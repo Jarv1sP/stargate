@@ -2748,9 +2748,28 @@ class Coordinator:
                         attempt, "managed systemd unit disappeared"
                     )
                 continue
+            # An exited main PID does not prove that container descendants
+            # stopped. Keep the original cancel TERM/KILL escalation alive.
+            canceled_children = False
+            if (
+                status.is_cleanup_ready
+                and attempt["state"] in {
+                    AttemptState.TERM_REQUESTED.value,
+                    AttemptState.KILL_REQUESTED.value,
+                    AttemptState.DRAINING.value,
+                }
+                and self.store.get_job(attempt["job_id"])["state"] == JobState.CANCELED.value
+                and status.control_group
+            ):
+                try:
+                    canceled_children = bool(read_cgroup_tree_processes(status.control_group))
+                except RuntimeError as exc:
+                    self._set_health("degraded", f"{attempt['id']}: {exc}")
+                    continue
             if (
                 status.is_cleanup_ready
                 and attempt["state"] != AttemptState.DRAINING.value
+                and not canceled_children
             ):
                 self._on_unit_exited(attempt, status)
                 continue
@@ -2793,7 +2812,9 @@ class Coordinator:
                 deadline = attempt.get("checkpoint_deadline_at")
                 if deadline is not None and self.clock() >= deadline:
                     self._enqueue_term_after_checkpoint(attempt)
-            elif attempt["state"] == AttemptState.TERM_REQUESTED.value:
+            elif attempt["state"] == AttemptState.TERM_REQUESTED.value or (
+                attempt["state"] == AttemptState.DRAINING.value and canceled_children
+            ):
                 deadline = attempt.get("term_deadline_at")
                 if (
                     deadline is not None
@@ -2985,7 +3006,7 @@ class Coordinator:
                 attempt["id"],
                 state=AttemptState.KILL_REQUESTED,
                 kill_deadline_at=None,
-                expected_states=[AttemptState.TERM_REQUESTED],
+                expected_states=[AttemptState.TERM_REQUESTED, AttemptState.DRAINING],
             )
             tx.enqueue_action(
                 job_id=attempt["job_id"],
@@ -3860,7 +3881,13 @@ class Coordinator:
             status = self._verified_status(attempt)
         except UnitNotFoundError:
             return {"already_exited": True, "unit_missing": True}
-        if status is None or status.is_cleanup_ready:
+        if status is None:
+            return {"already_exited": True}
+        if status.is_cleanup_ready and not (
+            victim_job["state"] == JobState.CANCELED.value
+            and status.control_group
+            and read_cgroup_tree_processes(status.control_group)
+        ):
             return {"already_exited": True}
         method = self.systemd.kill if kill else self.systemd.terminate
         signal_name = "KILL" if kill else "TERM"
