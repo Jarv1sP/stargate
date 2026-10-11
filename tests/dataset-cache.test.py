@@ -321,6 +321,30 @@ class DatasetCacheTests(unittest.TestCase):
         self.assertFalse(self.ready(version).exists())
         self.assertEqual(reopened.export_manifest(OWNER, "sample", version)["version"], version)
 
+    def test_existing_ready_read_lease_does_not_require_publication_headroom(self):
+        version = self.register(); self.publish(version)
+        before = (self.ready(version) / 'data').stat().st_ino
+        with patch.object(self.cache, '_free', side_effect=AssertionError('publication space gate during read lease')), \
+                patch.object(self.cache, '_reserved', side_effect=AssertionError('copy reservations during read lease')):
+            lease = self.cache.acquire_lease(OWNER, 'sample', version, 'read-with-full-cache-budget')
+            self.assertEqual(self.cache.acquire_lease(OWNER, 'sample', version, 'read-with-full-cache-budget'), lease)
+        self.assertTrue(lease['readOnly'])
+        self.assertEqual((self.ready(version) / 'data').stat().st_ino, before)
+        self.assertEqual(len(self.cache._leases('sample', version)), 1)
+
+    def test_read_lease_metadata_write_failure_is_not_reported_as_protected_read(self):
+        version = self.register(); self.publish(version)
+        original = D._write_json
+        lease_folder = self.cache._paths('sample', version)['.leases']
+        def fail_lease(path, value, *args, **kwargs):
+            if Path(path).parent == lease_folder:
+                raise OSError(28, 'fixture metadata volume full')
+            return original(path, value, *args, **kwargs)
+        with patch.object(D, '_write_json', side_effect=fail_lease):
+            with self.assertRaises(OSError):
+                self.cache.acquire_lease(OWNER, 'sample', version, 'metadata-full')
+        self.assertEqual(self.cache._leases('sample', version), [])
+
     def test_revoking_owner_does_not_destroy_existing_lease(self):
         version = self.register()
         self.publish(version)

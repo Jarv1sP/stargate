@@ -75,6 +75,7 @@
 - 扩卡明确使用 `fromReservedGpuCount`（原预留额度）、`sourceGpuCount`（原生尝试实际卡数）和 `targetGpuCount`；额度差额按前者计算，原生计划的 from_gpu_count 按实际卡数核对。两种源值不能互相默认，旧实验记录需显式迁移并核实物理源值。
 - `authorizeInitialAllocation`：同一只读事务核对 SENDING 派发、完整平台身份、当前任务授权和未改变的 HELD 额度；不修复缺失预留、不放行 UNKNOWN／ACCEPTED 重发。输出 scope=initial-quota，只代表额度；节点发送要求 launch-ready，不能跳过尚待接入的项目／数据准入。
 - `ProjectRunPreparer`：显式写入口，先只读确认已有项目，再按固定 UUID／generation／release 核对运行环境并复用原生运行目录声明。与 ExistingProjectReader 分离，不把查询变成创建操作；原 run-claim／output 退役保护继续生效。结果只证明项目运行准备，不是数据租约或容器启动证明。
+- 原生 READY 数据读取租约不再经过复制预留／发布安全余量检查；只写必要租约元数据，不搬运数据。元数据真实 ENOSPC／inode／I/O 错误仍失败，权限、版本、READY 与退役检查不变；这不是保证完全写满的元数据盘还能启动任务。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

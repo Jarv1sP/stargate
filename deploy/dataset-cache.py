@@ -2372,7 +2372,9 @@ class DatasetCache:
             leases = self._leases(dataset, version)
             lease = next((l for l in leases if l["jobId"] == job_id and l["owner"] == actor.user_id), None)
             if lease is None:
-                self._free(self._reserved() + 4096)
+                # Existing READY reads do not consume copy/publication capacity.
+                # The small atomic lease write still has to succeed; real
+                # metadata I/O errors must never become a protected-read reply.
                 _mkdir(paths[".leases"])
                 lease = dict(schema=SCHEMA, id=str(uuid.uuid4()), owner=actor.user_id, jobId=job_id, createdAt=time.time())
                 _write_json(paths[".leases"] / (lease["id"] + ".json"), lease)
