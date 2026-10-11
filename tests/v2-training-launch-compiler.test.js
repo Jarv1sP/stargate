@@ -100,6 +100,32 @@ test('exact plan and native digest survive Node to Python recovery; equivalent e
   assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
 });
 
+test('the fixed runner reads an actual compiler plan but refuses execution outside a GPUQ attempt', async t => {
+  const f = await fixture(t), project = await projectFixture(t);
+  const entrypoint = fileURLToPath(new URL('../scripts/v2-training-runner.py', import.meta.url));
+  const configPath = join(f.directory, 'runner.json');
+  const runner = [f.runner[0], '-I', '-B', entrypoint, '--config', configPath];
+  await writeFile(configPath, JSON.stringify({schema: 1, machineId: 'node-1', database: f.database,
+    gpuqSocket: join(f.directory, 'not-contacted.sock'), root: project.root, basePath: project.basePath,
+    controlRoot: join(f.directory, 'not-created-control'), gpuqArchive: join(f.directory, 'not-opened.pyz')}));
+  const compiler = new TrainingLaunchCompiler({runner, cwd: f.directory,
+    resources: f.compiler.resources, launchSpec: f.compiler.launchSpec});
+  const receipt = await new PrepareNodeTraining({compiler, bindings: f.bindings}).execute(f.input, pool);
+  assert.deepEqual((await f.read(receipt, {runner})).result.binding, receipt.binding);
+  const before = f.db.prepare('SELECT * FROM v2_node_runtime_plans').all();
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GPUQ_')));
+  await assert.rejects(run(runner[0], [...runner.slice(1), '--dispatch-id', receipt.binding.dispatchId, '--plan-digest', receipt.planDigest], {env}), error => {
+    assert.equal(error.code, 125);
+    assert.match(error.stderr, /NATIVE_EXECUTION_UNCONFIRMED/);
+    assert.equal(error.stdout, '');
+    assert.equal(error.stderr.includes('private-token'), false);
+    return true;
+  });
+  assert.deepEqual(f.db.prepare('SELECT * FROM v2_node_runtime_plans').all(), before);
+  await assert.rejects(stat(join(f.directory, 'not-created-control')), {code: 'ENOENT'});
+  assert.equal((await readdir(f.directory)).some(name => name === 'not-contacted.sock' || name === 'not-opened.pyz'), false);
+});
+
 test('mismatched task, selected node, registered project or lease never records or launches anything', async t => {
   const f = await fixture(t);
   const edits = [v => {v.submission.execution.argv.push('--changed');}, v => {v.identity.requestHash = 'f'.repeat(64);},

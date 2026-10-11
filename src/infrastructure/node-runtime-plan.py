@@ -1,7 +1,7 @@
 """Read one immutable node-private launch. No schema repair, preparation or submit.
 
 The database path and runner prefix come from the node service configuration;
-only dispatch ID and plan digest travel in the native command line. Hash the
+only dispatch ID and plan digest are per-task command-line inputs. Hash the
 stored UTF-8 bytes so Python never needs to reproduce JavaScript JSON encoding.
 """
 from contextlib import closing

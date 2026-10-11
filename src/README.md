@@ -97,7 +97,8 @@
 - `TrainingBudget`／`TrainingRuntime.run`：按已确认轮次的实际 GPU 数设置原 systemd 单元限额，复用 `job-resources` 的每卡 4 CPU／32 GiB、2048 进程规则及 cgroup 读取。设置成功后读取实际约束（含父级、亲和性和物理内存），提供仅本任务的只读 cgroup／JSON 视图；未确认限额不进入引擎。run 持有输入、预算和控制句柄直到引擎返回，启动前再核对当前轮次，保留原退出码且不自行释放持久资源。设置器／cgroup 数值目前为测试夹具，实际 systemd 限额与引擎仍待联调。
 - `BwrapTrainingEngine`／`SlirpNetwork`：基础环境的实际执行器，消费已有输入／控制／预算句柄；只读挂载代码、环境和数据，可写 home／outputs。GPU 路径由既有 UUID 解析器提供，不按卡号猜设备。可信 bootstrap 在命名空间完成后握手，网络助手按内核归属进入正确的 user/net namespace；再次授权后才执行带用户环境的命令。pidfd 跟踪原命名空间进程，正常退出或异常都收尾自己的进程，不释放调度租约。需要 Linux pidfd/nsfs、bubblewrap 和 slirp4netns。真实 CPU／本机网络测试已通过；OCI、生产 wrapper、实际项目环境／GPU 仍待验收。
 - `TrainingLaunchCompiler`／`PrepareNodeTraining`：把原请求、项目实例／环境与原数据租约编译成私有计划，宿主 argv 只含配置的运行器及计划引用；复用原生资源校验，不把用户容器命令当作宿主命令。原生 ASCII 名与中文展示名分开，展示元数据发送仍待接入。编译不创建租约或提供 launch-ready 许可。
-- `SqliteNodeDispatchBindings.prepareTraining` 同事务保存计划、原生规格和映射；旧实验库通过 `createNodeRuntimePlansSchema` 显式升级。`NodeRuntimePlans` 只读恢复固定编号并核对 JSON 字节摘要、wrapper 与原生摘要，不补建或重提；计划不包含原生摘要，避免循环引用。恢复的计划供 `TrainingRuntime` 使用，实际 wrapper 入口和容器执行仍待组装。
+- `SqliteNodeDispatchBindings.prepareTraining` 同事务保存计划、原生规格和映射；旧实验库通过 `createNodeRuntimePlansSchema` 显式升级。`NodeRuntimePlans` 只读恢复固定编号并核对 JSON 字节摘要、wrapper 与原生摘要，不补建或重提；计划不包含原生摘要，避免循环引用。恢复的计划供 `TrainingRuntime` 使用，节点服务及生产发布仍待完成。
+- `scripts/v2-training-runner.py`／`bootstrap/training-runner.py`：固定节点入口只接收配置路径、dispatchId 与 planDigest，组装已有原生身份、项目／数据、预算、控制及基础执行器。配置与任务内容分开，不迁移数据库、不创建项目／租约、不接收临时宿主 argv。当前只支持 base，OCI 明确拒绝；CLI 在 GPUQ 当前原生轮次之外拒绝执行。合成原生状态下的实际 CPU 串联已验证，真实 systemd／GPU 和生产服务接入仍待完成。
 - 原生启动先记录 STARTING，再调用 systemd；execution_snapshot 只读单次数据库观察，不等待 Coordinator 的慢操作锁。真实单元回执后才记 RUNNING；运行器在两阶段之间仍需用实际单元和本进程身份核对。取消主进程退出后的子进程收尾已同步上游 PR 273；成员观察失败时保留原租约、隔离该尝试的整组 GPU，并延后原 TERM／KILL 动作，不阻断其他健康卡。身份／租约结构不能可靠区分时仍保持全局拒绝，不能据此放宽所有异常。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
@@ -124,4 +125,16 @@ Ctrl-C 只中断本次查询，不终止训练。`TASK_READ_BUSY` 是查询名�
 
 诊断默认给出中文说明；加 `--json` 查看原生记录与平台额度。它不会停止任务、修复记录或释放资源，缺失的内核／worker 证据仍是未知；需要节点提供 `job-diagnostics-v1`。
 
-本链路返回读取位置的观察，不创建挂载或数据租约。生产身份迁移、远端数据目录、容器挂载以及新网页／CLI 外壳仍待接入，不能据此宣布完整数据读取或整体重构已上线。
+上述数据查询接口只返回读取位置的观察，不创建挂载或数据租约；执行链路另外管理它们。生产身份迁移、服务接入以及完整网页／CLI 外壳仍待完成，不能据此宣布整体重构已上线。
+
+## 节点运行器（仅维护者，尚未部署）
+
+配置格式见 [v2-runner.example.json](../deploy/v2-runner.example.json)。填写本节点已有的 V2 数据库、GPUQ socket／控制目录、项目根目录及数据来源；不复制生产数据库到影子库，不手工改任务记录。`leaseVersions` 默认空，仅在已批准的版本权限接管后配置；普通数据直读不需要填写它。
+
+为 `TrainingLaunchCompiler` 配置固定前缀，使用该版本目录和实际 Python 3.12 的绝对路径：
+
+```text
+<python3.12> -I -B <release>/scripts/v2-training-runner.py --config <node-config.json>
+```
+
+编译器追加 `--dispatch-id` 和 `--plan-digest`，用户命令／环境留在私有计划里。GPUQ 负责启动这个前缀；它不是成员的训练提交命令，直接从 SSH 运行会因缺少当前原生执行身份被拒绝。安装流程、公开提交、OCI 和真实 GPU 验收仍待完成。

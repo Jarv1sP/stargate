@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "machineId": "gpu-1",
+  "database": "/srv/gpuq-v2/node.sqlite",
+  "gpuqSocket": "/run/user/1000/gpuq.sock",
+  "root": "/srv/gpuq-console",
+  "basePath": "/opt/conda",
+  "controlRoot": "/srv/gpuq/control",
+  "gpuqArchive": "/opt/gpuq/gpuq.pyz",
+  "directories": {
+    "shared": "/srv/datasets"
+  },
+  "managedRoots": [
+    {"kind": "warehouse", "root": "/srv/warehouse"},
+    {"kind": "cache", "root": "/srv/cache"}
+  ],
+  "leaseVersions": [],
+  "runtimeConfig": {},
+  "bwrap": "/usr/bin/bwrap",
+  "slirp": "/usr/bin/slirp4netns",
+  "slirpLibraryPath": null
+}
