@@ -749,6 +749,7 @@ export async function executionCall(service,principal,operation,args,readContext
     if(job.nodeJobId)try{result=await observeJob(job,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});}catch{}
     if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==actorSnapshot||taskIdentity()!==snapshot)
       fail('授权或任务状态已改变，请重新查询完成状态。',409);
+    if(jobCompletion(job,result).completed&&!TERMINAL.has(job.state))persistSchedulerResult(service,job,result);
     return jobCompletion(job,result);
   }
   if(operation==='jobs.watch'){

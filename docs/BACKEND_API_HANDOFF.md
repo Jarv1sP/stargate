@@ -177,6 +177,8 @@ AUTO 成功回执的 `machine` 是已持久保存的最终目标，另附 `selec
 
 `jobs.completion {jobId}`（CLI：`gpuctl completion JOB_ID --json`）提供同一不可变任务的最新成功证明，不修改 `state/jobs` 的原终态。返回 `protocol:"job-completion-v1"`、`completed`、`state:SUCCEEDED|UNCONFIRMED`，以及 `jobId,userId,machine,nodeJobId,project,release,specSha256,portalHistory,nativeObservation`；成功另含 `completedAttempt,observedAt,nativeVersion`。CLI 已核实成功退出 0，未确认退出 2，请求错误退出 1。
 
+对尚未结束的任务，完整的节点成功回执会同时保存 `SUCCEEDED` 并清除门户占用计数；不再把正常收尾当作终态分歧要求人工恢复。查询只读取节点，不重投训练，不改写已有失败或取消历史；节点资源仍在收尾时保持未确认。
+
 原生手动重试成功后，历史终态不再自动同步，可能仍保留数据租约。此时 `completion` 仍为未确认，不能仅凭日志中的成功忽略资源保护。本人或管理员可显式执行 `gpuctl reconcile-resources JOB_ID --json`（`jobs.reconcile-resources {jobId}`）：只对账已有历史终态任务，不提交、重跑或取消任务，不修改原失败历史、取消标记和配额。服务端固定原生任务 ID、最新 attempt ID/序号和原生版本；节点在 job 锁内重读并核对完整规格、终止状态、全部消费者及代际，再正常收尾数据租约。缺失身份、运行中、未知或并发重试均拒绝；不得通过删除收据代替释放。成功回包 `protocol:job-resource-reconciliation-v1, resourcesReleased:true, reconciledNative, portalHistory, completion`，其中 `completion` 是收尾后的另一次只读核验，不保证后来新重试也已完成。该命令是显式变更，不自动重试；丢失响应可先用 `completion` 查询，再按原任务重新对账。
 
 `completed:true` 必须同时满足：固定节点/账号/submit key/不可变 spec 匹配；最新 attempt 为 `EXITED_SUCCESS`、exit 0、开始结束时间有效；native watch 已确认 GPU 消费者结束及数据租约收尾；较旧失败之后须有可信重试事件及更高 attempt。门户取消标记、缺少身份或事件基线、节点失联和清理中均返回未确认。仅当前获授权的本人/管理员可读，不接受客户端提交证据；不重放训练、占用额度、释放租约或覆盖失败历史。
