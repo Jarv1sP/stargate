@@ -7,12 +7,14 @@ import {AccountClient} from '../client/account-client.mjs';
 import {DirectoryClient} from '../client/directory-client.mjs';
 import {DataAccessImportClient} from '../client/data-access-import-client.mjs';
 import {ProjectClient} from '../client/project-client.mjs';
+import {TaskClient} from '../client/task-client.mjs';
 
 const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE login --username NAME --password-stdin
   --url ORIGIN --credentials FILE current
   --url ORIGIN --credentials FILE logout
   --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
+  --url ORIGIN --credentials FILE task --job UUID
   --url ORIGIN --credentials FILE register-directory --machine ID --source CONFIGURED_ID
   --url ORIGIN --credentials FILE register-project --project-id ID --machine ID --project SLUG --release SHA256
   --url ORIGIN --credentials FILE project-registration --project-id ID --machine ID --project SLUG --release SHA256
@@ -45,6 +47,7 @@ export async function runCli({argv, stdin, stdout}) {
     after: {type: 'string'}, limit: {type: 'string'},
     resource: {type: 'string'}, plan: {type: 'string'}, request: {type: 'string'},
     'project-id': {type: 'string'}, project: {type: 'string'}, release: {type: 'string'},
+    job: {type: 'string'},
   }});
   if (values.help) {stdout.write(usage); return;}
   const [command] = positionals;
@@ -58,6 +61,7 @@ export async function runCli({argv, stdin, stdout}) {
   const actions = {
     current: ({identity, expiry}) => ({...identity, ...expiry}),
     accounts: () => new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)}),
+    task: () => new TaskClient({transport}).read({jobId: values.job}),
     'register-directory': () => new DirectoryClient({transport}).register({machineId: values.machine, sourceId: values.source}),
     'register-project': () => new ProjectClient({transport}).registerRelease(projectReference()),
     'project-registration': () => new ProjectClient({transport}).registration(projectReference()),
