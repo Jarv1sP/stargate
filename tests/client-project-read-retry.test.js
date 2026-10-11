@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {apiPost} from '../client-http.mjs';
+import {projectUploadTransport} from './helpers/project-upload-transport.mjs';
 const {uploadCodeFiles}=await import(process.env.STARGATE_CLIENT_UNDER_TEST||'../cli.mjs');
 
 const origin='https://portal.example';
@@ -101,23 +102,23 @@ async function localCode(t){
 
 test('actual CLI resumes the discovered original upload after status EAGAIN at the confirmed offset',async t=>{
   const code=await localCode(t),queries=[],writes=[];
+  const write=async args=>{
+    assert.equal(args.machine,'node-a');
+    assert.equal(args.path,'train.py');
+    assert.equal(args.uploadId,upload.args.uploadId);
+    assert.equal(args.sha256,code.sha256);
+    assert.equal(args.totalSize,4);
+    assert.deepEqual({project:args.project,area:args.area},{project:'paper',area:'code'});
+    writes.push({...args,bytes:Buffer.from(args.data,'base64')});
+    return {complete:true,size:4,sha256:code.sha256};
+  };
   const call=(operation,args)=>apiPost(origin,'call',{operation,args},{token:'fixture-user-a',sleep:async()=>{},fetchImpl:async(url,options)=>{
     const request=JSON.parse(options.body);
-    if(request.operation==='files.put'){
-      assert.equal(request.args.machine,'node-a');
-      assert.equal(request.args.path,'train.py');
-      assert.equal(request.args.uploadId,upload.args.uploadId);
-      assert.equal(request.args.sha256,code.sha256);
-      assert.equal(request.args.totalSize,4);
-      assert.deepEqual({project:request.args.project,area:request.args.area},{project:'paper',area:'code'});
-      writes.push({...request.args,bytes:Buffer.from(request.args.data,'base64')});
-      return new Response(JSON.stringify({result:{complete:true,size:4,sha256:code.sha256}}));
-    }
     queries.push(request);
-    assert.equal(request.operation,'files.upload.status');
+    assert.equal(request.operation,'files.upload.status','portal control requests cannot relay byte frames');
     return queries.length===1?failure():new Response(JSON.stringify({result:{protocol:2,path:'train.py',state:'UPLOADING',uploadId:upload.args.uploadId,resumable:true,totalSize:4,sha256:code.sha256,receivedBytes:2}}));
   }});
-  const result=await uploadCodeFiles(call,{machine:'node-a',context:{project:'paper',area:'code'},local:code.local,remote:'train.py',progress:()=>{}});
+  const result=await uploadCodeFiles(call,{machine:'node-a',context:{project:'paper',area:'code'},local:code.local,remote:'train.py',progress:()=>{},transportFactory:projectUploadTransport(write)});
   assert.equal(result.uploaded,1);
   assert.deepEqual(queries[0],queries[1]);
   assert.equal(writes.length,1);
@@ -137,27 +138,27 @@ test('actual CLI keeps the source and performs zero file writes when the origina
 
 test('actual CLI lost final ACK plus status EAGAIN confirms the original completion without replaying bytes',async t=>{
   const code=await localCode(t),queries=[];let identity,writes=0;
+  const write=async args=>{
+    identity=args;writes++;
+    assert.equal(args.machine,'node-a');
+    assert.equal(args.project,'paper');
+    assert.equal(args.area,'code');
+    assert.equal(args.path,'train.py');
+    assert.equal(args.offset,0);
+    assert.equal(args.sha256,code.sha256);
+    assert.equal(args.totalSize,4);
+    assert.deepEqual(Buffer.from(args.data,'base64'),code.bytes);
+    throw new TypeError('final ACK lost');
+  };
   const call=(operation,args)=>apiPost(origin,'call',{operation,args},{sleep:async()=>{},fetchImpl:async(url,options)=>{
     const request=JSON.parse(options.body);
-    if(request.operation==='files.put'){
-      identity=request.args;writes++;
-      assert.equal(request.args.machine,'node-a');
-      assert.equal(request.args.project,'paper');
-      assert.equal(request.args.area,'code');
-      assert.equal(request.args.path,'train.py');
-      assert.equal(request.args.offset,0);
-      assert.equal(request.args.sha256,code.sha256);
-      assert.equal(request.args.totalSize,4);
-      assert.deepEqual(Buffer.from(request.args.data,'base64'),code.bytes);
-      throw new TypeError('final ACK lost');
-    }
     queries.push(request);
-    assert.equal(request.operation,'files.upload.status');
+    assert.equal(request.operation,'files.upload.status','portal control requests cannot relay byte frames');
     if(queries.length===1)return new Response('{"result":{"protocol":2,"path":"train.py","state":"ABSENT"}}');
     if(queries.length===2)return failure();
     return new Response(JSON.stringify({result:{protocol:2,path:'train.py',state:'COMPLETE',uploadId:identity.uploadId,totalSize:4,sha256:code.sha256,receivedBytes:4,complete:true,size:4,completionPending:false}}));
   }});
-  const result=await uploadCodeFiles(call,{machine:'node-a',context:{project:'paper',area:'code'},local:code.local,remote:'train.py',progress:()=>{},recoverySleep:async()=>{}});
+  const result=await uploadCodeFiles(call,{machine:'node-a',context:{project:'paper',area:'code'},local:code.local,remote:'train.py',progress:()=>{},recoverySleep:async()=>{},transportFactory:projectUploadTransport(write)});
   assert.equal(result.uploaded,1);
   assert.equal(writes,1);
   assert.equal(queries.length,3);

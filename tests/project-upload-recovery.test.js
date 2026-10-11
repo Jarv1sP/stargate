@@ -8,14 +8,20 @@ import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {uploadCodeFiles} from '../cli.mjs';
+import {projectUploadTransport} from './helpers/project-upload-transport.mjs';
 
 async function fixture(t,bytes=Buffer.alloc(1024*1024+7,65)){
  const dir=await mkdtemp(join(tmpdir(),'project-recovery-')),local=join(dir,'bundle');await writeFile(local,bytes);
  t.after(()=>rm(dir,{recursive:true,force:true}));
- const calls=[],sleeps=[],path='bundle.tar',sha256=createHash('sha256').update(bytes).digest('hex');
- const run=call=>uploadCodeFiles(async(op,args)=>{calls.push({op,args});return {result:await call(op,args)};},
-  {machine:'gpu-1',context:{project:'alpha',area:'code'},local,remote:path,progress:()=>{},recoverySleep:async ms=>sleeps.push(ms)});
- return {run,calls,sleeps,path,sha256,totalSize:bytes.length,local,dir};
+ const calls=[],sleeps=[],grants=[],path='bundle.tar',sha256=createHash('sha256').update(bytes).digest('hex');let closed=0;
+ t.after(()=>assert.equal(closed,grants.length,'every authorized test transport is closed'));
+ const run=call=>uploadCodeFiles(async(op,args)=>{
+  assert.equal(op,'files.upload.status','control requests never carry file bytes');
+  calls.push({op,args,channel:'control'});return {result:await call(op,args)};
+ },{machine:'gpu-1',context:{project:'alpha',area:'code'},local,remote:path,progress:()=>{},recoverySleep:async ms=>sleeps.push(ms),
+  transportFactory:projectUploadTransport(async args=>{calls.push({op:'files.put',args,channel:'data'});return call('files.put',args);},
+   {onAuthorize:request=>grants.push(request),onClose:()=>{closed++;}})});
+ return {run,calls,sleeps,grants,path,sha256,totalSize:bytes.length,local,dir};
 }
 const absent=path=>({protocol:2,state:'ABSENT',complete:false,path,receivedBytes:0});
 const complete=args=>({protocol:2,state:'COMPLETE',complete:true,...args,receivedBytes:args.totalSize,size:args.totalSize});
@@ -30,6 +36,8 @@ test('lost middle ACK queries and resumes same ID without resending accepted byt
  });
  const puts=f.calls.filter(v=>v.op==='files.put');assert.equal(puts.length,2);assert.equal(puts[0].args.uploadId,puts[1].args.uploadId);
  assert.deepEqual(puts.map(v=>v.args.offset),[0,1024*1024]);assert.deepEqual(f.sleeps,[1000]);
+ assert.ok(puts.every(value=>value.channel==='data'));
+ assert.equal(f.grants.length,2);assert.deepEqual(f.grants[0],f.grants[1],'recovery reauthorizes the same immutable file scope');
 });
 
 test('lost final ACK is confirmed by status and never resends or publishes',async t=>{
@@ -80,17 +88,19 @@ test('all bytes staged but final unconfirmed sends only a zero-byte final fence'
 test('recovery is bounded and a source mutation or authorization error is never retried',async t=>{
  const f=await fixture(t);
  await assert.rejects(f.run((op,args)=>{if(op==='files.upload.status')return absent(f.path);throw Object.assign(Error('down'),{status:503});}),/down/);
- assert.equal(f.calls.filter(v=>v.op==='files.put').length,4);assert.deepEqual(f.sleeps,[1000,2000,4000]);
+ assert.equal(f.calls.filter(v=>v.op==='files.put').length,11);
+ assert.deepEqual(f.sleeps,[1000,2000,4000,8000,16000,16000,16000,16000,16000,16000]);
+ assert.equal(f.grants.length,11);assert.ok(f.grants.every(value=>JSON.stringify(value)===JSON.stringify(f.grants[0])));
  const g=await fixture(t);await assert.rejects(g.run((op,args)=>{if(op==='files.upload.status')return absent(g.path);throw Object.assign(Error('forbidden'),{status:403});}),/forbidden/);
  assert.equal(g.sleeps.length,0);assert.equal(g.calls.filter(v=>v.op==='files.put').length,1);
  const h=await fixture(t);await assert.rejects(h.run(async(op,args)=>{if(op==='files.upload.status')return absent(h.path);await writeFile(h.local,'changed');throw Object.assign(Error('reset'),{status:502});}),/Local file changed/);
  assert.equal(h.calls.filter(v=>v.op==='files.put').length,1);
 });
 
-test('legacy non-project uploads retain zero automatic replay',async t=>{
+test('retired non-project uploads are rejected before any RPC or automatic retry',async t=>{
  const f=await fixture(t);let calls=0;
- await assert.rejects(uploadCodeFiles(async()=>{calls++;throw Object.assign(Error('reset'),{status:502});},{machine:'gpu-1',context:{},local:f.local,remote:f.path,progress:()=>{},recoverySleep:()=>{throw Error('must not sleep');}}),/reset/);
- assert.equal(calls,1);
+ await assert.rejects(uploadCodeFiles(async()=>{calls++;throw Object.assign(Error('reset'),{status:502});},{machine:'gpu-1',context:{},local:f.local,remote:f.path,progress:()=>{},recoverySleep:()=>{throw Error('must not sleep');}}),/Campus push requires a selected personal project/);
+ assert.equal(calls,0);
 });
 
 test('CLI to real temporary native project recovers rename-without-receipt and unblocks publication',async t=>{
