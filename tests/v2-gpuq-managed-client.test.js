@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {GpuqManagedClient} from '../src/infrastructure/gpuq-managed-client.mjs';
+import {GpuqLaunchSpec} from '../src/infrastructure/gpuq-launch-spec.mjs';
 
 async function fixture(t) {
   const folder = await mkdtemp(join(tmpdir(), 'v2-managed-')), socketPath = join(folder, 'rpc.sock');
@@ -75,6 +76,20 @@ test('bad identities and oversized managed wire requests make no native request'
   await assert.rejects(f.client.updateAllocation({submitKey: f.submitKey, grantId: f.grantId, expectedRevision: 0, maxGpus: 2}), error => error.code === 'INVALID_MANAGED_REQUEST');
   await assert.rejects(new GpuqManagedClient({...f.options, maxRequestBytes: 64}).submit({submission: {submit_key: f.submitKey}, grantId: f.grantId, maxGpus: 1}), error => error.code === 'INVALID_MANAGED_REQUEST');
   assert.equal(f.calls.length, 0);
+});
+
+test('prepared native digest is checked by the original hash implementation before any RPC mutation', async t => {
+  const f = await fixture(t);
+  const built = await new GpuqLaunchSpec({python: f.options.python}).build({submit_key: f.submitKey,
+    name: 'fixed-wrapper', owner: 'alice', priority: 2, dispatch_mode: 'queue', checkpoint_capability: 'none', restart_policy: 'never',
+    gpu_count: 1, placement: 'any', requested_gpu_uuids: [], argv: [process.execPath, '--version'], cwd: tmpdir(), env: {}}, {gpuUuids: ['GPU-a']});
+  const command = {submission: built.submission, grantId: f.grantId, maxGpus: 1, expectedDigest: built.nativeDigest};
+  await assert.rejects(f.client.submit({...command, submission: {...built.submission, argv: [...built.submission.argv, 'changed']}}), error => error.code === 'INVALID_MANAGED_REQUEST');
+  await assert.rejects(f.client.submit({...command, expectedDigest: '0'.repeat(64)}), error => error.code === 'INVALID_MANAGED_REQUEST');
+  assert.equal(f.calls.length, 0);
+  assert.equal((await f.client.submit(command)).grant.max_gpu_count, 1);
+  assert.equal(f.calls.length, 1);
+  assert.deepEqual(f.calls[0].args, {submission: built.submission, grant_id: f.grantId, max_gpu_count: 1});
 });
 
 test('mismatched grant replies cannot confirm mutation results', async t => {

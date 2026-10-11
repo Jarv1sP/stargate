@@ -26,23 +26,26 @@ export class SqliteTaskAuthority {
 
   requireDataRead(jobId, request) {
     const input = parseDataReadRequest(request);
-    return readTransaction(this.database, () => {
-      const context = this.contextWithinTransaction(jobId), {submission, accountId, accountRole} = context;
-      if (submission.machines.kind === 'selected' && !submission.machines.ids.includes(input.machineId)) {
-        throw new ApplicationError('TASK_SCOPE_MISMATCH');
-      }
-      if (!submission.dataSources.some(source => JSON.stringify(source) === JSON.stringify(input.source))) {
-        throw new ApplicationError('TASK_SCOPE_MISMATCH');
-      }
-      const resource = permissionResourceFor(input);
-      const row = this.database.prepare(`SELECT m.enabled,r.id resource_id,r.visibility,r.owner_id,
-        EXISTS(SELECT 1 FROM v2_machine_grants g WHERE g.account_id=? AND g.machine_id=m.id) machine_granted,
-        EXISTS(SELECT 1 FROM v2_data_readers d WHERE d.account_id=? AND d.resource_id=r.id) reader_granted
-        FROM v2_machines m LEFT JOIN v2_data_resources r
-          ON r.kind=? AND r.machine_id IS ? AND r.source_id=? AND r.version IS ? WHERE m.id=?`)
-        .get(accountId, accountId, resource.kind, resource.machineId, resource.sourceId, resource.version, input.machineId);
-      requireDataSourcePermission(accountId, accountRole, {machineEnabled: row?.enabled === 1, machineGranted: row?.machine_granted === 1,
-        source: row?.resource_id ? {visibility: row.visibility, ownerId: row.owner_id, readerGranted: row.reader_granted === 1} : null});
-    });
+    return readTransaction(this.database, () => this.requireDataReadWithinTransaction(this.contextWithinTransaction(jobId), input));
+  }
+
+  /** The caller holds one authorization snapshot; input is already parsed. */
+  requireDataReadWithinTransaction(context, input) {
+    const {submission, accountId, accountRole} = context;
+    if (submission.machines.kind === 'selected' && !submission.machines.ids.includes(input.machineId)) {
+      throw new ApplicationError('TASK_SCOPE_MISMATCH');
+    }
+    if (!submission.dataSources.some(source => JSON.stringify(source) === JSON.stringify(input.source))) {
+      throw new ApplicationError('TASK_SCOPE_MISMATCH');
+    }
+    const resource = permissionResourceFor(input);
+    const row = this.database.prepare(`SELECT m.enabled,r.id resource_id,r.visibility,r.owner_id,
+      EXISTS(SELECT 1 FROM v2_machine_grants g WHERE g.account_id=? AND g.machine_id=m.id) machine_granted,
+      EXISTS(SELECT 1 FROM v2_data_readers d WHERE d.account_id=? AND d.resource_id=r.id) reader_granted
+      FROM v2_machines m LEFT JOIN v2_data_resources r
+        ON r.kind=? AND r.machine_id IS ? AND r.source_id=? AND r.version IS ? WHERE m.id=?`)
+      .get(accountId, accountId, resource.kind, resource.machineId, resource.sourceId, resource.version, input.machineId);
+    requireDataSourcePermission(accountId, accountRole, {machineEnabled: row?.enabled === 1, machineGranted: row?.machine_granted === 1,
+      source: row?.resource_id ? {visibility: row.visibility, ownerId: row.owner_id, readerGranted: row.reader_granted === 1} : null});
   }
 }

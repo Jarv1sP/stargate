@@ -89,6 +89,21 @@ export class SqliteNodeDispatchBindings {
       return row ? {binding, submission: JSON.parse(row.submission_json)} : null;
     });
   }
+
+  /** Only compiled training plans can enter the new sender, not bare legacy specs. */
+  training({machineId, dispatchId}) {
+    if (machineId !== this.machineId) throw new ApplicationError('NODE_DISPATCH_MACHINE_MISMATCH');
+    return readTransaction(this.database, () => {
+      const binding = this.#read(dispatchId);
+      if (!binding) return null;
+      const row = this.database.prepare(`SELECT s.submission_json,p.plan_json,p.plan_digest
+        FROM v2_node_launch_specs s JOIN v2_node_runtime_plans p USING(dispatch_id) WHERE s.dispatch_id=?`).get(dispatchId);
+      if (!row) return null;
+      const submission = JSON.parse(row.submission_json);
+      verifyRuntimePlan({binding, built: {submission}, planJson: row.plan_json, planDigest: row.plan_digest});
+      return {binding, submission, plan: JSON.parse(row.plan_json)};
+    });
+  }
   get({machineId, dispatchId}) {
     if (machineId !== this.machineId) throw new ApplicationError('NODE_DISPATCH_MACHINE_MISMATCH');
     return readTransaction(this.database, () => this.#read(dispatchId));

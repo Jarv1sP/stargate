@@ -13,9 +13,10 @@ export class GpuqManagedClient {
     if (typeof socketPath !== 'string' || !isAbsolute(socketPath) || !Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1) throw new TypeError('Invalid managed client configuration');
     this.socketPath = socketPath; this.python = python; this.timeoutMs = timeoutMs; this.maxRequestBytes = maxRequestBytes;
   }
-  async submit({submission, grantId, maxGpus}) {
-    if (!uuid(submission?.submit_key) || !uuid(grantId) || !count(maxGpus)) throw new ApplicationError('INVALID_MANAGED_REQUEST');
-    return this.#call('submit', {submission, grant_id: grantId, max_gpu_count: maxGpus}, submission.submit_key, grantId);
+  async submit({submission, grantId, maxGpus, expectedDigest}) {
+    if (!uuid(submission?.submit_key) || !uuid(grantId) || !count(maxGpus)
+      || (expectedDigest !== undefined && (typeof expectedDigest !== 'string' || !/^[a-f0-9]{64}$/.test(expectedDigest)))) throw new ApplicationError('INVALID_MANAGED_REQUEST');
+    return this.#call('submit', {submission, grant_id: grantId, max_gpu_count: maxGpus}, submission.submit_key, grantId, expectedDigest);
   }
   async allocation({submitKey}) {
     if (!uuid(submitKey)) throw new ApplicationError('INVALID_MANAGED_REQUEST');
@@ -25,11 +26,12 @@ export class GpuqManagedClient {
     if (!uuid(submitKey) || !uuid(grantId) || !count(maxGpus) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new ApplicationError('INVALID_MANAGED_REQUEST');
     return this.#call('update', {submit_key: submitKey, grant_id: grantId, expected_revision: expectedRevision, max_gpu_count: maxGpus}, submitKey, grantId);
   }
-  async #call(operation, args, submitKey, grantId) {
+  async #call(operation, args, submitKey, grantId, expectedDigest) {
     const uncertain = operation === 'status' ? 'NATIVE_ALLOCATION_UNAVAILABLE' : 'NATIVE_OUTCOME_UNCONFIRMED';
     try {
       const {result} = await jsonProcess({program: this.python, args: ['-B', script], timeoutMs: this.timeoutMs, maxBytes: 2 * 1024 * 1024,
-        input: {socketPath: this.socketPath, operation, args, maxRequestBytes: this.maxRequestBytes}});
+        input: {socketPath: this.socketPath, operation, args, maxRequestBytes: this.maxRequestBytes,
+          ...(expectedDigest === undefined ? {} : {expectedDigest})}});
       if (result === null && operation === 'status') return null;
       if (!result || result.submit_key !== submitKey || typeof result.job_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(result.job_id)) throw new Error('Managed reply identity mismatch');
       if (['native', 'external-v1'].includes(result.mode) && result.grant === null && operation === 'status') return result;

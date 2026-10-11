@@ -31,11 +31,12 @@ export class SqliteTrainingCatalog {
     return readTransaction(this.database, () => this.#withInstances(this.#candidates(actor, request, now), request));
   }
   snapshotForTask(jobId) {
-    return readTransaction(this.database, () => {
-      const {accountId, accountRole, submission} = new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
-      const facts = this.#facts(accountId, submission);
-      return this.#withInstances(projectCandidates(accountId, accountRole, submission, facts), submission);
-    });
+    return readTransaction(this.database, () => this.snapshotTaskWithinTransaction(
+      new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId)));
+  }
+  snapshotTaskWithinTransaction({accountId, accountRole, submission}) {
+    const facts = this.#facts(accountId, submission);
+    return this.#withInstances(projectCandidates(accountId, accountRole, submission, facts), submission);
   }
   #withInstances(result, request) {
     const allowed = new Set(result.candidates.map(row => row.machineId));

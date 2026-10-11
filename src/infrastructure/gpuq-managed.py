@@ -1,11 +1,13 @@
 """Fixed managed operations only. Transport loss may follow a committed mutation."""
 import json
+import re
 from pathlib import Path
 import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'gpuq'))
 from gpuq.protocol import Client, ProtocolError, encode_request
+from gpuq.store import normalized_submission_digest
 
 REJECTIONS = {'BAD_REQUEST', 'BAD_SUBMISSION', 'ALLOCATION_CONFLICT', 'MAINTENANCE', 'NOT_FOUND', 'FORBIDDEN'}
 OPERATIONS = {'submit': ('submit_managed', {'submission', 'grant_id', 'max_gpu_count'}),
@@ -19,12 +21,19 @@ def main():
         if len(raw) > 2 * 1024 * 1024:
             raise ValueError('Request too large')
         value = json.loads(raw)
-        if not isinstance(value, dict) or set(value) != {'socketPath', 'operation', 'args', 'maxRequestBytes'}:
+        if not isinstance(value, dict) or set(value) not in (
+                {'socketPath', 'operation', 'args', 'maxRequestBytes'},
+                {'socketPath', 'operation', 'args', 'maxRequestBytes', 'expectedDigest'}):
             raise ValueError('Invalid managed envelope')
         operation, fields = OPERATIONS[value['operation']]
         args = value['args']
         if not isinstance(args, dict) or set(args) != fields:
             raise ValueError('Invalid operation fields')
+        if 'expectedDigest' in value:
+            expected = value['expectedDigest']
+            if (value['operation'] != 'submit' or not isinstance(expected, str) or not re.fullmatch('[a-f0-9]{64}', expected)
+                    or normalized_submission_digest(args['submission']) != expected):
+                raise ValueError('Prepared native submission differs from its binding')
         path = Path(value['socketPath'])
         if not path.is_absolute():
             raise ValueError('Expected configured absolute socket')

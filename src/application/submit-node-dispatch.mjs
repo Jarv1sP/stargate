@@ -9,16 +9,16 @@ export class SubmitNodeDispatch {
     const reference = {machineId, dispatchId};
     const existing = await this.receipts.execute(reference);
     if (existing !== null) return {kind: 'accepted', receipt: existing};
-    const launch = await this.bindings.launch(reference);
+    const launch = await this.bindings.training(reference);
     if (!launch) throw new ApplicationError('NODE_LAUNCH_NOT_PREPARED');
-    const {binding, submission} = launch;
-    const approval = await this.admission.acquire({...binding});
+    const {binding, submission, plan} = launch;
+    const approval = await this.admission.acquire({binding: {...binding}, project: plan.project, inputs: plan.inputs});
     const fields = ['dispatchId', 'jobId', 'accountId', 'machineId', 'gpuCount', 'requestHash'];
     if (!approval || approval.scope !== 'launch-ready' || fields.some(field => approval[field] !== binding[field]) || approval.grantId !== dispatchId) {
       throw new ApplicationError('NODE_LAUNCH_NOT_AUTHORIZED');
     }
     // Native cap is the initial reserved quota, not the elastic submission maximum.
-    const submitted = await this.native.submit({submission, grantId: dispatchId, maxGpus: binding.gpuCount});
+    const submitted = await this.native.submit({submission, grantId: dispatchId, maxGpus: binding.gpuCount, expectedDigest: binding.nativeDigest});
     try {
       const receipt = await this.receipts.execute(reference);
       if (receipt === null) return {kind: 'unconfirmed', ...reference};

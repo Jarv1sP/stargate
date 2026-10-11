@@ -79,6 +79,7 @@ export function verifyRuntimePlan({binding, built, planJson, planDigest}) {
   const plan = JSON.parse(planJson), argv = built.submission.argv;
   if (plan.schema !== 1 || hash(planJson) !== planDigest
     || identityFields.some(key => plan.identity[key] !== binding[key])
+    || built.submission.submit_key !== binding.dispatchId
     || JSON.stringify(argv.slice(-4)) !== JSON.stringify(['--dispatch-id', binding.dispatchId, '--plan-digest', planDigest])) {
     throw new ApplicationError('NODE_RUNTIME_PLAN_IDENTITY_MISMATCH');
   }
