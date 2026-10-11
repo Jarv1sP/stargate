@@ -52,12 +52,12 @@ function fail(message){throw Error(message);}
 const CLI_OPTIONS=new Map([
   ['pin','flag'],...['kind','status','title','body','body-file','announcement-type'].map(key=>[key,'value']),
   ['via','value'],['data-read','value'],
-  ['recursive','flag'],['yes','flag'],
   ...['sha256','file-id','password-code','source-url'].map(key=>[key,'value']),
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','ack-unknown','sync','data-workspace'].map(key=>[key,'flag']),
   ['sync-dir','value'],['candidates','value'],['owner-id','value'],
   ...['url','session-file','total','cards','as','role','name','description','display-name','min-vram','key','project','release','job','priority','cwd','timeout','reconnect','env-mode','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','ref','target-project','gpu','vram-mib','sm-percent','reason','script-file','revision','preview-token','parent','cursor','limit','members','primary','manifest-sha256'].map(key=>[key,'value']),
   ['machine','machines'],['data','datasets'],
+  ['recursive','flag'],['yes','flag'],
 ]);
 
 export function parseCLIOptions(argv){
@@ -226,9 +226,9 @@ async function main(){
   if(options.sync&&['release','legacy','root','as','job'].some(key=>Object.hasOwn(options,key)))fail('run --sync requires a personal project; cannot combine with --release/--legacy/--root/--as/--job');
   const transferCopy=positionals[0]==='transfer'&&positionals[1]==='copy',projectCopy=positionals[0]==='project'&&positionals[1]==='copy',transferWatch=positionals[0]==='transfer'&&positionals[1]==='watch',transferList=positionals[0]==='transfer'&&positionals[1]==='list';
   const datasetLabel=positionals[0]==='data'&&positionals[1]==='label';
+  const projectLifecycle=positionals[0]==='project'&&['label','group','archive','unarchive','retire'].includes(positionals[1]);
   const privateRemove=positionals[0]==='data'&&positionals[1]==='rm';
   if((options.recursive||options.yes)&&!privateRemove)fail('--recursive and --yes are only for data rm');
-  const projectLifecycle=positionals[0]==='project'&&['label','group','archive','unarchive','retire'].includes(positionals[1]);
   if(['ref','target-project'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'||options['dry-run']&&positionals[0]!=='sync'&&!privateRemove||['from','to'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'&&!transferCopy&&!projectCopy)fail('--from/--to are for sync, project copy or transfer copy; dry-run also supports data rm');
   if(options.candidates!==undefined&&positionals[0]!=='run')fail('--candidates is only for run --machine auto');
   if(options.general&&positionals[0]!=='note')fail('--general is only valid for note');
@@ -642,22 +642,6 @@ async function main(){
     }else if(command==='data'&&['import','imports','import-status','import-resume','import-cancel','import-discard'].includes(positionals[1])){
       if(training.length)fail('导入不接受额外命令。');
       result=await runCloudImport({action:positionals[1],positionals,options,machine:defaultMachine(),call});
-    }else if(command==='data'&&['rm','rm-status'].includes(positionals[1])){
-      const status=positionals[1]==='rm-status',allowed=['machines','datasets','url','session-file','json',...(status?[]:['recursive','yes','dry-run','key'])];
-      if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(key=>!allowed.includes(key))||options.yes&&options['dry-run'])fail('Usage: data rm PATH [--recursive] [--yes --key UUID] | data rm-status UUID');
-      const machine=defaultMachine();if(machine==='auto'||!state.machines.some(m=>m.id===machine))fail('Select an authorized cleanup server explicitly');
-      if(status){result=(await call('datasets.workspace.remove-status',{machine,key:positionals[2]})).result;}
-      else{
-        const path=workspaceDataPath(positionals[2]),recursive=options.recursive===true;
-        if(!options.yes)result=(await call('datasets.workspace.remove-plan',{machine,path,recursive})).result;
-        else{
-          const key=options.key||randomUUID();
-          process.stderr.write(`Cleanup: ${key}. Query with gpuctl data rm-status ${key} --machine ${machine}; reuse --key ${key} after an uncertain response.\n`);
-          result=(await call('datasets.workspace.remove',{machine,path,recursive,key})).result;
-        }
-      }
-      if(result.state==='FAILED')process.exitCode=1;
-      else if(result.state==='UNKNOWN'||result.launchUnconfirmed===true)process.exitCode=3;
     }else if(command==='data'&&['put','files','publish','workspace-status'].includes(positionals[1])){
       const action=positionals[1],allowed=['machines','datasets','url','session-file','json',...(action==='put'?['overwrite','via']:action==='publish'?['name','key']:[])];
       if(training.length||options.datasets.length||Object.keys(options).some(k=>!allowed.includes(k)))fail('Personal data commands do not accept project, root or training options');
@@ -680,6 +664,22 @@ async function main(){
         result={...(await call('datasets.workspace.status',{machine,...(positionals[2]?{operationId:positionals[2]}:{})})).result,machine};
         if(result.state==='FAILED')process.exitCode=1;else if(result.state==='UNKNOWN')process.exitCode=3;
       }
+    }else if(command==='data'&&['rm','rm-status'].includes(positionals[1])){
+      const status=positionals[1]==='rm-status',allowed=['machines','datasets','url','session-file','json',...(status?[]:['recursive','yes','dry-run','key'])];
+      if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(key=>!allowed.includes(key))||options.yes&&options['dry-run'])fail('Usage: data rm PATH [--recursive] [--yes --key UUID] | data rm-status UUID');
+      const machine=defaultMachine();if(machine==='auto'||!state.machines.some(m=>m.id===machine))fail('Select an authorized cleanup server explicitly');
+      if(status){result=(await call('datasets.workspace.remove-status',{machine,key:positionals[2]})).result;}
+      else{
+        const path=workspaceDataPath(positionals[2]),recursive=options.recursive===true;
+        if(!options.yes)result=(await call('datasets.workspace.remove-plan',{machine,path,recursive})).result;
+        else{
+          const key=options.key||randomUUID();
+          process.stderr.write(`Cleanup: ${key}. Query with gpuctl data rm-status ${key} --machine ${machine}; reuse --key ${key} after an uncertain response.\n`);
+          result=(await call('datasets.workspace.remove',{machine,path,recursive,key})).result;
+        }
+      }
+      if(result.state==='FAILED')process.exitCode=1;
+      else if(result.state==='UNKNOWN'||result.launchUnconfirmed===true)process.exitCode=3;
     }else if(command==='data'&&positionals[1]==='upload'){
       if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','url','session-file','json','name','via'].includes(k)))fail('Usage: data upload ARCHIVE_OR_DIRECTORY --name NAME [--machine SERVER] [--via auto|direct|relay]');
       if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(options.name||''))fail('Dataset name must be 1–40 ASCII letters, digits, _ or -, beginning with a letter or digit');

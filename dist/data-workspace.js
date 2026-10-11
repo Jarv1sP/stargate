@@ -86,9 +86,9 @@ export function dataWorkspaceHTML(){
     <details class="data-workspace-browser"><summary>查看文件与发布进度</summary><div class="data-workspace-browse-controls"><label class="field">目录<input name="data-workspace-browse-path" value="." aria-label="查看数据空间目录"></label><button class="button" id="data-workspace-refresh" type="button">刷新</button></div><ul id="data-workspace-files-list"></ul><details id="data-workspace-registrations"><summary>空登记</summary><button class="button" id="data-workspace-registrations-refresh" type="button">重新查询</button><ul id="data-workspace-registrations-list" aria-live="polite"></ul></details></details>
     <form id="data-workspace-publish-form"><h4>发布为训练数据集</h4><p class="muted">先结束此机器上的所有数据终端，再发布整理好的子目录。发布会复制并校验文件，训练使用只读版本；原目录保留。</p><div class="data-workspace-fields"><label class="field">整理好的子目录<input name="data-workspace-publish-path" placeholder="my-data" required><small>例如 /data2/my-data，填写 my-data。</small></label><label class="field">数据集名称<input name="data-workspace-name" placeholder="my-data" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{0,39}" required></label></div><div class="file-actions"><button class="button primary" id="data-workspace-publish" type="submit">校验并发布</button></div></form>
     ${cloudFilesHTML()}
+    <p id="data-workspace-status" role="status">上传只保存文件；数据整理完成后再发布。</p>
     <button class="button quiet" id="data-workspace-cleanup-status" type="button" hidden>查询上次清理</button>
     <button class="button danger" id="data-workspace-cleanup-retry" type="button" hidden>继续原清理</button>
-    <p id="data-workspace-status" role="status">上传只保存文件；数据整理完成后再发布。</p>
     <p class="muted data-workspace-footnote">上传前请确认磁盘容量；停止上传会保留已收到的文件片段。</p>
   </section>`;
 }
