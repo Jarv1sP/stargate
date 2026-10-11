@@ -126,8 +126,25 @@ def prepare(config, spec, workspace, project, environment):
     mounts = {'/workspace': workspace}
     if project:
         mounts['/outputs'] = project['output']
-    env = {'GPUQ_JOB_ID': job, 'GPUQ_CONSOLE_JOB_ID': spec['id'],
-           'GPUQ_ATTEMPT_ID': attempt, 'GPUQ_CONTROL_DIR': CONTROL, 'PYTHONPATH': SDK}
+    files, env = open_attempt(config, job_id=job, task_id=spec['id'], attempt_id=attempt,
+                             environment=environment, mounts=mounts, placement=spec.get('placement', {}))
+    args = ['--dir', '/run/gpuq']
+    for descriptor, target, readonly in files:
+        args += ['--ro-bind-data' if readonly else '--bind-fd', str(descriptor), target]
+    for key, value in env.items():
+        args += ['--setenv', key, value]
+    return args, [descriptor for descriptor, _, _ in files]
+
+
+def open_attempt(config, *, job_id, task_id, attempt_id, environment, mounts, placement):
+    """Open IPC for an already authorized attempt; caller owns returned FDs.
+
+    Legacy prepare validates its SQL binding above. V2 uses its native execution
+    authority before entering here; task_id need not equal the native submit key.
+    No database lookup, directory creation or resource release happens here.
+    """
+    env = {'GPUQ_JOB_ID': job_id, 'GPUQ_CONSOLE_JOB_ID': task_id,
+           'GPUQ_ATTEMPT_ID': attempt_id, 'GPUQ_CONTROL_DIR': CONTROL, 'PYTHONPATH': SDK}
     for key in COUNTERS:
         if key in environment:
             value = environment[key]
@@ -136,30 +153,27 @@ def prepare(config, spec, workspace, project, environment):
             env[key] = value
     if 'GPUQ_ALLOWED_GPU_COUNTS' in environment:
         value = environment['GPUQ_ALLOWED_GPU_COUNTS']
-        if not isinstance(value, str) or not re.fullmatch(r'[1-9][0-9]*(,[1-9][0-9]*){0,63}', value):
+        if not isinstance(value, str) or not re.fullmatch(r'[1-9][0-9]*(,[1-9][0-9]*){0,4095}', value):
             raise ValueError('Invalid allowed GPU counts')
         env['GPUQ_ALLOWED_GPU_COUNTS'] = value
     if environment.get('GPUQ_RESUME_CHECKPOINT'):
         env['GPUQ_RESUME_CHECKPOINT'] = resume_path(environment['GPUQ_RESUME_CHECKPOINT'], mounts)
     descriptors = []
     try:
-        rootfd = os.open(control_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        rootfd = os.open(config['controlRoot'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            descriptors.append(os.open(attempt, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=rootfd))
+            descriptors.append(os.open(attempt_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=rootfd))
         finally:
             os.close(rootfd)
         archive = os.open(config['gpuqArchive'], os.O_RDONLY | os.O_NOFOLLOW)
         descriptors.append(archive)
         if not stat.S_ISREG(os.fstat(archive).st_mode):
             raise ValueError('Scheduler SDK is not a regular archive')
-        args = ['--dir', '/run/gpuq', '--bind-fd', str(descriptors[0]), CONTROL,
-                '--ro-bind-data', str(archive), SDK]
-        runtime_env,library=hami_environment(config,spec,environment)
+        files = [(descriptors[0], CONTROL, False), (archive, SDK, True)]
+        runtime_env,library=hami_environment(config,{'placement': placement},environment)
         if library is not None:
-            descriptors.append(library);args+=['--ro-bind-data',str(library),'/opt/gpuq/libvgpu.so'];env.update(runtime_env)
-        for key, value in env.items():
-            args += ['--setenv', key, value]
-        return args, descriptors
+            descriptors.append(library);files.append((library,'/opt/gpuq/libvgpu.so',True));env.update(runtime_env)
+        return files, env
     except BaseException:
         for descriptor in descriptors:
             os.close(descriptor)

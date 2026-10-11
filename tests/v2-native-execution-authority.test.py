@@ -32,6 +32,8 @@ def load(name, path):
 F = load('native_authority_fixture', 'tests/gpuq-priority.test.py')
 A = load('native_authority', 'src/infrastructure/native-execution-authority.py')
 R = load('authorized_training_runtime', 'src/infrastructure/training-runtime.py')
+C = load('authorized_training_control', 'deploy/training-control.py')
+T = load('authorized_training_command', 'src/infrastructure/training-command.py')
 RF = load('authorized_runtime_fixture', 'tests/v2-training-runtime-inputs.test.py')
 from gpuq.backends import BackendError, UnitNotFoundError, UserSystemdBackend
 from gpuq.protocol import Client
@@ -272,6 +274,26 @@ class NativeAuthorityTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         fixture.assert_closed(handles)
         self.assertEqual(len(fixture.cache._leases('images', fixture.source['version'])), 1)
+
+    def test_command_control_uses_verified_native_attempt_without_equating_task_and_submit_key(self):
+        fixture, authority = self.inputs_fixture()
+        archive = self.root / 'test-sdk.pyz'
+        archive.write_bytes(b'not executed in this binding test')
+        control = T.TrainingCommand(C, config={'controlRoot': str(self.config.control_dir), 'gpuqArchive': str(archive)},
+                                    environment=self.environment)
+        runtime = R.TrainingRuntime(authority=authority, inputs=fixture.runtime, plan=self.runtime_plan(fixture))
+        before = '\n'.join(self.store._get_connection().iterdump())
+        with runtime.open() as resources, control.open(resources, sharing=None) as prepared:
+            env = prepared['environment']
+            self.assertEqual(env['GPUQ_CONSOLE_JOB_ID'], fixture.job)
+            self.assertEqual(env['GPUQ_CONSOLE_DISPATCH_ID'], self.dispatch)
+            self.assertEqual(env['GPUQ_JOB_ID'], self.job['id'])
+            self.assertEqual(env['GPUQ_ATTEMPT_ID'], self.attempt_id)
+            self.assertNotEqual(fixture.job, self.store.get_job(self.job['id'])['submit_key'])
+            self.assertEqual(os.fstat(prepared['mounts'][0][0]).st_ino, Path(self.attempt['control_dir']).stat().st_ino)
+            descriptors = [fd for fd, _, _ in prepared['mounts']]
+        fixture.assert_closed(descriptors)
+        self.assertEqual('\n'.join(self.store._get_connection().iterdump()), before)
 
     def test_initial_denial_makes_no_input_call_and_late_cancellation_closes_all_handles_without_releasing(self):
         fixture, authority = self.inputs_fixture()
