@@ -25,6 +25,7 @@ Runtime = load_module('runtime', 'src/infrastructure/training-runtime.py')
 Command = load_module('command', 'src/infrastructure/training-command.py')
 Budget = load_module('budget', 'src/infrastructure/training-budget.py')
 Engine = load_module('engine', 'src/infrastructure/bwrap-training-engine.py')
+OciEngine = load_module('oci_engine', 'src/infrastructure/oci-training-engine.py')
 Network = load_module('network', 'src/infrastructure/sandbox-network.py')
 Projects = load_module('projects', 'deploy/project-store.py')
 Cache = load_module('cache', 'deploy/dataset-cache.py')
@@ -32,6 +33,7 @@ Shared = load_module('shared', 'deploy/shared-data.py')
 Control = load_module('control', 'deploy/training-control.py')
 Resources = load_module('resources', 'deploy/job-resources.py')
 Devices = load_module('devices', 'deploy/gpu-devices.py')
+Oci = load_module('oci', 'deploy/personal-oci.py')
 from gpuq.protocol import Client
 
 
@@ -81,8 +83,9 @@ def run(config_path, *, dispatch_id, plan_digest):
     config = load_config(config_path)
     launch = Plans.NodeRuntimePlans(database=config['database'], machine_id=config['machineId'],
         runner=runner_prefix(config_path)).load(dispatch_id=dispatch_id, plan_digest=plan_digest)
-    if launch['plan']['project']['runtime']['kind'] != 'base':
-        raise EngineUnavailable('This runner currently supports base projects only')
+    kind = launch['plan']['project']['runtime']['kind']
+    if kind not in {'base', 'oci'}:
+        raise EngineUnavailable('Unsupported project runtime')
     authority = Authority.NativeExecutionAuthority(native=Client(config['gpuqSocket'], timeout=5),
         control_root=config['controlRoot'], machine_id=config['machineId'], binding=launch['binding'])
     projects = Projects.ProjectStore(config['root'], config['basePath'], initialize=False,
@@ -93,6 +96,14 @@ def run(config_path, *, dispatch_id, plan_digest):
         inputs=Inputs.TrainingRuntimeInputs(projects=projects, data=data), plan=launch['plan'])
     budget = Budget.TrainingBudget(Resources, systemd=Authority.systemd_runner)
     command = Command.TrainingCommand(Control, config=config)
-    network = Network.SlirpNetwork(binary=config['slirp'], library_path=config['slirpLibraryPath'])
-    engine = Engine.BwrapTrainingEngine(network=network, devices=Devices.mount_paths, bwrap=config['bwrap'])
+    if kind == 'base':
+        network = Network.SlirpNetwork(binary=config['slirp'], library_path=config['slirpLibraryPath'])
+        engine = Engine.BwrapTrainingEngine(network=network, devices=Devices.mount_paths, bwrap=config['bwrap'])
+    else:
+        def owner(account):
+            return Oci.PersonalOCI({**config['runtimeConfig'], 'root': config['root']}, account, initialize=False)
+        def devices(owner, uuids):
+            Oci.protected_file(Oci.CDI, owner.policy['cdiSHA256'])
+            return Oci.cdi_devices(Oci.CDI.read_bytes(), uuids)
+        engine = OciEngine.OciTrainingEngine(owners=owner, devices=devices, systemd=Authority.systemd_runner)
     return runtime.run(budget=budget, command=command, engine=engine)

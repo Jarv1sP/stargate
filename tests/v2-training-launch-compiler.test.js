@@ -183,6 +183,16 @@ test('compiler preserves checkpoint expansion, pinned placement and optional HAM
   await assert.rejects(f.compiler.compile(shared, pool), e => e.code === 'INVALID_SCHEDULING_REQUEST');
 });
 
+test('only a verified OCI release asks native systemd for delegation; user environment stays private', async t => {
+  const f = await fixture(t), input = structuredClone(f.input);
+  input.project.run.environmentMode = 'oci';
+  input.project.run.runtime = {kind: 'oci', identity: 'sha256:' + 'c'.repeat(64)};
+  const result = await f.compiler.compile(input, pool);
+  assert.deepEqual(result.built.submission.env, {GPUQ_CONSOLE_OCI: '1'});
+  assert.equal(result.built.submission.env.Z, undefined);
+  assert.deepEqual(JSON.parse(result.planJson).submission.execution.env, input.submission.execution.env);
+});
+
 test('runtime-plan write failure rolls back mapping and native spec; restart retry installs one immutable trio', async t => {
   const f = await fixture(t);
   f.db.exec("CREATE TRIGGER fail_plan BEFORE INSERT ON v2_node_runtime_plans BEGIN SELECT RAISE(ABORT,'fixture plan failure'); END");

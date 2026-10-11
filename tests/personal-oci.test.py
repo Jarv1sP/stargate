@@ -735,6 +735,23 @@ class OCITests(unittest.TestCase):
                 owner.unlink();owner.symlink_to('/etc/passwd')
                 with self.assertRaises(OSError):manager.runtime_temporary()
 
+    def test_existing_owner_can_explicitly_restore_only_volatile_runtime_state(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as root:
+            manager = self.anonymous_manager(root)
+            manager.initialize = False
+            runtime = Path(root) / 'runtime'
+            (runtime / str(os.getuid())).mkdir(parents=True, mode=0o700)
+            before = {str(path.relative_to(manager.folder)): path.stat().st_ino for path in manager.folder.rglob('*')}
+            with patch.object(o, 'RUNTIME', runtime):
+                with self.assertRaises(FileNotFoundError):
+                    manager.runtime_temporary()
+                prepared = manager.prepare_runtime_directory()
+                self.assertEqual(manager.runtime_temporary(), prepared)
+                self.assertEqual(manager.env['TMPDIR'], str(prepared))
+                self.assertEqual((prepared / '.owner').read_text(), manager.owner + '\n')
+            self.assertFalse(manager.initialize)
+            self.assertEqual({str(path.relative_to(manager.folder)): path.stat().st_ino for path in manager.folder.rglob('*')}, before)
+
     def test_immutable_image_id_accepts_only_full_sha256(self):
         for value in (SHA, 'sha256:'+SHA):
             self.assertEqual(o.immutable_image_id(value), 'sha256:'+SHA)

@@ -62,7 +62,10 @@ export class TrainingLaunchCompiler {
     const built = await this.launchSpec.build({...evaluated.resources, submit_key: identity.dispatchId,
       // Native name is a stable ASCII key. Unicode labels stay in the plan and
       // belong to GPUQ's separate display metadata, not this execution identity.
-      name: 'v2-' + identity.jobId, owner: identity.accountId, cwd: this.#cwd, env: {},
+      name: 'v2-' + identity.jobId, owner: identity.accountId, cwd: this.#cwd,
+      // This scheduler-owned marker enables child cgroup delegation for OCI.
+      // User environment remains inside the private container plan.
+      env: prepared.runtime.kind === 'oci' ? {GPUQ_CONSOLE_OCI: '1'} : {},
       argv: [...this.#runner, '--dispatch-id', identity.dispatchId, '--plan-digest', planDigest]}, pool);
     if (!built.allowedGpuCounts.includes(identity.gpuCount)) throw new ApplicationError('NODE_INITIAL_GPU_COUNT_INVALID');
     const binding = nodeDispatchBinding({...identity, nativeDigest: built.nativeDigest, nativeMaxGpus: built.submission.gpu_count,

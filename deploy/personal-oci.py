@@ -191,18 +191,19 @@ class PersonalOCI:
         with self.registry_auth():
             pass
 
-    def runtime_temporary(self):
+    def runtime_temporary(self, *, create=None):
         """Short private console-socket path; keep persistent engine DB paths."""
+        create = self.initialize if create is None else create
         candidate = RUNTIME/str(os.getuid())/'gpuq-oci'/self.owner[:32]
         need(len(os.fsencode(candidate)) + len('/conmon-term.XXXXXX') < 108, 'OCI runtime console path too long')
         base = self.s.private_dir(RUNTIME/str(os.getuid()))
-        parent = self.s.private_dir(base/'gpuq-oci', create=self.initialize)
-        path = self.s.private_dir(parent/self.owner[:32], create=self.initialize)
+        parent = self.s.private_dir(base/'gpuq-oci', create=create)
+        path = self.s.private_dir(parent/self.owner[:32], create=create)
         expected = (self.owner+'\n').encode()
         with self.s.directory(path) as directory:
             try: fd = os.open('.owner', os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK, dir_fd=directory)
             except FileNotFoundError:
-                if not self.initialize:
+                if not create:
                     raise
                 created = os.open('.owner', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600, dir_fd=directory)
                 try:
@@ -219,6 +220,15 @@ class PersonalOCI:
                      and self.s.stamp(os.fstat(fd)) == self.s.stamp(before), 'OCI runtime owner identity changed')
             finally: os.close(fd)
         return path
+
+    def prepare_runtime_directory(self):
+        """Explicitly restore only volatile owner IPC after login/reboot.
+
+        Existing graph/project/image storage is never initialized by this call.
+        """
+        self.runtime_tmp = self.runtime_temporary(create=True)
+        self.env['TMPDIR'] = str(self.runtime_tmp)
+        return self.runtime_tmp
 
     @contextlib.contextmanager
     def registry_auth(self):
@@ -985,7 +995,7 @@ class PersonalOCI:
                 need(fd not in sources or sources[fd] == name, 'Ambiguous OCI mount descriptor')
                 sources[fd] = name
             self._mount_sources = sources
-            yield
+            yield sources
             for parent, name, before in edges:
                 need(identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == before,
                      'OCI mount source changed during operation')

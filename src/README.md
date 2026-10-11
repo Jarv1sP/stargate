@@ -98,7 +98,8 @@
 - `BwrapTrainingEngine`／`SlirpNetwork`：基础环境的实际执行器，消费已有输入／控制／预算句柄；只读挂载代码、环境和数据，可写 home／outputs。GPU 路径由既有 UUID 解析器提供，不按卡号猜设备。可信 bootstrap 在命名空间完成后握手，网络助手按内核归属进入正确的 user/net namespace；再次授权后才执行带用户环境的命令。pidfd 跟踪原命名空间进程，正常退出或异常都收尾自己的进程，不释放调度租约。需要 Linux pidfd/nsfs、bubblewrap 和 slirp4netns。真实 CPU／本机网络测试已通过；OCI、生产 wrapper、实际项目环境／GPU 仍待验收。
 - `TrainingLaunchCompiler`／`PrepareNodeTraining`：把原请求、项目实例／环境与原数据租约编译成私有计划，宿主 argv 只含配置的运行器及计划引用；复用原生资源校验，不把用户容器命令当作宿主命令。原生 ASCII 名与中文展示名分开，展示元数据发送仍待接入。编译不创建租约或提供 launch-ready 许可。
 - `SqliteNodeDispatchBindings.prepareTraining` 同事务保存计划、原生规格和映射；旧实验库通过 `createNodeRuntimePlansSchema` 显式升级。`NodeRuntimePlans` 只读恢复固定编号并核对 JSON 字节摘要、wrapper 与原生摘要，不补建或重提；计划不包含原生摘要，避免循环引用。恢复的计划供 `TrainingRuntime` 使用，节点服务及生产发布仍待完成。
-- `scripts/v2-training-runner.py`／`bootstrap/training-runner.py`：固定节点入口只接收配置路径、dispatchId 与 planDigest，组装已有原生身份、项目／数据、预算、控制及基础执行器。配置与任务内容分开，不迁移数据库、不创建项目／租约、不接收临时宿主 argv。当前只支持 base，OCI 明确拒绝；CLI 在 GPUQ 当前原生轮次之外拒绝执行。合成原生状态下的实际 CPU 串联已验证，真实 systemd／GPU 和生产服务接入仍待完成。
+- `scripts/v2-training-runner.py`／`bootstrap/training-runner.py`：固定节点入口只接收配置路径、dispatchId 与 planDigest，按已核对的环境选择基础或 OCI 执行器。配置与任务内容分开，不迁移数据库、不创建项目／租约、不接收临时宿主 argv；CLI 在 GPUQ 当前原生轮次之外拒绝执行。生产服务和真实 GPU 链路仍待接入／验收。
+- `OciTrainingEngine`：复用已发布镜像、既有 owner graph、已打开挂载和共同控制／预算，不调用旧训练准备流程。编译器仅对 OCI 增加受控 `GPUQ_CONSOLE_OCI=1`，由原生启动器设置 Delegate；用户环境仍留在容器计划。按轮次命名容器，create 后再次授权再 start，以完整 CID／归属和实际退出记录处理结果；已有名称和未知创建回执不重建。仅对已确认归属的原 CID 收尾，必要时强制删除不完整的运行时，不删除绑定输出、镜像或其他容器。独立真实 Podman／systemd CPU 验收通过，但现有个人图存储策略、训练镜像、GPU 和完整原生提交链路仍需实测。
 - 原生启动先记录 STARTING，再调用 systemd；execution_snapshot 只读单次数据库观察，不等待 Coordinator 的慢操作锁。真实单元回执后才记 RUNNING；运行器在两阶段之间仍需用实际单元和本进程身份核对。取消主进程退出后的子进程收尾已同步上游 PR 273；成员观察失败时保留原租约、隔离该尝试的整组 GPU，并延后原 TERM／KILL 动作，不阻断其他健康卡。身份／租约结构不能可靠区分时仍保持全局拒绝，不能据此放宽所有异常。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
@@ -137,4 +138,4 @@ Ctrl-C 只中断本次查询，不终止训练。`TASK_READ_BUSY` 是查询名�
 <python3.12> -I -B <release>/scripts/v2-training-runner.py --config <node-config.json>
 ```
 
-编译器追加 `--dispatch-id` 和 `--plan-digest`，用户命令／环境留在私有计划里。GPUQ 负责启动这个前缀；它不是成员的训练提交命令，直接从 SSH 运行会因缺少当前原生执行身份被拒绝。安装流程、公开提交、OCI 和真实 GPU 验收仍待完成。
+编译器追加 `--dispatch-id` 和 `--plan-digest`，用户命令／环境留在私有计划里。GPUQ 负责启动这个前缀；它不是成员的训练提交命令，直接从 SSH 运行会因缺少当前原生执行身份被拒绝。OCI 使用 `runtimeConfig` 中节点既有的个人容器策略，不创建缺失的 owner graph 或拉取镜像；仅可显式恢复自己的临时 IPC 目录。安装流程、公开提交、真实个人图存储和 GPU 验收仍待完成。

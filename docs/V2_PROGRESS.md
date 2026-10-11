@@ -889,4 +889,14 @@ Git 回退点：`2bde55e`。
 - 7 项 Python 入口回归覆盖配置、计划／机器／摘要不匹配、缺库零创建、CLI 非原生轮次拒绝、参数注入、宿主 PYTHONPATH 不执行及完整 CPU 组装。正向串联使用真实临时节点计划库、GPUQ 原生库／Unix RPC、项目与数据句柄、网络和 bubblewrap；原生运行状态由夹具构造，systemd／进程身份、GPU 设备和限额观察被明确替换，未执行合成项目解释器。另新增 Node 实际编译→实际 CLI 拒绝的跨语言测试，核对原记录与输入不变。
 - 490 项完整 V2 Node、228 项相关 Python、两组 V2 浏览器、GPUQ 打包及新旧入口 --help 通过，无跳过。数据／GPU／额度租约没有因返回退出码而释放；真实 systemd 启动、GPU、安装与服务接入仍待完成，本段不是整站或生产验收。
 
+## 检查点 103：OCI 执行与真实 CPU 异常收尾验收
+
+- 固定入口接入 `OciTrainingEngine`；仅已确认 OCI 的编译结果携带内部 GPUQ_CONSOLE_OCI 标记，使原生 systemd 启动器启用 Delegate。普通任务原配方不变，用户 argv／env 仍留在私有计划。引擎不再调用旧 run_project 的项目准备、训练控制和重复预算扫描，使用输入阶段已经验证的固定镜像和原挂载。
+- 复用既有 owner graph／registry 配置／FD→具名挂载转换；原 named_mounts 现在返回已核对的路径映射，旧调用者不变。新增显式 prepare_runtime_directory 只恢复易失 IPC 目录，不初始化 graph、项目、镜像或配额；initialize=False 的普通读取行为及原断言保留。
+- 容器名称固定于原 attempt，create 成功并核对完整 CID、名称、owner／task／dispatch／attempt、镜像后才再次授权并 start。退出取实际容器记录而非 attach 客户端返回值；已有名称、无法确认的创建和错误归属不重发／覆盖。正常完成只删除原容器；丢失 attach 可能留下“initialized、Running=false、Pid>0”的实际载荷，仅对已核对的原完整 CID 使用[明确的强制删除](https://docs.podman.io/en/latest/markdown/podman-rm.1.html)，绑定输出和其他容器不在删除范围，调度／数据租约不因此释放。
+- 在一台既有 GPU 节点上使用独立临时 graph 和非 GPUQ 前缀的 transient 单元实测，CPUQuota=50%、MemoryMax=512 MiB、TasksMax=256、GPU=0；只从本机 shell／运行库生成微型镜像。最终两轮均通过正常退出 23、启动前撤销、杀死本测试 attach 客户端后的容器清理，零剩余测试容器，所有测试单元已回收；正式 gpuq.service 核对仍 active。没有修改生产 graph、项目、配置或重启服务。临时 Python 为完整 3.12.15 安装，前缀与 encodings 路径已核对，不替换系统解释器。
+- 记录首轮问题：私有测试策略缺失／拒绝本地 tarball、shell read 在无末尾换行数据上触发 set -e，是夹具问题；分别限定临时 tarball 策略及保留精确数据断言修正。引擎实际发现的两个缺陷是 Go inspect 模板字段不兼容和未提交 running 状态时 kill/wait 无法收尾；改为实际 JSON 接口及原 CID 强制清理，并增加对应回归。未把第一次普通退出成功冒充异常场景已通过。
+- 491 项完整 V2 Node、241 项相关 Python、两组 V2 浏览器与 GPUQ 打包／--help 通过，无跳过。新 OCI 回归包含 11 项生命周期／参数场景，另覆盖固定入口选择、仅 OCI 委派、原临时目录行为及旧调用者兼容；数据／配额释放仍是独立流程，不能从容器删除推断已完成平台收尾。
+- 实机使用测试 owner 适配器和临时镜像，非真实个人图存储／权限迁移或原生 GPUQ 派发；没有 GPU 或模型训练。现有个人容器策略、GPU／HAMi、完整原生提交／恢复、资源释放与正式灰度迁移仍待完成。验收源文件与本地引擎 SHA 已对照一致，测试文件保留供复核，未部署候选服务。
+
 下一段：推进实际运行器和完整执行链路，再完成真实灰度部署与迁移验收。完整任务、调度、项目、传输、通知和正式迁移验收仍在目标内，未完成。

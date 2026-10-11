@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,12 +161,26 @@ raise SystemExit(19)
     def test_unsupported_engine_is_explicit_and_never_falls_back_to_base(self):
         launch = B.Plans.NodeRuntimePlans(database=self.database, machine_id='node-1', runner=B.runner_prefix(self.config_path)).load(
             dispatch_id=self.native.dispatch, plan_digest=self.digest)
-        launch['plan']['project']['runtime'] = {'kind': 'oci', 'identity': 'sha256:' + 'a' * 64}
+        launch['plan']['project']['runtime'] = {'kind': 'future-engine', 'identity': 'sha256:' + 'a' * 64}
         with patch.object(B.Plans.NodeRuntimePlans, 'load', return_value=launch), \
                 patch.object(B.Authority, 'NativeExecutionAuthority', side_effect=AssertionError('unsupported engine must not start')) as authority:
             with self.assertRaises(B.EngineUnavailable):
                 self.execute()
             authority.assert_not_called()
+
+    def test_oci_plan_selects_the_oci_adapter_without_a_base_fallback(self):
+        launch = B.Plans.NodeRuntimePlans(database=self.database, machine_id='node-1', runner=B.runner_prefix(self.config_path)).load(
+            dispatch_id=self.native.dispatch, plan_digest=self.digest)
+        launch['plan']['project']['runtime'] = {'kind': 'oci', 'identity': 'sha256:' + 'a' * 64}
+        runtime, engine = Mock(), Mock()
+        runtime.run.return_value = 23
+        with patch.object(B.Plans.NodeRuntimePlans, 'load', return_value=launch), \
+                patch.object(B.Runtime, 'TrainingRuntime', return_value=runtime), \
+                patch.object(B.OciEngine, 'OciTrainingEngine', return_value=engine) as create_oci, \
+                patch.object(B.Engine, 'BwrapTrainingEngine', side_effect=AssertionError('no base fallback')):
+            self.assertEqual(self.execute(), 23)
+        create_oci.assert_called_once()
+        self.assertIs(runtime.run.call_args.kwargs['engine'], engine)
 
     def test_bootstrap_runs_stored_plan_through_real_rpc_inputs_and_cpu_engine(self):
         if not shutil.which('bwrap') or not Path(self.config['slirp']).is_file():
