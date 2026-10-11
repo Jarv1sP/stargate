@@ -69,9 +69,10 @@ test('safe confirmed absence automatically dispatches the original UUID without 
   assert.equal((await f.submit()).result.id,job.id);assert.equal(f.calls.filter(c=>c.op==='sync').length,1);
   assert.equal(f.service.store.jobs.length,1);
 });
-for(const change of ['fresh','wrong-owner','request-running','stale-proof'])test('absence cannot replay while '+change,async t=>{
+for(const change of ['fresh','recent-attempt','wrong-owner','request-running','stale-proof'])test('absence cannot replay while '+change,async t=>{
   const f=await fixture(t),job=await f.original();
   if(change==='fresh')job.dispatchFinishedAt=new Date().toISOString();
+  if(change==='recent-attempt')job.dispatchStartedAt=new Date().toISOString();
   f.setHandler(()=>{const result=absent(job);
     if(change==='wrong-owner')result.dispatchObservation.userId='other';
     if(change==='request-running')result.dispatchObservation.requestFinished=false;
@@ -180,6 +181,7 @@ test('repeated confirmed non-dispatch ends with a specific failure on the same U
   f.setHandler((_target,op)=>{if(op==='watch')return absent(job);throw Object.assign(Error('node refused'),{code:'EXECUTOR_UNCONFIRMED',status:502});});
   for(let n=0;n<4;n++){
     job.dispatchFinishedAt=new Date(Date.now()-SUBMISSION_SAFE_WINDOW_MS-1000).toISOString();
+    job.dispatchStartedAt=job.dispatchFinishedAt;
     if(job.submissionReconciliation)job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
     await f.start();
   }

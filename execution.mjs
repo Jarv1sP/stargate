@@ -102,7 +102,7 @@ async function firstDispatch(service,job){
       fail('首次派发前管理员角色已改变；P3/P4 任务未启动。',403,'SUBMISSION_AUTH_REVOKED');
     if(!personalCardQuotaExempt(user)&&(usage(service.store.jobs,user.id)>user.total||usage(service.store.jobs,user.id,current.machine)>user.limits[current.machine]))
       throw Error('首次派发等待个人可用卡数额度；未启动训练，请等待已有任务释放或取消多余任务。');
-    current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();
+    current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();delete current.dispatchFinishedAt;
     try{service.save();}catch(error){current.dispatchPending=true;throw error;}
     // Begin the attempt in the same serialized turn as admission, but return a
     // wrapped promise so slow remote I/O never holds the mutation queue. Persist
@@ -185,7 +185,7 @@ export function installExecution(service,bridge){
           }
           const now=Date.now(),old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
           const absent=result?.schedulerState==='NOT_SUBMITTED'&&!result.nodeJobId&&!result.latestAttempt;
-          const proof=result?.dispatchObservation,ended=Date.parse(current.dispatchFinishedAt||current.dispatchStartedAt||current.createdAt);
+          const proof=result?.dispatchObservation,ended=Math.max(Date.parse(current.dispatchFinishedAt)||0,Date.parse(current.dispatchStartedAt)||0)||Date.parse(current.createdAt);
           const confirmed=absent&&proof?.protocol==='job-dispatch-observation-v1'&&proof.jobId===current.id&&
             proof.userId===current.userId&&proof.submitKey===current.id&&proof.state==='NOT_SUBMITTED'&&proof.requestFinished===true&&
             Number.isFinite(proof.observedAt)&&proof.observedAt*1000>=now-30000&&proof.observedAt*1000<=now+5000&&
