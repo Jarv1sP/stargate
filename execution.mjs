@@ -143,6 +143,8 @@ export function bridgeClient(socketPath){
       // Native domain refusals keep their existing semantics, never become a
       // transient transport error and never trigger an implicit second write.
       if(!data.ok){
+        if(['storage.training.plan','datasets.training.status'].includes(operation)&&data.code==='TRAINING_ADMISSION_BUSY'&&data.status===503)
+          return finish(Object.assign(Error('数据正在使用，请稍后用原提交键重试；未提交训练。'),{status:503,code:'TRAINING_ADMISSION_BUSY'}));
         const transports={NODE_TRANSPORT_BUSY:[503,'节点连接查询繁忙；请稍后查询原状态。'],NODE_CONNECT_FAILED:[503,'节点连接暂时失败；操作结果未确认，请查询原状态。'],NODE_RESPONSE_TIMEOUT:[504,'节点处理超时；操作结果未确认，请查询原状态。'],NODE_SSH_AUTH_FAILED:[502,'节点 SSH 身份校验失败，请联系管理员；原操作不会自动重派。'],NODE_SSH_HOSTKEY_FAILED:[502,'节点 SSH 主机密钥校验失败，请联系管理员；原操作不会自动重派。'],NODE_RESPONSE_INVALID:[502,'节点响应协议异常；操作结果未确认，请查询原状态。']};
         const known=Object.hasOwn(transports,data.code)?transports[data.code]:null;
         if(known&&data.status===known[0])return finish(Object.assign(Error(known[1]),{status:known[0],code:data.code}));
@@ -544,6 +546,7 @@ export async function executionCall(service,principal,operation,args){
       }));}
       catch(error){
         if(error?.status===403||error?.message==='dataset owner authorization required')rejectSubmission('当前账号没有数据集读取授权；管理员个人训练也必须列入数据集 owners。未占用 GPU。',403);
+        if(error?.code==='TRAINING_ADMISSION_BUSY')throw error;
         rejectSubmission('无法确认所选机器的数据授权或准备状态，未占用 GPU。请稍后重试或查看数据集状态。',503);
       }
       if(!states.every(s=>s.state==='READY')){
@@ -563,7 +566,7 @@ export async function executionCall(service,principal,operation,args){
     let storagePlan;
     if(project.project||datasets.length){
       try{storagePlan=await trainingStoragePlan(service,user,request.machine,request,{from:request.projectPreparation?.from});}
-      catch(error){error.code='SUBMISSION_REJECTED';throw error;}
+      catch(error){if(error.code!=='TRAINING_ADMISSION_BUSY')error.code='SUBMISSION_REJECTED';throw error;}
       if(JSON.stringify(service.store.get(user.id))!==JSON.stringify(user)||service.maintenanceFor?.(request.machine))rejectSubmission('容量核对期间账号授权或机器维护状态已改变；未提交训练。',409);
     }
     if(!needsPreparation&&!personalCardQuotaExempt(user,request)){

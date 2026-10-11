@@ -127,6 +127,7 @@ export async function trainingStoragePlan(service,user,machine,request,{projectP
     catch(error){
       check();
       if(error?.status===403)fail('项目或数据来源未授权；未启动准备。','TRAINING_STORAGE_FORBIDDEN',403);
+      if(error?.code==='TRAINING_ADMISSION_BUSY')fail('数据正在使用，请稍后用原提交键重试；未提交训练。','TRAINING_ADMISSION_BUSY',503);
       if(fallback)return undefined;
       fail(message);
     }
