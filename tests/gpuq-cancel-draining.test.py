@@ -28,7 +28,7 @@ class CancelDrainingTests(unittest.TestCase):
                              managed_gpu_uuids=('GPU-0',), allowed_uid=os.getuid(), observe_only=False)
         self.config.log_dir.mkdir()
         self.config.control_dir.mkdir()
-        self.store = Store(self.config.db_path).initialize()
+        self.store = Store(self.config.db_path, clock=lambda: self.now).initialize()
         self.addCleanup(self.store.close)
         self.systemd = Mock()
         self.coordinator = Coordinator(self.config, self.store, Mock(), self.systemd,
@@ -39,20 +39,20 @@ class CancelDrainingTests(unittest.TestCase):
                                  side_effect=lambda group: list(self.children)).start()
         self.addCleanup(patch.stopall)
 
-    def canceled(self, state=AttemptState.DRAINING, *, term=True, deadline=990.0, canceled=True):
+    def canceled(self, state=AttemptState.DRAINING, *, term=True, deadline=990.0, canceled=True, indices=(0,)):
         raw = {'submit_key': str(uuid.uuid4()), 'name': 'test', 'owner': 'test-user',
                'priority': 2, 'dispatch_mode': 'queue', 'yield_policy': 'never',
-               'checkpoint_capability': 'none', 'restart_policy': 'never', 'gpu_count': 1,
+               'checkpoint_capability': 'none', 'restart_policy': 'never', 'gpu_count': len(indices),
                'placement': 'any', 'requested_gpu_uuids': [], 'argv': [sys.executable, '-c', 'pass'],
                'cwd': str(self.config.root), 'env': {}}
-        job = self.store.submit_job(validate_submission(raw, 1, managed_gpu_uuids=('GPU-0',)))
+        job = self.store.submit_job(validate_submission(raw, len(self.config.managed_gpu_uuids), managed_gpu_uuids=self.config.managed_gpu_uuids))
         aid = 'A' + uuid.uuid4().hex
         control, log = self.coordinator._create_attempt_paths(job['id'], aid)
         attempt = self.store.create_attempt(job['id'], attempt_id=aid, state=AttemptState.RUNNING,
-                    gpu_uuids=['GPU-0'], gpu_indices=[0], unit_name='gpuq-' + aid.lower(),
+                    gpu_uuids=[f'GPU-{i}' for i in indices], gpu_indices=list(indices), unit_name='gpuq-' + aid.lower(),
                     unit_token='attempt:' + aid, boot_id='test-boot', invocation_id='a' * 32,
                     control_dir=str(control), log_path=str(log))
-        self.store.acquire_leases(job['id'], aid, {'GPU-0': 0})
+        self.store.acquire_leases(job['id'], aid, {f'GPU-{i}': i for i in indices}, lease_token=aid)
         self.store.update_job(job['id'], state=JobState.CANCELED if canceled else JobState.RUNNING)
         self.store.update_attempt(aid, state=state, exit_code=15, term_deadline_at=deadline)
         status = SystemdUnitStatus(unit_name=attempt['unit_name'] + '.service',

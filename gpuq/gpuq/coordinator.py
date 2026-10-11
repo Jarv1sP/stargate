@@ -140,6 +140,14 @@ class StartCapacityBlocked(RuntimeError):
         )
 
 
+class CanceledGroupUnconfirmed(RuntimeError):
+    """The exact canceled attempt is known, but its remaining members are not."""
+
+    def __init__(self, attempt_id: str) -> None:
+        self.attempt_id = attempt_id
+        super().__init__('canceled process-group membership is unavailable')
+
+
 def _read_release_gate(boot_id: str, monotonic: Callable[[], float]) -> dict[str, Any]:
     """Root-owned, observational release barrier; expiry never opens it.
 
@@ -259,6 +267,11 @@ class CollisionFinding:
                 f"{self.gpu_uuid} reserved for start by {self.lease_attempt_id} "
                 f"became busy" + (f" with PID(s) {pid_text}" if pid_text else "")
             )
+        if self.kind == 'cancel-cgroup-unavailable':
+            return (
+                f'{self.gpu_uuid} remains leased to {self.lease_attempt_id}; '
+                'canceled process-group membership is unavailable'
+            )
         return (
             f"{self.gpu_uuid} leased to {self.lease_attempt_id} has managed "
             f"PID(s) {pid_text} from {self.process_attempt_id}"
@@ -275,6 +288,20 @@ class GpuQuarantine:
     affected_attempt_ids: tuple[str, ...]
     collision_active: bool
     clean_scans: int
+
+    @classmethod
+    def observed(cls, findings: Iterable[CollisionFinding]) -> "GpuQuarantine":
+        """A nonempty set of findings for one GPU starts a fresh observation hold."""
+        ordered = tuple(findings)
+        affected = set().union(*(finding.affected_attempt_ids for finding in ordered))
+        return cls(
+            gpu_uuid=ordered[0].gpu_uuid,
+            gpu_index=ordered[0].gpu_index,
+            findings=ordered,
+            affected_attempt_ids=tuple(sorted(affected)),
+            collision_active=True,
+            clean_scans=0,
+        )
 
 
 def _require_exact_fields(
@@ -727,18 +754,7 @@ class Coordinator:
         previous = self._quarantines
         updated: dict[str, GpuQuarantine] = {}
         for uuid_value, findings in grouped.items():
-            ordered = tuple(findings)
-            affected = sorted(
-                set().union(*(finding.affected_attempt_ids for finding in ordered))
-            )
-            updated[uuid_value] = GpuQuarantine(
-                gpu_uuid=uuid_value,
-                gpu_index=ordered[0].gpu_index,
-                findings=ordered,
-                affected_attempt_ids=tuple(affected),
-                collision_active=True,
-                clean_scans=0,
-            )
+            updated[uuid_value] = GpuQuarantine.observed(findings)
 
         by_uuid = {device.uuid: device for device in devices}
         required_clean = max(2, int(self.config.idle_confirmations))
@@ -785,6 +801,34 @@ class Coordinator:
             self._idle_counts[uuid_value] = 0
         for attempt_id in self._quarantine_affected_attempt_ids:
             self._release_counts[attempt_id] = 0
+
+    def _quarantine_finding(self, finding: CollisionFinding) -> None:
+        """Add a local observation without advancing other GPUs' clean counters."""
+        previous = self._quarantines.get(finding.gpu_uuid)
+        findings = previous.findings if previous else ()
+        if finding not in findings:
+            findings = (*findings, finding)
+        quarantine = GpuQuarantine.observed(findings)
+        self._quarantines[finding.gpu_uuid] = quarantine
+        self._quarantine_affected_attempt_ids = set().union(
+            *(set(item.affected_attempt_ids) for item in self._quarantines.values()))
+        self._idle_counts[finding.gpu_uuid] = 0
+        for attempt_id in quarantine.affected_attempt_ids:
+            self._release_counts[attempt_id] = 0
+
+    def _quarantine_canceled_attempt(self, attempt: dict[str, Any]) -> None:
+        """Unit identity and the complete durable gang fence have been verified."""
+        for gpu_uuid, gpu_index in zip(attempt['gpu_uuids'], attempt['gpu_indices']):
+            self._quarantine_finding(CollisionFinding(
+                gpu_uuid=gpu_uuid, gpu_index=gpu_index,
+                kind='cancel-cgroup-unavailable', pids=(), lease_attempt_id=str(attempt['id']),
+            ))
+
+    def _canceled_group_populated(self, attempt_id: str, control_group: str) -> bool:
+        try:
+            return bool(read_cgroup_tree_processes(control_group))
+        except RuntimeError as exc:
+            raise CanceledGroupUnconfirmed(attempt_id) from exc
 
     def _attempt_is_quarantine_affected(self, attempt: dict[str, Any]) -> bool:
         return str(attempt["id"]) in self._quarantine_affected_attempt_ids or bool(
@@ -2762,9 +2806,9 @@ class Coordinator:
                 and status.control_group
             ):
                 try:
-                    canceled_children = bool(read_cgroup_tree_processes(status.control_group))
-                except RuntimeError as exc:
-                    self._set_health("degraded", f"{attempt['id']}: {exc}")
+                    canceled_children = self._canceled_group_populated(attempt['id'], status.control_group)
+                except CanceledGroupUnconfirmed:
+                    self._quarantine_canceled_attempt(attempt)
                     continue
             if (
                 status.is_cleanup_ready
@@ -3471,19 +3515,7 @@ class Coordinator:
             pids=blocked.pids,
             lease_attempt_id=attempt_id,
         )
-        self._quarantines[blocked.gpu_uuid] = GpuQuarantine(
-            gpu_uuid=blocked.gpu_uuid,
-            gpu_index=blocked.gpu_index,
-            findings=(finding,),
-            affected_attempt_ids=(attempt_id,),
-            collision_active=True,
-            clean_scans=0,
-        )
-        self._quarantine_affected_attempt_ids = set().union(
-            *(set(item.affected_attempt_ids) for item in self._quarantines.values())
-        )
-        self._idle_counts[blocked.gpu_uuid] = 0
-        self._release_counts[attempt_id] = 0
+        self._quarantine_finding(finding)
 
     @_release_mutation
     def _process_actions(self) -> None:
@@ -3525,6 +3557,11 @@ class Coordinator:
                     action["id"], claim_token=claim_token, result=result
                 )
             except AllocationGrantError as exc:
+                self.store.fail_action(action['id'], str(exc), claim_token=claim_token,
+                                       retry=True, available_at=self.clock() + 1.0)
+                continue
+            except CanceledGroupUnconfirmed as exc:
+                self._quarantine_canceled_attempt(self.store.get_attempt(exc.attempt_id))
                 self.store.fail_action(action['id'], str(exc), claim_token=claim_token,
                                        retry=True, available_at=self.clock() + 1.0)
                 continue
@@ -3892,7 +3929,7 @@ class Coordinator:
         if status.is_cleanup_ready and not (
             victim_job["state"] == JobState.CANCELED.value
             and status.control_group
-            and read_cgroup_tree_processes(status.control_group)
+            and self._canceled_group_populated(attempt['id'], status.control_group)
         ):
             return {"already_exited": True}
         method = self.systemd.kill if kill else self.systemd.terminate
