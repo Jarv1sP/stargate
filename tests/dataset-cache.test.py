@@ -345,6 +345,57 @@ class DatasetCacheTests(unittest.TestCase):
                 self.cache.acquire_lease(OWNER, 'sample', version, 'metadata-full')
         self.assertEqual(self.cache._leases('sample', version), [])
 
+    def test_protected_source_lease_checks_role_inside_the_final_lock(self):
+        version = self.register(); self.publish(version)
+        with self.cache._locked():
+            tier = self.cache._tier('sample', version); tier['role'] = 'protected'
+            self.cache._write_tier('sample', version, tier)
+        original = self.cache._ready_snapshot
+        def change_role(*args, **kwargs):
+            result = original(*args, **kwargs)
+            with self.cache._locked():
+                tier = self.cache._tier('sample', version); tier['role'] = 'cache'
+                self.cache._write_tier('sample', version, tier)
+            return result
+        with patch.object(self.cache, '_ready_snapshot', side_effect=change_role):
+            with self.assertRaisesRegex(D.CacheError, 'protected original'):
+                self.cache.acquire_lease(OWNER, 'sample', version, 'warehouse-job', require_protected=True)
+        self.assertEqual(self.cache._leases('sample', version), [])
+        self.assertTrue(self.cache.acquire_lease(OWNER, 'sample', version, 'cache-job')['readOnly'])
+
+    def test_existing_data_leaser_is_narrow_idempotent_and_preserves_owner_acl(self):
+        version = self.register(); self.publish(version)
+        loader = importlib.util.spec_from_file_location('v2_data_leaser', Path(__file__).resolve().parents[1] / 'src/infrastructure/legacy-data-leaser.py')
+        adapter = importlib.util.module_from_spec(loader); loader.loader.exec_module(adapter)
+        leaser = adapter.LegacyDataLeaser(D, root=self.root, kind='cache')
+        with patch.object(D.DatasetCache, 'materialize', side_effect=AssertionError('must not copy')):
+            result = leaser.acquire(user_id=OWNER.user_id, job_id='job-1', dataset='sample', version=version, kind='cache')
+            self.assertEqual(leaser.acquire(user_id=OWNER.user_id, job_id='job-1', dataset='sample', version=version, kind='cache'), result)
+        self.assertNotIn(str(self.root), json.dumps(result))
+        self.assertEqual(result['accountId'], OWNER.user_id)
+        with self.assertRaises(PermissionError):
+            leaser.acquire(user_id=OTHER.user_id, job_id='job-2', dataset='sample', version=version, kind='cache')
+        with self.assertRaisesRegex(ValueError, 'configured kind'):
+            leaser.acquire(user_id=OWNER.user_id, job_id='job-2', dataset='sample', version=version, kind='warehouse')
+        self.assertEqual(len(self.cache._leases('sample', version)), 1)
+
+    def test_warehouse_leaser_accepts_only_existing_protected_ready_data(self):
+        version = self.register(); self.publish(version)
+        with self.cache._locked():
+            tier = self.cache._tier('sample', version); tier['role'] = 'protected'
+            self.cache._write_tier('sample', version, tier)
+        loader = importlib.util.spec_from_file_location('v2_warehouse_leaser', Path(__file__).resolve().parents[1] / 'src/infrastructure/legacy-data-leaser.py')
+        adapter = importlib.util.module_from_spec(loader); loader.loader.exec_module(adapter)
+        leaser = adapter.LegacyDataLeaser(D, root=self.root, kind='warehouse')
+        result = leaser.acquire(user_id=OWNER.user_id, job_id='warehouse-job', dataset='sample', version=version, kind='warehouse')
+        self.assertEqual(result['kind'], 'warehouse'); self.assertTrue(result['readOnly'])
+        with self.cache._locked():
+            tier = self.cache._tier('sample', version); tier['role'] = 'cache'
+            self.cache._write_tier('sample', version, tier)
+        with self.assertRaisesRegex(D.CacheError, 'protected original'):
+            leaser.acquire(user_id=OWNER.user_id, job_id='warehouse-job-2', dataset='sample', version=version, kind='warehouse')
+        self.assertEqual(len(self.cache._leases('sample', version)), 1)
+
     def test_revoking_owner_does_not_destroy_existing_lease(self):
         version = self.register()
         self.publish(version)

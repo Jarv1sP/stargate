@@ -2358,8 +2358,10 @@ class DatasetCache:
             leases.append(lease)
         return leases
 
-    def acquire_lease(self, actor, dataset, version, job_id):
+    def acquire_lease(self, actor, dataset, version, job_id, *, require_protected=False):
         """Executor must validate job ownership before invoking this method."""
+        if type(require_protected) is not bool:
+            raise CacheError('invalid protected-source requirement')
         _identifier(job_id, USER_RE)
         record, identity = self._record_snapshot(actor, dataset, version)
         paths = self._paths(dataset, version)
@@ -2369,6 +2371,8 @@ class DatasetCache:
             self._check_ready_snapshot(paths, ready_identity)
             if not ready:
                 raise CacheError("cannot lease an unready version")
+            if require_protected and self._tier(dataset, version)['role'] != 'protected':
+                raise CacheError('warehouse lease requires a protected original')
             leases = self._leases(dataset, version)
             lease = next((l for l in leases if l["jobId"] == job_id and l["owner"] == actor.user_id), None)
             if lease is None:
