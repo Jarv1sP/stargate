@@ -9,7 +9,7 @@ export class ReserveTaskExpansion {
     const {submission} = await this.authority.context(jobId);
     if (!submission.resources.autoScaleUp) throw new ApplicationError('INVALID_COMPUTE_EXPANSION');
     const validated = await this.validator.intent(submission);
-    if (!validated.allowedGpuCounts.includes(change.fromGpuCount) || !validated.allowedGpuCounts.includes(change.targetGpuCount)) {
+    if (!validated.allowedGpuCounts.includes(change.sourceGpuCount) || !validated.allowedGpuCounts.includes(change.targetGpuCount)) {
       throw new ApplicationError('INVALID_COMPUTE_EXPANSION');
     }
     return this.claims.reserveExpansionForTask(jobId, change, this.clock());

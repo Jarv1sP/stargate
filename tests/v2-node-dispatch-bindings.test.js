@@ -43,7 +43,7 @@ async function expansionFixture(t) {
   const f = await fixture(t); f.binding.nativeMaxGpus = 4; f.receipt.gpu_count = 4;
   f.bindings.bind(f.binding); createNodeExpansionBindingsSchema(f.db);
   const expansion = {changeId: randomUUID(), dispatchId: f.binding.dispatchId, planId: 'S' + randomUUID(),
-    sourceAttemptId: 'A' + randomUUID(), fromGpuCount: 2, targetGpuCount: 4};
+    sourceAttemptId: 'A' + randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 4};
   const expansions = new SqliteNodeExpansionBindings({database: f.db, machineId: 'node-1'});
   const scaleReceipt = {job_id: f.receipt.job_id, submit_key: f.binding.dispatchId, submit_digest: f.binding.nativeDigest,
     plan_id: expansion.planId, plan_state: 'FAILED', plan_version: 3, from_gpu_count: 2, target_gpu_count: 4,
@@ -200,7 +200,7 @@ test('expansion-to-plan binding is immutable and one native plan cannot be assoc
   const f = await expansionFixture(t);
   assert.deepEqual(f.expansions.bind(f.expansion), f.expansion);
   assert.deepEqual(f.expansions.bind({...f.expansion}), f.expansion);
-  for (const change of [{planId: 'S-other'}, {sourceAttemptId: 'A-other'}, {targetGpuCount: 3}, {fromGpuCount: 1}]) {
+  for (const change of [{planId: 'S-other'}, {sourceAttemptId: 'A-other'}, {targetGpuCount: 3}, {fromReservedGpuCount: 1, sourceGpuCount: 1}]) {
     assert.throws(() => f.expansions.bind({...f.expansion, ...change}), hasCode('NODE_EXPANSION_BINDING_CONFLICT'));
   }
   assert.throws(() => f.expansions.bind({...f.expansion, changeId: randomUUID()}), hasCode('NODE_EXPANSION_BINDING_CONFLICT'));
@@ -256,14 +256,14 @@ test('HTTP expansion recovery reaches coordinator accounting without treating fa
   const permit = dispatches.beginSend(jobId, f.now);
   dispatches.recordSendOutcome({dispatchId: permit.dispatch.dispatchId, senderToken: permit.senderToken, nodeJobId: node.receipt.job_id});
   const delivery = dispatches.delivery(permit.dispatch.dispatchId), changeId = randomUUID();
-  f.claims.reserveExpansionForTask(jobId, {changeId, fromGpuCount: 2, targetGpuCount: 4}, f.now);
+  f.claims.reserveExpansionForTask(jobId, {changeId, fromReservedGpuCount: 2, sourceGpuCount: 1, targetGpuCount: 4}, f.now);
   const binding = {...node.binding, dispatchId: delivery.dispatchId, jobId, accountId: delivery.accountId, requestHash: delivery.requestHash, nativeMaxGpus: 4};
   node.bindings.bind(binding);
-  const expansion = {changeId, dispatchId: binding.dispatchId, planId: 'S' + randomUUID(), sourceAttemptId: 'A-source', fromGpuCount: 2, targetGpuCount: 4};
+  const expansion = {changeId, dispatchId: binding.dispatchId, planId: 'S' + randomUUID(), sourceAttemptId: 'A-source', fromReservedGpuCount: 2, sourceGpuCount: 1, targetGpuCount: 4};
   new SqliteNodeExpansionBindings({database: node.db, machineId: 'node-1'}).bind(expansion);
   const native = await nativeServer(t, node);
   const receipt = {job_id: delivery.nodeJobId, submit_key: binding.dispatchId, submit_digest: binding.nativeDigest,
-    plan_id: expansion.planId, plan_state: 'FAILED', plan_version: 3, from_gpu_count: 2, target_gpu_count: 4,
+    plan_id: expansion.planId, plan_state: 'FAILED', plan_version: 3, from_gpu_count: 1, target_gpu_count: 4,
     source_attempt_id: expansion.sourceAttemptId, successor_attempt_id: 'A-successor', source_attempt_state: 'PREEMPTED',
     successor_attempt_state: 'PLANNED', plan_reserved_gpu_count: 0, job_reserved_gpu_count: 0, job_leased_gpu_count: 4};
   native.state.value = receipt;
@@ -275,10 +275,12 @@ test('HTTP expansion recovery reaches coordinator accounting without treating fa
   native.state.value = {...receipt, source_attempt_id: 'A-wrong'};
   await assert.rejects(app.execute(changeId), hasCode('EXPANSION_NODE_UNAVAILABLE'));
   assert.equal(f.claims.expansion(changeId).state, 'RESERVED');
+  native.state.value = {...receipt, from_gpu_count: 2};
+  await assert.rejects(app.execute(changeId), hasCode('EXPANSION_NODE_UNAVAILABLE'));
   native.state.value = {...receipt, plan_state: 'COMPLETED', plan_version: 4, successor_attempt_state: 'RUNNING'};
   assert.equal((await app.execute(changeId)).kind, 'applied');
   assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
-  assert.equal(native.state.requests.length, 3);
+  assert.equal(native.state.requests.length, 4);
   assert.ok(native.state.requests.every(row => row.op === 'scale_up_receipt'));
 });
 
@@ -299,7 +301,7 @@ test('HTTP expansion reader rejects wrong identity and malformed counts instead 
   const f = await expansionFixture(t); f.expansions.bind(f.expansion);
   const valid = await new LookupNodeExpansion({bindings: f.expansions, native: {async lookupScale() {return f.scaleReceipt;}}}).execute(f.expansionReference);
   for (const bad of [{...valid, changeId: randomUUID()}, {...valid, machineId: 'other'}, {...valid, jobLeasedGpuCount: -1},
-    {...valid, successorAttemptState: undefined}, {}]) {
+    {...valid, successorAttemptState: undefined}, {...valid, sourceGpuCount: undefined}, {}]) {
     const origin = await serve(t, (req, res) => res.end(JSON.stringify({result: bad})));
     await assert.rejects(new HttpExpansionReceipts({nodes: [{machineId: 'node-1', origin, credential}]}).lookup(f.expansionReference), hasCode('EXPANSION_NODE_UNAVAILABLE'));
   }

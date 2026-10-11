@@ -22,8 +22,9 @@ export function createComputeClaimsSchema(database) {
     );
     CREATE TABLE v2_compute_expansions (
       change_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES v2_compute_claims(job_id),
-      from_gpu_count INTEGER NOT NULL CHECK(from_gpu_count>=1),
-      target_gpu_count INTEGER NOT NULL CHECK(target_gpu_count>from_gpu_count AND target_gpu_count<=4096),
+      from_reserved_gpu_count INTEGER NOT NULL CHECK(from_reserved_gpu_count>=1),
+      source_gpu_count INTEGER NOT NULL CHECK(source_gpu_count>=1 AND source_gpu_count<=from_reserved_gpu_count),
+      target_gpu_count INTEGER NOT NULL CHECK(target_gpu_count>from_reserved_gpu_count AND target_gpu_count<=4096),
       state TEXT NOT NULL CHECK(state IN ('RESERVED','APPLIED','RELEASED')), created_at_ms INTEGER NOT NULL,
       resolution_json TEXT
     );
@@ -33,8 +34,8 @@ export function createComputeClaimsSchema(database) {
 
 const receipt = row => ({jobId: row.job_id, machineId: row.machine_id, gpuCount: row.gpu_count,
   reservedGpuCount: row.reserved_gpu_count, state: row.state, createdAtMs: row.created_at_ms});
-const expansionReceipt = row => ({changeId: row.change_id, jobId: row.job_id, fromGpuCount: row.from_gpu_count,
-  targetGpuCount: row.target_gpu_count, state: row.state, createdAtMs: row.created_at_ms});
+const expansionReceipt = row => ({changeId: row.change_id, jobId: row.job_id, fromReservedGpuCount: row.from_reserved_gpu_count,
+  sourceGpuCount: row.source_gpu_count, targetGpuCount: row.target_gpu_count, state: row.state, createdAtMs: row.created_at_ms});
 
 /** Internal quota ledger, not a GPU lease. Accounting starts unready until cutover/import. */
 export class SqliteComputeClaims {
@@ -133,19 +134,21 @@ export class SqliteComputeClaims {
   }
 
   /** Reserve extra quota before a native scale plan; never release on timeout. */
-  reserveExpansionForTask(jobId, {changeId, fromGpuCount, targetGpuCount}, now) {
+  reserveExpansionForTask(jobId, {changeId, fromReservedGpuCount, sourceGpuCount, targetGpuCount}, now) {
     return transaction(this.database, () => {
       const db = this.database, context = new SqliteTaskAuthority({database: db}).contextWithinTransaction(jobId);
       if (typeof changeId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(changeId)
-        || !Number.isSafeInteger(fromGpuCount) || !Number.isSafeInteger(targetGpuCount) || targetGpuCount <= fromGpuCount
+        || !Number.isSafeInteger(fromReservedGpuCount) || !Number.isSafeInteger(targetGpuCount) || targetGpuCount <= fromReservedGpuCount
+        || !Number.isSafeInteger(sourceGpuCount) || sourceGpuCount < 1 || sourceGpuCount > fromReservedGpuCount
         || !context.submission.resources.elastic || !context.submission.resources.autoScaleUp) throw new ApplicationError('INVALID_COMPUTE_EXPANSION');
       const claim = db.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
       if (!claim || claim.state !== 'HELD') throw new ApplicationError('COMPUTE_CLAIM_NOT_HELD');
-      requireTaskPlacement(context.submission, {machineId: claim.machine_id, gpuCount: fromGpuCount});
+      requireTaskPlacement(context.submission, {machineId: claim.machine_id, gpuCount: fromReservedGpuCount});
+      requireTaskPlacement(context.submission, {machineId: claim.machine_id, gpuCount: sourceGpuCount});
       requireTaskPlacement(context.submission, {machineId: claim.machine_id, gpuCount: targetGpuCount});
       const existing = db.prepare('SELECT * FROM v2_compute_expansions WHERE change_id=?').get(changeId);
       if (existing) {
-        if (existing.job_id !== jobId || existing.from_gpu_count !== fromGpuCount || existing.target_gpu_count !== targetGpuCount) {
+        if (existing.job_id !== jobId || existing.from_reserved_gpu_count !== fromReservedGpuCount || existing.source_gpu_count !== sourceGpuCount || existing.target_gpu_count !== targetGpuCount) {
           throw new ApplicationError('COMPUTE_EXPANSION_CONFLICT');
         }
         return expansionReceipt(existing);
@@ -156,11 +159,11 @@ export class SqliteComputeClaims {
       if (db.prepare("SELECT 1 FROM v2_compute_expansions WHERE job_id=? AND state='RESERVED'").get(jobId)) {
         throw new ApplicationError('COMPUTE_EXPANSION_PENDING');
       }
-      if (claim.reserved_gpu_count !== fromGpuCount) throw new ApplicationError('COMPUTE_CLAIM_CHANGED');
+      if (claim.reserved_gpu_count !== fromReservedGpuCount) throw new ApplicationError('COMPUTE_CLAIM_CHANGED');
       const balance = this.#balance({id: context.accountId}, claim.machine_id, context.accountRole);
-      if (targetGpuCount - fromGpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
-      db.prepare("INSERT INTO v2_compute_expansions(change_id,job_id,from_gpu_count,target_gpu_count,state,created_at_ms) VALUES(?,?,?,?,'RESERVED',?)")
-        .run(changeId, jobId, fromGpuCount, targetGpuCount, now);
+      if (targetGpuCount - fromReservedGpuCount > balance.remainingGpus) throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
+      db.prepare("INSERT INTO v2_compute_expansions(change_id,job_id,from_reserved_gpu_count,source_gpu_count,target_gpu_count,state,created_at_ms) VALUES(?,?,?,?,?,'RESERVED',?)")
+        .run(changeId, jobId, fromReservedGpuCount, sourceGpuCount, targetGpuCount, now);
       db.prepare('UPDATE v2_compute_claims SET reserved_gpu_count=? WHERE job_id=?').run(targetGpuCount, jobId);
       return expansionReceipt(db.prepare('SELECT * FROM v2_compute_expansions WHERE change_id=?').get(changeId));
     });

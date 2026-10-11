@@ -1,7 +1,7 @@
 import {ApplicationError} from './errors.mjs';
 
 export function requireExpansionIdentity(expected, observed) {
-  const fields = ['changeId', 'jobId', 'machineId', 'accountId', 'dispatchId', 'nodeJobId', 'requestHash', 'fromGpuCount', 'targetGpuCount'];
+  const fields = ['changeId', 'jobId', 'machineId', 'accountId', 'dispatchId', 'nodeJobId', 'requestHash', 'fromReservedGpuCount', 'sourceGpuCount', 'targetGpuCount'];
   if (!observed || fields.some(field => observed[field] !== expected[field])) throw new ApplicationError('EXPANSION_OBSERVATION_MISMATCH');
 }
 

@@ -40,7 +40,7 @@ async function fixture(t) {
 
 async function completionFixture(t) {
   const f = await fixture(t), jobId = f.addJob();
-  const change = {changeId: randomUUID(), fromGpuCount: 2, targetGpuCount: 4};
+  const change = {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 4};
   await f.app.execute(jobId, change);
   const observed = {...f.claims.expansion(change.changeId), planId: 'S' + randomUUID(), sourceAttemptId: 'A-source',
     successorAttemptId: 'A-successor', planState: 'COMPLETED', planVersion: 4,
@@ -55,7 +55,7 @@ test('matched completed expansion becomes applied without refund and permits the
   assert.equal(result.state, 'APPLIED');
   assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
   f.database.exec('UPDATE v2_compute_policies SET total_cards=8; UPDATE v2_machine_grants SET max_cards=8');
-  await f.app.execute(f.jobId, {changeId: randomUUID(), fromGpuCount: 4, targetGpuCount: 8});
+  await f.app.execute(f.jobId, {changeId: randomUUID(), fromReservedGpuCount: 4, sourceGpuCount: 4, targetGpuCount: 8});
   assert.deepEqual(f.claims.confirmExpansionApplied(f.observed), result);
   assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 8);
   assert.equal(f.dispatches.getForTask(f.jobId).gpuCount, 2);
@@ -64,7 +64,7 @@ test('matched completed expansion becomes applied without refund and permits the
 test('identity mismatches or incomplete success cannot settle an expansion', async t => {
   const f = await completionFixture(t);
   for (const change of [{jobId: randomUUID()}, {dispatchId: randomUUID()}, {nodeJobId: 'Jother'}, {accountId: 'other'},
-    {machineId: 'other'}, {requestHash: '0'.repeat(64)}, {fromGpuCount: 1}, {targetGpuCount: 8}]) {
+    {machineId: 'other'}, {requestHash: '0'.repeat(64)}, {fromReservedGpuCount: 1, sourceGpuCount: 1}, {targetGpuCount: 8}]) {
     assert.throws(() => f.claims.confirmExpansionApplied({...f.observed, ...change}), hasCode('EXPANSION_OBSERVATION_MISMATCH'));
   }
   for (const change of [{planState: 'FAILED'}, {successorAttemptId: null}, {planVersion: -1}]) {
@@ -84,7 +84,7 @@ test('completion proof cannot be rebound to a different plan or attempt', async 
 test('late applied evidence can be recorded after account disable without authorizing new expansion', async t => {
   const f = await completionFixture(t); f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
   assert.equal(f.claims.confirmExpansionApplied(f.observed).state, 'APPLIED');
-  await assert.rejects(f.app.execute(f.jobId, {changeId: randomUUID(), fromGpuCount: 4, targetGpuCount: 8}), hasCode('TASK_NOT_AUTHORIZED'));
+  await assert.rejects(f.app.execute(f.jobId, {changeId: randomUUID(), fromReservedGpuCount: 4, sourceGpuCount: 4, targetGpuCount: 8}), hasCode('TASK_NOT_AUTHORIZED'));
 });
 
 test('reconciliation keeps failed or absent plans unconfirmed and never refunds their extra quota', async t => {
@@ -120,7 +120,7 @@ test('coordinator confirms the exact expansion through the independent node bind
   new SqliteNodeDispatchBindings({database: db, machineId: 'node-1'}).bind(dispatch);
   const bindings = new SqliteNodeExpansionBindings({database: db, machineId: 'node-1'});
   bindings.bind({changeId: f.change.changeId, dispatchId: dispatch.dispatchId, planId: f.observed.planId,
-    sourceAttemptId: f.observed.sourceAttemptId, fromGpuCount: 2, targetGpuCount: 4});
+    sourceAttemptId: f.observed.sourceAttemptId, fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 4});
   const lookup = new LookupNodeExpansion({bindings, native: {async lookupScale() {
     return {job_id: f.observed.nodeJobId, submit_key: dispatch.dispatchId, submit_digest: dispatch.nativeDigest,
       plan_id: f.observed.planId, plan_state: 'COMPLETED', plan_version: 4, from_gpu_count: 2, target_gpu_count: 4,
@@ -135,7 +135,7 @@ test('coordinator confirms the exact expansion through the independent node bind
 
 test('expansion reserves only the extra quota and never rewrites the immutable initial dispatch count', async t => {
   const f = await fixture(t), jobId = f.addJob(), original = f.dispatches.getForTask(jobId);
-  const change = {changeId: randomUUID(), fromGpuCount: 2, targetGpuCount: 4};
+  const change = {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 4};
   f.database.exec('UPDATE v2_sessions SET revoked=1');
   const result = await f.app.execute(jobId, change);
   assert.equal(result.state, 'RESERVED');
@@ -144,36 +144,55 @@ test('expansion reserves only the extra quota and never rewrites the immutable i
   assert.deepEqual(f.dispatches.getForTask(jobId), original);
   const row = f.database.prepare('SELECT gpu_count,reserved_gpu_count FROM v2_compute_claims WHERE job_id=?').get(jobId);
   assert.equal(row.gpu_count, 2); assert.equal(row.reserved_gpu_count, 4);
-  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromGpuCount: 4, targetGpuCount: 8}), hasCode('COMPUTE_EXPANSION_PENDING'));
+  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromReservedGpuCount: 4, sourceGpuCount: 4, targetGpuCount: 8}), hasCode('COMPUTE_EXPANSION_PENDING'));
 });
 
 test('native legal-count rules reject fractional batch accumulation before any quota write', async t => {
   const f = await fixture(t), jobId = f.addJob();
-  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromGpuCount: 2, targetGpuCount: 3}), hasCode('INVALID_COMPUTE_EXPANSION'));
+  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 3}), hasCode('INVALID_COMPUTE_EXPANSION'));
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 2);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_compute_expansions').get().n, 0);
+});
+
+test('physical source size may be below reserved quota: expansion charges only the quota delta', async t => {
+  const f = await fixture(t), jobId = f.addJob();
+  const change = {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 1, targetGpuCount: 4};
+  const result = await f.app.execute(jobId, change);
+  assert.equal(result.fromReservedGpuCount, 2); assert.equal(result.sourceGpuCount, 1);
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 4);
+  assert.deepEqual(await f.app.execute(jobId, change), result);
+  await assert.rejects(f.app.execute(jobId, {...change, sourceGpuCount: 2}), hasCode('COMPUTE_EXPANSION_CONFLICT'));
+});
+
+test('missing or over-reservation physical source counts are rejected without guessing', async t => {
+  const f = await fixture(t), jobId = f.addJob();
+  for (const sourceGpuCount of [undefined, 0, 4]) {
+    await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount, targetGpuCount: 4}), hasCode('INVALID_COMPUTE_EXPANSION'));
+  }
   assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 2);
   assert.equal(f.database.prepare('SELECT count(*) n FROM v2_compute_expansions').get().n, 0);
 });
 
 test('quota exhaustion, stale base count and unaccepted dispatch prevent expansion grants', async t => {
   const f = await fixture(t), jobId = f.addJob();
-  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromGpuCount: 1, targetGpuCount: 4}), hasCode('COMPUTE_CLAIM_CHANGED'));
+  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromReservedGpuCount: 1, sourceGpuCount: 1, targetGpuCount: 4}), hasCode('COMPUTE_CLAIM_CHANGED'));
   f.addJob();
-  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromGpuCount: 2, targetGpuCount: 4}), hasCode('COMPUTE_QUOTA_EXCEEDED'));
+  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 4}), hasCode('COMPUTE_QUOTA_EXCEEDED'));
   const g = await fixture(t), pending = g.addJob(2, false);
-  await assert.rejects(g.app.execute(pending, {changeId: randomUUID(), fromGpuCount: 2, targetGpuCount: 4}), hasCode('TRAINING_DISPATCH_NOT_ACCEPTED'));
+  await assert.rejects(g.app.execute(pending, {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 4}), hasCode('TRAINING_DISPATCH_NOT_ACCEPTED'));
 });
 
 test('failed quota update rolls back the expansion journal and original held count', async t => {
   const f = await fixture(t), jobId = f.addJob();
   f.database.exec("CREATE TRIGGER fail_expand BEFORE UPDATE ON v2_compute_claims BEGIN SELECT RAISE(ABORT,'expansion failure'); END");
-  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromGpuCount: 2, targetGpuCount: 4}), /expansion failure/);
+  await assert.rejects(f.app.execute(jobId, {changeId: randomUUID(), fromReservedGpuCount: 2, sourceGpuCount: 2, targetGpuCount: 4}), /expansion failure/);
   assert.equal(f.database.prepare('SELECT count(*) n FROM v2_compute_expansions').get().n, 0);
   assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 2);
 });
 
 test('an expansion identifier cannot be reused for another job and new grants obey current permissions', async t => {
   const f = await fixture(t), jobs = [f.addJob(1), f.addJob(1)];
-  const change = {changeId: randomUUID(), fromGpuCount: 1, targetGpuCount: 2};
+  const change = {changeId: randomUUID(), fromReservedGpuCount: 1, sourceGpuCount: 1, targetGpuCount: 2};
   await f.app.execute(jobs[0], change);
   await assert.rejects(f.app.execute(jobs[1], change), hasCode('COMPUTE_EXPANSION_CONFLICT'));
   f.database.exec("DELETE FROM v2_machine_grants WHERE machine_id='node-1'");
@@ -200,7 +219,7 @@ test('independent expansion writers cannot both reserve the last shared account 
   const run = promisify(execFile);
   const results = await Promise.all(jobs.map(async jobId => {
     const child = run(process.execPath, ['--input-type=module', '-e', code, moduleUrl]);
-    child.child.stdin.end(JSON.stringify({path, jobId, now: f.now, change: {changeId: randomUUID(), fromGpuCount: 1, targetGpuCount: 2}}));
+    child.child.stdin.end(JSON.stringify({path, jobId, now: f.now, change: {changeId: randomUUID(), fromReservedGpuCount: 1, sourceGpuCount: 1, targetGpuCount: 2}}));
     return JSON.parse((await child).stdout);
   }));
   assert.equal(results.filter(row => row.state === 'RESERVED').length, 1);
