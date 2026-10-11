@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('scope_review_fixture',ROOT/'tests/gpuq-priority.test.py')
 F=importlib.util.module_from_spec(spec);spec.loader.exec_module(F)
 from gpuq import cluster_node
-from gpuq.store import Store
+from gpuq.store import Store, STORE_SCHEMA_VERSION, _schema_signature, _EXPECTED_SCHEMA_SIGNATURE_V11
 
 class ScopeReview(unittest.TestCase):
     # Reuse setup helpers without re-running every inherited fixture test.
@@ -93,9 +93,15 @@ class ScopeReview(unittest.TestCase):
         job=self.submit();old=self.root/'retry-v11.db'
         with closing(sqlite3.connect(self.config.db_path)) as source,closing(sqlite3.connect(old)) as target:
             source.backup(target);before=target.execute('SELECT submit_digest FROM jobs WHERE id=?',(job['id'],)).fetchone()[0]
+            target.execute('DROP TRIGGER jobs_allocation_authority_immutable')
+            target.execute('DROP TABLE allocation_grants')
+            target.execute('ALTER TABLE jobs DROP COLUMN allocation_authority')
             target.execute('ALTER TABLE jobs DROP COLUMN display_json');target.execute('ALTER TABLE jobs DROP COLUMN preempt_opt_in_only');target.execute('UPDATE schema_meta SET schema_version=11');target.execute('PRAGMA user_version=11');target.commit()
+            self.assertEqual(_schema_signature(target), _EXPECTED_SCHEMA_SIGNATURE_V11)
         migrated=Store(old).initialize()
         try:
+            self.assertEqual(migrated.check_integrity()['schema_version'], STORE_SCHEMA_VERSION)
+            self.assertIsNone(migrated.get_job(job['id'])['allocation_authority'])
             with closing(sqlite3.connect(old)) as db:self.assertEqual(db.execute('SELECT submit_digest FROM jobs WHERE id=?',(job['id'],)).fetchone()[0],before)
             fields={k:job[k] for k in ('submit_key','name','owner','priority','dispatch_mode','checkpoint_capability','restart_policy','gpu_count','placement','requested_gpu_uuids','argv','cwd','env','yield_policy')}
             self.assertEqual(migrated.submit_job(fields)['id'],job['id']);self.assertFalse(migrated.get_job(job['id'])['preempt_opt_in_only'])
