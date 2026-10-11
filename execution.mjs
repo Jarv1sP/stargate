@@ -190,7 +190,8 @@ export function installExecution(service,bridge){
           const current=service.store.jobs.find(j=>j.id===job.id);
           if(!current||service.closing||current.state!=='SUBMITTING'||current.cancelRequested||
             (current.policyRevision||0)!==policyRevision||JSON.stringify([current.userId,current.machine,current.spec])!==identity)return;
-          if(typeof result?.nodeJobId==='string'&&/^J[a-f0-9]{12}$/.test(result.nodeJobId)&&
+          if(result?.state==='FAILED'&&result.notSubmitted===true&&result.failureCode==='DATASET_NOT_READY'||
+            typeof result?.nodeJobId==='string'&&/^J[a-f0-9]{12}$/.test(result.nodeJobId)&&
             ['PENDING','STARTING','RUNNING','PREEMPTING','LOST','UNKNOWN',...TERMINAL].includes(result.state)){
             persistSchedulerResult(service,current,result);delete current.submissionReconciliation;service.save();return;
           }

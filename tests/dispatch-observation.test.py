@@ -62,6 +62,23 @@ class DispatchObservationTests(unittest.TestCase):
             self.path('.json').write_text(value)
             self.assertFalse(self.observe()['requestFinished'])
 
+    def test_fixed_rejection_is_terminal_only_after_lease_cleanup(self):
+        self.path('.json').write_text(json.dumps(self.job))
+        self.path('.dataset-not-submitted.json').write_text(json.dumps({'schema': 1, 'jobId': self.job['id'], 'failureCode': 'DATASET_NOT_READY'}))
+        self.path('.datasets.json').write_text('{}')
+        self.assertEqual(self.observe()['state'], 'UNKNOWN')
+        self.path('.datasets.json').unlink()
+        value = self.observe()
+        self.assertEqual(value['state'], 'REJECTED')
+        self.assertTrue(value['requestFinished'])
+        self.assertEqual(value['jobId'], self.job['id'])
+        self.assertEqual(json.loads(self.path('.json').read_text()), self.job)
+
+    def test_other_jobs_rejection_does_not_release_or_authorize_retry(self):
+        self.path('.dataset-not-submitted.json').write_text(json.dumps({'schema': 1, 'jobId': 'other', 'failureCode': 'DATASET_NOT_READY'}))
+        self.assertEqual(self.observe()['state'], 'UNKNOWN')
+        self.assertFalse(self.observe()['requestFinished'])
+
     def test_database_failure_is_not_absence(self):
         self.database.unlink()
         self.assertEqual(self.observe()['state'], 'UNKNOWN')

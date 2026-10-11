@@ -40,11 +40,20 @@ def observe_dispatch(root, database, job):
                 if json.load(stream) != job:
                     return result
         if any(os.path.lexists(folder / (job['id'] + suffix)) for suffix in
-               ('.dataset-dispatch-attempted', '.dataset-not-submitted.json', '.canceled')):
+               ('.dataset-dispatch-attempted', '.canceled')):
             return result
         with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
             if db.execute('SELECT id FROM jobs WHERE submit_key=?', (job['id'],)).fetchone():
                 return result
+        rejected = folder / (job['id'] + '.dataset-not-submitted.json')
+        if os.path.lexists(rejected):
+            with rejected.open() as stream:
+                if json.load(stream) != {'schema': 1, 'jobId': job['id'], 'failureCode': 'DATASET_NOT_READY'}:
+                    return result
+            if any(os.path.lexists(path) for path in (folder / (job['id'] + '.datasets.json'),
+                                                      Path(root) / 'storage-leases' / 'training' / job['id'])):
+                return result
+            return {**result, 'state': 'REJECTED', 'requestFinished': True, 'observedAt': time.time()}
         return {**result, 'state': 'NOT_SUBMITTED', 'requestFinished': True, 'observedAt': time.time()}
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
         return result

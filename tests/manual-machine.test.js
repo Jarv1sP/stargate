@@ -42,6 +42,7 @@ async function fixture(){
       if(state instanceof Error)throw state;
       return trainingSource(machine,args,{state,bytes:8,files:1,directories:0});
     }
+    if(operation==='datasets.list')return {datasets:[{dataset:reference.dataset,ownerIds:[args.userId],versions:[{version:reference.version}]}]};
     if(operation==='storage.training.plan')return trainingPlan(machine,args);
     if(operation==='logs')return {text:'local historical log'};
     assert.equal(operation,'sync','manual fixture rejects unknown node operations');
@@ -152,7 +153,7 @@ test('full selected-node quota does not spill over and global quota still spans 
   }finally{await f.close();}
 });
 
-test('selected-node dataset readiness failure cannot use another READY replica',async t=>{
+test('selected-node readiness waits through transport failure without borrowing another READY replica',async t=>{
   const cases=[
     ['REGISTERED',409],['STAGING',409],['PREPARING',409],['FAILED',409],
     [Error('local transport timeout'),503],[Error('dataset owner authorization required'),403]
@@ -160,11 +161,17 @@ test('selected-node dataset readiness failure cannot use another READY replica',
   for(const [state,status] of cases)await t.test(state instanceof Error?state.message:state,async()=>{
     const f=await fixture();try{
       await f.grant();f.datasetStates.set(selected+':sample',state);
-      await assert.rejects(f.submit({datasets:[reference]}),error=>error.status===status&&/未占用 GPU/.test(error.message));
-      await f.settle();
-      assert.deepEqual(f.calls.map(call=>[call.machine,call.operation]),[[selected,'datasets.status']]);
-      assert.equal(f.calls[0].args.userId,f.member.id);assert.equal(f.calls[0].args.hostAdmin,false);
-      assert.equal(f.service.store.jobs.length,0);assert.equal(usage(f.service.store.jobs,f.member.id),0);
+      if(status===503){
+        const {result}=await f.submit({datasets:[reference]});assert.equal(result.state,'PREPARING_DATA');
+        assert.equal(f.service.store.jobs.length,1);assert.equal(result.machine,selected);
+        assert.deepEqual(f.calls.map(call=>[call.machine,call.operation]),[[selected,'datasets.status'],[selected,'datasets.list']]);
+      }else{
+        await assert.rejects(f.submit({datasets:[reference]}),error=>error.status===status&&/未占用 GPU/.test(error.message));
+        await f.settle();assert.equal(f.service.store.jobs.length,0);
+        assert.deepEqual(f.calls.map(call=>[call.machine,call.operation]),[[selected,'datasets.status']]);
+      }
+      assert.ok(f.calls.every(call=>call.machine===selected&&call.args.userId===f.member.id&&call.args.hostAdmin===false));
+      assert.equal(usage(f.service.store.jobs,f.member.id),0);
     }finally{await f.close();}
   });
 });

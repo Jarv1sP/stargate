@@ -50,6 +50,14 @@ test('legacy PENDING/NOT_SUBMITTED placeholders are not admissions or permission
   for(let n=0;n<10;n++)await f.service.reconcile();
   assert.equal(f.calls.length,1,'bounded backoff suppresses duplicate reads');assert.equal(usage(f.service.store.jobs,f.user.id),1);
 });
+test('a definite pre-dispatch data rejection ends the same UUID and releases quota without another sync',async t=>{
+  const f=await fixture(t),job=await f.original();
+  f.setHandler(()=>({state:'FAILED',notSubmitted:true,failureCode:'DATASET_NOT_READY',assignedIndices:[],error:'数据副本在提交前已失效，未启动训练。'}));
+  await f.start();assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);
+  assert.equal(job.failureCode,'DATASET_NOT_READY');assert.equal(usage([job],f.user.id),0);
+  assert.ok(job.finishedAt);assert.equal(job.submissionReconciliation,undefined);
+  assert.deepEqual(f.calls.map(c=>c.op),['watch']);assert.equal(f.service.store.jobs.length,1);
+});
 test('safe confirmed absence permits one explicit same-key same-UUID dispatch, with no second job',async t=>{
   const f=await fixture(t),job=await f.original();f.setHandler(()=>absent(job));await f.start();
   assert.equal(publicJob(job).submissionState,'NOT_DISPATCHED');assert.equal(publicJob(job).canRetryDispatch,true);
@@ -109,6 +117,13 @@ test('authorized warehouse read failures reserve the key and UUID, then resume w
 test('owner denial never reserves a waiting UUID or makes a node write',async t=>{
   const f=await fixture(t);f.setHandler(dataHandler(f,{forbidden:true}));
   await assert.rejects(f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)}),e=>e.status===403);
+  assert.equal(f.service.store.jobs.length,0);assert.ok(f.calls.every(c=>!['sync','datasets.prepare','storage.lease.prepare'].includes(c.op)));
+});
+test('an unavailable authorization list is a safe 503 with no waiting job or leaked transport detail',async t=>{
+  const f=await fixture(t),normal=dataHandler(f,{busy:true});
+  f.setHandler((target,op,args)=>{if(op==='datasets.list')throw Error('/private/node?token=secret');return normal(target,op,args);});
+  await assert.rejects(f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)}),
+    error=>error.status===503&&error.message==='数据集读取授权暂未确认。');
   assert.equal(f.service.store.jobs.length,0);assert.ok(f.calls.every(c=>!['sync','datasets.prepare','storage.lease.prepare'].includes(c.op)));
 });
 test('a deferred admission fails on a real capacity shortage, without scheduler dispatch',async t=>{

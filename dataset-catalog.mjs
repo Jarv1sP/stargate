@@ -289,7 +289,12 @@ export async function assertDatasetReadAccess(service,principal,machine,refs){
   const user=service.store.get(principal.userId),policy=authorizationPolicy(user);
   if(!user.enabled||user.username!==principal.username||(user.role||'member')!==principal.role||!user.limits?.[machine])
     fail('当前账号没有这台服务器的读取授权。',403);
-  const result=await service.bridge(machine,'datasets.list',{userId:user.id,hostAdmin:false});
+  let result;
+  try{result=await service.bridge(machine,'datasets.list',{userId:user.id,hostAdmin:false});}
+  catch(error){
+    if(authorizationPolicy(service.store.get(user.id))!==policy||error?.status===403||error?.message==='dataset owner authorization required')fail('当前账号没有数据集读取授权。',403);
+    fail('数据集读取授权暂未确认。',503);
+  }
   if(authorizationPolicy(service.store.get(user.id))!==policy)fail('账号授权已改变。',403);
   if(!Array.isArray(result?.datasets))fail('数据集读取授权暂未确认。',503);
   const datasets=warehouseProjection(result).datasets;
