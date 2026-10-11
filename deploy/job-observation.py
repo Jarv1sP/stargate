@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Bounded native retry evidence. No submit, cancel, lease or journal writes."""
 from contextlib import closing
+import fcntl
 import json
 import math
 import os
@@ -11,6 +12,45 @@ import stat
 import time
 
 STATES = {'PENDING', 'STARTING', 'RUNNING', 'PREEMPTING', 'SUCCEEDED', 'FAILED', 'CANCELED', 'LOST'}
+
+
+def observe_dispatch(root, database, job):
+    """Read only: verify no same-ID dispatcher holds its existing job lock.
+
+    Portal must also wait beyond its original request deadline. A later explicit
+    retry keeps this exact submit_key, so GPUQ's existing unique key and job
+    flock still serialize any delayed original request with that retry.
+    """
+    result = {'protocol': 'job-dispatch-observation-v1', 'jobId': job['id'],
+              'userId': job['userId'], 'submitKey': job['id'],
+              'state': 'UNKNOWN', 'requestFinished': False, 'observedAt': time.time()}
+    fd = None
+    try:
+        folder = Path(root) / 'jobs'
+        try:
+            fd = os.open(folder / (job['id'] + '.lock'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return result
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except FileNotFoundError:
+            pass  # Never create a lock or a job spec for this read.
+        spec = folder / (job['id'] + '.json')
+        if os.path.lexists(spec):
+            with open(spec, 'r') as stream:
+                if json.load(stream) != job:
+                    return result
+        if any(os.path.lexists(folder / (job['id'] + suffix)) for suffix in
+               ('.dataset-dispatch-attempted', '.dataset-not-submitted.json', '.canceled')):
+            return result
+        with closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
+            if db.execute('SELECT id FROM jobs WHERE submit_key=?', (job['id'],)).fetchone():
+                return result
+        return {**result, 'state': 'NOT_SUBMITTED', 'requestFinished': True, 'observedAt': time.time()}
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def observe(root, database, job, data, expected_node_id):
