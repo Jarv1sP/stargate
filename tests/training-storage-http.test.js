@@ -22,7 +22,7 @@ async function fixture(t){
   const origin='http://127.0.0.1:'+port,f={calls:[],availableBytes:2**40,unknown:false};
   const bridge=async(target,operation,args)=>{
     f.calls.push({machine:target,operation,args:structuredClone(args)});
-    if(operation===f.busyOperation)throw Object.assign(Error('/private/device?ticket=secret'),{status:503,code:'TRAINING_ADMISSION_BUSY'});
+    if(operation===f.busyOperation&&(f.busyCount===undefined||f.busyCount-->0))throw Object.assign(Error('/private/device?ticket=secret'),{status:503,code:'TRAINING_ADMISSION_BUSY'});
     if(operation==='datasets.status')return {...ref,state:'READY'};
     if(operation==='projects.verify')return {project:args.project,release:args.release,state:'READY'};
     if(operation==='datasets.training.status')return trainingSource(target,args);
@@ -125,8 +125,25 @@ test('HTTP training read contention keeps BUSY and the same unregistered submiss
       assert.match(response.data.error,/数据正在使用/);assert.doesNotMatch(response.data.error,/能力.*未确认|容量.*未确认|private|ticket|secret/);
       assert.equal(response.data.storage,undefined);assert.equal(f.service.store.jobs.length,0);
       const calls=f.calls.slice(before);
-      assert.equal(calls.filter(c=>c.operation===operation).length,1);
+      assert.equal(calls.filter(c=>c.operation===operation).length,3);
       assert.equal(calls.some(c=>['sync','datasets.prepare','datasets.list','datasets.catalog'].includes(c.operation)),false);
     }
   }
+});
+
+test('HTTP transient admission contention retries reads and persists the original key exactly once',async t=>{
+  const f=await fixture(t),key=randomUUID();
+  f.service.ociProjectAdmission=async()=>{};
+  f.service.projectCopyProbe=async()=>({protocol:'portable-project-v1',enabled:true,environmentMode:'oci',architecture:'amd64',
+    project:'vision',release:ref.version,image:'sha256:'+'b'.repeat(64),releaseReady:true,codeBytes:1,codeEntries:1,imageUnpackedBytes:1024,imageEntries:1024});
+  f.busyOperation='datasets.training.status';f.busyCount=1;
+  const args={machine,cards:1,argv:['true'],key,project:'vision',release:ref.version,datasets:[ref],datasetReadMode:'warehouse'};
+  const response=await f.call('jobs.submit',args,f.member.token);
+  assert.equal(response.status,200,JSON.stringify(response.data));assert.equal(f.service.store.jobs.length,1);
+  assert.equal(f.service.store.jobs[0].key,key);
+  assert.equal(f.calls.filter(call=>call.operation==='datasets.training.status').length,3,'one failed read, its retry, then the fresh footprint read');
+  const before=f.calls.length,again=await f.call('jobs.submit',args,f.member.token);
+  assert.equal(again.status,200);assert.equal(again.data.result.id,response.data.result.id);
+  assert.equal(f.service.store.jobs.length,1);assert.equal(f.calls.length,before,'same key returns the persisted receipt without repeating admission or dispatch');
+  assert.equal(f.calls.some(call=>['sync','datasets.prepare'].includes(call.operation)),false);
 });

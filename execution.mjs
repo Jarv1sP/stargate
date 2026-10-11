@@ -16,7 +16,7 @@ import {datasetFilesCall} from './dataset-files.mjs';
 import {DATA_PREPARING,advanceDataPreparation,releaseDataPreparation} from './dataset-preparation.mjs';
 import {installDatasetReplication} from './dataset-replication.mjs';
 import {selectMachine} from './machine-selection.mjs';
-import {resolveTrainingDataset,trainingDatasetCapabilities} from './training-datasets.mjs';
+import {resolveTrainingDataset,trainingDatasetCapabilities,withTrainingReadRetries} from './training-datasets.mjs';
 import {trainingStoragePlan} from './training-storage.mjs';
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 export {datasetReferences} from './job-submission.mjs';
@@ -485,7 +485,7 @@ export async function executionCall(service,principal,operation,args){
     if(operation==='terminal.open')service.audit(principal.username,operation,args.machine,(args.hostAdmin?'host-root':args.dataWorkspace?'private-data':'private')+':'+mode+(args.takeover?':takeover':''));
     return service.bridge(args.machine,operation,{...args,userId:user.id,username:user.username,hostAdmin:args.hostAdmin===true});
   }
-  if(operation==='jobs.submit'){
+  if(operation==='jobs.submit')return withTrainingReadRetries(async()=>{
     // Only explicit admission refusals before persistence prove no submission.
     const rejectSubmission=(message,status)=>fail(message,status,'SUBMISSION_REJECTED');
     const request=normalizeJobSubmission(args,principal);
@@ -581,7 +581,7 @@ export async function executionCall(service,principal,operation,args){
     try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
     catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==id);throw e;}
     setImmediate(()=>service.reconcile().catch(()=>{}));return jobView(job);
-  }
+  });
   if(operation==='jobs.priority'){
     if(principal.role!=='admin')fail('调整排队优先级仅管理员可用。',403);
     if(Object.keys(args).some(k=>!['jobId','priority','expectedPriority'].includes(k)))fail('优先级参数无效。');

@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {MACHINES} from './dist/model.js';
 import {datasetCatalogCall} from './dataset-catalog.mjs';
-import {resolveTrainingDataset} from './training-datasets.mjs';
+import {resolveTrainingDataset,retryTrainingRead} from './training-datasets.mjs';
 
 export const TRAINING_STORAGE_PROTOCOL='training-storage-plan-v1';
 const SOURCE_PROTOCOL='dataset-training-source-v1',HASH=/^[a-f0-9]{64}$/,ID=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -160,7 +160,7 @@ export async function trainingStoragePlan(service,user,machine,request,{projectP
     if(service.resolveDataset)local=await read(()=>service.resolveDataset(user.id,machine,ref),'固定数据版本尚未确认；未启动准备。',{fallback:true});
     check();
     if(local?.status.state==='READY'&&local.reference)target={dataset:local.reference.dataset,version:local.reference.version};
-    source=await read(()=>service.bridge(machine,'datasets.training.status',{userId:user.id,hostAdmin:false,...target,datasetReadMode:'cache'}),'固定数据版本的容量尚未确认；未启动准备。',{fallback:true});
+    source=await read(()=>retryTrainingRead('datasets.training.status',()=>service.bridge(machine,'datasets.training.status',{userId:user.id,hostAdmin:false,...target,datasetReadMode:'cache'}),{check}),'固定数据版本的容量尚未确认；未启动准备。',{fallback:true});
     check();
     let footprint;
     try{footprint=datasetFootprint(source,target,'cache',{ready:local?.status.state==='READY',machine});}catch(error){
@@ -173,13 +173,13 @@ export async function trainingStoragePlan(service,user,machine,request,{projectP
       const sourceMachine=version.sourceMachine;
       if(!user.limits[sourceMachine]&&!service.archiveSourceAllowed?.(user.id,sourceMachine,sourceRef)&&!service.datasetIngressSourceAllowed?.(user.id,sourceMachine,sourceRef))
         fail('数据来源未授权。','TRAINING_STORAGE_FORBIDDEN',403);
-      source=await read(()=>service.bridge(sourceMachine,'datasets.training.status',{userId:user.id,hostAdmin:false,...sourceRef,datasetReadMode:'cache'}),'固定数据来源的容量或读取能力尚未确认；未启动准备。');
+      source=await read(()=>retryTrainingRead('datasets.training.status',()=>service.bridge(sourceMachine,'datasets.training.status',{userId:user.id,hostAdmin:false,...sourceRef,datasetReadMode:'cache'}),{check}),'固定数据来源的容量或读取能力尚未确认；未启动准备。');
       check();footprint=datasetFootprint(source,sourceRef,'cache',{machine:sourceMachine});
     }
     datasets.push(target);datasetFootprints.push({...target,...footprint});
   }
   const args={userId:user.id,hostAdmin:false,...project,datasets,datasetReadMode:mode,projectFootprint,datasetFootprints};
-  const value=await read(()=>service.bridge(machine,'storage.training.plan',args),'目标项目／缓存卷容量或新准入协议尚未确认；未启动准备。');
+  const value=await read(()=>retryTrainingRead('storage.training.plan',()=>service.bridge(machine,'storage.training.plan',args),{check}),'目标项目／缓存卷容量或新准入协议尚未确认；未启动准备。');
   check();const plan=validateTrainingStoragePlan(value,machine,args);
   return captureRequest?{plan,request:structuredClone(args)}:plan;
 }
