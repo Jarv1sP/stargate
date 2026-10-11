@@ -3,14 +3,17 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import socket
 import threading
+import time
 import unittest
 from unittest.mock import patch
+import uuid
 
 spec = importlib.util.spec_from_file_location('job_observation_fixture', Path(__file__).with_name('gpuq-execution-snapshot.test.py'))
 F = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(F)
-from gpuq.protocol import Client
+from gpuq.protocol import Client, encode_request
 from gpuq.rpc import ApiError, _ThreadingUnixServer
 from gpuq.store import StoreCorruptError
 
@@ -147,6 +150,41 @@ class JobObservationTests(unittest.TestCase):
             server.shutdown(); server.server_close(); thread.join(5)
         self.assertFalse(thread.is_alive())
         self.systemd.start.assert_not_called()
+
+    def test_disconnecting_a_client_does_not_release_the_native_rpc_slot_until_the_read_finishes(self):
+        job = self.managed()
+        entered = threading.Event()
+        def handle(operation, arguments):
+            entered.set()
+            return self.coordinator.handle_api(operation, arguments)
+        path = self.root / 'retained-read-slot.sock'
+        server = _ThreadingUnixServer(path, handle, os.getuid(), 262144)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def available_slots():
+            count = 0
+            while server.connection_slots.acquire(blocking=False):
+                count += 1
+            for _ in range(count):
+                server.connection_slots.release()
+            return count
+        before = '\n'.join(self.store._get_connection().iterdump())
+        try:
+            with self.store._lock:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.connect(str(path))
+                    client.sendall(encode_request('job_observation', {'submit_key': job['submit_key']}, str(uuid.uuid4())))
+                    self.assertTrue(entered.wait(2), 'native handler must start before client disconnect')
+                self.assertEqual(available_slots(), 31)
+            for _ in range(100):
+                if available_slots() == 32:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(available_slots(), 32)
+            self.assertEqual('\n'.join(self.store._get_connection().iterdump()), before)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(5)
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == '__main__':

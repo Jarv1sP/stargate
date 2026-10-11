@@ -22,8 +22,9 @@ def main():
         result = Client(path, timeout=5).call('job_observation', {'submit_key': value['submitKey']})
         print(json.dumps({'result': result}))
         return 0
-    except Exception:
-        print(json.dumps({'error': {'code': 'GPUQ_JOB_UNAVAILABLE'}}))
+    except Exception as error:
+        code = 'TASK_READ_TIMEOUT' if isinstance(error.__cause__, TimeoutError) else 'GPUQ_JOB_UNAVAILABLE'
+        print(json.dumps({'error': {'code': code}}))
         return 1
 
 

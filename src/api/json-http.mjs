@@ -1,5 +1,6 @@
 import {InvalidRequest} from '../contracts/errors.mjs';
 import {ApplicationError} from '../domain/errors.mjs';
+import {readRequestContext} from './read-request-context.mjs';
 
 export function reply(res, status, body, headers = {}) {
   res.writeHead(status, {'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers});
@@ -37,10 +38,17 @@ export function createJsonRoutes({routes, authenticate, statuses, reportError = 
     if (!route) return reply(res, 404, {error: {code: 'NOT_FOUND'}});
     if (req.method !== 'POST') return reply(res, 405, {error: {code: 'METHOD_NOT_ALLOWED'}});
     if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') return reply(res, 415, {error: {code: 'JSON_REQUIRED'}});
+    let context;
     try {
       const actor = await authenticate(req);
       const input = route.parse(await readJson(req));
-      reply(res, 200, {result: await route.useCase.execute(actor, input)});
-    } catch (error) {replyError(res, error, statuses, reportError);}
+      context = route.readOnly ? readRequestContext(req, res) : null;
+      context?.signal.throwIfAborted();
+      const result = context ? await route.useCase.execute(actor, input, {signal: context.signal}) : await route.useCase.execute(actor, input);
+      context?.signal.throwIfAborted();
+      reply(res, 200, {result});
+    } catch (error) {
+      if (!(context?.signal.aborted && res.destroyed)) replyError(res, error, statuses, reportError);
+    } finally {context?.dispose();}
   };
 }

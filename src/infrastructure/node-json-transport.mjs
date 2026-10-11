@@ -19,11 +19,13 @@ export class NodeJsonTransport {
     this.fetch = fetch; this.timeoutMs = timeoutMs; this.maxResponseBytes = maxResponseBytes;
   }
 
-  async request(machineId, route, input, {timeoutMs = this.timeoutMs} = {}) {
+  async request(machineId, route, input, {timeoutMs = this.timeoutMs, signal: callerSignal} = {}) {
+    callerSignal?.throwIfAborted();
     const node = this.#nodes.get(machineId);
     if (!node) throw new ApplicationError('NODE_UNAVAILABLE');
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('Invalid node timeout');
-    const signal = AbortSignal.timeout(Math.min(timeoutMs, this.timeoutMs));
+    const timeout = AbortSignal.timeout(Math.min(timeoutMs, this.timeoutMs));
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
     try {
       const url = new URL(route, node.origin);
       if (url.origin !== node.origin || url.username || url.password || !url.pathname.startsWith('/internal/v2/') || url.search || url.hash) throw new Error('Invalid node route');
@@ -48,10 +50,13 @@ export class NodeJsonTransport {
         if (response.status === 503 && ['SOURCE_BUSY', 'SOURCE_READ_TIMEOUT'].includes(body?.error?.code)) {
           throw new TransientReadError(body.error.code);
         }
+        if ((response.status === 429 && body?.error?.code === 'TASK_READ_BUSY')
+          || (response.status === 504 && body?.error?.code === 'TASK_READ_TIMEOUT')) throw new TransientReadError(body.error.code);
         throw new Error('Node request rejected');
       }
       return body.result;
     } catch (cause) {
+      callerSignal?.throwIfAborted();
       if (cause instanceof TransientReadError) throw cause;
       if (cause instanceof ApplicationError && cause.code === 'FORBIDDEN') throw cause;
       if (cause instanceof ApplicationError && cause.code === 'NODE_CREDENTIAL_REJECTED') throw new ApplicationError('NODE_UNAVAILABLE', {cause});
