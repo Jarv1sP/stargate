@@ -1089,14 +1089,44 @@ class ProjectStore:
         The existing durable run claim also blocks normal project retirement.
         This is not a data lease, GPU allocation or proof that a container ran.
         """
+        observed = self._inspect_run_reference(user, slug, version, jobid, project_uuid, generation)
+        self._claim_run_paths(user, slug, version, jobid)
+        return {**observed, 'jobId': jobid, 'runPrepared': True}
+
+    def _inspect_run_reference(self, user, slug, version, jobid, project_uuid, generation):
+        """Caller holds the project lifetime lock; wrong instances never inspect OCI."""
         if not isinstance(jobid, str) or not JOB_ID.fullmatch(jobid):
             fail('invalid_input', 'Invalid project job ID')
         metadata = self.inspect_release_metadata(user, slug, version)
         if metadata['projectUUID'] != project_uuid or metadata['generation'] != generation:
             fail('project_changed', 'Project instance differs from the registered launch reference')
-        observed = self.inspect_release_runtime(user, slug, version)
-        self._claim_run_paths(user, slug, version, jobid)
-        return {**observed, 'jobId': jobid, 'runPrepared': True}
+        return self.inspect_release_runtime(user, slug, version)
+
+    @contextlib.contextmanager
+    def open_run(self, user, slug, version, jobid, *, project_uuid, generation):
+        """Runner-local handles for an already prepared, exact project run.
+
+        Hold this project's shared lifetime lock through use. No quota setup,
+        run creation or runtime repair; the caller enforces container mounts
+        (code/env read-only, home/output writable) and actual task authority.
+        """
+        with self.lifetime(user, slug), contextlib.ExitStack() as handles:
+            observed = self._inspect_run_reference(user, slug, version, jobid, project_uuid, generation)
+            runs = self.existing_run_paths(user, slug, version, jobid)
+            path, _ = self._project(user, slug)
+            release = path / 'releases' / version
+            meta = self._release_meta(release, version)
+            paths = {'code': release / 'code', 'env': release / 'env', **runs}
+            descriptors = {}
+            for name, target in paths.items():
+                descriptor = handles.enter_context(directory(target))
+                info = os.fstat(descriptor)
+                mode = 0o555 if name in ('code', 'env') else 0o700
+                if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != mode:
+                    fail('unsafe_path', 'Project run directory ownership or mode changed')
+                descriptors[name] = descriptor
+            project = {**paths, 'meta': meta, 'environmentMode': observed['environmentMode'], 'readonly': True}
+            yield {'project': project, 'descriptors': descriptors, 'runtime': observed['runtime']}
 
     def _claim_run_paths(self, user, slug, version, jobid):
         """Caller holds the lifetime lock and has validated job ID and release."""
