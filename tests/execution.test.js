@@ -13,7 +13,7 @@ async function fixture(){
   await writeFile(bootstrap,JSON.stringify({username:'admin',password}));
   await writeFile(status,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:m.id==='gpu-1'?32607:24576})),gpuq:{connected:true,observeOnly:false,schedulableIndices:[0,1],jobs:[]}}))}));
   let remoteState='RUNNING',calls=[],offline=false;
-  const bridge=async(machine,operation,args)=>{calls.push({machine,operation,args});if(offline)throw Error('timeout');if(operation==='logs')return {text:'private-log'};return {state:remoteState,nodeJobId:'J'+args.job.id,assignedIndices:[0]};};
+  const bridge=async(machine,operation,args)=>{calls.push({machine,operation,args});if(offline)throw Error('timeout');if(operation==='logs')return {text:'private-log'};return {state:remoteState,nodeJobId:'J'+args.job.id.replaceAll('-','').slice(0,12),assignedIndices:[0]};};
   let s=await PortalService.open(database,bootstrap,status,bridge);clearInterval(s.executionTimer);
   const admin=await s.login('admin',password);
   const member=(await s.invoke(admin.token,'users.create',{username:'alice',password})).result;
@@ -57,7 +57,7 @@ test('ownership is enforced for tasks, logs, files; admin can cancel but not imp
 test('timeouts and LOST retain reservations, restart persists keys, disabled accounts cannot submit',async()=>{
  const f=await fixture();try{
    await f.grant();f.offline(true);const key=randomUUID();await f.submit({key});await f.settle();assert.equal(usage(f.s.store.jobs,f.member.id),1);
-   f.offline(false);f.setState('LOST');await f.s.reconcile();assert.equal(f.s.store.jobs[0].state,'UNKNOWN');assert.equal(usage(f.s.store.jobs,f.member.id),1);
+   f.offline(false);f.setState('LOST');f.s.store.jobs[0].submissionReconciliation.nextCheckAt=new Date(0).toISOString();await f.s.reconcile();assert.equal(f.s.store.jobs[0].state,'UNKNOWN');assert.equal(usage(f.s.store.jobs,f.member.id),1);
    await f.reopen();const a=await f.s.login('alice',password);assert.equal(f.s.store.jobs[0].key,key);assert.equal(usage(f.s.store.jobs,f.member.id),1);
    const admin=await f.s.login('admin',password);await f.s.invoke(admin.token,'users.enabled',{userId:f.member.id,enabled:false});
    await assert.rejects(f.s.invoke(a.token,'jobs.submit',{}),e=>e.status===401);assert.equal(usage(f.s.store.jobs,f.member.id),1);

@@ -23,6 +23,7 @@ async function fixture(t){
   const bridge=async(target,operation,args)=>{
     f.calls.push({machine:target,operation,args:structuredClone(args)});
     if(operation===f.busyOperation&&(f.busyCount===undefined||f.busyCount-->0))throw Object.assign(Error('/private/device?ticket=secret'),{status:503,code:'TRAINING_ADMISSION_BUSY'});
+    if(operation==='datasets.list')return {datasets:[{dataset:ref.dataset,ownerIds:[args.userId],versions:[{version:ref.version}]}]};
     if(operation==='datasets.status')return {...ref,state:'READY'};
     if(operation==='projects.verify')return {project:args.project,release:args.release,state:'READY'};
     if(operation==='datasets.training.status')return trainingSource(target,args);
@@ -77,10 +78,10 @@ test('HTTP capacity refusal exposes only verified usable counters and never crea
   assert.equal(f.service.store.jobs.length,0);assert.ok(f.calls.every(call=>call.machine===machine));
   assert.equal(f.calls.some(call=>['sync','datasets.prepare'].includes(call.operation)),false);
   f.unknown=true;
-  const unknown=await submit();assert.equal(unknown.status,503);assert.equal(unknown.data.code,'SUBMISSION_REJECTED');
-  assert.deepEqual(unknown.data.storage,{protocol:1,reasonCode:'TRAINING_STORAGE_UNKNOWN',requiredBytes:null,availableBytes:null,volumes:[]});
+  const unknown=await submit();assert.equal(unknown.status,200);assert.equal(unknown.data.result.state,'PREPARING_DATA');
+  assert.equal(unknown.data.storage,undefined);assert.equal(unknown.data.result.error,undefined);
   assert.equal(JSON.stringify(unknown.data).includes('/private/device'),false);assert.equal(JSON.stringify(unknown.data).includes('/host'),false);
-  assert.equal(f.service.store.jobs.length,0);
+  assert.equal(f.service.store.jobs.length,1);assert.equal(f.calls.some(call=>['sync','datasets.prepare'].includes(call.operation)),false);
 });
 
 test('HTTP capability rejects foreign identity fields and missing machine grants before RPC',async t=>{
@@ -111,24 +112,27 @@ test('HTTP project probe errors are safe 503/403 refusals with no persisted task
   }
 });
 
-test('HTTP training read contention keeps BUSY and the same unregistered submission key without fallback',async t=>{
-  const f=await fixture(t),key=randomUUID();
+test('HTTP read contention accepts each authorized key once, without GPU or mutation fallback',async t=>{
+  const f=await fixture(t);
   f.service.ociProjectAdmission=async()=>{};
   f.service.projectCopyProbe=async()=>({protocol:'portable-project-v1',enabled:true,environmentMode:'oci',architecture:'amd64',
     project:'vision',release:ref.version,image:'sha256:'+'b'.repeat(64),releaseReady:true,codeBytes:1,codeEntries:1,imageUnpackedBytes:1024,imageEntries:1024});
-  // Do not admit a write: every attempt stops at one of the two read phases.
   for(const mode of ['warehouse','cache']){
     for(const operation of ['datasets.training.status','storage.training.plan']){
-      f.busyOperation=operation;const before=f.calls.length;
-      const response=await f.call('jobs.submit',{machine,cards:1,argv:['true'],key,project:'vision',release:ref.version,datasets:[ref],datasetReadMode:mode},f.member.token);
-      assert.equal(response.status,503,JSON.stringify(response.data));assert.equal(response.data.code,'TRAINING_ADMISSION_BUSY');
-      assert.match(response.data.error,/数据正在使用/);assert.doesNotMatch(response.data.error,/能力.*未确认|容量.*未确认|private|ticket|secret/);
-      assert.equal(response.data.storage,undefined);assert.equal(f.service.store.jobs.length,0);
-      const calls=f.calls.slice(before);
-      assert.equal(calls.filter(c=>c.operation===operation).length,3);
-      assert.equal(calls.some(c=>['sync','datasets.prepare','datasets.list','datasets.catalog'].includes(c.operation)),false);
+      f.busyOperation=operation;const before=f.calls.length,key=randomUUID();
+      const args={machine,cards:1,argv:['true'],key,project:'vision',release:ref.version,datasets:[ref],datasetReadMode:mode};
+      const response=await f.call('jobs.submit',args,f.member.token);
+      assert.equal(response.status,200,JSON.stringify(response.data));assert.equal(response.data.result.state,'PREPARING_DATA');
+      assert.equal(response.data.result.key,key);assert.equal(response.data.storage,undefined);
+      assert.doesNotMatch(JSON.stringify(response.data),/private|ticket=secret|能力.*未确认|容量.*未确认/);
+      const calls=f.calls.slice(before);assert.equal(calls.filter(c=>c.operation===operation).length,3);
+      assert.ok(calls.every(c=>c.machine===machine));assert.equal(calls.some(c=>['sync','datasets.prepare','datasets.catalog'].includes(c.operation)),false);
+      const count=f.calls.length,again=await f.call('jobs.submit',args,f.member.token);
+      assert.equal(again.status,200);assert.equal(again.data.result.id,response.data.result.id);assert.equal(f.calls.length,count);
     }
   }
+  assert.equal(f.service.store.jobs.length,4);
+  assert.ok(f.service.store.jobs.every(job=>job.state==='PREPARING_DATA'&&job.trainingAdmissionPending));
 });
 
 test('HTTP transient admission contention retries reads and persists the original key exactly once',async t=>{

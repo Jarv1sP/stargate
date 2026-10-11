@@ -46,7 +46,7 @@ async function observe(service,id,usage){
   let failure=null;
   let projectReady=true,projectState;
   let admission;
-  if(job.trainingStoragePlan){
+  if(job.trainingStoragePlan||job.trainingAdmissionPending){
     const user=service.store.get(job.userId);
     admission=await trainingStoragePlan(service,user,job.machine,{
       project:job.project?{project:job.project,release:job.release}:{},
@@ -65,7 +65,7 @@ async function observe(service,id,usage){
   }
   // Remote operations intentionally stay OUTSIDE the global mutation queue.
   // A slow manifest/SSH response cannot block cancellation or terminal opens.
-  if(admission&&projectReady&&!failure&&job.datasetReadMode!=='warehouse'&&job.datasets?.length){
+  if(admission&&projectReady&&!failure&&job.datasets?.length){
     if(!await service.enqueue(()=>{
       const live=current(service,id,snapshot);if(!live)return false;
       persist(service,live.job,()=>{live.job.trainingStoragePlan=admission.plan;live.job.trainingStorageRequest=admission.request;});return true;
@@ -79,11 +79,17 @@ async function observe(service,id,usage){
       const resolved=await resolveTrainingDataset(service,job.userId,job.machine,ref,'warehouse');
       status=resolved.status;reference=resolved.reference;
       states.push({...ref,state:status.state});
-      if(status.state!=='READY'||!reference){failure='本机仓库原件已不可读取：'+ref.dataset+'；未改用缓存或申请 GPU。';break;}
+      if(status.state!=='READY'||!reference)continue;
       references.push(reference);
       continue;
     }
     const transfer=service.datasetReplicaState?.(job.userId,job.machine,ref);
+    if(job.trainingAdmissionPending&&!job.allowPrepareData){
+      const resolved=await resolveTrainingDataset(service,job.userId,job.machine,ref,'cache');
+      states.push({...ref,state:resolved.status.state});
+      if(resolved.status.state==='READY'&&resolved.reference)references.push(resolved.reference);
+      continue;
+    }
     try{
       if(service.resolveDataset){const resolved=await service.resolveDataset(job.userId,job.machine,ref);status=resolved.status;reference=resolved.reference;}
       else{status=await service.bridge(job.machine,'datasets.status',{...identity,...ref});reference=ref;}
@@ -175,7 +181,19 @@ export async function releaseDataPreparation(service,job){
 export function advanceDataPreparation(service,job,usage){
   let pending=inFlight.get(service);if(!pending){pending=new Map();inFlight.set(service,pending);}
   if(pending.has(job.id))return pending.get(job.id);
-  const operation=observe(service,job.id,usage).finally(async()=>{
+  const operation=observe(service,job.id,usage).catch(error=>service.enqueue(()=>{
+    if(!job.trainingAdmissionPending)throw error;
+    const live=current(service,job.id);if(!live)return;
+    if(error?.status===403||error?.code==='TRAINING_STORAGE_INSUFFICIENT'||error?.message==='dataset owner authorization required'){
+      finish(service,live.job,'FAILED',error.message);return;
+    }
+    persist(service,live.job,()=>{
+      const attempts=(live.job.dataPreparation?.readAttempts||0)+1;
+      live.job.error=null;live.job.queueReason='等待数据就绪（自动重查中）';
+      live.job.dataPreparation={...live.job.dataPreparation,readAttempts:attempts,
+        lastReason:error.code||'UNCONFIRMED',nextCheckAt:new Date(Date.now()+Math.min(60000,15000*2**Math.min(attempts-1,2))).toISOString()};
+    });
+  })).finally(async()=>{
     try{await releaseDataPreparation(service,job);}
     finally{if(pending.get(job.id)===operation)pending.delete(job.id);}
   });

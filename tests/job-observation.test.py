@@ -124,6 +124,10 @@ class Observation(unittest.TestCase):
         with patch.object(node, 'platform_root_check'), patch.object(node, 'gpu', side_effect=AssertionError('no GPU call')):
             value = node.process('watch', {'job': self.job, 'expectedNodeJobId': self.native})
             self.assertIsNone(value['nodeJobId']); self.assertEqual(value['nativeObservation']['status'], 'UNKNOWN')
+            self.assertEqual(value['dispatchObservation']['state'], 'NOT_SUBMITTED')
+            self.assertTrue(value['dispatchObservation']['requestFinished'])
+            self.assertEqual(value['dispatchObservation']['submitKey'], self.job['id'])
+            self.assertEqual(value['dispatchObservation']['userId'], self.job['userId'])
 
 
 if __name__ == '__main__':

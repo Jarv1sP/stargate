@@ -134,6 +134,7 @@ export function stateClass(job){
 }
 export function stateWord(job){
   if(job.cancelRequested&&!endedJob(job))return '正在取消';
+  if(job.state==='SUBMITTING'&&job.submissionState==='NOT_DISPATCHED')return '未派发';
   if(job.state==='CANCELED'&&job.preempted===true)return '让位结束';
   return {RUNNING:'运行中',STARTING:'启动中',PENDING:'排队中',QUEUED:'排队中',PREPARING_DATA:'准备数据',SUBMITTING:'提交中',FAILED:'失败',UNKNOWN:'状态待核对',SUCCEEDED:'已完成',CANCELED:'已取消',PREEMPTING:'正在让位',PREEMPTED:'让位结束'}[job.state]||'状态未知';
 }

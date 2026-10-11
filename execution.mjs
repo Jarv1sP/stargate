@@ -11,7 +11,7 @@ import {yieldCapable} from './dist/scheduling-policy.js';
 import {normalizeJobSubmission,createSubmittedJob,datasetReferences,personalCardQuotaExempt} from './job-submission.mjs';
 import {snapshotSyncCall} from './snapshot-sync.mjs';
 import {elasticCapable,placementCapable} from './dist/gpu-allocation.js';
-import {datasetCatalogCall,datasetListView,createDatasetRemovalGuard} from './dataset-catalog.mjs';
+import {datasetCatalogCall,datasetListView,createDatasetRemovalGuard,assertDatasetReadAccess} from './dataset-catalog.mjs';
 import {datasetStorageOverviewCall} from './dataset-storage-overview.mjs';
 import {datasetFilesCall} from './dataset-files.mjs';
 import {DATA_PREPARING,advanceDataPreparation,releaseDataPreparation} from './dataset-preparation.mjs';
@@ -24,6 +24,9 @@ export {datasetReferences} from './job-submission.mjs';
 
 export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
 export const PRIORITIES=new Set(['idle','normal','high']);
+export const SUBMISSION_SAFE_WINDOW_MS=120000;
+const SUBMISSION_CHECK_MESSAGE='正在确认节点状态（自动重查中）';
+const submissionDelay=attempt=>Math.min(60000,15000*2**Math.min(attempt,2));
 const DISPLAY_OPERATIONS=new Set(['datasets.overview','datasets.catalog','datasets.capacity','datasets.list','datasets.files.list','files.list','storage.usage.mine','storage.usage.users']);
 const DISPLAY_NODE_OPERATIONS=new Set(['datasets.list','datasets.capacity','datasets.files.list','files.list']);
 const displayServices=new WeakMap();
@@ -111,13 +114,13 @@ async function firstDispatch(service,job){
     if(storagePlan&&(JSON.stringify({digest:current.digest,spec:current.spec,policyRevision:current.policyRevision||0})!==storageSnapshot||
        Date.now()-Date.parse(storagePlan.checkedAt)>30000))throw Error('首次派发前容量核验已过期或任务已改变；未启动训练。');
     if(storagePlan)current.trainingStoragePlan=storagePlan;
-    current.dispatchPending=false;
+    current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();
     try{service.save();}catch(error){current.dispatchPending=true;throw error;}
     // Begin the attempt in the same serialized turn as admission, but return a
     // wrapped promise so slow remote I/O never holds the mutation queue. Persist
     // before sending: a lost reply or restart cannot reinterpret an attempt as
     // a safely retractable reservation or stop a possibly running experiment.
-    return {response:service.bridge(current.machine,'sync',nativeJobRequest(service,current))};
+    return {dispatched:true,response:service.bridge(current.machine,'sync',nativeJobRequest(service,current))};
   });
 }
 export function bridgeClient(socketPath){
@@ -169,15 +172,49 @@ export function installExecution(service,bridge){
   let cycle=null;
   const kind=job=>job.cancelRequested&&!TERMINAL.has(job.state)?'cancel':job.state==='SUBMITTING'&&job.dispatchPending===true?'first':'observe';
   const eligible=(job,maintained)=>(!TERMINAL.has(job.state)||job.dataPreparationHold&&job.dataPreparationHold.state!=='RELEASED')&&
-    (TERMINAL.has(job.state)||!maintained||job.cancelRequested);
+    (TERMINAL.has(job.state)||!maintained||job.cancelRequested)&&
+    (job.cancelRequested||!(Date.parse(job.dataPreparation?.nextCheckAt)>Date.now()))&&
+    (job.cancelRequested||job.state!=='SUBMITTING'||job.dispatchPending===true||!(Date.parse(job.submissionReconciliation?.nextCheckAt)>Date.now()));
   const step=async job=>{
     if(TERMINAL.has(job.state)){try{await releaseDataPreparation(service,job);}catch{}return;}
     const policyRevision=job.policyRevision||0;
+    let dispatched=false;
     try{
       if(job.state===DATA_PREPARING){await advanceDataPreparation(service,job,usage);return;}
+      if(job.state==='SUBMITTING'&&job.dispatchPending!==true&&!job.cancelRequested){
+        const identity=JSON.stringify([job.userId,job.machine,job.spec]);
+        // watch never submits or releases resources. In particular its legacy
+        // PENDING/NOT_SUBMITTED placeholder is not a scheduler admission.
+        const result=await service.bridge(job.machine,'watch',{job:job.spec},{rpcTimeoutMs:27000});
+        await service.enqueue(()=>{
+          const current=service.store.jobs.find(j=>j.id===job.id);
+          if(!current||service.closing||current.state!=='SUBMITTING'||current.cancelRequested||
+            (current.policyRevision||0)!==policyRevision||JSON.stringify([current.userId,current.machine,current.spec])!==identity)return;
+          if(result?.state==='FAILED'&&result.notSubmitted===true&&result.failureCode==='DATASET_NOT_READY'||
+            typeof result?.nodeJobId==='string'&&/^J[a-f0-9]{12}$/.test(result.nodeJobId)&&
+            ['PENDING','STARTING','RUNNING','PREEMPTING','LOST','UNKNOWN',...TERMINAL].includes(result.state)){
+            persistSchedulerResult(service,current,result);delete current.submissionReconciliation;service.save();return;
+          }
+          const now=Date.now(),old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
+          const absent=result?.schedulerState==='NOT_SUBMITTED'&&!result.nodeJobId&&!result.latestAttempt;
+          const proof=result?.dispatchObservation,ended=Date.parse(current.dispatchFinishedAt||current.dispatchStartedAt||current.createdAt);
+          const confirmed=absent&&proof?.protocol==='job-dispatch-observation-v1'&&proof.jobId===current.id&&
+            proof.userId===current.userId&&proof.submitKey===current.id&&proof.state==='NOT_SUBMITTED'&&proof.requestFinished===true&&
+            Number.isFinite(proof.observedAt)&&proof.observedAt*1000>=now-30000&&proof.observedAt*1000<=now+5000&&
+            Number.isFinite(ended)&&now-ended>=SUBMISSION_SAFE_WINDOW_MS;
+          current.submissionReconciliation={...old,state:confirmed?'NOT_DISPATCHED':'CHECKING',attempts,
+            checkedAt:new Date(now).toISOString(),nextCheckAt:new Date(now+submissionDelay(attempts-1)).toISOString(),
+            ...(confirmed?{absenceConfirmedAt:new Date(now).toISOString()}:{}),
+          };
+          current.error=confirmed?(old.retryUsed?'未派发，请联系管理员恢复。':'未派发，请用原提交键重试。'):SUBMISSION_CHECK_MESSAGE;
+          current.checkedAt=new Date(now).toISOString();service.save();
+        });
+        return;
+      }
       const action=job.cancelRequested?'cancel':'sync';
       const attempt=action==='sync'&&job.state==='SUBMITTING'&&job.dispatchPending===true?await firstDispatch(service,job):{response:service.bridge(job.machine,action,nativeJobRequest(service,job))};
       if(!attempt)return;
+      dispatched=attempt.dispatched===true;
       const result=await attempt.response;
       await service.enqueue(()=>{
         const current=service.store.jobs.find(j=>j.id===job.id);if(!current||service.closing||TERMINAL.has(current.state)||(current.policyRevision||0)!==policyRevision)return;
@@ -185,7 +222,13 @@ export function installExecution(service,bridge){
         persistSchedulerResult(service,current,result);maintainTaskNotes(service);
       });
       if(TERMINAL.has(job.state))await releaseDataPreparation(service,job);
-    }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&!TERMINAL.has(current.state)&&(current.policyRevision||0)===policyRevision){current.error=String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save();}});}
+    }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&!TERMINAL.has(current.state)&&(current.policyRevision||0)===policyRevision){
+      const pending=current.state==='SUBMITTING'&&current.dispatchPending!==true&&!current.cancelRequested;
+      if(pending){const old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
+        current.submissionReconciliation={...old,state:'CHECKING',attempts,lastReason:e.code||'UNCONFIRMED',nextCheckAt:new Date(Date.now()+submissionDelay(attempts-1)).toISOString()};}
+      current.error=pending?SUBMISSION_CHECK_MESSAGE:String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save();
+    }});}
+    finally{if(dispatched)await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing){current.dispatchFinishedAt=new Date().toISOString();service.save();}});}
   };
   const pump=()=>{
     const current=cycle;if(!current)return;
@@ -243,7 +286,11 @@ export function installExecution(service,bridge){
   if(bridge){service.executionTimer=setInterval(()=>service.reconcile().catch(()=>{}),15000);service.executionTimer.unref();}
 }
 export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&j.state!==DATA_PREPARING&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
-export function publicJob(job,users=[]){const {spec,digest,schedulerPolicy,dataPreparationHold,dispatchPending,trainingStoragePlan:privateStoragePlan,trainingStorageRequest:privateStorageRequest,trainingPreparations:privatePreparations,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,...jobTiming(job),...taskIdentity(job,users),command:spec.argv,
+export function publicJob(job,users=[]){const {spec,digest,schedulerPolicy,dataPreparationHold,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,trainingAdmissionPending,allowPrepareData,trainingStoragePlan:privateStoragePlan,trainingStorageRequest:privateStorageRequest,trainingPreparations:privatePreparations,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,
+  ...(job.state==='SUBMITTING'&&dispatchPending!==true?{submissionState:submissionReconciliation?.state||'CHECKING',
+    canRetryDispatch:submissionReconciliation?.state==='NOT_DISPATCHED'&&!submissionReconciliation.retryUsed,
+    error:submissionReconciliation?.state==='NOT_DISPATCHED'?(submissionReconciliation.retryUsed?'未派发，请联系管理员恢复。':'未派发，请用原提交键重试。'):SUBMISSION_CHECK_MESSAGE}:{}),
+  ...jobTiming(job),...taskIdentity(job,users),command:spec.argv,
   yieldPolicy:['legacy','never','now','save'].includes(schedulerPolicy?.yield_policy)?schedulerPolicy.yield_policy:null,
   restartPolicy:['never','on-preempt'].includes(schedulerPolicy?.restart_policy)?schedulerPolicy.restart_policy:null,
   dispatchMode:['queue','preempt-now','preempt-save'].includes(schedulerPolicy?.dispatch_mode)?schedulerPolicy.dispatch_mode:null};}
@@ -524,7 +571,18 @@ export async function executionCall(service,principal,operation,args,readContext
     const request=normalizeJobSubmission(args,principal);
     const {datasets,project,explicit,digest,minVramGiB:min}=request;
     const previous=service.store.jobs.find(j=>j.userId===user.id&&j.key===request.key);
-    if(previous){if(previous.digest!==digest)rejectSubmission('同一提交键不能用于不同任务。',409);return jobView(previous);}
+    if(previous){
+      if(previous.digest!==digest)rejectSubmission('同一提交键不能用于不同任务。',409);
+      if(previous.state==='SUBMITTING'&&!previous.cancelRequested&&previous.submissionReconciliation?.state==='NOT_DISPATCHED'&&
+        !previous.submissionReconciliation.retryUsed){
+        authorizedMachine(previous.machine);
+        previous.submissionReconciliation={...previous.submissionReconciliation,state:'CHECKING',retryUsed:true};
+        previous.dispatchPending=true;previous.error=null;service.save();
+        service.audit(principal.username,operation,previous.id,'retry-original-dispatch');
+        setImmediate(()=>service.reconcile().catch(()=>{}));
+      }
+      return jobView(previous);
+    }
     if(service.store.jobs.length>=5000)rejectSubmission('任务历史达到归档上限，请联系管理员归档后提交。',503);
     if(request.cards>user.total)rejectSubmission('任务卡数超出跨机器用卡总额度。',409);
     if(request.machineSelection){
@@ -554,7 +612,7 @@ export async function executionCall(service,principal,operation,args,readContext
     if(explicit&&(!prioritySupported||!yieldCapable(host)))rejectSubmission('节点未接通独立让位与 checkpoint 控制通道；未提交任务。',503);
     if(explicit?.mode&&explicit.mode!=='queue'&&!host.gpuq.capabilities.includes('preempt-opt-in-only-v1'))rejectSubmission('节点尚未接通请求模式的主动让位范围限制。',503);
     if(request.priorityProvided&&!prioritySupported)rejectSubmission('所选机器尚未确认安全优先级功能，未提交任务；请刷新或联系管理员升级。',503);
-    let needsPreparation=!!request.machineSelection,resolvedReferences=[];
+    let needsPreparation=!!request.machineSelection,resolvedReferences=[],admissionPending=false;
     if(datasets.length){
       // Personal training uses the same owner-only Principal as node lease
       // acquisition. Only the explicitly selected node is queried; management
@@ -579,11 +637,18 @@ export async function executionCall(service,principal,operation,args,readContext
       }));}
       catch(error){
         if(error?.status===403||error?.message==='dataset owner authorization required')rejectSubmission('当前账号没有数据集读取授权；管理员个人训练也必须列入数据集 owners。未占用 GPU。',403);
-        if(error?.code==='TRAINING_ADMISSION_BUSY')throw error;
-        rejectSubmission('无法确认所选机器的数据授权或准备状态，未占用 GPU。请稍后重试或查看数据集状态。',503);
+        // A temporary data/metadata read is not a rejection once the same
+        // member-bound version grant is known. Accept the original key first;
+        // the preparation lane will repeat only reads before any dispatch.
+        await assertDatasetReadAccess(service,principal,request.machine,datasets);
+        admissionPending=true;needsPreparation=true;
+        states=datasets.map(ref=>({...ref,state:'WAITING'}));
       }
-      if(!states.every(s=>s.state==='READY')){
-        if(request.datasetReadMode==='warehouse')rejectSubmission('所选服务器没有这个固定版本的可读仓库原件；未复制到缓存、切换服务器或占用 GPU。',409);
+      if(!admissionPending&&!states.every(s=>s.state==='READY')){
+        if(request.datasetReadMode==='warehouse'){
+          await assertDatasetReadAccess(service,principal,request.machine,datasets);
+          admissionPending=true;needsPreparation=true;
+        }else{
         if(!request.prepareData)rejectSubmission('所选机器没有完整的本地数据副本。先用 gpuctl data prepare 数据集@版本 准备数据；此时未占用 GPU，不会自动切换服务器。',409);
         const catalog=await datasetCatalogCall(service,{...principal,userId:user.id},'datasets.catalog',{machine:request.machine});
         const catalogVersions=datasets.map(ref=>catalog.datasets?.find(d=>d.dataset===ref.dataset)?.versions?.find(v=>v.version===ref.version));
@@ -592,14 +657,20 @@ export async function executionCall(service,principal,operation,args,readContext
         if(!datasets.every((ref,index)=>states[index].state==='READY'||catalogVersions[index]?.canUse===true&&(catalogVersions[index].canPrepare===true||catalogVersions[index].state==='PREPARING')))rejectSubmission('部分数据没有可用来源；请先在数据集页面完成导入。未占用 GPU。',409);
         if(service.store.jobs.filter(j=>j.userId===user.id&&j.state===DATA_PREPARING).length>=10)rejectSubmission('最多保留 10 个数据准备中的训练，请先等待或取消。',429);
         needsPreparation=true;
+        }
       }
     }
     if(needsPreparation&&service.store.jobs.filter(j=>j.userId===user.id&&j.state===DATA_PREPARING).length>=10)rejectSubmission('最多保留 10 个准备中的训练，请先等待或取消。',429);
     if(request.machineSelection&&(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine)))rejectSubmission('账号授权或机器维护状态已改变；未提交训练。',409);
     let storagePlan;
-    if(project.project||datasets.length){
+    if((project.project||datasets.length)&&!admissionPending){
       try{storagePlan=await trainingStoragePlan(service,user,request.machine,request,{from:request.projectPreparation?.from});}
-      catch(error){if(error.code!=='TRAINING_ADMISSION_BUSY')error.code='SUBMISSION_REJECTED';throw error;}
+      catch(error){
+        if(!datasets.length||error.status===403||error.code==='TRAINING_STORAGE_INSUFFICIENT'){
+          if(error.code!=='TRAINING_ADMISSION_BUSY')error.code='SUBMISSION_REJECTED';throw error;
+        }
+        admissionPending=true;needsPreparation=true;
+      }
       if(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine))rejectSubmission('容量核对期间账号授权或机器维护状态已改变；未提交训练。',409);
     }
     if(!needsPreparation&&!personalCardQuotaExempt(user,request)){
@@ -607,9 +678,10 @@ export async function executionCall(service,principal,operation,args,readContext
       if(usage(service.store.jobs,user.id,request.machine)+request.cards>user.limits[request.machine])rejectSubmission('超出所选机器的用卡额度（排队、运行和待核对任务均计入）；不会自动切换服务器。',409);
     }
     const job=createSubmittedJob(request,user,prioritySupported),{id}=job;
+    if(admissionPending){job.trainingAdmissionPending=true;job.allowPrepareData=request.prepareData===true;}
     if(storagePlan)job.trainingStoragePlan=storagePlan;
     if(!needsPreparation&&datasets.length&&resolvedReferences.length===datasets.length)job.spec.datasets=datasets.map(ref=>resolvedReferences.find(value=>(value.mountAs||value.dataset)===ref.dataset));
-    if(needsPreparation){job.state=DATA_PREPARING;job.queueReason='等待准备项目和本机数据；尚未申请 GPU。';job.dataPreparation={datasets:datasets.map(ref=>({...ref,state:'WAITING'}))};}
+    if(needsPreparation){job.state=DATA_PREPARING;job.queueReason=admissionPending?'等待数据就绪（自动重查中）':'等待准备项目和本机数据；尚未申请 GPU。';job.dataPreparation={datasets:datasets.map(ref=>({...ref,state:'WAITING'}))};}
     service.db.exec('BEGIN IMMEDIATE');
     try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
     catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==id);throw e;}

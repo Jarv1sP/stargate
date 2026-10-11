@@ -137,6 +137,7 @@ test('proven pre-dispatch cache eviction ends cleanly, while unknown transport r
     assert.equal(job.state,'SUBMITTING');assert.equal(usage(f.service.store.jobs,f.member.id),1);
     f.syncFail(Error('response lost'));await f.service.reconcile();
     assert.equal(job.state,'SUBMITTING');assert.equal(usage(f.service.store.jobs,f.member.id),1);
+    job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
     f.syncFail(null);f.sync({state:'FAILED',notSubmitted:true,failureCode:'DATASET_NOT_READY',assignedIndices:[],error:'重新准备后新建任务。'});
     await f.service.reconcile();assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);
     assert.equal(job.failureCode,'DATASET_NOT_READY');assert.equal(usage(f.service.store.jobs,f.member.id),0);
@@ -432,13 +433,16 @@ test('readiness transport failures are unavailable, not falsely reported as miss
   }finally{await f.close();}
 });
 
-test('failed selected-node readiness never falls back to another READY machine',async()=>{
+test('failed selected-node readiness waits with its authorized key instead of borrowing another READY machine',async()=>{
   const f=await fixture();try{
-    await f.grant();f.states.set('gpu-1:sample',Error('offline'));
-    const result=await f.submit();assert.equal(result.status,503,JSON.stringify(result.data));
-    assert.equal(f.service.store.jobs.length,0);assert.equal(usage(f.service.store.jobs,f.member.id),0);
-    assert.deepEqual(f.calls.map(call=>[call.machine,call.operation]),[['gpu-1','datasets.status']]);
-  }finally{await f.close();}
+    await f.grant();f.service.reconciling=true;f.states.set('gpu-1:sample',Error('offline')); // Isolate admission from its subsequent background observation.
+    const key=randomUUID(),result=await f.submit({key});assert.equal(result.status,200,JSON.stringify(result.data));
+    assert.equal(result.data.result.state,'PREPARING_DATA');assert.equal(f.service.store.jobs.length,1);
+    assert.equal(f.service.store.jobs[0].key,key);assert.equal(usage(f.service.store.jobs,f.member.id),0);
+    assert.deepEqual(f.calls.map(call=>[call.machine,call.operation]),[['gpu-1','datasets.status'],['gpu-1','datasets.list']]);
+    const before=f.calls.length,again=await f.submit({key});assert.equal(again.data.result.id,result.data.result.id);
+    assert.equal(f.calls.length,before);assert.equal(f.service.store.jobs.length,1);
+  }finally{f.service.reconciling=false;await f.close();}
 });
 
 test('dataset job retry is durable and idempotent; changing versions under the same key conflicts',async()=>{

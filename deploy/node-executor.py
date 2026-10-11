@@ -87,6 +87,11 @@ def job_observation(job,data,expected_node_id):
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     return module.observe(ROOT,CONFIG['database'],job,data,expected_node_id)
 
+def dispatch_observation(job):
+    spec=importlib.util.spec_from_file_location('gpuq_job_observation',HERE/'job-observation.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.observe_dispatch(ROOT,CONFIG['database'],job)
+
 def job_log_result(job,data,text):
     try:
         package=job_diagnostics(job,data)
@@ -1839,6 +1844,10 @@ def process(operation,args):
         data=gpu('show',row[0]) if row else {'job':{'state':'NOT_SUBMITTED'},'attempts':[]}
         observation={'nativeObservation':job_observation(job,data,expected_node_id)} if expected_node_id is not None else {}
         if operation=='diagnostics':return {**job_diagnostics(job,data),**observation}
+        if row is None:observation['dispatchObservation']=dispatch_observation(job)
+        if observation.get('dispatchObservation',{}).get('state')=='REJECTED':
+            return {'state':'FAILED','notSubmitted':True,'failureCode':'DATASET_NOT_READY','assignedIndices':[],
+                    'error':'数据副本在提交前已失效，未启动训练。请重新准备数据后新建任务。',**observation}
         state=data.get('job',data);attempts=data.get('attempts',[])
         assigned=attempts[0].get('gpu_indices',[]) if attempts and state.get('state') not in ('SUCCEEDED','FAILED','CANCELED','LOST') else []
         if row and state.get('state') in ('SUCCEEDED','FAILED','CANCELED') and not scheduler_terminal_confirmed(data):

@@ -7,7 +7,7 @@ import {MACHINES} from '../dist/model.js';
 const machine=MACHINES[0].id;
 function queued(f,{cancelRequested=false}={}){
   const id=randomUUID(),spec={id,userId:f.owner.id,username:f.owner.username,name:'中文任务',machine,argv:['true']};
-  const job={id,userId:f.owner.id,username:f.owner.username,submitterName:'归档用户',name:'中文任务',description:'显示不改变执行身份',machine,cards:1,state:'SUBMITTING',spec,cancelRequested};
+  const job={id,userId:f.owner.id,username:f.owner.username,submitterName:'归档用户',name:'中文任务',description:'显示不改变执行身份',machine,cards:1,state:'SUBMITTING',dispatchPending:true,spec,cancelRequested};
   f.service.store.jobs.push(job);
   f.service.gpuq.stale=false;
   const host=f.service.gpuq.hosts.find(h=>h.id===machine);

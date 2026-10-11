@@ -115,7 +115,7 @@ test('lost first reply is not re-observed or replayed in the active pass',{timeo
   const work=f.start();await tick();await tick();
   for(let n=0;n<10;n++)f.service.reconcile().catch(()=>{});await tick();
   assert.equal(f.calls.filter(c=>c.args.job.id===fresh.id).length,1);assert.equal(f.job(fresh.id).dispatchPending,false);
-  assert.equal(f.job(fresh.id).state,'SUBMITTING');assert.match(f.job(fresh.id).error,/first reply lost/);
+  assert.equal(f.job(fresh.id).state,'SUBMITTING');assert.equal(f.job(fresh.id).error,'正在确认节点状态（自动重查中）');
   assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);held.resolve();await work;
 });
 

@@ -20,7 +20,7 @@ async function fixture(t){
     assert.equal(service.store.jobs.find(job=>job.id===args.job.id).dispatchPending,false,'durable attempt marker precedes remote I/O');
     calls.push({machine,operation,args:structuredClone(args)});
     if(service.lostReply)throw Error('reply lost');
-    return {nodeJobId:'Jfixture',state:'PENDING',assignedIndices:[],queueReason:'waiting for available GPU'};
+    return {nodeJobId:'J0123456789ab',state:'PENDING',assignedIndices:[],queueReason:'waiting for available GPU'};
   };
   const open=async bootstrapPath=>{
     service=await PortalService.open(database,bootstrapPath,status,bridge);clearInterval(service.executionTimer);service.reconciling=true;
@@ -94,12 +94,12 @@ test('a slow first node reply does not hold the account mutation queue or replay
   assert.equal(f.job(a.id).cancelRequested,false);
 });
 
-test('lost first reply and later demotion continue only the same attempted sync after reopen',async t=>{
+test('lost first reply and later demotion only observe the original UUID after reopen',async t=>{
   const f=await fixture(t),a=await f.submit({priority:'high'}),spec=structuredClone(f.job(a.id).spec);
   f.service.lostReply=true;await f.step();assert.equal(f.calls.length,1);assert.equal(f.job(a.id).dispatchPending,false);
-  assert.equal(f.job(a.id).state,'SUBMITTING');assert.match(f.job(a.id).error,/reply lost/);
-  await f.demote();await f.reopen();await f.step();
-  assert.equal(f.calls.length,2);assert.equal(f.calls[1].operation,'sync');assert.deepEqual(f.calls[1].args.job,spec);
+  assert.equal(f.job(a.id).state,'SUBMITTING');assert.equal(f.job(a.id).error,'正在确认节点状态（自动重查中）');
+  await f.demote();await f.reopen();f.job(a.id).submissionReconciliation.nextCheckAt=new Date(0).toISOString();await f.step();
+  assert.equal(f.calls.length,2);assert.equal(f.calls[1].operation,'watch');assert.deepEqual(f.calls[1].args.job,spec);
   assert.equal(f.job(a.id).state,'PENDING');assert.equal(usage(f.service.store.jobs,f.user.id),1);
 });
 
@@ -108,6 +108,6 @@ test('legacy unmarked work is observed conservatively rather than retroactively 
   await f.demote();
   // Legacy records intentionally have no marker; this simulated bridge checks
   // identity, not the new-record admission marker.
-  f.service.bridge=async(machine,operation,args)=>{f.calls.push({machine,operation,args:structuredClone(args)});return {state:'RUNNING',assignedIndices:[0]};};
-  await f.step();assert.equal(f.calls.length,1);assert.equal(f.calls[0].operation,'sync');assert.equal(f.job(a.id).state,'RUNNING');
+  f.service.bridge=async(machine,operation,args)=>{f.calls.push({machine,operation,args:structuredClone(args)});return {state:'RUNNING',nodeJobId:'J0123456789ab',assignedIndices:[0]};};
+  await f.step();assert.equal(f.calls.length,1);assert.equal(f.calls[0].operation,'watch');assert.equal(f.job(a.id).state,'RUNNING');
 });
