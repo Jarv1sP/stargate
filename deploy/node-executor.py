@@ -59,7 +59,7 @@ def require_upload_ingress_operation(operation):
     if operation not in UPLOAD_INGRESS_OPERATIONS:
         raise ValueError('Invalid dedicated dataset upload ingress operation')
 
-def workspace_storage_check(needed=0, *, target_fd=None, admission=False):
+def workspace_storage_check(needed=0, *, target_fd=None, admission=False, terminal=False):
     """Only configured nodes gain new-start admission; controls stay available."""
     global WORKSPACE_STORAGE
     if 'workspaceReserveBytes' not in CONFIG:
@@ -73,7 +73,10 @@ def workspace_storage_check(needed=0, *, target_fd=None, admission=False):
         spec=importlib.util.spec_from_file_location('gpuq_workspace_storage',HERE/'project-store.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         WORKSPACE_STORAGE=module
-    WORKSPACE_STORAGE.require_workspace_space(ROOT,WORKSPACE_STORAGE.workspace_reserve_bytes(CONFIG),needed,target_fd=target_fd)
+    if terminal:
+        WORKSPACE_STORAGE.require_terminal_space(ROOT,CONFIG)
+    else:
+        WORKSPACE_STORAGE.require_workspace_space(ROOT,WORKSPACE_STORAGE.workspace_reserve_bytes(CONFIG),needed,target_fd=target_fd)
 
 def job_diagnostics(job,data):
     global DIAGNOSTICS
@@ -1325,7 +1328,7 @@ def terminal_op(operation,args):
         receipt=terminal_metadata(receipt_path) if receipt_path.exists() else None
         if opening:
             if mode=='new' and not (folder/(jid+'.json')).exists():
-                if args.get('hostAdmin') is not True:workspace_storage_check(admission=True)
+                if args.get('hostAdmin') is not True:workspace_storage_check(admission=True,terminal=True)
                 oci_properties=terminal_oci_properties(args)
                 unit='amax-term-'+jid
                 spec={'userId':args['userId'],'username':args['username'],'cards':0,'argv':['/bin/bash','--noprofile','--norc','-i'],'hostAdmin':args.get('hostAdmin') is True}

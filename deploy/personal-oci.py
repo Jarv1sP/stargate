@@ -1040,7 +1040,7 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
     """Both existing scheduler profiles enter here after allocation/limits."""
     owner = PersonalOCI(config, spec['userId'])
     owner.stderr_sink = stderr_sink
-    mounts = [(workfd, '/workspace', not terminal), (project_fds['home'], '/home/gpuq', False),
+    mounts = [(workfd, '/workspace', project.get('readonly', not terminal)), (project_fds['home'], '/home/gpuq', False),
               (project_fds['output'], '/outputs', False)]
     mounts += [(fd, target, True) for fd, target in dataset_fds]
     if datafd is not None:

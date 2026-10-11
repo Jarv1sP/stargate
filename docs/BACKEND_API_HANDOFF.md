@@ -1,5 +1,7 @@
 # 后端接口交接
 
+`projects.create` 可选 `storageMode:"local-roots", workspaceMode:"project"|"task"`，后者默认 project。节点仅在配置的本机公共数据根可用时创建，结果须确认 `localStorage.mode/workspaceMode`；未知节点不得静默降级。`projects.list` 可附 `localDataRoots:{protocol:1,available,mode,roots?,unavailable?}`，路径只含容器 `/data`、`/fast-data`，不返回宿主目录。新项目状态含同一 `localStorage` 公开视图，未带字段的旧项目不改变行为。详见 [LOCAL_DATA_ROOTS.md](LOCAL_DATA_ROOTS.md)。
+
 ## 显卡故障与部分采集
 
 `gpuq.health:"degraded"` 可附固定诊断 `healthIssue:{kind:"managed-gpu-missing",indices:[1]}` 或 `{kind:"scheduler-degraded"}`。只有明确的调度器受管 GPU 缺失错误映射为前者；卡号有界且去重，不转发原始错误、UUID、路径或命令。已授权成员与管理员均可看到固定诊断，未授权、过期和失联状态不沿用旧故障结论。配套节点 `deploy/node-probe.py` 位于采集 SSH 强制命令，不属于数据存储 helper 更新；未部署时仅显示通用调度异常。

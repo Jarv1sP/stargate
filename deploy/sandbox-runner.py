@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """GPUQ-owned job process. Mount only assigned devices and one user's workspace."""
 import hashlib,importlib.util,json,os,re,select,subprocess,sys,time,tempfile
+from contextlib import ExitStack
+from functools import wraps
 sys.dont_write_bytecode=True  # Native retries retain the immutable cohort, not a bytecode side tree.
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
@@ -108,11 +110,14 @@ def project_runtime(spec,root,cfg,jid,terminal):
     module=importlib.util.spec_from_file_location('gpuq_project_store',HERE/'project-store.py')
     store_module=importlib.util.module_from_spec(module);sys.modules[module.name]=store_module;module.loader.exec_module(store_module)
     store=store_module.ProjectStore(root,cfg['conda'],reserve_bytes=store_module.workspace_reserve_bytes(cfg),config=cfg)
+    storage=store.local_storage(spec['userId'],spec['project'])
     if terminal:
         paths=store.dev_paths(spec['userId'],spec['project'])
-        return {**paths,'output':paths['scratch'],'readonly':False,'environmentMode':store.environment_mode(spec['userId'],spec['project'])}
+        return {**paths,'output':paths['scratch'],'readonly':False,'environmentMode':store.environment_mode(spec['userId'],spec['project']),**({'localStorage':storage} if storage else {})}
     release=store.release(spec['userId'],spec['project'],spec['release'])
-    return {**release,**store.run_paths(spec['userId'],spec['project'],spec['release'],jid),'readonly':True,'environmentMode':release['meta'].get('environmentMode','shared')}
+    result={**release,**store.run_paths(spec['userId'],spec['project'],spec['release'],jid),'readonly':True,'environmentMode':release['meta'].get('environmentMode','shared')}
+    if storage:result.update(code=store.local_run_workspace(spec['userId'],spec['project'],spec['release'],jid),readonly=False,environmentReadonly=True,localStorage=storage)
+    return result
 
 def project_path(mode,resources=False):
     if mode not in ('shared','isolated'):raise ValueError('Invalid project environment mode')
@@ -147,19 +152,28 @@ os.execvpe(sys.argv[2],sys.argv[2:],os.environ)
 '''
     return ['/usr/bin/python3','-c',bootstrap,mode,*command]
 
-def workspace_admission(cfg,root):
+def workspace_admission(cfg,root,*,terminal=False):
     # Recheck when a queued job actually starts, before untrusted execution.
     # Host-root terminals do not use this sandbox runner. No periodic policing.
     if 'workspaceReserveBytes' not in cfg:return
     module=local_module('gpuq_workspace_storage','project-store.py')
-    module.require_workspace_space(root,module.workspace_reserve_bytes(cfg))
+    if terminal:module.require_terminal_space(root,cfg)
+    else:module.require_workspace_space(root,module.workspace_reserve_bytes(cfg))
 
 def oci_runtime_spec(spec,jid,terminal):
     # Legacy terminal metadata has no job ID. The validated on-disk filename
     # is the trusted identity, not any optional ID supplied by the client.
     return {**spec,'id':jid} if terminal else spec
 
-def run_job(capture,*,resource_module):
+def with_mount_lifetime(function):
+    @wraps(function)
+    def scoped(*args,**kwargs):
+        with ExitStack() as lifetime:
+            return function(*args,**kwargs,lifetime=lifetime)
+    return scoped
+
+@with_mount_lifetime
+def run_job(capture,*,resource_module,lifetime=None):
     jid=sys.argv[1]
     if not re.fullmatch(r'[a-f0-9-]{36}',jid):raise ValueError('Invalid job ID')
     cfg=json.loads((HERE/'node-config.json').read_text());root=Path(cfg['root'])
@@ -176,7 +190,7 @@ def run_job(capture,*,resource_module):
     if not terminal:capture.bind(root,spec,unit,group,env,indices,uuids)
     runtimefd=capture.runtimefd
     capture.phase='WORKSPACE_ADMISSION'
-    workspace_admission(cfg,root)
+    workspace_admission(cfg,root,terminal=terminal)
     capture.phase='GPU_ALLOCATION'
     if terminal:indices=[];uuids=[]
     else:runtime_spec=local_module('gpuq_allocation','scheduling-policy.py').allocated_spec(spec,indices,uuids,cfg,os.environ)
@@ -206,6 +220,11 @@ def run_job(capture,*,resource_module):
     workfd=os.open(workspace,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     project_fds={name:os.open(project[name],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW) for name in ('env','home','output')} if project else {}
     dataset_fds=[] if terminal else open_dataset_mounts(spec)
+    if project and project.get('localStorage'):
+        roots=local_module('gpuq_public_roots','public-data-roots.py')
+        mounted,unavailable=lifetime.enter_context(roots.opened(cfg,project['localStorage'],consumer={'unit':unit,'cgroup':group}))
+        dataset_fds.extend((os.dup(fd),target) for fd,target in mounted)
+        if unavailable:print('未挂载可选数据目录：'+', '.join(unavailable),file=sys.stderr)
     datafd,datalock=open_data_workspace(spec,jid,terminal)
     if project and project['environmentMode']=='oci':
         capture.phase='OCI_EXECUTION'
@@ -224,7 +243,7 @@ def run_job(capture,*,resource_module):
           '--ro-bind','/etc/ld.so.cache','/etc/ld.so.cache','--ro-bind','/etc/alternatives','/etc/alternatives','--ro-bind','/etc/ssl','/etc/ssl',
           '--ro-bind-fd' if project and project['readonly'] else '--bind-fd',str(workfd),'/workspace','--chdir','/workspace','--clearenv']
     if project:
-        args+=['--ro-bind-fd' if project['readonly'] else '--bind-fd',str(project_fds['env']),'/opt/project-env',
+        args+=['--ro-bind-fd' if project.get('environmentReadonly',project['readonly']) else '--bind-fd',str(project_fds['env']),'/opt/project-env',
                '--bind-fd',str(project_fds['home']),'/home/gpuq','--bind-fd',str(project_fds['output']),'/outputs']
     # Ray reads /sys/fs/cgroup/{cpu.max,memory.max} at the mount root, not the
     # host's job-unit path. Expose only this job's real cgroup, always read-only.

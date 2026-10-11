@@ -47,6 +47,24 @@ async function fixture(){
  const settle=async()=>{await new Promise(r=>setImmediate(r));while(service.reconciling)await new Promise(r=>setTimeout(r,2));};
  return {service,calls,user,admin,member,otherLogin,call,ready:v=>ready=v,settle,close:async()=>{await settle();service.close();await rm(dir,{recursive:true,force:true});}};
 }
+test('local roots project creation is explicit, owner-bound and requires a matching node receipt',async()=>{
+ const f=await fixture();try{
+  const bridge=f.service.bridge;
+  f.service.bridge=async(machine,operation,args)=>{
+   const result=await bridge(machine,operation,args);
+   return operation==='projects.create'&&args.storageMode?{...result,localStorage:{protocol:1,mode:args.storageMode,workspaceMode:args.workspaceMode,roots:[{path:'/data',readOnly:true}],unavailable:[]}}:result;
+  };
+  const result=await f.call('projects.create',{project:'public-data',storageMode:'local-roots',workspaceMode:'task'});
+  assert.equal(result.result.localStorage.workspaceMode,'task');
+  assert.deepEqual(f.calls.at(-1).args,{project:'public-data',storageMode:'local-roots',workspaceMode:'task',environmentMode:'oci',userId:f.member.id});
+  const count=f.calls.length;
+  for(const extra of [{storageMode:'unknown'},{workspaceMode:'task'},{storageMode:'local-roots',workspaceMode:'unknown'},{storageMode:'local-roots',hostPath:'/data1'},{storageMode:'local-roots',userId:'builtin-admin'}])await assert.rejects(f.call('projects.create',{project:'bad',...extra}));
+  assert.equal(f.calls.length,count);
+  f.service.bridge=bridge;
+  await assert.rejects(f.call('projects.create',{project:'no-ack',storageMode:'local-roots'}),e=>e.status===503);
+  assert.equal(f.service.store.jobs.length,0);
+ }finally{await f.close();}
+});
 test('project display names are owner CAS metadata and never replace immutable execution references',async()=>{
  const f=await fixture();try{
   const ref={project:'my-project'},before=f.service.store.jobs.length;

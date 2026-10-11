@@ -36,6 +36,7 @@ class ProjectOperations:
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        self.store_module = module
         self.store = module.ProjectStore(executor.ROOT, executor.CONFIG['conda'],
                                         reserve_bytes=module.workspace_reserve_bytes(executor.CONFIG), config=executor.CONFIG)
         self.folder = executor.ROOT/'project-ops'
@@ -425,7 +426,7 @@ class ProjectOperations:
         if operation.startswith('projects.local-import.'):
             return self.local_imports().process(operation,args)
         allowed = {'userId'} if operation == 'projects.list' else {'userId','project'}
-        if operation == 'projects.create': allowed.add('environmentMode')
+        if operation == 'projects.create': allowed.update(('environmentMode', 'storageMode', 'workspaceMode'))
         if operation == 'projects.publish': allowed.add('key')
         if operation == 'projects.verify': allowed.add('release')
         if not isinstance(args, dict) or set(args)-allowed:
@@ -438,6 +439,8 @@ class ProjectOperations:
             self.n.workspace(args['userId'])
             result = {'projects':self.store.list(args['userId']),
                       'environmentModes':self.environment_modes(args['userId'])}
+            if 'publicDataRoots' in self.n.CONFIG:
+                result['localDataRoots'] = self.store_module.public_roots_module().capabilities(self.n.CONFIG)
             # Store does not know detached-worker state.
             for item in result['projects']:
                 item.update(self.status({'userId':args['userId'],'project':item['project']}))
@@ -449,7 +452,8 @@ class ProjectOperations:
             release = self.store.release(*identity, args['release'])
             return {'project':args['project'],'release':args['release'],'state':'READY'}
         with self.guard(args):
-            if operation == 'projects.create': return self.store.create(*identity, environment_mode=args.get('environmentMode'))
+            if operation == 'projects.create': return self.store.create(*identity, environment_mode=args.get('environmentMode'),
+                storage_mode=args.get('storageMode'), workspace_mode=args.get('workspaceMode'))
             if operation != 'projects.publish': raise ValueError('Unknown project operation')
             pending = self.pending(args)
             original = self.receipt(args)

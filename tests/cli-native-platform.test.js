@@ -55,7 +55,7 @@ test('native client works with a loopback mock API and Unicode Windows-style wor
       if (operation === 'state') { res.end(JSON.stringify({ state })); return; }
       if (operation === 'projects.create') {
         assert.equal(args.environmentMode, 'oci');
-        result = { project: args.project, environmentMode: 'oci' };
+        result = { project: args.project, environmentMode: 'oci',...(args.storageMode?{localStorage:{protocol:1,mode:args.storageMode,workspaceMode:args.workspaceMode,roots:[{path:'/data',readOnly:true}],unavailable:[]}}:{}) };
       }
       else if (operation === 'files.upload.status') {
         assert.equal(args.project, 'native-test');
@@ -167,6 +167,12 @@ test('native client works with a loopback mock API and Unicode Windows-style wor
     assert.equal((await ok(['login', principal.username, '--password-stdin'], 'offline-test-not-a-secret\r\n')).json.data.loggedIn, true);
     assert.equal((await ok(['state'])).json.data.machines[0].id, 'offline-node');
     await ok(['use', 'offline-node']);
+    const localProject=await ok(['project','create','local-data-test','--storage','local-roots','--workspace-mode','task']);
+    assert.equal(localProject.json.data.localStorage.workspaceMode,'task');
+    assert.equal(requests.at(-1).args.storageMode,'local-roots');
+    const beforeInvalid=requests.length;
+    assert.notEqual((await cli(['state','--storage','local-roots'])).code,0);
+    assert.equal(requests.length,beforeInvalid);
     assert.equal((await ok(['project', 'create', 'native-test'])).json.data.environmentMode, 'oci');
     const codeDir = join(dir, '代码 space ! &');
     await mkdir(codeDir);

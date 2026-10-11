@@ -389,7 +389,7 @@ class SnapshotSync:
         with self.ops.store.locked(user,project):
             path,_=self.ops.store._project(user,project)
             life=self.ops.lifecycle()
-            blockers=life.writer_blockers(args,synchronization=False)+life.history_blockers(args,path)
+            blockers=life.writer_blockers(args,synchronization=False)+life.history_blockers(args,path,require_unused=True)
             if blockers or not self.publication_quiet(args):
                 raise ValueError('Project has an active or unconfirmed writer/history; nothing was stopped')
             # Re-read under both locks before the sole durable write. Payload,

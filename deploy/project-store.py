@@ -32,8 +32,18 @@ JOB_ID = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 _ROOT_GUARD = None
+_PUBLIC_ROOTS = None
 DEFAULT_WORKSPACE_RESERVE = 10 * 1024**3
 PROJECT_LOCK_WAIT_SECONDS = 2.0
+
+
+def public_roots_module():
+    global _PUBLIC_ROOTS
+    if _PUBLIC_ROOTS is None:
+        spec = importlib.util.spec_from_file_location('gpuq_public_roots', Path(__file__).with_name('public-data-roots.py'))
+        _PUBLIC_ROOTS = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_PUBLIC_ROOTS)
+    return _PUBLIC_ROOTS
 
 
 def project_lifetime(function):
@@ -143,6 +153,11 @@ def require_workspace_space(root, reserve_bytes, needed=0, *, target_fd=None):
             fail('insufficient_space',
                  f'Personal workspace free-space reserve reached: availableBytes={available}, '
                  f'reserveBytes={reserve_bytes}, requestedBytes={needed}.')
+
+
+def require_terminal_space(root, config):
+    """Opening a session needs control metadata, not a bulk-copy reservation."""
+    require_workspace_space(root, min(workspace_reserve_bytes(config), 16*1024**2), 65536)
 
 
 def stamp(info):
@@ -278,6 +293,8 @@ class ProjectStore:
             fail('unsafe_path', 'Project ownership metadata does not match')
         if meta.get('environmentMode', 'shared') not in ('shared', 'isolated', 'oci'):
             fail('unsafe_path', 'Invalid project environment mode')
+        if 'localStorage' in meta:
+            public_roots_module().validate_snapshot(meta['localStorage'])
         if 'projectUUID' in meta and (not isinstance(meta['projectUUID'], str) or not JOB_ID.fullmatch(meta['projectUUID'])):
             fail('unsafe_path', 'Invalid persistent project UUID')
         return path, meta
@@ -387,10 +404,12 @@ class ProjectStore:
             pass
 
     @project_lifetime
-    def create(self, user, slug, environment_mode=None):
+    def create(self, user, slug, environment_mode=None, storage_mode=None, workspace_mode=None):
         self.admit(user, slug)
         if environment_mode is not None and environment_mode not in ('shared', 'isolated', 'oci'):
             fail('invalid_input', 'Environment mode must be shared, isolated or oci')
+        if storage_mode not in (None, 'local-roots') or workspace_mode not in (None, 'project', 'task') or workspace_mode is not None and storage_mode is None:
+            fail('invalid_input', 'Local roots require an explicit storage mode and project/task workspace')
         self._check_root()
         if environment_mode == 'oci':
             self._oci(user).verify_host()
@@ -403,19 +422,25 @@ class ProjectStore:
                 _, existing = self._project(user, slug)
                 if environment_mode is not None and existing.get('environmentMode', 'shared') != environment_mode:
                     fail('environment_conflict', 'Existing project environment mode cannot be changed; create a new project')
+                wanted = storage_mode or 'legacy'
+                actual = existing.get('localStorage', {}).get('mode', 'legacy')
+                if actual != wanted or storage_mode and existing['localStorage']['workspaceMode'] != (workspace_mode or 'project'):
+                    fail('storage_conflict', 'Existing project storage mode cannot be changed')
                 return self.status(user, slug)
             count = sum(1 for name in os.listdir(parent) if SLUG.fullmatch(name))
             if count >= self.max_projects:
                 fail('limit_exceeded', 'Maximum projects per user reached')
             stage = private_dir(parent / ('.creating-' + uuid.uuid4().hex), create=True)
             try:
+                storage = public_roots_module().capture(self.config, workspace_mode or 'project') if storage_mode else None
                 for name in ('dev', 'releases', '.staging', 'runs'):
                     private_dir(stage / name, create=True)
                 for name in ('code', 'env', 'home', 'scratch'):
                     private_dir(stage / 'dev' / name, create=True)
                 atomic_json(stage / 'project.json', {'schema': 2, 'owner': owner,
                             'project': slug, 'environmentMode': environment_mode or 'shared',
-                            'createdAt': int(time.time()), 'projectUUID': str(uuid.uuid4())})
+                            'createdAt': int(time.time()), 'projectUUID': str(uuid.uuid4()),
+                            **({'localStorage': storage} if storage is not None else {})})
                 os.rename(stage, project)
                 with directory(parent) as fd:
                     os.fsync(fd)
@@ -463,7 +488,48 @@ class ProjectStore:
                 'releases': releases, 'latestReadyRelease': latest,
                 'warnings': next((item['warnings'] for item in releases if item['release']==latest), []),
                 'environmentMode': project.get('environmentMode', 'shared'),
-                'offlineAssetsPath': '/workspace/offline'}
+                'offlineAssetsPath': '/workspace/offline',
+                **({'localStorage': public_roots_module().public(project['localStorage'])} if 'localStorage' in project else {})}
+
+    def local_storage(self, user, slug):
+        return self._project(user, slug)[1].get('localStorage')
+
+    def local_run_workspace(self, user, slug, version, jobid):
+        """Explicit new-layout workspace; old run/claim format remains intact."""
+        path, project = self._project(user, slug)
+        storage = project.get('localStorage')
+        if storage is None:
+            return None
+        self.run_paths(user, slug, version, jobid)
+        if storage['workspaceMode'] == 'project':
+            return self.dev_paths(user, slug)['code']
+        run = path/'runs'/jobid
+        with self._file_lock(run/'.workspace.lock'):
+            ready = run/'workspace.json'
+            target = run/'workspace'
+            expected = {'release': version, 'jobId': jobid, 'mode': 'task'}
+            if ready.exists():
+                if read_json(ready) != expected:
+                    fail('job_conflict', 'Saved task workspace identity changed')
+                return private_dir(target)
+            if target.exists():
+                fail('workspace_unconfirmed', 'Task workspace initialization is unconfirmed; existing files were preserved')
+            source = self.release(user, slug, version)['code']
+            stage = run/('.workspace-'+uuid.uuid4().hex)
+            try:
+                shutil.copytree(source, stage, symlinks=True)
+                for directory_path, _, files in os.walk(stage):
+                    os.chmod(directory_path, 0o700)
+                    for name in files:
+                        item = Path(directory_path)/name
+                        if not item.is_symlink():
+                            os.chmod(item, 0o700 if item.stat().st_mode & 0o111 else 0o600)
+                os.rename(stage, target)
+                atomic_json(ready, expected)
+            finally:
+                if stage.exists():
+                    self._remove_stage(stage)
+            return private_dir(target)
 
     @project_lifetime
     def dev_paths(self, user, slug):

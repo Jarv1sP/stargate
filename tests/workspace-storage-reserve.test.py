@@ -246,7 +246,25 @@ class Integration(unittest.TestCase):
                 # Read-only original invocation binding precedes diagnostics;
                 # reserve admission still precedes allocation and limit writes.
                 source = (DEPLOY / name).read_text()
-                self.assertLess(source.index('    workspace_admission(cfg,root)'), source.index("    else:runtime_spec="))
+                self.assertLess(source.index('    workspace_admission(cfg,root,terminal=terminal)'), source.index("    else:runtime_spec="))
+
+    def test_existing_terminal_can_open_below_bulk_reserve_but_not_without_metadata_space(self):
+        case = self.fixture('terminal-sessions.test.py', 'TerminalSessions')
+        case.n.CONFIG['workspaceReserveBytes'] = 256*1024**3
+        personal = {**case.context, 'hostAdmin': False}
+        with patch.object(os, 'fstatvfs', return_value=free(250*1024**3)):
+            request, result = case.open(context=personal)
+            self.assertEqual(len(case.starts), 1)
+            case.n.process('terminal.close', case.connection(request, result))
+        with patch.object(os, 'fstatvfs', return_value=free(0)):
+            with self.assertRaisesRegex(ValueError, 'reserve'):case.open(context=personal)
+        self.assertEqual(len(case.starts), 1)
+        for name in ('sandbox-runner.py', 'sandbox-runner-common-p0.py'):
+            runner = load(DEPLOY/name)
+            with patch.object(runner, 'local_module', return_value=store), patch.object(os, 'fstatvfs', return_value=free(250*1024**3)):
+                runner.workspace_admission(case.n.CONFIG, case.n.ROOT, terminal=True)
+                with self.assertRaisesRegex(ValueError, 'reserve'):
+                    runner.workspace_admission(case.n.CONFIG, case.n.ROOT)
 
     def test_real_runner_main_rejects_before_gpu_probe_budget_mutation_or_payload(self):
         for name in ('sandbox-runner.py', 'sandbox-runner-common-p0.py'):

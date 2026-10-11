@@ -64,6 +64,8 @@ class PortableProjects:
 
     @project_reader
     def export(self, user, project, release, operation=None):
+        need(self.store.local_storage(user, project) is None,
+             'Local public-root project export needs an explicitly configured target layout')
         source = self.store.release(user, project, release)
         meta = source['meta']
         need(meta.get('environmentMode') == 'oci', 'Cross-node environments require a published OCI project')

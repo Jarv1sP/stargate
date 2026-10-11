@@ -52,6 +52,7 @@ function fail(message){throw Error(message);}
 const CLI_OPTIONS=new Map([
   ['pin','flag'],...['kind','status','title','body','body-file','announcement-type'].map(key=>[key,'value']),
   ['via','value'],['data-read','value'],
+  ['storage','value'],['workspace-mode','value'],
   ...['sha256','file-id','password-code','source-url'].map(key=>[key,'value']),
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','ack-unknown','sync','data-workspace'].map(key=>[key,'flag']),
   ['sync-dir','value'],['candidates','value'],['owner-id','value'],
@@ -225,6 +226,7 @@ async function main(){
   if(options.sync&&['release','legacy','root','as','job'].some(key=>Object.hasOwn(options,key)))fail('run --sync requires a personal project; cannot combine with --release/--legacy/--root/--as/--job');
   const transferCopy=positionals[0]==='transfer'&&positionals[1]==='copy',projectCopy=positionals[0]==='project'&&positionals[1]==='copy',transferWatch=positionals[0]==='transfer'&&positionals[1]==='watch',transferList=positionals[0]==='transfer'&&positionals[1]==='list';
   const datasetLabel=positionals[0]==='data'&&positionals[1]==='label';
+  if((options.storage!==undefined||options['workspace-mode']!==undefined)&&(positionals[0]!=='project'||positionals[1]!=='create'))fail('--storage and --workspace-mode are only for project create');
   const projectLifecycle=positionals[0]==='project'&&['label','group','archive','unarchive','retire'].includes(positionals[1]);
   if(['ref','target-project','dry-run'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'||['from','to'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'&&!transferCopy&&!projectCopy)fail('--from/--to are for sync, project copy or transfer copy; ref/target-project/dry-run are only for sync');
   if(options.candidates!==undefined&&positionals[0]!=='run')fail('--candidates is only for run --machine auto');
@@ -531,6 +533,7 @@ async function main(){
     }else if(command==='project'&&['list','quota','create','use','status','publish'].includes(positionals[1])){
       if(options.legacy)fail('Project commands do not accept --legacy');
       const action=positionals[1],machine=defaultMachine();
+      if((options.storage!==undefined||options['workspace-mode']!==undefined)&&(action!=='create'||options.storage!=='local-roots'||options['workspace-mode']!==undefined&&!['project','task'].includes(options['workspace-mode'])))fail('Use project create NAME --storage local-roots [--workspace-mode project|task]');
       if(!state.machines.some(m=>m.id===machine))fail('这台机器未授权或不存在');
       if(['list','quota'].includes(action)){
         if(positionals.length!==2||options.project||options['env-mode'])fail('Usage: project list|quota [--machine SERVER]');
@@ -540,8 +543,9 @@ async function main(){
         const project=projectSlug(positionals[2]||options.project||(['status','publish'].includes(action)?selectedProject(machine):null));
         if(positionals[2]&&options.project&&positionals[2]!==options.project)fail('Conflicting project names');
         if(options.key)fail('--key is for training submissions; publication is tracked per project with project status');
-        result=(await call(`projects.${action==='use'?'status':action}`,{machine,project,...(action==='create'?{environmentMode:'oci'}:{})})).result;
+        result=(await call(`projects.${action==='use'?'status':action}`,{machine,project,...(action==='create'?{environmentMode:'oci',...(options.storage?{storageMode:options.storage,workspaceMode:options['workspace-mode']||'project'}:{})}:{})})).result;
         if(action==='create'&&(result?.project!==project||result.environmentMode!=='oci'))fail('Node did not confirm the personal container project. Inspect the original project; no fallback or replacement was accepted.');
+        if(action==='create'&&options.storage&&(result?.localStorage?.mode!=='local-roots'||result.localStorage.workspaceMode!==(options['workspace-mode']||'project')))fail('服务器未确认本机公共目录模式；请查询原项目。');
         if(action==='create'||action==='use'){
           session.projectsByMachine={...session.projectsByMachine,[machine]:project};await saveSession();
           result={...result,machine,selectedProject:project};
@@ -639,6 +643,10 @@ async function main(){
     }else if(command==='data'&&['import','imports','import-status','import-resume','import-cancel','import-discard'].includes(positionals[1])){
       if(training.length)fail('导入不接受额外命令。');
       result=await runCloudImport({action:positionals[1],positionals,options,machine:defaultMachine(),call});
+    }else if(command==='data'&&positionals[1]==='roots'){
+      if(positionals.length!==2||training.length||options.datasets.length||Object.keys(options).some(key=>!['machines','datasets','url','session-file','json'].includes(key)))fail('Usage: data roots [--machine SERVER]');
+      const machine=defaultMachine(),response=await call('projects.list',{machine});
+      result={machine,...(response.result?.localDataRoots||{available:false,reason:'节点尚未启用本机公共数据目录'})};
     }else if(command==='data'&&['put','files','publish','workspace-status'].includes(positionals[1])){
       const action=positionals[1],allowed=['machines','datasets','url','session-file','json',...(action==='put'?['overwrite','via']:action==='publish'?['name','key']:[])];
       if(training.length||options.datasets.length||Object.keys(options).some(k=>!allowed.includes(k)))fail('Personal data commands do not accept project, root or training options');

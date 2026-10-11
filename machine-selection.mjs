@@ -43,6 +43,7 @@ export async function selectMachine(service,user,request,priorityCapable,usage){
   if(!sources.length&&sourceUnconfirmed)fail('项目版本查询暂未确认；未提交训练，请稍后重试。',503);
   if(!sources.length)fail('未找到可迁移的 READY 个人容器项目版本；请先发布项目。');
   const source=sources[0];
+  if(sources.some(s=>(s.probe.localStorage?.mode||'legacy')!==(source.probe.localStorage?.mode||'legacy')||(s.probe.localStorage?.workspaceMode||null)!==(source.probe.localStorage?.workspaceMode||null)))fail('候选项目的数据目录或工作区模式不一致，请明确选择服务器。');
   if(sources.some(s=>s.probe.architecture!==source.probe.architecture||s.probe.image!==source.probe.image))fail('同一项目版本的镜像或架构信息不一致；请管理员核对，未提交训练。');
   const storageExcluded=[];
   const choices=(await Promise.all(eligible.map(async m=>{
@@ -50,6 +51,7 @@ export async function selectMachine(service,user,request,priorityCapable,usage){
     let local=sources.find(s=>s.machine===m.id),from=local?.machine;
     if(!local){
       for(const candidate of sources){
+        if(candidate.probe.localStorage?.mode==='local-roots')continue;
         try{const target=await service.projectCopyProbe(user.id,m.id,{project:request.project.project,from:candidate.machine});
           if(target?.protocol==='portable-project-v1'&&target.enabled===true&&target.environmentMode==='oci'&&target.project===request.project.project&&target.architecture===candidate.probe.architecture&&target.sources?.includes(candidate.machine)){from=candidate.machine;break;}
         }catch{}

@@ -12,6 +12,9 @@ gpuctl use MACHINE_ID
 
 2. 创建个人项目，上传代码，在容器内安装依赖
 gpuctl project create my-project
+gpuctl data roots  查看本机公共目录是否已开通
+gpuctl project create shared-data --storage local-roots --workspace-mode project
+本机公共目录模式自动只读挂载 /data；task 工作区模式为每个任务保留独立可写代码目录。
 gpuctl project use my-project
 gpuctl push .
 gpuctl ssh

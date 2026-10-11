@@ -11,12 +11,14 @@ import {createPortalServer} from '../portal-server.mjs';
 import {MACHINES} from '../dist/machines.js';
 import {accountMenu,closeSubmit,openSubmit} from './starbase-workflows.mjs';
 import {guardedRoute} from './browser-route-guard.mjs';
+import {inspectGeometry} from './layout-geometry.mjs';
 
 const directory=await mkdtemp(join(tmpdir(),'personal-project-browser-')),shots=process.env.UI_SCREENSHOTS||'/tmp/personal-project-ui';
 const password='Personal-Project-Local-Only-2026!',machine=MACHINES[0].id,oldRelease='a'.repeat(64),release='b'.repeat(64);
 const projects=new Map(),sessions=new Map(),calls=[],requests=[],errors=[],outside=[],csp=[],animations=[];
 const identity=(node,user,project)=>JSON.stringify([node,user,project]),copy=value=>structuredClone(value);
 let server,service,browser,createMode=null,createError='',unconfirmedClose=false,environmentModes=['shared','isolated','oci'];
+let localDataRoots;
 const reserve=net.createServer();await new Promise(resolve=>reserve.listen(0,'127.0.0.1',resolve));const port=reserve.address().port;await new Promise(resolve=>reserve.close(resolve));
 const origin='http://127.0.0.1:'+port;
 const ready=(project,environmentMode='oci')=>({project,environmentMode,state:'READY',releases:[{release:oldRelease,state:'READY'}],latestReadyRelease:oldRelease});
@@ -26,10 +28,10 @@ try{
   await writeFile(statusPath,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(node=>({id:node.id,reachable:true,checkedAt:new Date().toISOString(),gpus:Array.from({length:node.cards},(_,index)=>({index,model:node.model,memoryTotalMiB:32768,memoryUsedMiB:0,processesAvailable:true,processes:[]})),gpuq:{connected:true,health:'ok',observeOnly:false,schedulableIndices:[0],jobs:[]}}))}));
   const bridge=async(node,operation,args)=>{
     calls.push({node,operation,args:copy(args)});const key=identity(node,args.userId,args.project),project=projects.get(key);
-    if(operation==='projects.list')return {...(environmentModes?{environmentModes}:{}),projects:[...projects].filter(([entry])=>{const [m,u]=JSON.parse(entry);return m===node&&u===args.userId;}).map(([,value])=>copy(value))};
+    if(operation==='projects.list')return {...(environmentModes?{environmentModes}:{}),...(localDataRoots?{localDataRoots}:{}),projects:[...projects].filter(([entry])=>{const [m,u]=JSON.parse(entry);return m===node&&u===args.userId;}).map(([,value])=>copy(value))};
     if(operation==='projects.create'){
       if(createError)throw Error(createError);
-      const result={project:args.project,state:'DRAFT',releases:[],latestReadyRelease:null,...(createMode==='missing'?{}:{environmentMode:createMode||args.environmentMode})};projects.set(key,result);return copy(result);
+      const result={project:args.project,state:'DRAFT',releases:[],latestReadyRelease:null,...(createMode==='missing'?{}:{environmentMode:createMode||args.environmentMode}),...(args.storageMode?{localStorage:{protocol:1,mode:args.storageMode,workspaceMode:args.workspaceMode,roots:[{path:'/data',readOnly:true}],unavailable:[]}}:{})};projects.set(key,result);return copy(result);
     }
     if(operation==='projects.status'){assert.ok(project);assert.equal(args.key,undefined);return copy(project);}
     if(operation==='projects.publish'){
@@ -160,13 +162,33 @@ try{
   const adminPublishCount=publishes().length;await chooseMachine();await action('projects.status',()=>page.locator('[name=workspace-project]').selectOption('admin-project'));await idle();assert.equal(publishes().length,adminPublishCount);
   assert.equal(await page.locator('#project-environment').textContent(),'共享 · 旧环境（兼容）');
   const zeroPage=await browser.newPage({viewport:{width:320,height:844}});await configure(zeroPage);await login(zeroPage,'no-access');
+  localDataRoots={protocol:1,available:true,mode:'local-roots',roots:[{path:'/data',readOnly:true}],unavailable:[]};
+  await action('projects.list',()=>page.locator('#projects-refresh').click());await idle();
+  await page.locator('#project-create').evaluate(element=>element.open=true);
+  await page.locator('[name=storage-mode]').selectOption('local-roots');
+  await page.locator('[name=workspace-mode]').selectOption('task');
+  createMode=null;await create('roots-ui');
+  assert.equal(await page.locator('[name=training-target]').inputValue(),'current');
+  assert.deepEqual(calls.filter(row=>row.operation==='projects.create').at(-1).args,{project:'roots-ui',storageMode:'local-roots',workspaceMode:'task',environmentMode:'oci',userId:'builtin-admin'});
+  for(const width of [1440,390,320]){
+    await page.setViewportSize({width,height:1000});await page.locator('#project-create').evaluate(element=>element.open=true);
+    await page.screenshot({path:join(shots,'local-roots-'+width+'.png'),fullPage:true,animations:'disabled'});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    const geometry=await inspectGeometry(page,{roots:['#project-create'],controls:'input,select,button'});
+    assert.deepEqual(geometry.failures,[],JSON.stringify({width,geometry}));
+  }
   assert.equal(await zeroPage.locator('[name=workspace-machine] option').count(),1);assert.equal(await zeroPage.locator('#project-create-form [type=submit]').isDisabled(),true);assert.equal(await zeroPage.locator('#project-publish').isDisabled(),true);
   const countBeforeForgery=calls.length;const forbidden=await zeroPage.evaluate(async machine=>{const response=await fetch('/api/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation:'projects.create',args:{machine,project:'forged',environmentMode:'oci'}})});return response.status;},machine);
   assert.equal(forbidden,403);assert.equal(calls.length,countBeforeForgery,'zero authorization never reaches the node');await zeroPage.close();assert.ok(zero.id);
 
   for(const request of requests.filter(row=>row.operation==='projects.status'))assert.deepEqual(Object.keys(request.args).sort(),['machine','project']);
   for(const request of requests.filter(row=>row.operation==='projects.publish'))assert.deepEqual(Object.keys(request.args).sort(),['key','machine','project']);
-  for(const request of requests.filter(row=>row.operation==='projects.create'))assert.deepEqual(Object.keys(request.args).sort(),['environmentMode','machine','project']);
+  for(const request of requests.filter(row=>row.operation==='projects.create')){
+    if(request.args.project==='roots-ui'){
+      assert.deepEqual(Object.keys(request.args).sort(),['environmentMode','machine','project','storageMode','workspaceMode']);
+      assert.equal(request.args.storageMode,'local-roots');assert.equal(request.args.workspaceMode,'task');
+    }else assert.deepEqual(Object.keys(request.args).sort(),['environmentMode','machine','project']);
+  }
   csp.push(...await page.evaluate(()=>publicationCSP));assert.deepEqual(csp,[]);assert.deepEqual(errors,[]);assert.deepEqual(outside,[]);
 
   // Layout-only mocked states run after the real authorization acceptance.

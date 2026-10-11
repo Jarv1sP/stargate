@@ -43,7 +43,8 @@ export function taskStateLabel(job){
 export const validProject=value=>typeof value==='string'&&/^[a-z][a-z0-9_-]{0,47}$/.test(value);
 export function projectDirectoryListing(result){
   if(!Array.isArray(result?.projects))throw Error('项目列表尚未确认，请重新读取。');
-  return {projects:result.projects.filter(item=>validProject(item?.project)),environmentModes:Array.isArray(result.environmentModes)?result.environmentModes.filter(mode=>['shared','isolated','oci'].includes(mode)):[]};
+  return {projects:result.projects.filter(item=>validProject(item?.project)),environmentModes:Array.isArray(result.environmentModes)?result.environmentModes.filter(mode=>['shared','isolated','oci'].includes(mode)):[],
+    ...(result.localDataRoots?.protocol===1&&typeof result.localDataRoots.available==='boolean'?{localDataRoots:result.localDataRoots}:{})};
 }
 export function projectDirectoryEntries(directory,machines){
   return machines.flatMap(({id})=>(directory.get(id)?.projects||[]).map(info=>({machine:id,info})));
@@ -298,6 +299,16 @@ export function executionUI(store,refresh,toast){
     const availability=query('#project-create-availability');availability.hidden=!!creationMachine();
     availability.textContent=!machines.length?'暂无服务器授权':directoryLoading?'正在确认…':directoryError||!known?'个人容器状态未知':'个人容器未开通';
     query('#environment-mode-note').textContent='可在容器内安装系统软件；开发终端没有 GPU；容器内 root 不是服务器 root。';
+    const form=query('#project-create-form');
+    if(!query('#project-storage-choice')){
+      const fields=document.createElement('div');fields.id='project-storage-choice';fields.className='workspace-context-grid';
+      fields.innerHTML='<label>数据访问<select name="storage-mode"><option value="legacy">现有固定数据版本</option><option value="local-roots">本机公共目录（只读）</option></select></label><label data-workspace-mode-field hidden>可写工作区<select name="workspace-mode"><option value="project">项目共享</option><option value="task">每个任务独立</option></select></label>';
+      form.insertBefore(fields,form.querySelector('[type=submit]'));
+      fields.addEventListener('change',()=>{query('[data-workspace-mode-field]').hidden=query('[name=storage-mode]').value!=='local-roots';});
+    }
+    const capability=directory.get(creationMachine())?.localDataRoots;
+    query('#project-storage-choice').hidden=capability===undefined&&query('[name=storage-mode]').value!=='local-roots';
+    query('[name=storage-mode] option[value=local-roots]').disabled=capability?.available!==true;
   }
   function notifyContext(){document.dispatchEvent(new CustomEvent('gpuq-workspace-context',{detail:{userId:actor,...context()}}));}
   const reduced=()=>matchMedia('(prefers-reduced-motion:reduce)').matches;
@@ -730,9 +741,11 @@ export function executionUI(store,refresh,toast){
     if(event.target.id==='project-create-form'){event.preventDefault();const slug=query('[name=new-project]').value;guarded(event.target.querySelector('[type=submit]'),async()=>{
       const selected=creationMachine(),token=currentToken();if(!selected)throw Error('尚无已确认支持个人容器的开发位置，不能创建。');if(!validProject(slug))throw Error('项目名需小写字母开头，使用字母、数字、下划线或短横线，最多 48 位。');
       const environmentMode='oci';
+      const storageMode=query('[name=storage-mode]')?.value,workspaceMode=query('[name=workspace-mode]')?.value||'project';
+      if(storageMode==='local-roots'&&directory.get(selected)?.localDataRoots?.available!==true)throw Error('本机公共目录尚未确认可用，请刷新服务器状态。');
       query('#project-create-error').hidden=true;
-      let result;try{result=await projectCall('projects.create',{machine:selected,project:slug,environmentMode});if(token!==currentToken())return;confirmProjectCreation(result,{project:slug,environmentMode});}catch(error){if(token===currentToken()){query('#project-create-error').hidden=false;query('#project-create-error').textContent=error.message;}throw error;}
-      machine=selected;catalog=[...(directory.get(selected)?.projects||[]).filter(item=>item.project!==slug),result];rememberCatalog(selected);project=slug;epoch++;restorePublication();query('[name=release]').value='';query('[name=training-target]').value=environmentMode==='oci'?'auto':'current';syncMachineFields();clearFileContext();catalogError='';renderProject();notifyContext();query('[name=new-project]').value='';query('#project-create').open=false;submitKey=crypto.randomUUID();toast('项目已创建。');
+      let result;try{result=await projectCall('projects.create',{machine:selected,project:slug,environmentMode,...(storageMode==='local-roots'?{storageMode,workspaceMode}:{})});if(token!==currentToken())return;confirmProjectCreation(result,{project:slug,environmentMode});if(storageMode==='local-roots'&&(result.localStorage?.mode!==storageMode||result.localStorage?.workspaceMode!==workspaceMode))throw Error('服务器未确认所选数据目录及工作区模式，请查询原项目。');}catch(error){if(token===currentToken()){query('#project-create-error').hidden=false;query('#project-create-error').textContent=error.message;}throw error;}
+      machine=selected;catalog=[...(directory.get(selected)?.projects||[]).filter(item=>item.project!==slug),result];rememberCatalog(selected);project=slug;epoch++;restorePublication();query('[name=release]').value='';query('[name=training-target]').value=storageMode==='local-roots'?'current':environmentMode==='oci'?'auto':'current';syncMachineFields();clearFileContext();catalogError='';renderProject();notifyContext();query('[name=new-project]').value='';query('#project-create').open=false;submitKey=crypto.randomUUID();toast('项目已创建。');
     },true);return;}
     if(event.target.id!=='train-form')return;event.preventDefault();const form=new FormData(event.target);
     guarded(event.target.querySelector('[type=submit]'),async()=>{if(acceptedDraft)throw Error('此配置已提交，请先选择再次使用配置。');if(trainingUnavailable(store.data?.gpuq,trainingHosts()))throw Error('训练暂未开放');const target=assertContext();if(parsedTarget&&(target.machine!==parsedTarget.machine||project!==parsedTarget.project))throw Error('配置目标已改变，请先确认当前目标。');if(form.get('machine')!==machine)throw Error('服务器选择已改变，请核对工作台顶部后再提交。');const datasets=datasetReferences(form.get('datasets'));

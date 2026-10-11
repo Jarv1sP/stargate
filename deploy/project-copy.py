@@ -73,6 +73,7 @@ class ProjectCopies(t.TransferJobs):
             # port and TLS certificate pin; no network request or ticket here.
             ProjectPeer(peer,{}).close();sources.append(machine)
         if 'from' in args:p.need(args['from'] in sources,'No trusted LAN project source is configured')
+        status = None
         try:
             status=self.store.status(args['userId'],args['project'])
             p.need(status.get('environmentMode')=='oci','Existing target project is not OCI; use a different project name')
@@ -81,6 +82,8 @@ class ProjectCopies(t.TransferJobs):
         result={'protocol':'portable-project-v1','enabled':True,'project':args['project'],
                 'environmentMode':'oci','architecture':{'x86_64':'amd64','aarch64':'arm64'}.get(platform.machine(),platform.machine()),
                 'sources':sources,'releaseReady':False}
+        if status and status.get('localStorage'):
+            result['localStorage']=status['localStorage']
         if 'release' in args:
             # A read-only compatibility probe has no operation ID. Only the
             # immutable release needs validation; prepare/start bind an ID.
@@ -143,6 +146,8 @@ class ProjectCopies(t.TransferJobs):
 
     def prepare(self,args):
         p.need(set(args)=={'id','userId','project','release','targetMachine'},'Invalid project export fields')
+        p.need(self.store.local_storage(args['userId'],args['project']) is None,
+               'Local public-root projects require an explicitly configured target project; automatic project copying is unavailable')
         self.identity(args)
         target=args['targetMachine']
         p.need(isinstance(target,str) and t.MACHINE.fullmatch(target) and target!=self.machine(),'Select a different exact target node')

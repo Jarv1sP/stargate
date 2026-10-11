@@ -79,6 +79,11 @@ if datasets is not None:
     module=importlib.util.spec_from_file_location('gpuq_install_dataset_cache',dest/'dataset-cache.py');cache_module=importlib.util.module_from_spec(module);sys.modules[module.name]=cache_module;module.loader.exec_module(cache_module)
     cache_module.DatasetCache('/data2/datasets',sources=datasets.get('sources',{}),reserve_bytes=datasets.get('reserveBytes',10*1024**3))
     node_config['datasets']=datasets
+if 'publicDataRoots' in node:
+    node_config['publicDataRoots']=node['publicDataRoots']
+    public_spec=importlib.util.spec_from_file_location('gpuq_install_public_data',dest/'public-data-roots.py')
+    public_module=importlib.util.module_from_spec(public_spec);public_spec.loader.exec_module(public_module)
+    public_module.configured(node_config)
 (dest/'node-config.json').write_text(json.dumps(node_config,indent=2))
 units=home/'.config/systemd/user';units.mkdir(parents=True,exist_ok=True)
 for item in node_runtime.manifest(source/'deploy')['units']:shutil.copy2(source/'deploy'/item,units/item)
