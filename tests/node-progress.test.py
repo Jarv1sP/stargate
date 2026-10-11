@@ -17,6 +17,7 @@ class ProgressBridge(unittest.TestCase):
         __import__('runpy').run_path(str(Path(__file__).with_name('storage_test_helpers.py')))['isolated_platform_pin'](self)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.base=Path(self.temp.name)
         shutil.copy2(DEPLOY/'node-executor.py',self.base/'node-executor.py')
+        shutil.copy2(DEPLOY/'job-observation.py',self.base/'job-observation.py')
         shutil.copy2(DEPLOY/'scheduling-policy.py',self.base/'scheduling-policy.py')
         shutil.copy2(DEPLOY/'platform-root-guard.py',self.base/'platform-root-guard.py')
         self.config={'root':str(self.base/'state'),'cards':8,'gpu':'/synthetic-gpu','database':str(self.base/'gpuq.db')}
@@ -42,6 +43,10 @@ class ProgressBridge(unittest.TestCase):
     def test_unregistered_watch_does_not_create_files_or_register_task(self):
         result=self.node.process('watch',{'job':self.job})
         self.assertEqual(result['state'],'PENDING');self.assertIsNone(result['nodeJobId']);self.assertEqual(self.calls,[])
+        self.assertEqual(result['dispatchObservation']['state'],'NOT_SUBMITTED')
+        self.assertEqual(result['dispatchObservation']['jobId'],self.job['id'])
+        self.assertEqual(result['dispatchObservation']['userId'],self.job['userId'])
+        self.assertTrue(result['dispatchObservation']['requestFinished'])
         self.assertFalse(self.node.ROOT.exists())
 
     def test_read_registered_progress_and_exit_only_show_and_bounded_attempt_fields(self):

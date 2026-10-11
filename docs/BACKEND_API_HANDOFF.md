@@ -127,13 +127,21 @@ ProjectOps 只认可绑定完整原收据摘要及快照 inode 的证明；单�
 
 后端只读筛选机器后，将唯一实际 `machine`、原提交 `digest`、`machineSelection` 和 `projectPreparation:{from,project,release,state,operationId?}` 随任务落库。项目／数据准备阶段为 `PREPARING_DATA`，不占 GPU 额度；后续逐阶段重新检查权限、维护、固定版本和额度。超时、刷新或重启只能观察这个目标和原操作，不能换机器或新建提交键。UI 展示实际 `machine`，用 `projectPreparation.state` 与 `dataPreparation` 显示进度；不把准备中的任务误画成已拿到显卡。
 
+### 提交受理、等待数据与未确认回执
+
+明确机器、固定数据版本的提交，在当前会话与数据读取授权已确认后，数据或容量暂时未确认会持久化原 `key`、作业 UUID，返回 `PREPARING_DATA`。后台以 15／30／60 秒封顶退避重查，不申请 GPU、不换机器或读取模式；撤权及已确认的实际容量不足明确失败。未允许 `prepareData` 的请求只读取既有状态，不擅自复制数据。暂时读取失败时的授权证明使用所选节点现有的本人 `datasets.list`，管理员同样 `hostAdmin:false`；无法确认授权时不会擅自受理。
+
+`SUBMITTING` 且原派发回执未确认的作业，后台只读 `watch` 原 UUID；真实原生任务出现后同步状态并清除错误。公开回执附 `submissionState:"CHECKING"|"NOT_DISPATCHED"`、`canRetryDispatch`，等待时提示「正在确认节点状态（自动重查中）」。旧节点的 `PENDING / NOT_SUBMITTED` 占位不证明已排队或可重派。
+
+节点 `watch` 在无原生任务时可追加 `dispatchObservation:{protocol:"job-dispatch-observation-v1",jobId,userId,submitKey,state:"UNKNOWN"|"NOT_SUBMITTED",requestFinished,observedAt}`。该只读证明检查原任务锁、不可变规格、派发／取消标记和 GPUQ 原提交键。原派发请求结束至少 120 秒且证明匹配时，原用户可显式用相同 `key` 与完全相同参数恢复一次，复用原 UUID、spec 和节点 `submit_key`；尝试先持久化，丢回执不再次重放。节点不支持证明时仅自动查询。不会自动提交、取消或清理原作业。
+
 ### 项目／缓存容量准入与仓库只读训练
 
-配套新版 AUTO 候选须先通过 `training-storage-plan-v1` 的真实节点只读核验：固定项目代码与展开镜像、数据版本清单、卷 byte/inode 可用、管理员预留、已有传输预约、缓存预算和已启用内核配额。相同物理卷只算一份可用容量，不减去界面上的 `projectBytes` 再扣一次；查询未知、旧协议或不足均排除。明确服务器则返回错误，不改选、自动删除或使用系统盘。准备前与首次派发前重新核对；慢 RPC 不占全局写队列，取消、撤权、维护或规格变化使旧结果失效。
+配套新版 AUTO 候选须先通过 `training-storage-plan-v1` 的真实节点只读核验：固定项目代码与展开镜像、数据版本清单、卷 byte/inode 可用、管理员预留、已有传输预约、缓存预算和已启用内核配额。相同物理卷只算一份可用容量，不减去界面上的 `projectBytes` 再扣一次；查询未知、旧协议或不足均排除。明确服务器的实际容量不足返回错误；已有固定数据读取授权但临时读数未知时先受理并等待，不改选、自动删除或使用系统盘。准备前与首次派发前重新核对；慢 RPC 不占全局写队列，取消、撤权、维护或规格变化使旧结果失效。
 
 计划是内部时点准入，不返回客户端或写入 native spec，不预占未来 checkpoint/输出。节点实际写入与启动仍保留独立的实时卷守卫。旧已尝试任务和没有新计划标记的历史任务不追溯改变同步或取消规则。
 
-`jobs.submit` 可选 `datasetReadMode:"warehouse"`；省略或 `"cache"` 保留原摘要和 node spec。warehouse 需要固定个人项目、明确数据版本及正常 owner-only 读取权限；只有所选机器本地 authority 仓库的固定 READY 版本可用。内核只读挂载仍为 `/data2/<logical dataset>`，持久读取租约固定 mode、机器、authority 与源根身份，注销／回收围栏仍有效。节点离线、非仓库节点、未确认或缺权限时拒绝，不回落缓存／其他节点。AUTO + warehouse 只在本地拥有全部仓库版本的合法候选中选机。CLI 对应 `--data-read warehouse`；前端能力未实机确认前不开放切换。
+`jobs.submit` 可选 `datasetReadMode:"warehouse"`；省略或 `"cache"` 保留原摘要和 node spec。warehouse 需要固定个人项目、明确数据版本及正常 owner-only 读取权限；只有所选机器本地 authority 仓库的固定 READY 版本可用。内核只读挂载仍为 `/data2/<logical dataset>`，持久读取租约固定 mode、机器、authority 与源根身份，注销／回收围栏仍有效。缺少读取权限时拒绝；已有固定版本授权但节点离线、仓库状态或容量未确认时先受理并等待，不回落缓存／其他节点。AUTO + warehouse 只在本地拥有全部仓库版本的合法候选中选机。CLI 对应 `--data-read warehouse`；前端能力未实机确认前不开放切换。
 
 只读内部 `datasets.training.status` 与 `storage.training.plan` 仅走正常训练执行桥，不扩展元数据或上传 forced key。客户端不提交 `projectFootprint`、`datasetFootprints`、物理路径、authority、容量计划或 hostAdmin；前端仍仅提交原固定项目和数据声明。
 
@@ -141,13 +149,13 @@ ProjectOps 只认可绑定完整原收据摘要及快照 inode 的证明；单�
 
 前端预检使用认证只读 `datasets.training.capabilities {machine,dataset,version}`，只能传这三个固定字段。返回 `{protocol:1,machine,dataset,version,warehouse:{available,reason}}`；`reason` 为 `null`、`maintenance`、`offline`、`protocol-unavailable`、`unverified`、`forbidden`、`machine-not-warehouse` 或 `not-ready`。这不是容量预留或训练授权，提交时仍重核全部条件；维护或旧／未知节点不开放仓库直读。查询走有界独立数据读取 lane，不等待全局写队列，前后重新验证登录与授权，不泄露物理源。
 
-已确认容量不足的提交返回 HTTP409、`code:"SUBMISSION_REJECTED"`；容量／协议无法确认返回503、同一 code。可附 `storage:{protocol:1,reasonCode:"TRAINING_STORAGE_INSUFFICIENT"|"TRAINING_STORAGE_UNKNOWN",requiredBytes,availableBytes,volumes}`。顶层数字仅在唯一确认的物理字节不足时为非负整数，否则为 null；UNKNOWN 为全 null 和空 volumes。已确认行仅含 `roles:["project"|"cache"]`、`requiredBytes/availableBytes/requiredInodes/availableInodes`；available 已扣预留和在途承诺。文件数、预算或多项限制不足时显示错误原文，不拿磁盘物理 free 伪造统一可用数字。不会返回内部计划、owner、路径或设备身份。
+已确认容量不足的提交返回 HTTP409、`code:"SUBMISSION_REJECTED"`；无固定数据授权可用于等待的容量／协议无法确认仍返回503、同一 code；已有固定数据授权的提交返回原UUID及PREPARING_DATA，后台重查。可附 `storage:{protocol:1,reasonCode:"TRAINING_STORAGE_INSUFFICIENT"|"TRAINING_STORAGE_UNKNOWN",requiredBytes,availableBytes,volumes}`。顶层数字仅在唯一确认的物理字节不足时为非负整数，否则为 null；UNKNOWN 为全 null 和空 volumes。已确认行仅含 `roles:["project"|"cache"]`、`requiredBytes/availableBytes/requiredInodes/availableInodes`；available 已扣预留和在途承诺。文件数、预算或多项限制不足时显示错误原文，不拿磁盘物理 free 伪造统一可用数字。不会返回内部计划、owner、路径或设备身份。
 
 AUTO 成功回执的 `machine` 是已持久保存的最终目标，另附 `selectionSummary:{protocol:1,selectedMachine,reason:"storage-fit-and-resource-rank",storageVerified,gpuPoolAvailable,queuedJobs,localProject,localDatasetCount,observedAt,storageExcluded:[{machine,reason:"storage-insufficient"|"storage-unverified"}]}`。它只解释本次选择时的授权候选、容量与资源快照，不承诺未来卡位或磁盘；没有合适目标则拒绝，不创建任务，排队后不自动改派。
 
 结果继续用本人认证的 `files.list/get {machine:job.machine,project:job.project,area:"output",runId:job.id,path,...}` 或 `gpuctl pull REMOTE_FILE LOCAL_FILE --machine MACHINE --project PROJECT --job JOB_UUID`，不能使用开发机代替实际执行机。页面可按终态提醒保存结果，`jobs.completion` 可另核实成功证明；当前没有可靠结果总大小或“已下载”历史，不虚构这些字段，也不自动清除输出。
 
-个人累计用卡额度只约束普通成员；当前启用的管理员对共享、独占、手选和 AUTO 一致豁免。单任务物理卡数、显存、能力、owner-only 数据授权、优先级和显式让位规则不变，资源不足交给节点排队；不清除既有任务或租约，也不更改成员原始额度。全平台 5000 条历史和每人 10 个准备中任务的上限保留。新任务内部 `dispatchPending:true` 随记录持久化（不下发到节点或返回客户端）；首次 sync 在串行队列内重验当前角色/启用状态、机器和个人额度及管理员专属优先级，先持久化标记为 false 再开始远程调用，等待回包不占用串行队列。降级后未派发任务不沿用管理员豁免；已尝试派发、旧无标记或回执未知任务继续原同步路径，不凭角色变化停止训练或释放资源。该标记不是节点成功证明。
+个人累计用卡额度只约束普通成员；当前启用的管理员对共享、独占、手选和 AUTO 一致豁免。单任务物理卡数、显存、能力、owner-only 数据授权、优先级和显式让位规则不变，资源不足交给节点排队；不清除既有任务或租约，也不更改成员原始额度。全平台 5000 条历史和每人 10 个准备中任务的上限保留。新任务内部 `dispatchPending:true` 随记录持久化（不下发到节点或返回客户端）；首次 sync 在串行队列内重验当前角色/启用状态、机器和个人额度及管理员专属优先级，先持久化标记为 false 再开始远程调用，等待回包不占用串行队列。降级后未派发任务不沿用管理员豁免；已尝试派发、旧无标记或回执未知的SUBMITTING任务改为只读核对原UUID；不凭角色变化停止训练、释放资源或自动重放。该标记不是节点成功证明。
 
 后台任务核对每台机器保留一个首次派发／取消通道和一个既有任务观察通道，最多两个在途操作，同一任务始终只有一个。新任务能加入正在进行的核对，不等待其他机器或旧任务列表全部查完；既有任务仍按原顺序获得独立观察通道。每轮同一阶段只尝试一次，首次回包丢失不会在该轮立即重新 sync。取消先等待该任务自身在途操作结束，不并发取消与 sync；UNKNOWN 仍保留额度和原编号。此调度不绕过全局持久写队列、当前授权、维护门禁或节点排队，也不保证节点／网络故障时的启动时间。
 

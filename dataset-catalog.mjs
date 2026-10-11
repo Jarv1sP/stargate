@@ -283,6 +283,27 @@ function combinedOwnerLabel(locations,owners){
 
 // Discovery is metadata-only. The elevated principal is confined to list;
 // capabilities, source selection and all mutations keep the member's own ACL.
+// Admission needs only an owner-bound version grant, not a complete capacity
+// scan or a READY cache. This existing personal list RPC never elevates admins.
+export async function assertDatasetReadAccess(service,principal,machine,refs){
+  const user=service.store.get(principal.userId),policy=authorizationPolicy(user);
+  if(!user.enabled||user.username!==principal.username||(user.role||'member')!==principal.role||!user.limits?.[machine])
+    fail('当前账号没有这台服务器的读取授权。',403);
+  let result;
+  try{result=await service.bridge(machine,'datasets.list',{userId:user.id,hostAdmin:false});}
+  catch(error){
+    if(authorizationPolicy(service.store.get(user.id))!==policy||error?.status===403||error?.message==='dataset owner authorization required')fail('当前账号没有数据集读取授权。',403);
+    fail('数据集读取授权暂未确认。',503);
+  }
+  if(authorizationPolicy(service.store.get(user.id))!==policy)fail('账号授权已改变。',403);
+  if(!Array.isArray(result?.datasets))fail('数据集读取授权暂未确认。',503);
+  const datasets=warehouseProjection(result).datasets;
+  for(const ref of refs){
+    const item=datasets.find(row=>row.dataset===ref.dataset&&row.versions?.some(value=>value.version===ref.version));
+    if(!item||item.ownerIds!=null&&!ownerIds(item)?.includes(user.id))fail('当前账号没有数据集读取授权。',403);
+  }
+}
+
 export async function datasetCatalogCall(service,principal,operation,args,{refreshRemovalExclusions=true}={}){
   if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>k!=='machine'))fail('数据集目录参数无效。');
   let user;
