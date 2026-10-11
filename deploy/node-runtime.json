@@ -1,7 +1,7 @@
 {
   "version": 1,
   "dependencies": [
-    "platform-root-guard.py", "storage-quota.py", "configure-storage-quota.py", "manage-storage-quota.py", "personal-oci.py", "oci-cohort.py", "dataset-cache.py", "dataset-files.py", "storage-observation.py", "dataset-cache-actions.py", "dataset-upload.py", "dataset-archive-intake.py", "dataset-ingress-node.py", "data-workspace.py", "data-import.py", "cloud-files.py", "project-store.py",
+    "platform-root-guard.py", "storage-quota.py", "configure-storage-quota.py", "manage-storage-quota.py", "personal-oci.py", "oci-cohort.py", "dataset-cache.py", "dataset-subset.py", "dataset-files.py", "storage-observation.py", "dataset-cache-actions.py", "dataset-upload.py", "dataset-archive-intake.py", "dataset-ingress-node.py", "data-workspace.py", "data-import.py", "cloud-files.py", "project-store.py",
     "job-diagnostics.py", "job-observation.py", "job-resources.py", "training-control.py", "scheduling-policy.py",
     "admin-command.py", "gpuq-network", "snapshot-sync.py", "gpu-devices.py",
     "transfer-jobs.py", "transfer-peer.py", "direct-upload.py", "portable-project.py", "project-copy.py", "project-local-import.py", "project-lifecycle.py",

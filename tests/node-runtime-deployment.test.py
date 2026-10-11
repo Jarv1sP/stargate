@@ -33,6 +33,23 @@ def load(path,name):
 
 
 class DependencyValidation(unittest.TestCase):
+    def test_subset_view_helper_is_in_both_complete_runtime_cohorts(self):
+        for profile in ('common-p0', 'ray-p0'):
+            with self.subTest(profile=profile):
+                _, payloads = node_runtime.preflight(DEPLOY, profile)
+                self.assertIn('dataset-subset.py', payloads)
+                self.assertIn('dataset-cache.py', payloads)
+                # Real import of just the shipped files detects omitted dynamic
+                # dependencies without installing or invoking the node executor.
+                with tempfile.TemporaryDirectory() as folder:
+                    for name in ('dataset-subset.py', 'dataset-cache.py'):
+                        (Path(folder) / name).write_bytes(payloads[name])
+                    result = subprocess.run([sys.executable, '-B', '-c',
+                        "import runpy; m=runpy.run_path('dataset-subset.py'); print(m['PROTOCOL'])"],
+                        cwd=folder, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), 'dataset-subset-v1')
+
     def test_pure_python_suffix_in_a_dynamic_filename_is_not_a_dependency(self):
         node_runtime.validate_dependencies({'worker.py':b"name = 'helper'\nfilename = name + '.py'\n"})
 
