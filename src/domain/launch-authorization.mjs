@@ -13,8 +13,12 @@ export function requireLaunchPreparation({submission, machineId, project, inputs
     || project.project !== instance.project || project.projectUUID !== instance.projectUUID || project.generation !== instance.generation) {
     throw new ApplicationError('NODE_LAUNCH_PROJECT_CHANGED');
   }
-  if (inputs.length !== submission.dataSources.length || inputs.some((input, index) =>
-    !sameSource(input.source, submission.dataSources[index]) || (input.source.kind !== 'directory' && !input.leaseId))) {
+  requirePreparedSources(submission.dataSources, inputs);
+}
+
+export function requirePreparedSources(sources, inputs) {
+  if (inputs.length !== sources.length || inputs.some((input, index) =>
+    !sameSource(input.source, sources[index]) || (input.source.kind !== 'directory' && !input.leaseId))) {
     throw new ApplicationError('NODE_LAUNCH_INPUTS_CHANGED');
   }
 }

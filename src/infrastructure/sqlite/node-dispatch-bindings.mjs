@@ -101,7 +101,7 @@ export class SqliteNodeDispatchBindings {
       if (!row) return null;
       const submission = JSON.parse(row.submission_json);
       verifyRuntimePlan({binding, built: {submission}, planJson: row.plan_json, planDigest: row.plan_digest});
-      return {binding, submission, plan: JSON.parse(row.plan_json)};
+      return {binding, submission, plan: JSON.parse(row.plan_json), planDigest: row.plan_digest};
     });
   }
   get({machineId, dispatchId}) {

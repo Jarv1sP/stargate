@@ -37,6 +37,8 @@ import {HttpDispatchReceipts} from '../src/infrastructure/http-dispatch-receipts
 import {ReconcileTrainingDispatch} from '../src/application/reconcile-training-dispatch.mjs';
 import {NODE_SUBMISSION_ROUTE} from '../src/contracts/node-submission.mjs';
 import {LAUNCH_AUTHORIZATION_ROUTE, launchAuthorizationRequest} from '../src/contracts/launch-authorization.mjs';
+import {assembleNodePreparation, assembleTaskPreparation} from '../src/bootstrap/node-preparation.mjs';
+import {NODE_PREPARATION_ROUTES} from '../src/contracts/node-preparation.mjs';
 
 const python = process.env.V2_PYTHON || 'python3', run = promisify(execFile);
 async function nativeServer(t) {
@@ -49,7 +51,7 @@ async function nativeServer(t) {
   return JSON.parse(line);
 }
 
-async function fixture(t) {
+async function fixture(t, {prepare = true} = {}) {
   const f = await computeFixture(t), project = await projectFixture(t), data = await publishedFixture(t), server = await nativeServer(t);
   f.ready(); createTrainingQueueSchema(f.database); createTrainingDispatchSchema(f.database);
   createTrainingCatalogSchema(f.database); createProjectRegistrationSchema(f.database);
@@ -63,10 +65,8 @@ async function fixture(t) {
   const jobId = new SqliteTrainingQueue({database: f.database}).enqueue(f.actor, submission, f.now).request.jobId;
   const dispatches = new SqliteTrainingDispatches({database: f.database});
   const selected = dispatches.prepareForTask(jobId, {machineId: 'node-1', gpuCount: 2}, f.now);
-  const prepared = await new ProjectRunPreparer({machineId: 'node-1', root: project.root, basePath: project.basePath, python})
-    .prepare({...project.request, projectUUID: registered.projectUUID, generation: registered.generation, jobId}, context);
   const leaser = new ManagedDataLeaser({machineId: 'node-1', roots: data.roots, python});
-  const request = {...data.request('warehouse'), jobId}, lease = await leaser.acquire(request, context);
+  const request = {...data.request('warehouse'), jobId};
   const database = join(project.directory, 'node.sqlite'), node = new DatabaseSync(database); t.after(() => node.close());
   createNodeDispatchBindingsSchema(node);
   const bindings = new SqliteNodeDispatchBindings({database: node, machineId: 'node-1'});
@@ -75,14 +75,21 @@ async function fixture(t) {
   await writeFile(config, JSON.stringify({schema: 1, machineId: 'node-1', database, gpuqSocket: server.socketPath,
     controlRoot: server.controlRoot, gpuqArchive: fileURLToPath(new URL('../build/gpuq.pyz', import.meta.url)),
     root: project.root, basePath: project.basePath, managedRoots: data.roots}));
-  const compiler = new TrainingLaunchCompiler({runner: [executable, '-I', '-B', fileURLToPath(new URL('../scripts/v2-training-runner.py', import.meta.url)), '--config', config],
+  const runner = [executable, '-I', '-B', fileURLToPath(new URL('../scripts/v2-training-runner.py', import.meta.url)), '--config', config];
+  const compiler = new TrainingLaunchCompiler({runner,
     cwd: project.directory, resources: new ValidateTrainingResources({policy: new GpuqPolicy({python})}), launchSpec: new GpuqLaunchSpec({python})});
-  const receipt = await new PrepareNodeTraining({compiler, bindings}).execute({identity: dispatches.delivery(selected.dispatchId),
-    submission, project: {id: 'project-1', run: prepared}, leases: [lease]}, {gpuUuids: ['GPU-0', 'GPU-1', 'GPU-2', 'GPU-3']});
+  let receipt, lease;
+  if (prepare) {
+    const prepared = await new ProjectRunPreparer({machineId: 'node-1', root: project.root, basePath: project.basePath, python})
+      .prepare({...project.request, projectUUID: registered.projectUUID, generation: registered.generation, jobId}, context);
+    lease = await leaser.acquire(request, context);
+    receipt = await new PrepareNodeTraining({compiler, bindings}).execute({identity: dispatches.delivery(selected.dispatchId),
+      submission, project: {id: 'project-1', run: prepared}, leases: [lease]}, {gpuUuids: ['GPU-0', 'GPU-1', 'GPU-2', 'GPU-3']});
+  }
   const native = new GpuqManagedClient({socketPath: server.socketPath, python});
   const lookup = new LookupNodeDispatch({bindings, native: new GpuqReceiptReader({socketPath: server.socketPath, python})});
   const app = new SubmitNodeDispatch({bindings, receipts: lookup, admission: new SqliteLaunchAuthorization({database: f.database}), native});
-  return {...f, project, data, node, server, jobId, selected, receipt, dispatches, native, app, bindings,
+  return {...f, project, data, node, server, runner, jobId, selected, receipt, dispatches, native, app, bindings,
     context, leaser, request, lease, reference: {machineId: 'node-1', dispatchId: selected.dispatchId}};
 }
 
@@ -112,8 +119,8 @@ async function listen(t, handler) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = false} = {}) {
-  const observed = {authorizations: [], authorizationReplies: 0, sends: 0};
+async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = false, dropPreparationReply = false} = {}) {
+  const observed = {authorizations: [], authorizationReplies: 0, sends: 0, preparations: 0};
   let releaseAuthorization;
   const authorizationReady = holdAuthorizationReply ? new Promise(resolve => {releaseAuthorization = resolve;}) : Promise.resolve();
   t.after(() => releaseAuthorization?.());
@@ -121,6 +128,8 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
     {machineId: 'node-1', credential: nodeKey}, {machineId: 'node-2', credential: otherNodeKey}], reportError() {}}));
   const shared = {database: f.node, machineId: 'node-1', credential: coordinatorKey, socketPath: f.server.socketPath, python, reportError() {}};
   const receipts = assembleDispatchReceipt(shared);
+  const preparation = assembleNodePreparation({...shared, runner: f.runner, cwd: f.project.directory,
+    root: f.project.root, basePath: f.project.basePath, roots: f.data.roots});
   const submit = assembleNodeSubmission({...shared, coordinator: {origin, credential: nodeKey,
     fetch: async (url, options) => {
       observed.authorizations.push(JSON.parse(options.body));
@@ -128,6 +137,13 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
       await authorizationReady; return response;
     }}});
   const nodeOrigin = await listen(t, async (req, res) => {
+    if (Object.values(NODE_PREPARATION_ROUTES).includes(req.url)) {
+      if (req.url === NODE_PREPARATION_ROUTES.prepare) {
+        observed.preparations++;
+        if (dropPreparationReply) res.end = () => {req.socket.destroy();};
+      }
+      return preparation(req, res);
+    }
     if (req.url !== NODE_SUBMISSION_ROUTE) return receipts(req, res);
     observed.sends++;
     if (dropReply) res.end = () => {req.socket.destroy();};
@@ -135,6 +151,7 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
   });
   const nodes = [{machineId: 'node-1', origin: nodeOrigin, credential: coordinatorKey}];
   return {origin, nodeOrigin, observed, releaseAuthorization, sender: assembleTrainingSender({database: f.database, nodes}),
+    prepare: assembleTaskPreparation({database: f.database, nodes}),
     recovery: new ReconcileTrainingDispatch({dispatches: f.dispatches, nodes: new HttpDispatchReceipts({nodes})})};
 }
 
@@ -154,6 +171,37 @@ test('coordinator send journal crosses both HTTP directions and reaches one real
   assert.equal((await h.sender.execute(f.jobId)).kind, 'existing');
   assert.equal(h.observed.sends, 1);
   assert.equal((await f.native.allocation({submitKey: f.selected.dispatchId})).grant.max_gpu_count, 2);
+});
+
+test('unprepared task traverses HTTP project/lease/plan preparation before the original native send', async t => {
+  const f = await fixture(t, {prepare: false}), h = await endpoints(t, f);
+  assert.equal(f.bindings.training(f.reference), null);
+  assert.equal(await f.leaser.lookup(f.request, f.context), null);
+  const before = await stat(join(f.data.directory, 'approved', 'sample.txt'));
+  const [first, concurrent] = await Promise.all([h.prepare.execute(f.jobId), h.prepare.execute(f.jobId)]);
+  assert.deepEqual(first, concurrent);
+  assert.equal(first.binding.dispatchId, f.selected.dispatchId);
+  const lease = await f.leaser.lookup(f.request, f.context);
+  assert.equal(first.inputs[0].leaseId, lease.leaseId);
+  assert.deepEqual(await h.prepare.execute(f.jobId), first);
+  const after = await stat(join(f.data.directory, 'approved', 'sample.txt'));
+  assert.deepEqual([after.ino, after.size, after.mtimeMs], [before.ino, before.size, before.mtimeMs]);
+  assert.equal(f.node.prepare('SELECT count(*) n FROM v2_node_runtime_plans').get().n, 1);
+  assert.equal((await h.sender.execute(f.jobId)).kind, 'accepted');
+  assert.equal(h.observed.sends, 1);
+});
+
+test('lost preparation reply recovers the saved plan without another preparation or new lease', async t => {
+  const f = await fixture(t, {prepare: false}), h = await endpoints(t, f, {dropPreparationReply: true});
+  await assert.rejects(h.prepare.execute(f.jobId), error => error.code === 'NODE_PREPARATION_UNCONFIRMED');
+  const original = f.bindings.training(f.reference), lease = await f.leaser.lookup(f.request, f.context);
+  assert.ok(original); assert.ok(lease);
+  const recovered = await h.prepare.execute(f.jobId);
+  assert.equal(recovered.planDigest, original.planDigest);
+  assert.equal(recovered.inputs[0].leaseId, lease.leaseId);
+  assert.equal(h.observed.preparations, 1);
+  assert.equal(f.dispatches.delivery(f.selected.dispatchId).state, 'PREPARED');
+  assert.equal(await f.native.allocation({submitKey: f.selected.dispatchId}), null);
 });
 
 test('lost HTTP send reply keeps UNKNOWN and recovers the original receipt without another send', async t => {

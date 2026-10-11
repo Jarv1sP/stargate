@@ -76,6 +76,7 @@
 - `SubmitNodeDispatch`：只接受固定节点／派发引用，先恢复原接收回执；未接受任务必须读取同时保存的计划／规格／绑定，裸规格或错误计划不能发送。将已准备的项目／原数据租约引用送到协调器授权，匹配许可后提交固定原生规格和初始额度，再核对原回执。没有新 argv/env 或隐式重试；HTTP 入口已组装，生产后台 worker 与部署仍待完成。
 - `bootstrap/training-send.mjs`：协调器提供只读 authorize-launch，节点提供 submit；节点回查使用自己的独立凭据，机器身份不由请求体决定，不能复用一个回查凭据代表多台机器。只传递准备记录的授权引用，不传 argv／env／宿主路径。该授权接口支持既有 100 来源／64 KiB 范围，其他 JSON 路由保留原默认 8 KiB。
 - `SendTrainingDispatch`／`HttpNodeSubmissions`：协调器先持久化唯一发送许可，再发送原节点／派发引用。丢回包、连接失败或错误回执不重试写操作，保留 UNKNOWN 和原额度，之后用现有回执查询恢复；原操作已经获准时，客户端断开不能把它变成另一次提交。它是单任务发送用例，不自动启动后台循环或安装服务。
+- `PrepareTaskLaunch`／`PrepareNodeWorkload`：协调器读取原派发的当前授权上下文，先查节点原计划，缺失时才显式准备原项目运行目录、已有数据版本的读取租约和固定运行计划。原目录无需租约，不复制数据、不改选节点、不发送训练；中途失败保留原声明／租约，回包丢失后按原编号查询。节点同一服务实例合并并发准备，跨进程依赖原有持久身份；不是跨副本全局锁。准备返回前重核任务取消、授权和项目实例，普通显示信息变化不作失效条件。`bootstrap/node-preparation.mjs` 组装内部 HTTP 通路，后台 worker 和公开提交仍待接入。
 - 扩卡明确使用 `fromReservedGpuCount`（原预留额度）、`sourceGpuCount`（原生尝试实际卡数）和 `targetGpuCount`；额度差额按前者计算，原生计划的 from_gpu_count 按实际卡数核对。两种源值不能互相默认，旧实验记录需显式迁移并核实物理源值。
 - `authorizeInitialAllocation` 仍只代表 SENDING 任务的当前 HELD 额度，不提供完整启动权限；`SqliteLaunchAuthorization` 在同一只读事务中复用它、任务／项目目录和数据权限，匹配原 release、实例代次及已准备输入后返回 launch-ready。没有另一份权限规则，不扫描数据、容量或复制内容；原目录无需租约，托管版本要求原租约引用，运行器实际打开时仍核对原对象。UNKNOWN 不凭未观察到记录重发或返还额度。
 - `ProjectRunPreparer`：显式写入口，先只读确认已有项目，再按固定 UUID／generation／release 核对运行环境并复用原生运行目录声明。与 ExistingProjectReader 分离，不把查询变成创建操作；原 run-claim／output 退役保护继续生效。结果只证明项目运行准备，不是数据租约或容器启动证明。

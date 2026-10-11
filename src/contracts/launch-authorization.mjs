@@ -11,11 +11,7 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
 
 export function parseLaunchAuthorization(value) {
   if (!exact(value, ['binding', 'project', 'inputs'])) throw new InvalidRequest('launch');
-  const binding = parseDispatchIdentity(value.binding), project = value.project;
-  if (!exact(project, ['id', 'project', 'release', 'projectUUID', 'generation'])
-    || typeof project.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(project.id)
-    || typeof project.project !== 'string' || !/^[a-z][a-z0-9_-]{0,47}$/.test(project.project)
-    || !hash(project.release) || !hash(project.generation) || !uuid(project.projectUUID)) throw new InvalidRequest('project');
+  const binding = parseDispatchIdentity(value.binding), project = parseLaunchProject(value.project);
   if (!Array.isArray(value.inputs) || value.inputs.length > 100) throw new InvalidRequest('inputs');
   const inputs = value.inputs.map(input => {
     const source = parseDataSource(input?.source);
@@ -23,7 +19,15 @@ export function parseLaunchAuthorization(value) {
       || (source.kind !== 'directory' && !uuid(input.leaseId))) throw new InvalidRequest('inputs');
     return source.kind === 'directory' ? {source} : {source, leaseId: input.leaseId};
   });
-  return {binding, project: {...project}, inputs};
+  return {binding, project, inputs};
+}
+
+export function parseLaunchProject(project) {
+  if (!exact(project, ['id', 'project', 'release', 'projectUUID', 'generation'])
+    || typeof project.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(project.id)
+    || typeof project.project !== 'string' || !/^[a-z][a-z0-9_-]{0,47}$/.test(project.project)
+    || !hash(project.release) || !hash(project.generation) || !uuid(project.projectUUID)) throw new InvalidRequest('project');
+  return {...project};
 }
 
 /** Only permission evidence crosses back to the coordinator, not execution material. */

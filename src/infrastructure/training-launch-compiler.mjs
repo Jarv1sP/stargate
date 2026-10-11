@@ -25,17 +25,29 @@ export class TrainingLaunchCompiler {
 
   /** Inputs come from the persisted task, registered node project and original lease receipts. */
   async compile({identity, submission, project, leases}, pool) {
-    const request = normalizeTrainingRequest(parseTrainingSubmission(submission));
+    return this.compilePrepared(this.intent(identity, parseTrainingSubmission(submission)), {project, leases}, pool);
+  }
+
+  /** The shared wire parser owns shape validation; check intent before preparation writes. */
+  intent(identity, submission) {
+    const request = normalizeTrainingRequest(structuredClone(submission));
     const payload = canonicalTrainingPayload(request);
-    const prepared = parseProjectRunResult(project.run);
-    if (identity.requestHash !== hash(payload) || project.id !== request.project.id
-      || prepared.release !== request.project.release || prepared.accountId !== identity.accountId
-      || prepared.jobId !== identity.jobId || prepared.machineId !== identity.machineId
+    if (identity.requestHash !== hash(payload)
       || (request.machines.kind === 'selected' && !request.machines.ids.includes(identity.machineId))) {
       throw new ApplicationError('NODE_RUNTIME_PLAN_IDENTITY_MISMATCH');
     }
     const paths = request.dataSources.map(containerPathFor);
     if (new Set(paths).size !== paths.length) throw new ApplicationError('TRAINING_DATA_PATH_CONFLICT');
+    return {identity: Object.fromEntries(identityFields.map(key => [key, identity[key]])), request, payload};
+  }
+
+  async compilePrepared({identity, request, payload}, {project, leases}, pool) {
+    const prepared = parseProjectRunResult(project.run);
+    if (project.id !== request.project.id
+      || prepared.release !== request.project.release || prepared.accountId !== identity.accountId
+      || prepared.jobId !== identity.jobId || prepared.machineId !== identity.machineId) {
+      throw new ApplicationError('NODE_RUNTIME_PLAN_IDENTITY_MISMATCH');
+    }
     if (!Array.isArray(leases) || leases.length !== request.dataSources.filter(source => source.kind !== 'directory').length) {
       throw new ApplicationError('NODE_RUNTIME_PLAN_LEASE_MISMATCH');
     }

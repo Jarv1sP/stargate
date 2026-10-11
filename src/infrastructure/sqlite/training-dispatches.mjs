@@ -135,6 +135,17 @@ export class SqliteTrainingDispatches {
     });
   }
 
+  /** Coordinator preparation only; caller owns the read transaction. */
+  preparationWithinTransaction(jobId) {
+    const context = new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
+    const selected = this.#find(jobId);
+    if (!selected || selected.state !== 'PREPARED') throw new ApplicationError('TRAINING_DISPATCH_NOT_PREPARED');
+    const row = this.#delivery(selected.dispatch_id);
+    this.claims.requireHeldTaskClaimWithinTransaction(jobId, {machineId: row.machine_id, gpuCount: row.gpu_count});
+    return {context, binding: {dispatchId: row.dispatch_id, jobId, accountId: row.account_id,
+      machineId: row.machine_id, gpuCount: row.gpu_count, requestHash: row.payload_hash}};
+  }
+
   /** Quota authorization only; project/data leases and runtime admission are still separate. */
   authorizeInitialAllocation(binding) {
     return readTransaction(this.database, () => this.authorizeInitialAllocationWithinTransaction(binding));
