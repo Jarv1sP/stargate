@@ -11,6 +11,7 @@ import {createPortalServer} from '../portal-server.mjs';
 import {MACHINES} from '../dist/machines.js';
 import {accountMenu,closeSubmit,openSubmit} from './starbase-workflows.mjs';
 import {guardedRoute} from './browser-route-guard.mjs';
+import {inspectOperationalGeometry} from './operational-geometry.mjs';
 
 const directory=await mkdtemp(join(tmpdir(),'personal-project-browser-')),shots=process.env.UI_SCREENSHOTS||'/tmp/personal-project-ui';
 const password='Personal-Project-Local-Only-2026!',machine=MACHINES[0].id,oldRelease='a'.repeat(64),release='b'.repeat(64);
@@ -176,7 +177,7 @@ try{
     const logged=await layout.context().request.post(origin+'/api/login',{headers:{Origin:origin},data:{username:'admin',password,client:'browser'}});assert.equal(logged.status(),200);
     const user={id:'layout-'+role,username:'layout-'+role,name:'排版验收',role,enabled:true,approvedAt:new Date().toISOString(),policyVersion:0,total:8,limits:Object.fromEntries(layoutMachines.map(node=>[node.id,node.cards]))},principal={userId:user.id,username:user.username,role};
     const state={machines:layoutMachines,users:[user],jobs:[],executionEnabled:true,operationalMaintenance:{version:1,revision:0,global:null,machines:{}},gpuq:{stale:false,checkedAt:new Date().toISOString(),hosts:[]}};
-    const layoutProject=ready('container-layout');let layoutRequest=null;const layoutCalls=[];
+    const layoutProject={...ready('container-layout'),sharedData:{protocol:'shared-data-directories-v1',available:true,directories:[{name:'imagenet',path:'/datasets/imagenet',readOnly:true,state:'READABLE'}]}};let layoutRequest=null;const layoutCalls=[];
     await layout.route('**/*',guardedRoute(async route=>{
       const request=route.request(),url=new URL(request.url());if(url.origin!==origin){await route.fallback();return;}
       if(url.pathname==='/machines.js'){await route.fulfill({contentType:'text/javascript',body:'export const MACHINES='+JSON.stringify(layoutMachines)+';'});return;}
@@ -201,6 +202,14 @@ try{
       await layout.screenshot({path:join(shots,`personal-${role}-${width}-${node.id}-create.png`)});
       assert.ok(await layout.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),role+' '+width+' '+node.id+' does not overflow');
       assert.equal(await layout.locator('[name=workspace-machine]').getAttribute('title'),node.id);
+      assert.equal(await layout.locator('#shared-data-note').isVisible(),true);
+      assert.match(await layout.locator('#shared-data-note').textContent(),/默认只读.*\/datasets\/imagenet/);
+      await layout.locator('#shared-data-note').evaluate(node=>node.scrollIntoView({block:'center',behavior:'instant'}));
+      await layout.evaluate(()=>new Promise(resolve=>requestAnimationFrame(resolve)));
+      const sharedGeometry=await inspectOperationalGeometry(layout,{roots:['.personal-terminal'],controls:'button',focusedTargets:['#shared-data-note'],viewportContainment:[{child:'#shared-data-note',parent:'.personal-terminal'}]});
+      assert.deepEqual(sharedGeometry.failures,[],JSON.stringify({role,width,sharedGeometry}));
+      await layout.screenshot({path:join(shots,`shared-data-${role}-${width}-${node.id}.png`)});
+      assert.ok(await layout.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Shared directory path does not overflow');
       await layout.locator('#project-create').evaluate(element=>element.open=false);
     }
     await action('projects.publish',()=>layout.locator('#project-publish').click(),layout);await idle(layout);assert.ok(layoutRequest.key);assert.equal(await layout.locator('#project-status').textContent(),'发布结果未确认');

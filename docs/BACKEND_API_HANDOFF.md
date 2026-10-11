@@ -1,5 +1,7 @@
 # 后端接口交接
 
+`projects.status` 可选返回 `sharedData:{protocol:"shared-data-directories-v1",available:true,directories:[{name,path,readOnly:true,state:"READABLE"|"UNAVAILABLE"}]}`。只提供容器中的 `/datasets/名称`，不返回宿主路径。该字段说明新开发会话和训练的默认共享只读挂载，不是要求用户上传或准备的数据集；不增加提交参数或复制入口。节点须确认所选 runner 支持此能力，旧节点没有字段时不猜测已经挂载。
+
 ## 显卡故障与部分采集
 
 `gpuq.health:"degraded"` 可附固定诊断 `healthIssue:{kind:"managed-gpu-missing",indices:[1]}` 或 `{kind:"scheduler-degraded"}`。只有明确的调度器受管 GPU 缺失错误映射为前者；卡号有界且去重，不转发原始错误、UUID、路径或命令。已授权成员与管理员均可看到固定诊断，未授权、过期和失联状态不沿用旧故障结论。配套节点 `deploy/node-probe.py` 位于采集 SSH 强制命令，不属于数据存储 helper 更新；未部署时仅显示通用调度异常。

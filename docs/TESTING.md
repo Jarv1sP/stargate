@@ -1,5 +1,7 @@
 # 测试与发布检查
 
+`shared-data.test.py` 验证已有共享目录默认用于开发和训练、100 个读者共用源 inode、不复制／改权限／检查数据写入预留、缺失目录和旧运行器不虚报可用、OCI 挂载保持只读、现有受管缓存读取保护不绕过。可用时还运行实际 bubblewrap 命名空间，读取原样本并验证写入得到 EROFS；缺少运行器或内核不允许用户命名空间时明确 skip。它不是真实 Podman/GPU 或生产数据验收。个人容器页面既有 smoke 增加成员／管理员三宽读取路径显示。
+
 可选的真实训练适配器测试：在已安装 PyTorch 和 NumPy 的本地环境运行
 `python3 tests/elastic-ddp-smoke.py`。只用 CPU/Gloo 和临时目录，不提交 GPUQ
 任务、不连接服务器。覆盖 1→3 与 2→3 rank 扩容：global batch=12、micro batch=2，

@@ -207,7 +207,9 @@ try{
       assert.match(await direct.innerText(),/--via direct/);
       const workspace=guide.locator('.guide-explanation').filter({hasText:'已有文件或外接硬盘中的大数据'});
       await workspace.locator('summary').click();
-      assert.match(await workspace.innerText(),/联系管理员从原位置核对、整理并入仓库/);
+      assert.match(await workspace.innerText(),/能够直接读取就共用原目录，不必再入库/);
+      assert.match(await workspace.innerText(),/需要固定快照或跨机副本时，联系管理员从原位置整理并入仓库/);
+      assert.match(await guide.locator('.guide-prose').textContent(),/多个任务共用原目录，不用上传、发布或准备另一份副本/);
       assert.match(await workspace.innerText(),/不要把训练缓存当作长期数据仓库/);
       assert.match(await workspace.innerText(),/压缩包不会自动解压/);
       const dataText=await guide.locator('.guide-prose').textContent();

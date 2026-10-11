@@ -544,7 +544,9 @@ class NodeDatasets(unittest.TestCase):
             for fd, _ in mounts:
                 os.close(fd)
         code = (DEPLOY / 'sandbox-runner.py').read_text()
-        self.assertIn("dataset_fds=[] if terminal else open_dataset_mounts(spec)", code)
+        self.assertIn("dataset_fds=open_input_mounts(cfg,spec,terminal)", code)
+        self.assertIn("mounts=[] if terminal else open_dataset_mounts(spec)", code)
+        self.assertIn("local_module('gpuq_shared_data','shared-data.py').open_mounts(cfg)", code)
         self.assertIn("['--ro-bind-fd',str(descriptor),target]", code)
         self.assertNotIn("'--bind','/data2'", code)
 

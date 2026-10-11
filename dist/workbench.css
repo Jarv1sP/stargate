@@ -302,3 +302,4 @@
 .sb .job-result-file:hover{background:var(--bg-2)}
 .sb .job-result-file:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
 .sb [data-job-result-slot]:not([hidden]){display:inline-flex}
+#shared-data-note{overflow-wrap:anywhere}

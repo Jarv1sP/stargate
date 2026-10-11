@@ -6,7 +6,7 @@
     "admin-command.py", "gpuq-network", "snapshot-sync.py", "gpu-devices.py",
     "transfer-jobs.py", "transfer-peer.py", "direct-upload.py", "portable-project.py", "project-copy.py", "project-local-import.py", "project-lifecycle.py",
     "dataset-tier.py", "dataset-retirement.py", "dataset-retirement-node.py", "dataset-rebuild-proof.py", "storage-node.py", "storage-authority.py", "storage-warehouse.py", "storage-archive.py", "storage-retirement.py", "storage-leases.py", "dataset-training-source.py", "training-storage.py",
-    "task-display.py", "training-preparation.py"
+    "task-display.py", "training-preparation.py", "shared-data.py"
   ],
   "profiles": {
     "common-p0": {"runner": "sandbox-runner-common-p0.py", "extra": []},

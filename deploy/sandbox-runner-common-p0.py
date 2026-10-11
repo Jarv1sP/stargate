@@ -6,6 +6,7 @@ from pathlib import Path
 HERE=Path(__file__).resolve().parent
 TRAINING_CONTROL_PROTOCOL=1
 GPU_ALLOCATION_PROTOCOL=2
+SHARED_DATA_DIRECTORIES_PROTOCOL=1
 
 def sandbox_information(descriptor,timeout=12,maximum=4096):
     """--info-fd is a stream: bubblewrap writes JSON fields separately."""
@@ -63,6 +64,16 @@ def open_dataset_mounts(spec):
     module=importlib.util.spec_from_file_location('gpuq_node_datasets',HERE/'node-executor.py')
     executor=importlib.util.module_from_spec(module);module.loader.exec_module(executor)
     return executor.dataset_open_mounts(spec)
+
+def open_input_mounts(cfg,spec,terminal):
+    mounts=[] if terminal else open_dataset_mounts(spec)
+    try:
+        if 'sharedDataDirectories' in cfg:
+            mounts+=local_module('gpuq_shared_data','shared-data.py').open_mounts(cfg)
+        return mounts
+    except BaseException:
+        for fd,_ in mounts:os.close(fd)
+        raise
 
 def open_data_workspace(spec,jid,terminal):
     if not spec.get('dataWorkspace'):return None,None
@@ -156,7 +167,7 @@ def main():
     # Mount by open FD to pin the directory and avoid a path replacement race.
     workfd=os.open(workspace,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     project_fds={name:os.open(project[name],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW) for name in ('env','home','output')} if project else {}
-    dataset_fds=[] if terminal else open_dataset_mounts(spec)
+    dataset_fds=open_input_mounts(cfg,spec,terminal)
     datafd,datalock=open_data_workspace(spec,jid,terminal)
     if project and project['environmentMode']=='oci':
         try:
@@ -178,7 +189,7 @@ def main():
            '--ro-bind',str(HERE/'gpuq-network'),'/opt/gpuq/bin/gpuq-network']
     if runtimefd is not None:args+=['--dir','/run/gpuq','--bind-fd',str(runtimefd),'/run/gpuq/runtime']
     if dataset_fds:
-        args+=['--dir','/data2']
+        args+=['--dir','/data2','--dir','/datasets']
         for descriptor,target in dataset_fds:args+=['--ro-bind-fd',str(descriptor),target]
     if datafd is not None:
         args+=['--bind-fd',str(datafd),'/data2','--chdir','/data2','--setenv','GPUQ_DATA_WORKSPACE','/data2']

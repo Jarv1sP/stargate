@@ -366,6 +366,10 @@ class ProjectOperations:
         if local is not None and local['state'] not in ('IMPORTED','FAILED','CANCELED'):
             result.update(state=local['state'],error='Local draft import is pending; use its original operation ID')
         result['developmentTerminals'] = self.development_terminals(args)
+        if 'sharedDataDirectories' in self.n.CONFIG:
+            definition=importlib.util.spec_from_file_location('gpuq_shared_data',self.n.HERE/'shared-data.py')
+            helper=importlib.util.module_from_spec(definition);definition.loader.exec_module(helper)
+            result['sharedData']=helper.describe(self.n.CONFIG)
         return result
 
     def lifecycle(self):
