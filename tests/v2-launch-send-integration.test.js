@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {spawn, execFile} from 'node:child_process';
 import {once} from 'node:events';
@@ -39,6 +40,9 @@ import {NODE_SUBMISSION_ROUTE} from '../src/contracts/node-submission.mjs';
 import {LAUNCH_AUTHORIZATION_ROUTE, launchAuthorizationRequest} from '../src/contracts/launch-authorization.mjs';
 import {assembleNodePreparation, assembleTaskPreparation} from '../src/bootstrap/node-preparation.mjs';
 import {NODE_PREPARATION_ROUTES} from '../src/contracts/node-preparation.mjs';
+import {assembleTrainingDispatchWorker, startTrainingDispatchWorker} from '../src/bootstrap/training-dispatch-worker.mjs';
+import {assembleTrainingQueue} from '../src/bootstrap/training-queue.mjs';
+import {GpuqPoolReader} from '../src/infrastructure/gpuq-pool-reader.mjs';
 
 const python = process.env.V2_PYTHON || 'python3', run = promisify(execFile);
 async function nativeServer(t) {
@@ -51,7 +55,7 @@ async function nativeServer(t) {
   return JSON.parse(line);
 }
 
-async function fixture(t, {prepare = true} = {}) {
+async function fixture(t, {prepare = true, select = true} = {}) {
   const f = await computeFixture(t), project = await projectFixture(t), data = await publishedFixture(t), server = await nativeServer(t);
   f.ready(); createTrainingQueueSchema(f.database); createTrainingDispatchSchema(f.database);
   createTrainingCatalogSchema(f.database); createProjectRegistrationSchema(f.database);
@@ -64,7 +68,7 @@ async function fixture(t, {prepare = true} = {}) {
     .run('warehouse-images', 'dataset', null, 'images', data.version, 'private', 'alice');
   const jobId = new SqliteTrainingQueue({database: f.database}).enqueue(f.actor, submission, f.now).request.jobId;
   const dispatches = new SqliteTrainingDispatches({database: f.database});
-  const selected = dispatches.prepareForTask(jobId, {machineId: 'node-1', gpuCount: 2}, f.now);
+  const selected = select ? dispatches.prepareForTask(jobId, {machineId: 'node-1', gpuCount: 2}, f.now) : null;
   const leaser = new ManagedDataLeaser({machineId: 'node-1', roots: data.roots, python});
   const request = {...data.request('warehouse'), jobId};
   const database = join(project.directory, 'node.sqlite'), node = new DatabaseSync(database); t.after(() => node.close());
@@ -89,8 +93,8 @@ async function fixture(t, {prepare = true} = {}) {
   const native = new GpuqManagedClient({socketPath: server.socketPath, python});
   const lookup = new LookupNodeDispatch({bindings, native: new GpuqReceiptReader({socketPath: server.socketPath, python})});
   const app = new SubmitNodeDispatch({bindings, receipts: lookup, admission: new SqliteLaunchAuthorization({database: f.database}), native});
-  return {...f, project, data, node, server, runner, jobId, selected, receipt, dispatches, native, app, bindings,
-    context, leaser, request, lease, reference: {machineId: 'node-1', dispatchId: selected.dispatchId}};
+  return {...f, project, data, node, server, runner, submission, jobId, selected, receipt, dispatches, native, app, bindings,
+    context, leaser, request, lease, reference: selected ? {machineId: 'node-1', dispatchId: selected.dispatchId} : null};
 }
 
 test('real prepared inputs and coordinator authorization reach native acceptance once, without another preparation or capacity scan', async t => {
@@ -152,8 +156,98 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
   const nodes = [{machineId: 'node-1', origin: nodeOrigin, credential: coordinatorKey}];
   return {origin, nodeOrigin, observed, releaseAuthorization, sender: assembleTrainingSender({database: f.database, nodes}),
     prepare: assembleTaskPreparation({database: f.database, nodes}),
+    worker: () => assembleTrainingDispatchWorker({database: f.database, nodes}),
     recovery: new ReconcileTrainingDispatch({dispatches: f.dispatches, nodes: new HttpDispatchReceipts({nodes})})};
 }
+
+test('queued task selects through native pool RPC and the periodic worker prepares and sends it after logout', {timeout: 15000}, async t => {
+  const f = await fixture(t, {prepare: false, select: false}), h = await endpoints(t, f);
+  const pools = new GpuqPoolReader({machineId: 'node-1', socketPath: f.server.socketPath, python});
+  const pool = await pools.inspect({machineId: 'node-1'});
+  assert.equal(pool.dispatchEnabled, true); assert.equal(pool.freeGpuUuids.length, 4);
+  const queue = assembleTrainingQueue({database: f.database, projects: f.project.reader, sources: f.data.managed, python,
+    pools});
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_dispatches').get().n, 0);
+  f.database.exec('UPDATE v2_sessions SET revoked=1');
+  const chosen = await queue.execute();
+  assert.equal(chosen.outcomes[0].kind, 'prepared');
+  const dispatch = chosen.outcomes[0].dispatch;
+  const done = Promise.withResolvers(), worker = h.worker();
+  const service = startTrainingDispatchWorker({worker, intervalMs: 10,
+    onOutcome(result) {if (result.kind === 'error') done.reject(result.error); else if (result.kind === 'accepted') done.resolve(result);},
+    reportError: done.reject});
+  try {
+    const outcome = await done.promise;
+    assert.equal(outcome.dispatch.dispatchId, dispatch.dispatchId);
+    assert.equal(outcome.dispatch.jobId, f.jobId);
+    assert.equal(f.dispatches.delivery(dispatch.dispatchId).state, 'ACCEPTED');
+    assert.equal((await f.native.allocation({submitKey: dispatch.dispatchId})).grant.max_gpu_count, dispatch.gpuCount);
+    assert.equal(h.observed.preparations, 1); assert.equal(h.observed.sends, 1);
+    assert.deepEqual((await queue.execute()).outcomes, []);
+  } finally {await service.stop();}
+});
+
+test('fresh worker recovers lost preparation response from the original saved plan before one send', async t => {
+  const f = await fixture(t, {prepare: false}), h = await endpoints(t, f, {dropPreparationReply: true});
+  let worker = h.worker();
+  try {
+    const initial = await worker.poll(), outcomes = [...initial.outcomes, ...await worker.idle()];
+    assert.equal(outcomes[0].error.code, 'NODE_PREPARATION_UNCONFIRMED');
+  } finally {await worker.close();}
+  const original = f.bindings.training(f.reference), lease = await f.leaser.lookup(f.request, f.context);
+  assert.ok(original); assert.ok(lease);
+  worker = h.worker();
+  try {
+    const next = await worker.poll(), outcomes = [...next.outcomes, ...await worker.idle()];
+    assert.equal(outcomes[0].kind, 'accepted');
+    assert.equal(f.bindings.training(f.reference).planDigest, original.planDigest);
+    assert.equal((await f.leaser.lookup(f.request, f.context)).leaseId, lease.leaseId);
+    assert.equal(h.observed.preparations, 1); assert.equal(h.observed.sends, 1);
+  } finally {await worker.close();}
+});
+
+test('fresh worker queries an uncertain native send even after revocation, without sending or releasing again', async t => {
+  const f = await fixture(t, {prepare: false}), h = await endpoints(t, f, {dropReply: true});
+  let worker = h.worker();
+  try {
+    const initial = await worker.poll(), outcomes = [...initial.outcomes, ...await worker.idle()];
+    assert.equal(outcomes[0].error.code, 'DISPATCH_SEND_UNCONFIRMED');
+    assert.equal(f.dispatches.delivery(f.selected.dispatchId).state, 'UNKNOWN');
+  } finally {await worker.close();}
+  f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
+  worker = h.worker();
+  try {
+    const next = await worker.poll(), outcomes = [...next.outcomes, ...await worker.idle()];
+    assert.equal(outcomes[0].kind, 'accepted');
+    assert.equal(f.dispatches.delivery(f.selected.dispatchId).state, 'ACCEPTED');
+    assert.equal(h.observed.preparations, 1); assert.equal(h.observed.sends, 1);
+    assert.equal(f.database.prepare('SELECT reserved_gpu_count FROM v2_compute_claims').get().reserved_gpu_count, 2);
+    assert.equal(f.database.prepare('SELECT state FROM v2_compute_claims').get().state, 'HELD');
+  } finally {await worker.close();}
+});
+
+test('two real preparations share one dataset without sharing task leases or duplicating native jobs', async t => {
+  const f = await fixture(t, {prepare: false}), h = await endpoints(t, f);
+  const secondInput = {...structuredClone(f.submission), requestId: randomUUID(), name: '第二个训练'};
+  const secondJob = new SqliteTrainingQueue({database: f.database}).enqueue(f.actor, secondInput, f.now).request.jobId;
+  const second = f.dispatches.prepareForTask(secondJob, {machineId: 'node-1', gpuCount: 2}, f.now);
+  const sample = join(f.data.directory, 'approved', 'sample.txt'), before = await stat(sample), worker = h.worker();
+  try {
+    const first = await worker.poll(), outcomes = [...first.outcomes, ...await worker.idle()];
+    assert.equal(outcomes.length, 2); assert.ok(outcomes.every(row => row.kind === 'accepted'));
+    const nativeIds = [f.selected, second].map(value => f.dispatches.delivery(value.dispatchId).nodeJobId);
+    assert.equal(new Set(nativeIds).size, 2); assert.ok(nativeIds.every(value => /^J[a-f0-9]{12}$/.test(value)));
+    const leases = [await f.leaser.lookup(f.request, f.context), await f.leaser.lookup({...f.request, jobId: secondJob}, f.context)];
+    assert.notEqual(leases[0].leaseId, leases[1].leaseId);
+    assert.deepEqual(leases.map(value => value.jobId), [f.jobId, secondJob]);
+    assert.equal(f.node.prepare('SELECT count(*) n FROM v2_node_runtime_plans').get().n, 2);
+    assert.equal(f.database.prepare('SELECT sum(reserved_gpu_count) n FROM v2_compute_claims').get().n, 4);
+    await worker.poll(); await worker.idle();
+    assert.equal(h.observed.preparations, 2); assert.equal(h.observed.sends, 2);
+    const after = await stat(sample);
+    assert.deepEqual([after.ino, after.size, after.mtimeMs], [before.ino, before.size, before.mtimeMs]);
+  } finally {await worker.close();}
+});
 
 test('coordinator send journal crosses both HTTP directions and reaches one real native acceptance', async t => {
   const f = await fixture(t), h = await endpoints(t, f);

@@ -14,6 +14,9 @@ from gpuq.rpc import _ThreadingUnixServer
 fixture = module.SchedulerPriorityTests()
 fixture.setUp()
 try:
+    # Represent an already recovered idle inventory. GPUs are fixture records;
+    # no monitor, scheduler tick, systemd operation or training runs here.
+    fixture.coordinator._set_health('ok')
     path = fixture.root / 'submit.sock'
     server = _ThreadingUnixServer(path, fixture.coordinator.handle_api, os.getuid(), 262144)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
