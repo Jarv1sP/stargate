@@ -25,12 +25,21 @@ class LegacyDataLeaser:
     def lookup(self, *, user_id, job_id, dataset, version, kind):
         return self._call('lookup', user_id=user_id, job_id=job_id, dataset=dataset, version=version, kind=kind)
 
-    def _call(self, operation, *, user_id, job_id, dataset, version, kind):
+    def _principal(self, user_id, dataset, version, kind):
         if kind != self._kind:
             raise ValueError('Managed lease differs from configured kind')
         delegated = self._lease_version == {'dataset': dataset, 'version': version}
+        return self._module.Principal(user_id, delegated)
+
+    def open_mount(self, *, user_id, job_id, dataset, version, kind, lease_id):
+        """In-process runner scope only; descriptors cannot be sent over JSON RPC."""
+        actor = self._principal(user_id, dataset, version, kind)
+        return self._cache.open_lease(actor, dataset, version, job_id, lease_id, require_protected=kind == 'warehouse')
+
+    def _call(self, operation, *, user_id, job_id, dataset, version, kind):
+        actor = self._principal(user_id, dataset, version, kind)
         method = self._cache.acquire_lease if operation == 'acquire' else self._cache.lookup_lease
-        lease = method(self._module.Principal(user_id, delegated), dataset, version, job_id, require_protected=kind == 'warehouse')
+        lease = method(actor, dataset, version, job_id, require_protected=kind == 'warehouse')
         if lease is None:
             return None
         return {'leaseId': lease['leaseId'], 'jobId': job_id, 'accountId': user_id, 'dataset': dataset,

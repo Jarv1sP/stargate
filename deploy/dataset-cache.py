@@ -2374,7 +2374,7 @@ class DatasetCache:
             if require_protected and self._tier(dataset, version)['role'] != 'protected':
                 raise CacheError('warehouse lease requires a protected original')
             lease = next((l for l in self._leases(dataset, version) if l["jobId"] == job_id and l["owner"] == actor.user_id), None)
-            yield paths, lease
+            yield paths, lease, ready_identity
 
     @staticmethod
     def _lease_result(lease, dataset, version, paths):
@@ -2382,12 +2382,31 @@ class DatasetCache:
 
     def lookup_lease(self, actor, dataset, version, job_id, *, require_protected=False):
         """Existing protected read only; absence is not permission to release or recreate."""
-        with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease):
+        with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease, _):
             return None if lease is None else self._lease_result(lease, dataset, version, paths)
+
+    @contextlib.contextmanager
+    def open_lease(self, actor, dataset, version, job_id, lease_id, *, require_protected=False):
+        """Pin the exact leased input for a runner; closing it never releases the lease.
+
+        No global lock is held while the caller uses the descriptor. The trusted
+        scheduler must retain the durable lease until all consumers have stopped;
+        the container runtime, not this descriptor, enforces a read-only mount.
+        """
+        if not isinstance(lease_id, str) or str(uuid.UUID(lease_id)) != lease_id:
+            raise CacheError('invalid lease ID')
+        with contextlib.ExitStack() as handles:
+            with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease, identity):
+                if lease is None or lease['id'] != lease_id:
+                    raise CacheError('dataset lease does not match the task')
+                descriptor = handles.enter_context(_directory(paths['ready'] / 'data'))
+                if _stamp(os.fstat(descriptor)) != identity[2]:
+                    raise CacheError('opened dataset differs from the leased version')
+            yield descriptor
 
     def acquire_lease(self, actor, dataset, version, job_id, *, require_protected=False):
         """Executor must validate job ownership before invoking this method."""
-        with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease):
+        with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease, _):
             if lease is None:
                 # Existing READY reads do not consume copy/publication capacity.
                 # The small atomic lease write still has to succeed; real
