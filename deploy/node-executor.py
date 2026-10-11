@@ -615,8 +615,12 @@ def _dataset_op(operation,args,*,_request_id=None,_expected_registration=None,_e
         version=args.get('version')
         if not isinstance(version,str) or not DATASET_VERSION.fullmatch(version):raise ValueError('Invalid immutable dataset version')
         warehouse=storage_warehouse()
-        local_original=warehouse is not None and warehouse.contains(actor,dataset,version)
-        status=warehouse.status(actor,dataset,version) if local_original else cache.status(actor,dataset,version)
+        local_original=warehouse is not None
+        try:status=warehouse.status(actor,dataset,version) if local_original else cache.status(actor,dataset,version)
+        except FileNotFoundError:
+            if not local_original:raise
+            local_original=False
+            status=cache.status(actor,dataset,version)
         if status['state']=='READY':return status
         if not local_original and dataset_recovery_configured(cache,actor,dataset,version):status['recoveryConfigured']=True
         task={'op':'prepare','dataset':dataset,'version':version,'userId':actor.user_id,'hostAdmin':actor.is_admin}
