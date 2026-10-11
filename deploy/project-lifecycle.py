@@ -12,6 +12,8 @@ from pathlib import Path
 import stat
 import sys
 import time
+import sqlite3
+from contextlib import closing
 
 PROTOCOL = 'project-lifecycle-v1'
 
@@ -83,6 +85,15 @@ class ProjectLifecycle:
                     blockers.append({'kind': 'copy', 'id': path.stem, 'reason': 'Copy worker or source reader is active/unconfirmed'})
         return blockers
 
+    def job_finished(self, key):
+        # Specs and run-claims are immutable history, not current job state.
+        try:
+            with closing(sqlite3.connect(f'file:{self.n.CONFIG["database"]}?mode=ro', uri=True, timeout=2)) as db:
+                row = db.execute('SELECT id FROM jobs WHERE submit_key=?', (key,)).fetchone()
+            return bool(row and self.n.scheduler_terminal_confirmed(self.n.gpu('show', row[0])))
+        except (OSError, ValueError, sqlite3.Error):
+            return False
+
     def history_blockers(self, args, path):
         blockers = []
         owner = self.store._identity(args['userId'], args['project'])
@@ -95,9 +106,8 @@ class ProjectLifecycle:
                 if not self.s.JOB_ID.fullmatch(item.stem): continue
                 value = self.s.read_json(item)
                 if value.get('project') == args['project'] and (value.get('owner') == owner if kind == 'run-claim' else value.get('userId') == args['userId']):
-                    blockers.append({'kind': kind, 'id': item.stem, 'reason': 'Historical execution identity must remain accessible; archive this project instead'})
-        runs = self.s.private_dir(path / 'runs')
-        if any(runs.iterdir()): blockers.append({'kind': 'run-output', 'reason': 'Run directories or outputs exist; archive this project instead'})
+                    if not self.job_finished(item.stem):
+                        blockers.append({'kind': kind, 'id': item.stem, 'reason': 'Job is active or its termination is unconfirmed'})
         return blockers
 
     def manifest(self, root):
@@ -191,7 +201,7 @@ class ProjectLifecycle:
             if value['revision'] != args['revision']: raise ValueError('Project lifecycle revision changed; make a new plan')
             with self.store.locked(user, project):
                 plan = self.plan_locked({'userId': user, 'project': project})
-                if plan['state'] != 'ELIGIBLE': raise ValueError('Project has execution history or active/unconfirmed consumers; preserve it and inspect the plan')
+                if plan['state'] != 'ELIGIBLE': raise ValueError('Project has active/unconfirmed consumers; wait for them to finish')
                 if plan['manifestSha256'] != args['manifestSha256']: raise ValueError('Project content changed since the retirement plan; no files moved')
                 if target.exists() or target.is_symlink(): raise ValueError('Retirement destination already exists; no replacement allowed')
                 spec = importlib.util.spec_from_file_location('gpuq_lifecycle_rename', self.n.HERE / 'project-local-import.py')
