@@ -221,6 +221,14 @@ AUTO 成功回执的 `machine` 是已持久保存的最终目标，另附 `selec
 
 `status.result` 使用 `protocol:"terminal-session-status-v1"`，包含原 `id`、`state:ALIVE|STOPPED|UNKNOWN`、`evidence`、`attachmentState`、`writerLeaseExpired`、`canCloseStopped`；不包含写入凭据、真实 cgroup 路径或宿主机文件路径。单位完整身份（含 InvocationID）、PID、cgroup、socket、spec/租约元数据前后不一致，或检查超时，均保持 `UNKNOWN`。无凭据 `close` 在原 ID 锁内重新核验两轮停止证据及元数据 identity，仅更新该 session receipt，返回同一协议、原 `id`、`closed:true,state:"STOPPED",metadataOnly:true`。其归属 tombstone 与项目围栏保留；正常新建不能复用 ID。活跃/未知/租约未过期/旧协议均拒绝，活跃终端的原单写关闭要求不变。执行桥新增的唯一固定操作为 `terminal.status`，不得使用终端通配授权。
 
+## 私人数据目录清理
+
+`datasets.workspace.list` 的 `cleanupProtocol:1` 表示此节点提供独立清理；缺失时保留旧浏览功能。新增 `datasets.workspace.remove-plan {machine,path,recursive?}`、`remove {machine,path,recursive?,key}`、`remove-status {machine,key}`。只接受当前账号私人目录相对路径，目录需要 `recursive:true`；不接受根目录、宿主路径、owner、project 或 hostAdmin。管理员身份不扩大到他人的目录。
+
+预览返回 `protocol:1,state:"PREVIEW",path,recursive,type,logicalBytes,freedBytes:null,requiresStoppedDataTerminals:true,volume`，volume 是实际目标设备容量，不用缓存卷替代。受理和查询返回原 `key/path/recursive`，状态为 `QUEUED/RUNNING/UNKNOWN/FAILED/SUCCEEDED`；阶段为 `WAITING/SCANNING/CLAIMING/DELETING/COMPLETE`。仅明确确认原 worker 停止时 `retryable:true`。logicalBytes 是已扫描文件逻辑字节，不等于真实释放量，freedBytes 始终 null。
+
+清理不检查大文件写入保留线，不启动交互终端；仍需少量元数据空间。节点在现有私人工作区锁下绑定目标 inode，后台移入原操作私有目录后删除；恢复只处理原对象，完成回执丢失也不接管后来同名的新目录。网页先预览并确认、提交前按账号和机器保存 UUID；超时先查询，不自动重放。维护中保留预览/查询、阻止删除派发。配套部署 Portal、执行桥固定白名单、节点 runtime 中的 workspace-cleanup.py 和 CLI/UI；不更改已有上传 UUID，不提供公共数据淘汰。
+
 ## 项目文件上传的确认与恢复
 
 `files.get` 和 `files.list` 为有界远端读取：使用既有全局 4 / 单节点 2 的读取准入，35 秒截止，调用前后重新核验会话及权限；截止后保留在途容量直到桥调用实际结束，不加入串行写队列。客户端只对读取执行有界重试，不重放写入。

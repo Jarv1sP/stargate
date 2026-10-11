@@ -140,6 +140,7 @@
 #page-datasets #data-workspace-files-list code{flex:1;min-width:0;font-size:12px}
 #page-datasets #data-workspace-files-list small{font-size:12px}
 #page-datasets #data-workspace-files-list .button{min-height:44px;flex:none}
+#page-datasets #data-workspace-files-list [data-workspace-remove]{min-height:48px;min-width:48px}
 #page-datasets #data-workspace-files-list code{overflow-wrap:anywhere}
 #page-datasets #data-workspace-registrations>summary{cursor:pointer;min-height:44px;padding:12px 0}
 #page-datasets #data-workspace-registrations-list{list-style:none;padding:0;margin:12px 0}

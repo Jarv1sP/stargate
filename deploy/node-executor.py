@@ -2153,6 +2153,7 @@ if __name__=='__main__':
     if len(sys.argv)==3 and sys.argv[1]=='--dataset-cache-worker':sys.exit(dataset_cache_actions().release_worker(sys.argv[2]))
     if len(sys.argv)==5 and sys.argv[1]=='--dataset-upload-worker':sys.exit(dataset_uploads().worker(*sys.argv[2:]))
     if len(sys.argv)==4 and sys.argv[1]=='--data-workspace-worker':sys.exit(data_workspaces().worker(*sys.argv[2:]))
+    if len(sys.argv)==4 and sys.argv[1]=='--workspace-cleanup-worker':sys.exit(data_workspaces().cleanups().worker(*sys.argv[2:]))
     if len(sys.argv)==5 and sys.argv[1]=='--data-import-worker':sys.exit(data_imports().worker(*sys.argv[2:]))
     if len(sys.argv)==5 and sys.argv[1]=='--cloud-files-worker':sys.exit(cloud_files().worker(*sys.argv[2:]))
     if len(sys.argv)==4 and sys.argv[1]=='--data-workspace-recover':

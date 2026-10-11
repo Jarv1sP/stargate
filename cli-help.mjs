@@ -77,6 +77,9 @@ gpuctl exec cancel HANDLE
 宿主 root 可以绕过平台限制，不属于普通容器权限。
 
 数据缓存与删除
+gpuctl data rm RELATIVE_PATH --recursive  预览本人数据目录清理，不删除
+gpuctl data rm RELATIVE_PATH --recursive --yes --key UUID  明确提交后台清理
+gpuctl data rm-status UUID  查询原清理；无需打开终端
 gpuctl data storage status [NAME@VERSION]
 gpuctl data storage plan
 gpuctl data unregister NAME[@VERSION] --machine SERVER

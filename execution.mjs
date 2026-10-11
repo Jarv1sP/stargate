@@ -378,14 +378,14 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation.startsWith('datasets.workspace.')){
     authorizedMachine(args.machine);
     const action=operation.slice('datasets.workspace.'.length);
-    const fields={list:['path'],get:['path','offset'],put:['path','offset','data','truncate'],status:['operationId'],publish:['path','name','key']}[action];
+    const fields={list:['path'],get:['path','offset'],put:['path','offset','data','truncate'],status:['operationId'],publish:['path','name','key'],'remove-plan':['path','recursive'],remove:['path','recursive','key'],'remove-status':['key']}[action];
     if(!fields||Object.keys(args).some(k=>!['machine',...fields].includes(k)))fail('个人数据目录参数无效。');
     const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-    if(action!=='status'){
+    if(!['status','remove-status'].includes(action)){
       const path=args.path??(action==='list'?'.':undefined);
       if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||
           (path!=='.'&&path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))||
-          (path==='.'&&['put','get','publish'].includes(action)))fail('请使用个人 /data2 内的相对路径，不要填写宿主机路径。');
+          (path==='.'&&['put','get','publish','remove-plan','remove'].includes(action)))fail('请使用个人 /data2 内的相对路径，不要填写宿主机路径。');
     }
     if(args.offset!==undefined&&(!Number.isSafeInteger(args.offset)||args.offset<0||args.offset>100*1024**3))fail('文件偏移量无效。');
     if(action==='put'){
@@ -395,8 +395,11 @@ export async function executionCall(service,principal,operation,args,readContext
     }
     if(action==='publish'&&(!uuid.test(args.key||'')||typeof args.name!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(args.name)))fail('发布需提供连接键和有效的数据集名称。');
     if(action==='status'&&args.operationId!==undefined&&!uuid.test(args.operationId))fail('发布操作编号无效。');
+    if(['remove','remove-status'].includes(action)&&!uuid.test(args.key||''))fail('清理需使用原完整 UUID。');
+    if(args.recursive!==undefined&&typeof args.recursive!=='boolean')fail('recursive 必须为布尔值。');
     const {machine,...request}=args;
     if(action==='publish')service.audit(principal.username,operation,machine,args.name);
+    if(action==='remove')service.audit(principal.username,operation,machine,args.key);
     return service.bridge(machine,operation,{...request,userId:user.id,hostAdmin:false});
   }
   if(operation.startsWith('datasets.upload.')){

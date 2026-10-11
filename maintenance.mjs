@@ -23,6 +23,7 @@ const READ_OR_STOP=new Set([
   'projects.sync.status','projects.sync.cancel',
   'datasets.delete.status','datasets.delete.cancel','storage.dataset-delete.cancel','storage.dataset-delete.status','storage.dataset-delete.capabilities','storage.dataset-delete.locations',
   'datasets.workspace.list','datasets.workspace.get','datasets.workspace.status','datasets.upload.status','datasets.upload.list','datasets.upload.admission.status',
+  'datasets.workspace.remove-plan','datasets.workspace.remove-status',
   'datasets.upload.routes','datasets.upload.pause','datasets.upload.direct-revoke','datasets.import.list','datasets.import.status','datasets.import.cancel',
   'datasets.storage.status','datasets.storage.plan','terminal.close','terminal.detach','terminal.status',
   'transfers.list','transfers.status','transfers.capabilities','transfers.cancel','transfers.progress',

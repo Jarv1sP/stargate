@@ -7,6 +7,7 @@ directory by FD, never the cache or metadata directories containing it.
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,11 @@ NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,39}\Z')
 class DataWorkspaces:
     def __init__(self, executor):
         self.n = executor
+
+    def cleanups(self):
+        spec = importlib.util.spec_from_file_location('gpuq_workspace_cleanup', self.n.HERE/'workspace-cleanup.py')
+        module = importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module.WorkspaceCleanup(self)
 
     def storage(self, user):
         self.n.workspace(user)
@@ -348,13 +354,17 @@ class DataWorkspaces:
 
     def process(self, operation, args):
         fields = {'list': {'path'}, 'put': {'path','offset','data','truncate'},
-                  'get': {'path','offset'}, 'status': {'operationId'}, 'publish': {'path','name','key'}}
+                  'get': {'path','offset'}, 'status': {'operationId'}, 'publish': {'path','name','key'},
+                  'remove-plan': {'path','recursive'}, 'remove': {'path','recursive','key'}, 'remove-status': {'key'}}
         action = operation.removeprefix('datasets.workspace.')
         if (not isinstance(args, dict) or action not in fields
                 or set(args)-fields[action]-{'userId','hostAdmin'}
                 or type(args.get('hostAdmin', False)) is not bool or args.get('hostAdmin', False)):
             raise ValueError('Invalid personal data workspace request')
         module, cache, owner = self.storage(args.get('userId'))
+        if action == 'remove-plan':return self.cleanups().plan(args['userId'], args.get('path'), args.get('recursive', False))
+        if action == 'remove-status':return self.cleanups().status(args['userId'], args.get('key'))
+        if action == 'remove':return self.cleanups().remove(args)
         if action == 'status':
             return self.status(args['userId'], args.get('operationId'))
         with self.guard(args):
@@ -368,4 +378,4 @@ class DataWorkspaces:
                 with cache._locked():
                     cache._free(cache._reserved()+1024*1024+65536)
             result = self.n.file_op('files.'+action, args, root=owner/'data')
-            return {**result, 'path': args.get('path', '.')} if action == 'list' else result
+            return {**result, 'path': args.get('path', '.'), 'cleanupProtocol': 1} if action == 'list' else result

@@ -35,7 +35,7 @@ export function workspaceEntriesHTML(result){
   const parent=result?.path||'.';
   return (result?.entries||[]).map(entry=>{
     const path=parent==='.'?entry.name:parent+'/'+entry.name;
-    return `<li><span>${entry.type==='directory'?'目录':entry.type==='file'?'文件':'不可下载'}</span><code title="${esc(entry.name)}">${esc(entry.name)}</code><small>${entry.type==='directory'?'':esc(bytesLabel(entry.size))}</small>${entry.type==='directory'?`<button class="button" type="button" data-workspace-path="${esc(path)}">打开</button>`:entry.type==='file'?`<button class="button" type="button" data-workspace-download="${esc(path)}">下载</button>`:''}</li>`;
+    return `<li><span>${entry.type==='directory'?'目录':entry.type==='file'?'文件':'不可下载'}</span><code title="${esc(entry.name)}">${esc(entry.name)}</code><small>${entry.type==='directory'?'':esc(bytesLabel(entry.size))}</small>${entry.type==='directory'?`<button class="button" type="button" data-workspace-path="${esc(path)}">打开</button>`:entry.type==='file'?`<button class="button" type="button" data-workspace-download="${esc(path)}">下载</button>`:''}${result.cleanupProtocol===1&&['file','directory'].includes(entry.type)?`<button class="button danger" type="button" data-workspace-remove="${esc(path)}" data-recursive="${entry.type==='directory'}">删除</button>`:''}</li>`;
   }).join('')||'<li class="data-workspace-empty">此目录为空。可上传文件，或在数据终端里创建目录。</li>';
 }
 export const WORKSPACE_DOWNLOAD_MEMORY_BYTES=100*1024**2;
@@ -86,6 +86,8 @@ export function dataWorkspaceHTML(){
     <details class="data-workspace-browser"><summary>查看文件与发布进度</summary><div class="data-workspace-browse-controls"><label class="field">目录<input name="data-workspace-browse-path" value="." aria-label="查看数据空间目录"></label><button class="button" id="data-workspace-refresh" type="button">刷新</button></div><ul id="data-workspace-files-list"></ul><details id="data-workspace-registrations"><summary>空登记</summary><button class="button" id="data-workspace-registrations-refresh" type="button">重新查询</button><ul id="data-workspace-registrations-list" aria-live="polite"></ul></details></details>
     <form id="data-workspace-publish-form"><h4>发布为训练数据集</h4><p class="muted">先结束此机器上的所有数据终端，再发布整理好的子目录。发布会复制并校验文件，训练使用只读版本；原目录保留。</p><div class="data-workspace-fields"><label class="field">整理好的子目录<input name="data-workspace-publish-path" placeholder="my-data" required><small>例如 /data2/my-data，填写 my-data。</small></label><label class="field">数据集名称<input name="data-workspace-name" placeholder="my-data" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{0,39}" required></label></div><div class="file-actions"><button class="button primary" id="data-workspace-publish" type="submit">校验并发布</button></div></form>
     ${cloudFilesHTML()}
+    <button class="button quiet" id="data-workspace-cleanup-status" type="button" hidden>查询上次清理</button>
+    <button class="button danger" id="data-workspace-cleanup-retry" type="button" hidden>继续原清理</button>
     <p id="data-workspace-status" role="status">上传只保存文件；数据整理完成后再发布。</p>
     <p class="muted data-workspace-footnote">上传前请确认磁盘容量；停止上传会保留已收到的文件片段。</p>
   </section>`;
@@ -94,6 +96,11 @@ export function dataWorkspaceUI(store,section,toast,{onBusyChange=()=>{},refresh
   const cloud=cloudFilesUI(store,section,toast);
   let epoch=0,working=false,controller=null;
   const element=selector=>section.querySelector(selector);
+  const cleanupStorageKey=()=>`stargate.workspace-cleanup.v1:${store.principal?.userId||''}:${machine()}`;
+  function cleanupRecord(){try{const value=JSON.parse(localStorage.getItem(cleanupStorageKey())||'null');return value?.userId===store.principal?.userId&&value.machine===machine()&&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.key||'')?value:null;}catch{return null;}}
+  function saveCleanup(value){localStorage.setItem(cleanupStorageKey(),JSON.stringify(value));}
+  function cleanupText(result){return `清理 ${result.path} · ${({QUEUED:'已排队',RUNNING:'处理中',FAILED:'失败',SUCCEEDED:'已完成'})[result.state]||'状态未确认'} · ${result.key}${result.error?' · '+result.error:''}`;}
+  function confirmCleanup(result,request){if(result?.protocol!==1||result.key!==request.key||result.path!==request.path||result.recursive!==request.recursive||!['QUEUED','RUNNING','FAILED','SUCCEEDED','UNKNOWN'].includes(result.state))throw Error('清理结果未确认，请查询原编号。');return result;}
   const machine=()=>element('[name=dataset-machine]')?.value;
   const context=()=>JSON.stringify([store.principal?.userId,store.principal?.role,store.authGeneration,machine(),epoch]);
   const valid=expected=>expected===context();
@@ -106,8 +113,10 @@ export function dataWorkspaceUI(store,section,toast,{onBusyChange=()=>{},refresh
     const card=section.querySelector('.data-workspace-card:not(.cloud-import)');if(!card)return;restoreMaintenanceControls(card);relayChoice();
     const enabled=store.production&&store.principal&&machine(),external=element('#dataset-upload-pause')?.hidden===false;
     for(const node of section.querySelectorAll('.data-workspace-card input,.data-workspace-card button'))node.disabled=!enabled||working||external;
-    disableMaintenanceControls(card,'#data-workspace-upload,#data-workspace-publish,#terminal-data-open,#terminal-data-reconnect,#cloud-files-form [type=submit],[data-cloud-verify],[data-cloud-restore]',maintenanceFor(store.data?.operationalMaintenance,machine()));
+    disableMaintenanceControls(card,'#data-workspace-upload,#data-workspace-publish,#terminal-data-open,#terminal-data-reconnect,#cloud-files-form [type=submit],[data-cloud-verify],[data-cloud-restore],[data-workspace-remove],#data-workspace-cleanup-retry',maintenanceFor(store.data?.operationalMaintenance,machine()));
     const stop=element('#data-workspace-cancel');if(stop){stop.hidden=!controller;stop.disabled=!controller;}
+    const cleanup=element('#data-workspace-cleanup-status');if(cleanup)cleanup.hidden=!cleanupRecord();
+    const retry=element('#data-workspace-cleanup-retry');if(retry)retry.hidden=cleanupRecord()?.retryable!==true;
     cloud.controls(working||external);
   }
   function reset(){epoch++;controller?.abort();controller=null;working=false;element('#data-workspace-files-list')?.replaceChildren();element('#data-workspace-registrations-list')?.replaceChildren();cloud.reset();relayChoice(true);onBusyChange();}
@@ -162,6 +171,32 @@ export function dataWorkspaceUI(store,section,toast,{onBusyChange=()=>{},refresh
   section.addEventListener('click',event=>{
     const button=event.target.closest('button');if(!button||button.disabled)return;
     if(button.id==='data-workspace-cancel'){controller?.abort();return;}
+    if(button.id==='data-workspace-cleanup-status')return run(async({call,report,machine,check})=>{
+      const request=cleanupRecord();if(!request)throw Error('当前账号没有保存的清理编号。');
+      const result=confirmCleanup(await call('datasets.workspace.remove-status',{machine,key:request.key}),request);check();
+      saveCleanup({...request,state:result.state,retryable:result.retryable===true});report(cleanupText(result));
+    });
+    if(button.id==='data-workspace-cleanup-retry')return run(async({call,report,machine,check})=>{
+      const request=cleanupRecord();if(!request)throw Error('当前账号没有保存的清理编号。');
+      const state=confirmCleanup(await call('datasets.workspace.remove-status',{machine,key:request.key}),request);check();
+      if(state.retryable!==true)throw Error('原清理尚未确认可继续，请稍后查询。');
+      if(!window.confirm('继续原清理 '+request.path+'？只处理原编号绑定的内容。'))return;
+      check();saveCleanup({...request,state:'UNKNOWN',retryable:false});
+      const result=confirmCleanup(await call('datasets.workspace.remove',{machine,key:request.key,path:request.path,recursive:request.recursive}),request);check();
+      saveCleanup({...request,state:result.state,retryable:false});report(cleanupText(result));
+    });
+    if(button.hasAttribute('data-workspace-remove'))return run(async({call,report,machine,check})=>{
+      const path=workspacePath(button.dataset.workspaceRemove),recursive=button.dataset.recursive==='true',previous=cleanupRecord();
+      if(previous&&!['SUCCEEDED','FAILED'].includes(previous.state))throw Error('上次清理尚未确认完成，请先查询原编号。');
+      const plan=await call('datasets.workspace.remove-plan',{machine,path,recursive});check();
+      if(plan?.protocol!==1||plan.path!==path||plan.recursive!==recursive||plan.state!=='PREVIEW')throw Error('清理预览未确认。');
+      if(!window.confirm(`永久删除 ${machine} 上本人数据目录中的 ${path}？${recursive?'包含全部子目录和文件。':''}此卷可用 ${bytesLabel(plan.volume?.availableBytes)}；实际释放量以清理后读数为准。无法通过回收站撤销。`))return;
+      check();const key=previous?.state==='FAILED'&&previous.path===path&&previous.recursive===recursive?previous.key:crypto.randomUUID();
+      const request={machine,path,recursive,key,userId:store.principal.userId,state:'UNKNOWN'};saveCleanup(request);
+      report('清理编号：'+key+'；回包丢失后请查询此编号。');
+      const result=confirmCleanup(await call('datasets.workspace.remove',{machine,path,recursive,key}),request);check();
+      saveCleanup({...request,state:result.state});report(cleanupText(result));
+    });
     if(button.hasAttribute('data-workspace-download'))return run(async({call,report,machine,check})=>{
       const path=workspacePath(button.dataset.workspaceDownload);controller=new AbortController();controls();let writer=null;const chunks=[];
       try{

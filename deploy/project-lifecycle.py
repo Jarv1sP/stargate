@@ -87,14 +87,17 @@ class ProjectLifecycle:
 
     def job_finished(self, key):
         # Specs and run-claims are immutable history, not current job state.
+        database = self.n.CONFIG.get('database')
+        if not isinstance(database, str) or not database:
+            return False
         try:
-            with closing(sqlite3.connect(f'file:{self.n.CONFIG["database"]}?mode=ro', uri=True, timeout=2)) as db:
+            with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True, timeout=2)) as db:
                 row = db.execute('SELECT id FROM jobs WHERE submit_key=?', (key,)).fetchone()
             return bool(row and self.n.scheduler_terminal_confirmed(self.n.gpu('show', row[0])))
         except (OSError, ValueError, sqlite3.Error):
             return False
 
-    def history_blockers(self, args, path):
+    def history_blockers(self, args, path, *, require_unused=False):
         blockers = []
         owner = self.store._identity(args['userId'], args['project'])
         for folder, kind in ((self.store.path / '.run-claims', 'run-claim'), (self.n.ROOT / 'jobs', 'job-history')):
@@ -106,8 +109,10 @@ class ProjectLifecycle:
                 if not self.s.JOB_ID.fullmatch(item.stem): continue
                 value = self.s.read_json(item)
                 if value.get('project') == args['project'] and (value.get('owner') == owner if kind == 'run-claim' else value.get('userId') == args['userId']):
-                    if not self.job_finished(item.stem):
+                    if require_unused or not self.job_finished(item.stem):
                         blockers.append({'kind': kind, 'id': item.stem, 'reason': 'Job is active or its termination is unconfirmed'})
+        if require_unused and (path/'runs').exists() and any((path/'runs').iterdir()):
+            blockers.append({'kind': 'run-output', 'reason': 'Code synchronization cancellation requires a project without run outputs'})
         return blockers
 
     def manifest(self, root):

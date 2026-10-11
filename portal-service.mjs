@@ -356,6 +356,7 @@ export class PortalService extends DemoService{
     }
     if(operation==='tasks.display.get'||operation==='tasks.display.set')return taskDisplayCall(this,token,operation,args).then(result=>({result,principal:this.principal(token)}));
     if(['host.status','files.upload.status','files.get','files.list',
+      'datasets.workspace.remove-plan','datasets.workspace.remove-status',
       'projects.list','projects.quota','projects.status','projects.local-import.status','projects.retire.plan','projects.retire.status'
     ].includes(operation))return this.remoteRead(token,operation,args);
     if(operation==='projects.replicate'||operation==='projects.replication.status'||operation==='projects.replication.cancel'||operation==='projects.replication.retry'){

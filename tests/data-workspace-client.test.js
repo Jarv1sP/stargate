@@ -56,6 +56,15 @@ test('workspace list escapes server filenames, paths and sizes',()=>{
   assert.doesNotMatch(html,/<bad>|<script>|data-workspace-path=""/);assert.match(html,/&lt;script&gt;/);assert.match(dataWorkspaceHTML(),/不会自动解压/);assert.match(dataWorkspaceHTML(),/结束此机器上的所有数据终端/);
 });
 
+test('private cleanup buttons require explicit node capability and retain exact escaped targets',()=>{
+  const entries=[{type:'directory',name:'old',size:0},{type:'file',name:'a"b',size:4},{type:'unsupported',name:'socket'}];
+  for(const cleanupProtocol of [undefined,0,'1'])assert.doesNotMatch(workspaceEntriesHTML({entries,cleanupProtocol}),/data-workspace-remove/);
+  const html=workspaceEntriesHTML({path:'incoming',entries,cleanupProtocol:1});
+  assert.match(html,/data-workspace-remove="incoming\/old" data-recursive="true"/);
+  assert.match(html,/data-workspace-remove="incoming\/a&quot;b" data-recursive="false"/);
+  assert.equal((html.match(/data-workspace-remove=/g)||[]).length,2);
+});
+
 test('publication receipts report current readiness and require admin inspection for unknown outcomes',()=>{
   for(const state of ['NOT_READY','UNREGISTERED','UNAVAILABLE']){
     const text=publicationText({state,publicationState:'READY'});assert.doesNotMatch(text,/服务器正在|已发布：|可在下方选择/);

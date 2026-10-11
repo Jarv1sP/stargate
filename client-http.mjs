@@ -2,6 +2,7 @@
 // proof of failure and must never cause an implicit second submission.
 const READS=new Set(['state','datasets.list','datasets.status','datasets.catalog','projects.list','projects.status','projects.verify','projects.local-import.status','projects.label.get','projects.group.get','projects.catalog','projects.retire.plan','projects.retire.status','files.get','files.list','files.upload.status','files.upload.list','host.status','jobs.logs','jobs.watch','jobs.diagnostics','jobs.completion','transfers.list','transfers.status','community.posts.list','community.posts.get','community.comments.list']);
 const TRANSIENT=new Set([502,503,504]);
+READS.add('datasets.workspace.remove-plan');READS.add('datasets.workspace.remove-status');
 // Cover a short single-instance rollout without a tight polling loop. Queries
 // remain bounded; a mutation is never replayed by this generic transport.
 const READ_RETRY_DELAYS=[500,1000,2000,4000,8000,16000,16000];

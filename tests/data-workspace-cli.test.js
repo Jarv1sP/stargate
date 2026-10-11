@@ -11,7 +11,7 @@ import {createLocalDatasetTools} from '../client-data-upload.mjs';
 
 const chunk=1024*1024;
 async function fixture(t){
-  const dir=await fs.mkdtemp(join(tmpdir(),'gpuq-data-workspace-cli-')),session=join(dir,'session.json'),calls=[],files=new Map();let loseReply=false,publication='PUBLISHING';
+  const dir=await fs.mkdtemp(join(tmpdir(),'gpuq-data-workspace-cli-')),session=join(dir,'session.json'),calls=[],files=new Map();let loseReply=false,publication='PUBLISHING',cleanupState='QUEUED';
   const server=createServer(async(req,res)=>{try{
     let raw='';for await(const part of req)raw+=part;const {operation,args={}}=JSON.parse(raw);calls.push({operation,args});res.setHeader('Content-Type','application/json');
     if(operation==='state'){res.end(JSON.stringify({state:{demo:false,gpuqConnected:true,machines:[{id:'gpu-1'}],users:[],jobs:[]}}));return;}
@@ -27,6 +27,11 @@ async function fixture(t){
     }else if(operation==='datasets.workspace.list')result={path:args.path,entries:[{name:'archive.zip',type:'file'}]};
     else if(operation==='datasets.workspace.publish')result={operationId:args.key,state:'PUBLISHING'};
     else if(operation==='datasets.workspace.status')result={operationId:args.operationId,state:publication};
+    else if(operation==='datasets.workspace.remove-plan')result={protocol:1,path:args.path,recursive:args.recursive,state:'PREVIEW',freedBytes:null};
+    else if(operation==='datasets.workspace.remove'){
+      if(loseReply){loseReply=false;throw Error('Simulated response lost after cleanup accepted');}
+      result={protocol:1,key:args.key,path:args.path,recursive:args.recursive,state:cleanupState,freedBytes:null};
+    }else if(operation==='datasets.workspace.remove-status')result={protocol:1,key:args.key,path:'old',recursive:true,state:cleanupState,freedBytes:null};
     else throw Error('Unexpected operation '+operation);
     res.end(JSON.stringify({result}));
   }catch(error){res.statusCode=400;res.end(JSON.stringify({error:error.message}));}});
@@ -34,8 +39,35 @@ async function fixture(t){
   await fs.writeFile(session,JSON.stringify({url,token:'test-only',principal:{userId:'demo-user-1',username:'tester',role:'member'},machine:'gpu-1',projectsByMachine:{'gpu-1':'selected-project'}}));
   const cli=args=>new Promise((resolve,reject)=>{const p=spawn(process.execPath,[fileURLToPath(new URL('../cli.mjs',import.meta.url)),'--url',url,'--session-file',session,'--json',...args]);let stdout='',stderr='';p.stdout.on('data',s=>stdout+=s);p.stderr.on('data',s=>stderr+=s);p.on('error',reject);p.on('close',code=>resolve({code,stdout,stderr,result:stdout?JSON.parse(stdout).data:null}));});
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));await fs.rm(dir,{recursive:true,force:true});});
-  return {dir,calls,files,cli,lose:()=>{loseReply=true;},publication:value=>{publication=value;}};
+  return {dir,calls,files,cli,lose:()=>{loseReply=true;},publication:value=>{publication=value;},cleanup:value=>{cleanupState=value;}};
 }
+
+test('cleanup is preview-first, explicit and uses the original key after a lost reply without opening a terminal',async t=>{
+  const f=await fixture(t),key=randomUUID();
+  const preview=await f.cli(['data','rm','old','--recursive']);assert.equal(preview.code,0,preview.stderr);assert.equal(preview.result.state,'PREVIEW');
+  assert.deepEqual(f.calls.at(-1),{operation:'datasets.workspace.remove-plan',args:{machine:'gpu-1',path:'old',recursive:true}});
+  const before=f.calls.length;f.lose();
+  const lost=await f.cli(['data','rm','old','--recursive','--yes','--key',key]);assert.equal(lost.code,1);assert.match(lost.stderr,new RegExp(key));
+  assert.deepEqual(f.calls.slice(before).filter(row=>row.operation!=='state'),[{operation:'datasets.workspace.remove',args:{machine:'gpu-1',path:'old',recursive:true,key}}]);
+  f.cleanup('UNKNOWN');const unknown=await f.cli(['data','rm-status',key]);assert.equal(unknown.code,3);assert.equal(unknown.result.key,key);
+  f.cleanup('FAILED');assert.equal((await f.cli(['data','rm-status',key])).code,1);
+  f.cleanup('SUCCEEDED');assert.equal((await f.cli(['data','rm','old','--recursive','--yes','--key',key])).code,0);
+  assert.equal(f.calls.at(-1).args.key,key);
+  assert.equal(f.calls.some(row=>row.operation.startsWith('terminal.')),false);
+});
+
+test('cleanup rejects root, project, traversal and unauthorized target before mutation',async t=>{
+  const f=await fixture(t);
+  for(const args of [
+    ['data','rm','.','--yes'],['data','rm','../other','--yes'],['data','rm','/data2/old','--yes'],
+    ['data','rm','old','--yes','--root'],['data','rm','old','--yes','--project','other'],
+    ['data','rm','old','--yes','--machine','gpu-4'],['data','rm','old','--yes','--dry-run'],
+    ['data','rm-status',randomUUID(),'--yes'],
+  ]){
+    const before=f.calls.length,result=await f.cli(args);assert.equal(result.code,1,JSON.stringify(args));
+    assert.equal(f.calls.slice(before).some(row=>row.operation!=='state'),false,JSON.stringify(args));
+  }
+});
 
 test('data put chunks one file into personal data without extraction, publication or selected project context',async t=>{
   const f=await fixture(t),source=join(f.dir,'images.zip'),content=randomBytes(chunk+37);await fs.writeFile(source,content);
