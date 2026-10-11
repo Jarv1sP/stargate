@@ -70,6 +70,14 @@ class LifecycleTests(unittest.TestCase):
         version=self.publish()['release'];self.store.run_paths(self.user,self.slug,version,key)
         self.assertEqual(set(x['kind'] for x in self.plan()['blockers']),{'run-claim','run-output'})
 
+    def test_exact_instance_run_preparation_uses_existing_retirement_blockers(self):
+        version=self.publish()['release'];key=str(uuid.uuid4())
+        observed=self.store.inspect_release_metadata(self.user,self.slug,version)
+        self.store.prepare_run(self.user,self.slug,version,key,project_uuid=observed['projectUUID'],generation=observed['generation'])
+        plan=self.plan()
+        self.assertEqual(set(x['kind'] for x in plan['blockers']),{'run-claim','run-output'})
+        self.assertNotEqual(plan['state'],'ELIGIBLE')
+
     def test_unknown_terminal_publication_upload_and_sync_block(self):
         terminals=s.private_dir(self.root/'terminals',create=True);key=str(uuid.uuid4())
         s.atomic_json(terminals/(key+'.json'),self.args);self.ops.terminal_stopped=lambda key:False

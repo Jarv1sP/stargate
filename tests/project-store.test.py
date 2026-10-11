@@ -202,9 +202,9 @@ class ProjectStoreTests(unittest.TestCase):
                 reader.inspect(user_id=self.user, project=self.slug, release=published['release'])
         self.assertEqual(error.exception.code, 'project_busy')
 
-    def assert_error(self, code, function, *args):
+    def assert_error(self, code, function, *args, **kwargs):
         with self.assertRaises(module.ProjectError) as raised:
-            function(*args)
+            function(*args, **kwargs)
         self.assertEqual(raised.exception.code, code)
 
     def test_create_idempotent_status_list_and_private_layout(self):
@@ -548,6 +548,38 @@ class ProjectStoreTests(unittest.TestCase):
             module.atomic_json(path / '.publishing.json', {'startedAt': 1})
             self.assertEqual(self.store.status(self.user, self.slug)['state'], 'PUBLISHING')
         self.assertEqual(self.store.status(self.user, self.slug)['state'], 'DRAFT')
+
+    def test_exact_run_preparation_reuses_durable_claims_without_legacy_runtime_initialization(self):
+        release = self.publish()['release']; job = str(uuid.uuid4())
+        observed = self.store.inspect_release_metadata(self.user, self.slug, release)
+        reference = {'project_uuid': observed['projectUUID'], 'generation': observed['generation']}
+        with patch.object(self.store, 'release', side_effect=AssertionError('must not initialize OCI during preparation')):
+            prepared = self.store.prepare_run(self.user, self.slug, release, job, **reference)
+            self.assertEqual(self.store.prepare_run(self.user, self.slug, release, job, **reference), prepared)
+        self.assertTrue(prepared['runPrepared']); self.assertTrue(prepared['runtimeIdentityVerified'])
+        self.assertEqual(prepared['jobId'], job)
+        self.assertNotIn(str(self.root), json.dumps(prepared))
+        paths = self.store.existing_run_paths(self.user, self.slug, release, job)
+        self.assertEqual(set(paths), {'home', 'output'})
+        self.assertTrue(all(path.is_dir() for path in paths.values()))
+        claim = json.loads((self.store.path / '.run-claims' / (job + '.json')).read_text())
+        self.assertEqual(claim['release'], release)
+
+    def test_wrong_project_instance_never_creates_a_run_or_verifies_an_unrelated_runtime(self):
+        release = self.publish()['release']; job = str(uuid.uuid4())
+        observed = self.store.inspect_release_metadata(self.user, self.slug, release)
+        with patch.object(self.store, 'inspect_release_runtime', side_effect=AssertionError('wrong instance runtime')):
+            self.assert_error('project_changed', self.store.prepare_run, self.user, self.slug, release, job,
+                              project_uuid=observed['projectUUID'], generation='0' * 64)
+        self.assertFalse((self.store.path / '.run-claims' / (job + '.json')).exists())
+
+    def test_changed_runtime_prevents_run_preparation_without_creating_claims(self):
+        release = self.publish()['release']; job = str(uuid.uuid4())
+        observed = self.store.inspect_release_metadata(self.user, self.slug, release)
+        (self.base / 'bin/python3.12').write_bytes(b'changed approved base')
+        self.assert_error('base_changed', self.store.prepare_run, self.user, self.slug, release, job,
+                          project_uuid=observed['projectUUID'], generation=observed['generation'])
+        self.assertFalse((self.store.path / '.run-claims' / (job + '.json')).exists())
 
     def test_run_paths_are_isolated_idempotent_and_globally_bound(self):
         release = self.publish()['release']

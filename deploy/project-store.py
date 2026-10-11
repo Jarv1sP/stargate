@@ -1080,6 +1080,26 @@ class ProjectStore:
         if not isinstance(jobid, str) or not JOB_ID.fullmatch(jobid):
             fail('invalid_input', 'Invalid project job ID')
         self.release(user, slug, version)
+        return self._claim_run_paths(user, slug, version, jobid)
+
+    @project_lifetime
+    def prepare_run(self, user, slug, version, jobid, *, project_uuid, generation):
+        """Prepare run directories for an exact existing instance; never repair its runtime.
+
+        The existing durable run claim also blocks normal project retirement.
+        This is not a data lease, GPU allocation or proof that a container ran.
+        """
+        if not isinstance(jobid, str) or not JOB_ID.fullmatch(jobid):
+            fail('invalid_input', 'Invalid project job ID')
+        metadata = self.inspect_release_metadata(user, slug, version)
+        if metadata['projectUUID'] != project_uuid or metadata['generation'] != generation:
+            fail('project_changed', 'Project instance differs from the registered launch reference')
+        observed = self.inspect_release_runtime(user, slug, version)
+        self._claim_run_paths(user, slug, version, jobid)
+        return {**observed, 'jobId': jobid, 'runPrepared': True}
+
+    def _claim_run_paths(self, user, slug, version, jobid):
+        """Caller holds the lifetime lock and has validated job ID and release."""
         path, project = self._project(user, slug)
         self._quota(user, path.parent)
         claim = {'owner': project['owner'], 'project': slug, 'release': version, 'jobId': jobid}
