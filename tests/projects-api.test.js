@@ -225,7 +225,7 @@ test('project jobs pin one release and verify it before quota reservation',async
   f.ready(false);await assert.rejects(f.call('jobs.submit',args),e=>e.status===409);assert.equal(f.service.store.jobs.length,0);
   f.ready(true);const result=(await f.call('jobs.submit',args)).result;await f.settle();
   assert.equal(result.project,'my-project');assert.equal(result.release,release);assert.equal(f.calls.find(c=>c.operation==='sync').args.job.release,release);
-  const admission=f.calls.filter(c=>c.operation==='storage.training.plan');assert.equal(admission.length,2,'fresh submission and first dispatch each verify capacity');
+  const admission=f.calls.filter(c=>c.operation==='storage.training.plan');assert.equal(admission.length,1,'admission verifies capacity once; first dispatch uses node write guards');
   assert.ok(admission.every(c=>c.machine==='gpu-1'&&c.args.userId===f.member.id&&c.args.release===release));
   assert.equal(Object.hasOwn(result,'trainingStoragePlan'),false);assert.equal(Object.hasOwn(f.calls.find(c=>c.operation==='sync').args.job,'trainingStoragePlan'),false);
   assert.equal((await f.call('jobs.submit',args)).result.id,result.id);

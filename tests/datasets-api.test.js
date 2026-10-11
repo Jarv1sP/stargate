@@ -398,10 +398,10 @@ test('manual selection uses only that READY replica even when another machine ha
     assert.equal(result.data.result.machine,'gpu-2');assert.deepEqual(result.data.result.datasets,[reference]);
     assert.deepEqual(f.service.store.jobs[0].spec.datasets,[reference]);
     await f.settle();
-    // Submission readiness, capacity admission, and first-dispatch capacity
-    // recheck all stay pinned to the same explicitly selected server.
-    assert.deepEqual(f.calls.filter(c=>c.operation==='datasets.status').map(c=>c.machine),['gpu-2','gpu-2','gpu-2']);
-    assert.equal(f.calls.filter(c=>c.operation==='storage.training.plan').length,2);
+    // Readiness and capacity admission stay pinned to the selected server;
+    // first dispatch does not repeat these lock-sensitive reads.
+    assert.deepEqual(f.calls.filter(c=>c.operation==='datasets.status').map(c=>c.machine),['gpu-2','gpu-2']);
+    assert.equal(f.calls.filter(c=>c.operation==='storage.training.plan').length,1);
     assert.ok(f.calls.filter(c=>['datasets.training.status','storage.training.plan'].includes(c.operation))
       .every(c=>c.machine==='gpu-2'&&c.args.userId===f.member.id&&c.args.hostAdmin===false));
     assert.deepEqual(f.calls.find(c=>c.operation==='sync').args.job.datasets,[reference]);

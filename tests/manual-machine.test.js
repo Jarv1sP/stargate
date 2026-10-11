@@ -184,16 +184,16 @@ test('all dataset references are checked only on the chosen node with owner iden
     const result=(await f.submit({datasets:[reference,secondReference]})).result;
     assert.equal(result.machine,selected);await f.settle();
     const checks=f.calls.filter(call=>call.operation==='datasets.status');
-    // Initial readiness, submission capacity and first-dispatch capacity each
-    // recheck the exact selected-node identity; no alternate READY is borrowed.
-    assert.equal(checks.length,6);assert.ok(f.calls.every(call=>call.machine===selected));
-    assert.deepEqual(checks.map(call=>call.args),Array.from({length:3},()=>[reference,secondReference]
+    // Initial readiness and admission use the selected-node identity once;
+    // first dispatch cannot borrow an alternate READY or reread capacity.
+    assert.equal(checks.length,4);assert.ok(f.calls.every(call=>call.machine===selected));
+    assert.deepEqual(checks.map(call=>call.args),Array.from({length:2},()=>[reference,secondReference]
       .map(ref=>({...ref,userId:f.member.id,hostAdmin:false}))).flat());
     const footprints=f.calls.filter(call=>call.operation==='datasets.training.status');
-    assert.deepEqual(footprints.map(call=>call.args),Array.from({length:2},()=>[reference,secondReference]
+    assert.deepEqual(footprints.map(call=>call.args),Array.from({length:1},()=>[reference,secondReference]
       .map(ref=>({userId:f.member.id,hostAdmin:false,...ref,datasetReadMode:'cache'}))).flat());
     const plans=f.calls.filter(call=>call.operation==='storage.training.plan');
-    assert.equal(plans.length,2);
+    assert.equal(plans.length,1);
     for(const plan of plans)assert.deepEqual(plan.args,{userId:f.member.id,hostAdmin:false,
       datasets:[reference,secondReference],datasetReadMode:'cache',projectFootprint:null,
       datasetFootprints:[reference,secondReference].map(ref=>({...ref,bytes:8,files:1,directories:0,manifestBytes:100}))});

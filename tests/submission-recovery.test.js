@@ -58,18 +58,21 @@ test('a definite pre-dispatch data rejection ends the same UUID and releases quo
   assert.ok(job.finishedAt);assert.equal(job.submissionReconciliation,undefined);
   assert.deepEqual(f.calls.map(c=>c.op),['watch']);assert.equal(f.service.store.jobs.length,1);
 });
-test('safe confirmed absence permits one explicit same-key same-UUID dispatch, with no second job',async t=>{
-  const f=await fixture(t),job=await f.original();f.setHandler(()=>absent(job));await f.start();
-  assert.equal(publicJob(job).submissionState,'NOT_DISPATCHED');assert.equal(publicJob(job).canRetryDispatch,true);
-  f.service.reconciling=true;const spec=structuredClone(job.spec),reply=await f.submit();
-  assert.equal(reply.result.id,job.id);assert.equal(job.dispatchPending,true);assert.deepEqual(job.spec,spec);
-  assert.equal(job.submissionReconciliation.retryUsed,true);f.setHandler(()=>({state:'PENDING',nodeJobId:nodeId}));
-  await f.start();assert.equal(job.state,'PENDING');assert.equal(f.calls.filter(c=>c.op==='sync').length,1);
-  await f.submit();assert.equal(f.calls.filter(c=>c.op==='sync').length,1);assert.equal(f.service.store.jobs.length,1);
+test('safe confirmed absence automatically dispatches the original UUID without a user retry',async t=>{
+  const f=await fixture(t),job=await f.original(),spec=structuredClone(job.spec),key=job.key,digest=job.digest;
+  // Legacy retryUsed must not permanently strand a confirmed absent task.
+  job.submissionReconciliation={retryUsed:true,attempts:109};
+  f.setHandler((_target,op)=>op==='watch'?absent(job):{state:'PENDING',nodeJobId:nodeId});await f.start();
+  assert.equal(job.state,'PENDING');assert.deepEqual(f.calls.map(c=>c.op),['watch','sync']);
+  assert.deepEqual(f.calls[1].args.job.id,job.id);assert.deepEqual(job.spec,spec);
+  assert.equal(job.key,key);assert.equal(job.digest,digest);
+  assert.equal((await f.submit()).result.id,job.id);assert.equal(f.calls.filter(c=>c.op==='sync').length,1);
+  assert.equal(f.service.store.jobs.length,1);
 });
-for(const change of ['fresh','wrong-owner','request-running','stale-proof'])test('absence cannot replay while '+change,async t=>{
+for(const change of ['fresh','recent-attempt','wrong-owner','request-running','stale-proof'])test('absence cannot replay while '+change,async t=>{
   const f=await fixture(t),job=await f.original();
   if(change==='fresh')job.dispatchFinishedAt=new Date().toISOString();
+  if(change==='recent-attempt')job.dispatchStartedAt=new Date().toISOString();
   f.setHandler(()=>{const result=absent(job);
     if(change==='wrong-owner')result.dispatchObservation.userId='other';
     if(change==='request-running')result.dispatchObservation.requestFinished=false;
@@ -79,8 +82,10 @@ for(const change of ['fresh','wrong-owner','request-running','stale-proof'])test
   await f.start();assert.equal(publicJob(job).canRetryDispatch,false);assert.ok(f.calls.every(c=>c.op==='watch'));
 });
 test('revocation prevents an otherwise confirmed same-key recovery from dispatching',async t=>{
-  const f=await fixture(t),job=await f.original();f.setHandler(()=>absent(job));await f.start();
-  f.user.limits={};await assert.rejects(f.submit(),e=>e.status===403);assert.ok(f.calls.every(c=>c.op==='watch'));
+  const f=await fixture(t),job=await f.original();f.setHandler(()=>{f.user.limits={};return absent(job);});await f.start();
+  assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);assert.match(job.error,/授权已改变/);
+  assert.equal(usage([job],f.user.id),0);assert.ok(f.calls.every(c=>c.op==='watch'));
+  assert.equal((await f.submit()).result.state,'FAILED');assert.ok(f.calls.every(c=>c.op==='watch'));
 });
 
 function dataHandler(f,{busy=false,forbidden=false,availableBytes=2**40}={}){
@@ -155,11 +160,54 @@ test('revoked waiting admission fails before reading or dispatching',async t=>{
   await advanceDataPreparation(f.service,job,usage);assert.equal(job.state,'FAILED');assert.match(job.error,/授权/);
   assert.equal(f.calls.length,count);assert.equal(usage([job],f.user.id),0);
 });
-test('one lost recovery reply cannot authorize a second replay of the same original UUID',async t=>{
-  const f=await fixture(t),job=await f.original();f.setHandler(()=>absent(job));await f.start();
-  f.service.reconciling=true;await f.submit();f.setHandler(()=>{throw Object.assign(Error('lost ACK'),{code:'EXECUTOR_TIMEOUT',status:504});});
+test('a lost recovery reply cannot replay without a fresh authoritative absence',async t=>{
+  const f=await fixture(t),job=await f.original();
+  f.setHandler((_target,op)=>{if(op==='watch')return absent(job);throw Object.assign(Error('lost ACK'),{code:'EXECUTOR_TIMEOUT',status:504});});
   await f.start();assert.equal(f.calls.filter(c=>c.op==='sync').length,1);
-  job.dispatchFinishedAt=new Date(Date.now()-SUBMISSION_SAFE_WINDOW_MS-1000).toISOString();job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
-  f.setHandler(()=>absent(job));await f.service.reconcile();assert.equal(publicJob(job).canRetryDispatch,false);
+  job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
+  f.setHandler(()=>({state:'PENDING',schedulerState:'NOT_SUBMITTED',nodeJobId:null}));
+  await f.service.reconcile();assert.equal(publicJob(job).canRetryDispatch,false);
   await f.submit();assert.equal(f.calls.filter(c=>c.op==='sync').length,1);assert.equal(f.service.store.jobs.length,1);
+});
+test('first dispatch uses completed admission without repeating lock-sensitive capacity reads',async t=>{
+  const f=await fixture(t),first=await f.submit(),job=f.service.store.jobs[0];
+  job.trainingStoragePlan={fits:true,checkedAt:new Date(0).toISOString()};
+  f.setHandler((_target,op)=>{assert.equal(op,'sync');return {state:'PENDING',nodeJobId:nodeId};});
+  await f.start();assert.equal(job.state,'PENDING');assert.equal(job.id,first.result.id);
+  assert.deepEqual(f.calls.map(c=>c.op),['sync']);
+});
+test('temporary non-dispatch keeps waiting and resumes the same UUID after more than three retries',async t=>{
+  const f=await fixture(t),job=await f.original(),spec=structuredClone(job.spec);
+  f.setHandler((_target,op)=>{if(op==='watch')return absent(job);throw Object.assign(Error('node refused'),{code:'EXECUTOR_UNCONFIRMED',status:502});});
+  for(let n=0;n<4;n++){
+    job.dispatchFinishedAt=new Date(Date.now()-SUBMISSION_SAFE_WINDOW_MS-1000).toISOString();
+    job.dispatchStartedAt=job.dispatchFinishedAt;
+    if(job.submissionReconciliation)job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
+    await f.start();
+  }
+  assert.equal(f.calls.filter(c=>c.op==='sync').length,4);assert.equal(job.state,'SUBMITTING');
+  assert.notEqual(job.notSubmitted,true);assert.equal(usage([job],f.user.id),1);
+  job.dispatchFinishedAt=new Date(Date.now()-SUBMISSION_SAFE_WINDOW_MS-1000).toISOString();
+  job.dispatchStartedAt=job.dispatchFinishedAt;job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
+  f.setHandler((_target,op)=>op==='watch'?absent(job):{state:'PENDING',nodeJobId:nodeId});
+  await f.start();assert.equal(job.state,'PENDING');assert.equal(job.nodeJobId,nodeId);
+  assert.equal(f.service.store.jobs.length,1);assert.deepEqual(job.spec,spec);
+});
+test('same key recovers an old retry-limit failure by observing before dispatch, without a new UUID',async t=>{
+  const f=await fixture(t),job=await f.original();
+  Object.assign(job,{state:'FAILED',notSubmitted:true,failureCode:'SUBMISSION_NOT_DISPATCHED',finishedAt:new Date().toISOString()});
+  const spec=structuredClone(job.spec);f.calls.length=0;
+  const response=await f.submit();assert.equal(response.result.id,job.id);assert.equal(job.state,'SUBMITTING');
+  assert.equal(job.dispatchPending,false);assert.deepEqual(f.calls,[]);assert.equal(f.service.store.jobs.length,1);
+  f.setHandler((_target,op)=>op==='watch'?absent(job):{state:'PENDING',nodeJobId:nodeId});
+  await f.start();assert.equal(job.state,'PENDING');assert.deepEqual(f.calls.map(c=>c.op),['watch','sync']);
+  assert.deepEqual(job.spec,spec);assert.equal(f.service.store.jobs.length,1);
+});
+test('an unconfirmed node receipt preserves quota and exposes the reason after the safety window',async t=>{
+  const f=await fixture(t),job=await f.original();
+  job.dispatchStartedAt=new Date(Date.now()-SUBMISSION_SAFE_WINDOW_MS-1000).toISOString();
+  f.setHandler(()=>{throw Object.assign(Error('private transport detail'),{code:'NODE_CONNECT_FAILED',status:503});});
+  await f.start();assert.equal(job.state,'SUBMITTING');assert.equal(usage([job],f.user.id),1);
+  assert.match(publicJob(job).error,/NODE_CONNECT_FAILED/);assert.doesNotMatch(publicJob(job).error,/private transport/);
+  assert.deepEqual(f.calls.map(c=>c.op),['watch']);
 });

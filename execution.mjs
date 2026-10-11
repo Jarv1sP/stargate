@@ -26,6 +26,8 @@ export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
 export const PRIORITIES=new Set(['idle','normal','high']);
 export const SUBMISSION_SAFE_WINDOW_MS=120000;
 const SUBMISSION_CHECK_MESSAGE='正在确认节点状态（自动重查中）';
+const submissionError=job=>Date.now()-Date.parse(job.dispatchStartedAt||job.createdAt)>=SUBMISSION_SAFE_WINDOW_MS&&job.submissionReconciliation?.lastReason
+  ?`节点尚未确认派发（${job.submissionReconciliation.lastReason}），正在自动核对。`:SUBMISSION_CHECK_MESSAGE;
 const submissionDelay=attempt=>Math.min(60000,15000*2**Math.min(attempt,2));
 const DISPLAY_OPERATIONS=new Set(['datasets.overview','datasets.catalog','datasets.capacity','datasets.list','datasets.files.list','files.list','storage.usage.mine','storage.usage.users']);
 const DISPLAY_NODE_OPERATIONS=new Set(['datasets.list','datasets.capacity','datasets.files.list','files.list']);
@@ -87,34 +89,19 @@ function persistSchedulerResult(service,job,result){
   }
 }
 async function firstDispatch(service,job){
-  // Only new records with this durable marker are known never to have reached
-  // a node. Legacy/attempted/unknown jobs must keep their existing sync path.
-  let storagePlan,storageSnapshot;
-  if(job.trainingStoragePlan){
-    const user=service.store.get(job.userId);
-    storageSnapshot=JSON.stringify({digest:job.digest,spec:job.spec,policyRevision:job.policyRevision||0});
-    // Capacity I/O must not hold the global mutation queue. Recheck the fixed
-    // target immediately before its first attempt, then fence the observation
-    // against cancellation, identity changes and expiry in the serialized turn.
-    storagePlan=await trainingStoragePlan(service,user,job.machine,{
-      project:job.project?{project:job.project,release:job.release}:{},
-      datasets:job.datasets||[],datasetReadMode:job.datasetReadMode,
-    });
-  }
+  // Admission/preparation already checked capacity. Node writers retain their
+  // live disk guards; repeating the read here can strand an admitted job on a lock.
   return service.enqueue(()=>{
     const current=service.store.jobs.find(j=>j.id===job.id);
     if(!current||service.closing||current.state!=='SUBMITTING'||current.cancelRequested||service.maintenanceFor?.(current.machine))return null;
     const user=service.store.get(current.userId),capacity=MACHINES.find(m=>m.id===current.machine)?.cards||0;
     if(!user.enabled||!user.limits[current.machine]||current.cards>user.limits[current.machine]||current.cards>user.total||current.cards>capacity)
-      throw Error('首次派发前账号或机器授权已改变；未启动训练，请恢复授权或取消任务。');
+      fail('首次派发前账号或机器授权已改变；未启动训练。',403,'SUBMISSION_AUTH_REVOKED');
     if(user.role!=='admin'&&(current.spec.priority==='high'||RANKS[current.spec.scheduling?.rank]>2))
-      throw Error('首次派发前管理员角色已改变；P3/P4 任务未启动，请取消后重新提交。');
+      fail('首次派发前管理员角色已改变；P3/P4 任务未启动。',403,'SUBMISSION_AUTH_REVOKED');
     if(!personalCardQuotaExempt(user)&&(usage(service.store.jobs,user.id)>user.total||usage(service.store.jobs,user.id,current.machine)>user.limits[current.machine]))
       throw Error('首次派发等待个人可用卡数额度；未启动训练，请等待已有任务释放或取消多余任务。');
-    if(storagePlan&&(JSON.stringify({digest:current.digest,spec:current.spec,policyRevision:current.policyRevision||0})!==storageSnapshot||
-       Date.now()-Date.parse(storagePlan.checkedAt)>30000))throw Error('首次派发前容量核验已过期或任务已改变；未启动训练。');
-    if(storagePlan)current.trainingStoragePlan=storagePlan;
-    current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();
+    current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();delete current.dispatchFinishedAt;
     try{service.save();}catch(error){current.dispatchPending=true;throw error;}
     // Begin the attempt in the same serialized turn as admission, but return a
     // wrapped promise so slow remote I/O never holds the mutation queue. Persist
@@ -197,7 +184,7 @@ export function installExecution(service,bridge){
           }
           const now=Date.now(),old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
           const absent=result?.schedulerState==='NOT_SUBMITTED'&&!result.nodeJobId&&!result.latestAttempt;
-          const proof=result?.dispatchObservation,ended=Date.parse(current.dispatchFinishedAt||current.dispatchStartedAt||current.createdAt);
+          const proof=result?.dispatchObservation,ended=Math.max(Date.parse(current.dispatchFinishedAt)||0,Date.parse(current.dispatchStartedAt)||0)||Date.parse(current.createdAt);
           const confirmed=absent&&proof?.protocol==='job-dispatch-observation-v1'&&proof.jobId===current.id&&
             proof.userId===current.userId&&proof.submitKey===current.id&&proof.state==='NOT_SUBMITTED'&&proof.requestFinished===true&&
             Number.isFinite(proof.observedAt)&&proof.observedAt*1000>=now-30000&&proof.observedAt*1000<=now+5000&&
@@ -206,7 +193,10 @@ export function installExecution(service,bridge){
             checkedAt:new Date(now).toISOString(),nextCheckAt:new Date(now+submissionDelay(attempts-1)).toISOString(),
             ...(confirmed?{absenceConfirmedAt:new Date(now).toISOString()}:{}),
           };
-          current.error=confirmed?(old.retryUsed?'未派发，请联系管理员恢复。':'未派发，请用原提交键重试。'):SUBMISSION_CHECK_MESSAGE;
+          if(confirmed){
+            current.dispatchPending=true;current.submissionReconciliation.dispatchRetries=(old.dispatchRetries||0)+1;
+            current.error=null;service.audit('system','jobs.submit',current.id,'auto-retry-original-dispatch');
+          }else current.error=submissionError(current);
           current.checkedAt=new Date(now).toISOString();service.save();
         });
         return;
@@ -226,7 +216,10 @@ export function installExecution(service,bridge){
       const pending=current.state==='SUBMITTING'&&current.dispatchPending!==true&&!current.cancelRequested;
       if(pending){const old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
         current.submissionReconciliation={...old,state:'CHECKING',attempts,lastReason:e.code||'UNCONFIRMED',nextCheckAt:new Date(Date.now()+submissionDelay(attempts-1)).toISOString()};}
-      current.error=pending?SUBMISSION_CHECK_MESSAGE:String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save();
+      if(current.state==='SUBMITTING'&&current.dispatchPending===true&&e.status===403){
+        current.state='FAILED';current.notSubmitted=true;current.failureCode=e.code||'SUBMISSION_AUTH_REVOKED';current.finishedAt=new Date().toISOString();
+      }
+      current.error=pending?submissionError(current):String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save();
     }});}
     finally{if(dispatched)await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing){current.dispatchFinishedAt=new Date().toISOString();service.save();}});}
   };
@@ -288,8 +281,7 @@ export function installExecution(service,bridge){
 export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&j.state!==DATA_PREPARING&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
 export function publicJob(job,users=[]){const {spec,digest,schedulerPolicy,dataPreparationHold,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,trainingAdmissionPending,allowPrepareData,trainingStoragePlan:privateStoragePlan,trainingStorageRequest:privateStorageRequest,trainingPreparations:privatePreparations,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,
   ...(job.state==='SUBMITTING'&&dispatchPending!==true?{submissionState:submissionReconciliation?.state||'CHECKING',
-    canRetryDispatch:submissionReconciliation?.state==='NOT_DISPATCHED'&&!submissionReconciliation.retryUsed,
-    error:submissionReconciliation?.state==='NOT_DISPATCHED'?(submissionReconciliation.retryUsed?'未派发，请联系管理员恢复。':'未派发，请用原提交键重试。'):SUBMISSION_CHECK_MESSAGE}:{}),
+    canRetryDispatch:false,error:submissionError(job)}:{}),
   ...jobTiming(job),...taskIdentity(job,users),command:spec.argv,
   yieldPolicy:['legacy','never','now','save'].includes(schedulerPolicy?.yield_policy)?schedulerPolicy.yield_policy:null,
   restartPolicy:['never','on-preempt'].includes(schedulerPolicy?.restart_policy)?schedulerPolicy.restart_policy:null,
@@ -573,13 +565,11 @@ export async function executionCall(service,principal,operation,args,readContext
     const previous=service.store.jobs.find(j=>j.userId===user.id&&j.key===request.key);
     if(previous){
       if(previous.digest!==digest)rejectSubmission('同一提交键不能用于不同任务。',409);
-      if(previous.state==='SUBMITTING'&&!previous.cancelRequested&&previous.submissionReconciliation?.state==='NOT_DISPATCHED'&&
-        !previous.submissionReconciliation.retryUsed){
-        authorizedMachine(previous.machine);
-        previous.submissionReconciliation={...previous.submissionReconciliation,state:'CHECKING',retryUsed:true};
-        previous.dispatchPending=true;previous.error=null;service.save();
-        service.audit(principal.username,operation,previous.id,'retry-original-dispatch');
-        setImmediate(()=>service.reconcile().catch(()=>{}));
+      if(previous.state==='FAILED'&&previous.notSubmitted===true&&previous.failureCode==='SUBMISSION_NOT_DISPATCHED'&&!previous.nodeJobId&&!previous.cancelRequested){
+        previous.state='SUBMITTING';previous.dispatchPending=false;previous.error=SUBMISSION_CHECK_MESSAGE;
+        delete previous.notSubmitted;delete previous.failureCode;delete previous.finishedAt;
+        previous.submissionReconciliation={...previous.submissionReconciliation,state:'CHECKING',nextCheckAt:new Date(0).toISOString()};
+        service.audit(principal.username,'jobs.submit',previous.id,'recover-confirmed-non-dispatch');service.save();
       }
       return jobView(previous);
     }
