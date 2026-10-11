@@ -14,12 +14,14 @@ def main():
         if len(raw) > 8192:
             raise ValueError('Request too large')
         value = json.loads(raw)
-        if not isinstance(value, dict) or set(value) != {'socketPath', 'submitKey'}:
+        if not isinstance(value, dict) or set(value) != {'socketPath', 'submitKey', 'operation'}:
             raise ValueError('Invalid observation query')
+        if value['operation'] not in ('job_observation', 'job_diagnostics'):
+            raise ValueError('Invalid observation operation')
         path = Path(value['socketPath'])
         if not path.is_absolute():
             raise ValueError('Expected configured absolute socket')
-        result = Client(path, timeout=5).call('job_observation', {'submit_key': value['submitKey']})
+        result = Client(path, timeout=5).call(value['operation'], {'submit_key': value['submitKey']})
         print(json.dumps({'result': result}))
         return 0
     except Exception as error:

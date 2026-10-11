@@ -3,10 +3,12 @@ import {ApplicationError, TransientReadError} from '../domain/errors.mjs';
 import {parseDispatchReceiptRequest} from '../contracts/dispatch-receipt.mjs';
 import {NODE_JOB_OBSERVATION_ROUTE, NODE_JOB_OBSERVATION_MAX_BYTES, parseNodeJobObservation} from '../contracts/task-read.mjs';
 import {NODE_TASK_LOGS_ROUTE, parseNodeLogRequest, parseLogChunk, requireLogCursor} from '../contracts/task-logs.mjs';
+import {NODE_TASK_DIAGNOSTICS_ROUTE, parseNodeDiagnostics} from '../contracts/task-diagnostics.mjs';
 
 export class HttpJobObserver {
   constructor(options) {this.transport = new NodeJsonTransport({...options, maxResponseBytes: NODE_JOB_OBSERVATION_MAX_BYTES});}
   observe(reference, options) {return this.#query(NODE_JOB_OBSERVATION_ROUTE, parseDispatchReceiptRequest(reference), parseNodeJobObservation, options);}
+  diagnostics(reference, options) {return this.#query(NODE_TASK_DIAGNOSTICS_ROUTE, parseDispatchReceiptRequest(reference), parseNodeDiagnostics, options);}
   async logs(reference, options) {
     const input = parseNodeLogRequest(reference), result = await this.#query(NODE_TASK_LOGS_ROUTE, input, parseLogChunk, options);
     try {requireLogCursor(result, input);} catch (cause) {throw new ApplicationError('NODE_JOB_UNAVAILABLE', {cause});}

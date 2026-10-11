@@ -2561,12 +2561,39 @@ class Store:
 
     def get_job_observation(self, submit_key: str) -> dict[str, Any] | None:
         """One job/attempt/progress snapshot, without a scheduler tick or private paths."""
+        return self._job_read_snapshot(submit_key, diagnostics=False)
+
+    def get_job_diagnostics(self, submit_key: str) -> dict[str, Any] | None:
+        """The same snapshot plus bounded native-ledger evidence, not live probes."""
+        return self._job_read_snapshot(submit_key, diagnostics=True)
+
+    def _job_read_snapshot(self, submit_key: str, *, diagnostics: bool) -> dict[str, Any] | None:
         key = _nonempty(submit_key, 'submit_key', maximum=256)
         job_fields = ('id', 'submit_key', 'submit_digest', 'owner', 'name', 'gpu_count', 'state',
                       'priority', 'state_reason', 'created_at', 'started_at', 'finished_at')
         attempt_fields = ('id', 'ordinal', 'state', 'gpu_uuids_json', 'gpu_indices_json', 'exit_code', 'failure_reason')
         columns = [f'j.{field} observed_job_{field}' for field in job_fields]
         columns += [f'a.{field} observed_attempt_{field}' for field in attempt_fields]
+        policy_fields = ('gpu_count', 'min_gpu_count', 'elastic_gpu_count', 'placement', 'target_global_batch_size', 'per_device_micro_batch_size')
+        if diagnostics:
+            columns += [f'j.{field} policy_{field}' for field in policy_fields]
+            columns += [
+                'j.allocation_authority resource_mode',
+                "(SELECT json_object('grant_id',grant_id,'revision',revision,'max_gpu_count',max_gpu_count,'initial_max_gpu_count',initial_max_gpu_count) FROM allocation_grants WHERE job_id=j.id) resource_grant",
+                '(SELECT COUNT(*) FROM leases WHERE job_id=j.id) lease_count',
+                "(SELECT json_group_array(json_object('attempt_id',attempt_id,'gpu_uuid',gpu_uuid,'gpu_index',gpu_index)) FROM (SELECT attempt_id,gpu_uuid,gpu_index FROM leases WHERE job_id=j.id ORDER BY gpu_index,gpu_uuid,attempt_id LIMIT 4096)) resource_leases",
+                '(SELECT COUNT(*) FROM scale_up_reservations WHERE job_id=j.id) reservation_count',
+                "(SELECT json_group_array(json_object('plan_id',plan_id,'gpu_uuid',gpu_uuid,'gpu_index',gpu_index)) FROM (SELECT plan_id,gpu_uuid,gpu_index FROM scale_up_reservations WHERE job_id=j.id ORDER BY gpu_index,gpu_uuid LIMIT 4096)) resource_reservations",
+                "(SELECT COUNT(*) FROM actions WHERE job_id=j.id AND state='PENDING') pending_action_count",
+                """(SELECT json_group_array(json_object('id',id,'attempt_id',attempt_id,'type',action_type,
+                    'attempt_count',attempt_count,'available_at',available_at,'error_recorded',last_error IS NOT NULL,
+                    'claim_recorded',claim_token IS NOT NULL)) FROM (SELECT id,attempt_id,action_type,attempt_count,
+                    available_at,last_error,claim_token FROM actions WHERE job_id=j.id AND state='PENDING'
+                    ORDER BY available_at,created_at,id LIMIT 16)) resource_actions""",
+                """(SELECT json_object('id',id,'state',state,'source_attempt_id',source_attempt_id,'successor_attempt_id',successor_attempt_id,
+                    'from_gpu_count',from_gpu_count,'target_gpu_count',target_gpu_count) FROM scale_up_plans WHERE job_id=j.id
+                    AND state IN ('SAVE_REQUESTED','CHECKPOINT_ACKED','TERM_REQUESTED','RESTART_PENDING','RESTART_PLANNED') LIMIT 1) resource_scale_plan""",
+            ]
         with self._read_connection() as connection:
             row = connection.execute(f'''
                 SELECT {','.join(columns)},p.*,
@@ -2583,13 +2610,24 @@ class Store:
             attempt['gpu_uuids'] = _json_load(attempt.pop('gpu_uuids_json'))
             attempt['gpu_indices'] = _json_load(attempt.pop('gpu_indices_json'))
         progress = self._attempt_progress(row) if row['attempt_id'] is not None else None
-        return {
+        result = {
             'job': {field: row['observed_job_' + field] for field in job_fields},
             'latest_attempt': attempt,
             'progress': None if progress is None else {field: progress[field] for field in
                 ('snapshot', 'updated_at', 'heartbeat_at', 'advanced_at', 'stalled_at')},
             'latest_event_id': row['latest_event_id'],
         }
+        if diagnostics:
+            result['resources'] = {
+                'policy': {field: row['policy_' + field] for field in policy_fields},
+                'mode': row['resource_mode'],
+                'grant': None if row['resource_grant'] is None else _json_load(row['resource_grant']),
+                'leases': _json_load(row['resource_leases']), 'lease_count': row['lease_count'],
+                'reservations': _json_load(row['resource_reservations']), 'reservation_count': row['reservation_count'],
+                'pending_actions': _json_load(row['resource_actions']), 'pending_action_count': row['pending_action_count'],
+                'scale_plan': None if row['resource_scale_plan'] is None else _json_load(row['resource_scale_plan']),
+            }
+        return result
 
     def get_allocation_authorization(self, job_id: str) -> dict[str, Any]:
         """Distinguish native jobs from explicitly managed jobs with no grant yet."""

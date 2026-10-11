@@ -28,14 +28,17 @@ try:
     log_path.chmod(0o600)
     fixture.store.create_attempt(job_id, attempt_id=attempt_id, state='RUNNING', gpu_uuids=['GPU-0', 'GPU-1'], gpu_indices=[0, 1],
         unit_name='fixture-no-unit', unit_token='fixture-no-token', boot_id='fixture-boot', log_path=str(log_path))
+    if config.get('retainLeases'):
+        fixture.store.acquire_leases(job_id, attempt_id, {'GPU-0': 0, 'GPU-1': 1})
     fixture.store.update_job(job_id, state='RUNNING')
     fixture.store.accept_attempt_progress({'version': 1, 'job_id': job_id, 'attempt_id': attempt_id, 'sequence': 1,
         'phase': 'train', 'epochs_completed': 3, 'epochs_total': 10, 'steps_completed': 30, 'steps_total': 100,
         'metrics': {'loss': 0.25}, 'eta_seconds': 60, 'stall_timeout_seconds': 30, 'severity': 'info', 'message': None}, observed_at=100)
     fixture.coordinator.clock = lambda: 110
     if config.get('terminal'):
-        fixture.store.update_attempt(attempt_id, state='EXITED_SUCCESS', exit_code=0)
-        fixture.store.update_job(job_id, state='SUCCEEDED')
+        exit_code = config.get('exitCode', 0)
+        fixture.store.update_attempt(attempt_id, state='EXITED_FAILURE' if exit_code else 'EXITED_SUCCESS', exit_code=exit_code)
+        fixture.store.update_job(job_id, state='FAILED' if exit_code else 'SUCCEEDED')
     path = fixture.root / 'observe.sock'
     server = _ThreadingUnixServer(path, fixture.coordinator.handle_api, os.getuid(), 262144)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

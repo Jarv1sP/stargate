@@ -24,8 +24,8 @@ async function listen(t, handler) {
 
 export async function publicServer(t, f, nodes = f.nodes) {
   let tasks, sessions;
-  const modules = new Map(['client/task-client.mjs', 'client/task-log-reader.mjs', 'client/session-client.mjs', 'client/http-transport.mjs', 'client/session.mjs', 'client/errors.mjs',
-    'contracts/task-read.mjs', 'contracts/task-logs.mjs', 'contracts/dispatch-receipt.mjs', 'contracts/session.mjs', 'contracts/errors.mjs']
+  const modules = new Map(['client/task-client.mjs', 'client/task-log-reader.mjs', 'client/task-diagnostic-format.mjs', 'client/session-client.mjs', 'client/http-transport.mjs', 'client/session.mjs', 'client/errors.mjs',
+    'contracts/task-read.mjs', 'contracts/task-logs.mjs', 'contracts/task-diagnostics.mjs', 'contracts/dispatch-receipt.mjs', 'contracts/session.mjs', 'contracts/errors.mjs']
     .map(name => ['/modules/' + name, new URL('../../src/' + name, import.meta.url)]));
   const origin = await listen(t, async (req, res) => {
     if (req.url === '/') {res.writeHead(200, {'Content-Type': 'text/html'}); res.end('<!doctype html><title>Task SDK fixture</title>'); return;}

@@ -9,6 +9,7 @@ import {DataAccessImportClient} from '../client/data-access-import-client.mjs';
 import {ProjectClient} from '../client/project-client.mjs';
 import {TaskClient} from '../client/task-client.mjs';
 import {TaskLogReader} from '../client/task-log-reader.mjs';
+import {formatTaskDiagnostics} from '../client/task-diagnostic-format.mjs';
 import {SESSION_POLICY} from '../domain/session-policy.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {once} from 'node:events';
@@ -19,6 +20,7 @@ const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE logout
   --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
   --url ORIGIN --credentials FILE task --job UUID
+  --url ORIGIN --credentials FILE task-diagnostics --job UUID [--json]
   --url ORIGIN --credentials FILE task-logs --job UUID [--attempt ID] [--bytes 65536] [--start] [--follow] [--json]
   --url ORIGIN --credentials FILE register-directory --machine ID --source CONFIGURED_ID
   --url ORIGIN --credentials FILE register-project --project-id ID --machine ID --project SLUG --release SHA256
@@ -100,6 +102,11 @@ export async function runCli({argv, stdin, stdout}) {
     current: ({identity, expiry}) => ({...identity, ...expiry}),
     accounts: () => new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)}),
     task: () => new TaskClient({transport}).read({jobId: values.job}),
+    'task-diagnostics': async () => {
+      const result = await new TaskClient({transport}).diagnostics({jobId: values.job});
+      if (values.json) return result;
+      stdout.write(formatTaskDiagnostics(result).join('\n') + '\n');
+    },
     'task-logs': ({session}) => printTaskLogs({transport, session, values, stdout}),
     'register-directory': () => new DirectoryClient({transport}).register({machineId: values.machine, sourceId: values.source}),
     'register-project': () => new ProjectClient({transport}).registerRelease(projectReference()),

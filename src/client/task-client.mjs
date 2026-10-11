@@ -1,6 +1,7 @@
 import {TASK_READ_ROUTE, parseTaskReadRequest, parseTaskReadResult} from '../contracts/task-read.mjs';
 import {InvalidResponse} from '../contracts/errors.mjs';
 import {TASK_LOGS_ROUTE, parseTaskLogRequest, parseTaskLogResult, requireLogCursor} from '../contracts/task-logs.mjs';
+import {TASK_DIAGNOSTICS_ROUTE, parseTaskDiagnosticResult} from '../contracts/task-diagnostics.mjs';
 
 /** Browser and CLI share this observation API, never a scheduler-specific command. */
 export class TaskClient {
@@ -18,6 +19,13 @@ export class TaskClient {
     const result = parseTaskLogResult(response?.result);
     if (result.task.jobId !== input.jobId) throw new InvalidResponse();
     requireLogCursor(result.log.chunk, input);
+    return result;
+  }
+  async diagnostics(request, options) {
+    const input = parseTaskReadRequest(request);
+    const response = await this.transport.request(TASK_DIAGNOSTICS_ROUTE, input, options);
+    const result = parseTaskDiagnosticResult(response?.result);
+    if (result.task.jobId !== input.jobId) throw new InvalidResponse();
     return result;
   }
 }

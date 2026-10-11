@@ -109,7 +109,7 @@ function cli(f, args, input = '') {
   return {child, done};
 }
 
-for (const operation of ['task', 'task-logs']) test(`SIGINT of CLI ${operation} detaches the read through both servers and leaves the original dispatch intact`, async t => {
+for (const operation of ['task', 'task-logs', 'task-diagnostics']) test(`SIGINT of CLI ${operation} detaches the read through both servers and leaves the original dispatch intact`, async t => {
   const f = await remoteFixture(t);
   const login = await cli(f, ['login', '--username', 'alice', '--password-stdin'], loginRequest.password).done;
   assert.equal(login.code, 0, login.stderr);
@@ -120,7 +120,8 @@ for (const operation of ['task', 'task-logs']) test(`SIGINT of CLI ${operation} 
   const canceled = await bounded(command.done);
   assert.equal(canceled.signal, 'SIGINT'); assert.equal(canceled.stdout, '');
   await bounded(f.closed.promise);
-  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].op, operation === 'task' ? 'job_observation' : 'attempt_log_reference');
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].op, {task: 'job_observation', 'task-logs': 'attempt_log_reference', 'task-diagnostics': 'job_diagnostics'}[operation]);
   assert.equal(f.dispatches.getForTask(f.jobId).state, 'SENDING');
   assert.deepEqual(f.errors, []);
 });

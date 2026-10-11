@@ -17,7 +17,7 @@ from gpuq.protocol import ProtocolError
 
 class JobObserverBridgeTests(unittest.TestCase):
     def run_bridge(self, client, value=None):
-        value = value or {'socketPath': '/fixture/gpuq.sock', 'submitKey': 'original-key'}
+        value = value or {'socketPath': '/fixture/gpuq.sock', 'submitKey': 'original-key', 'operation': 'job_observation'}
         output = io.StringIO()
         with (patch.object(M, 'Client', return_value=client) as constructor,
               patch('sys.stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(value).encode()))), redirect_stdout(output)):
@@ -49,11 +49,18 @@ class JobObserverBridgeTests(unittest.TestCase):
         client = SimpleNamespace(call=Mock(side_effect=AssertionError('must not call native')))
         for extra in [{'operation': 'cancel'}, {'jobId': 'different'}, {'logPath': '/private'}]:
             code, result, constructor = self.run_bridge(client,
-                {'socketPath': '/fixture/gpuq.sock', 'submitKey': 'original-key', **extra})
+                {'socketPath': '/fixture/gpuq.sock', 'submitKey': 'original-key', 'operation': 'job_observation', **extra})
             self.assertEqual(code, 1)
             self.assertEqual(result, {'error': {'code': 'GPUQ_JOB_UNAVAILABLE'}})
             constructor.assert_not_called()
         client.call.assert_not_called()
+
+    def test_diagnostics_is_a_separate_fixed_read_and_does_not_fall_back_to_show(self):
+        client = SimpleNamespace(call=Mock(return_value={'resources': {}}))
+        code, result, _ = self.run_bridge(client, {'socketPath': '/fixture/gpuq.sock', 'submitKey': 'original-key', 'operation': 'job_diagnostics'})
+        self.assertEqual(code, 0)
+        self.assertEqual(result, {'result': {'resources': {}}})
+        client.call.assert_called_once_with('job_diagnostics', {'submit_key': 'original-key'})
 
 
 if __name__ == '__main__':

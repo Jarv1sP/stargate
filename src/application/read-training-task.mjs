@@ -1,6 +1,7 @@
 import {ApplicationError} from '../domain/errors.mjs';
 import {requireSameTaskRead, projectNodeJobObservation} from '../domain/task-read.mjs';
 import {nativeDispatchAcceptance} from '../domain/node-dispatch.mjs';
+import {projectNodeDiagnostics, taskDiagnosticFindings} from '../domain/task-diagnostics.mjs';
 
 /** Independent observations: no dashboard rebuild, task mutation or retry of a write. */
 export class ReadTrainingTask {
@@ -12,6 +13,11 @@ export class ReadTrainingTask {
   async logs(actor, {jobId, ...cursor}, options) {
     const {task, kind, value} = await this.#read(actor, jobId, 'logs', cursor, options);
     return {task, log: {kind: kind === 'observed' ? 'chunk' : kind, chunk: value}};
+  }
+  async diagnostics(actor, {jobId}, options) {
+    const {task, kind, value: node, quota} = await this.#read(actor, jobId, 'diagnostics', {}, options);
+    return {task, diagnostics: {kind, node}, quota, findings: taskDiagnosticFindings({task, kind, node, quota}),
+      unknowns: ['live-processes', 'current-node-capacity', 'kernel-counters', 'worker-captures', 'storage-lease-release']};
   }
   async #read(actor, jobId, operation, cursor, {signal} = {}) {
     signal?.throwIfAborted();
@@ -40,7 +46,7 @@ export class ReadTrainingTask {
       if (['jobId', 'accountId', 'requestHash', 'dispatchId', 'machineId', 'gpuCount'].some(key => receipt[key] !== after.binding[key])
         || (after.binding.nodeJobId !== null && receipt.nodeJobId !== after.binding.nodeJobId)) throw new ApplicationError('TASK_OBSERVATION_MISMATCH');
     }
-    return {task: after.task, kind: observation.kind, value: observation.node};
+    return {task: after.task, kind: observation.kind, value: observation.node, quota: after.quota};
   }
 }
 
@@ -54,6 +60,15 @@ export class ObserveNodeJob {
     const native = await this.native.observe({submitKey: binding.dispatchId, machineId: binding.machineId}, {signal});
     signal?.throwIfAborted();
     return native === null ? null : projectNodeJobObservation(binding, native);
+  }
+
+  async diagnostics(reference, {signal} = {}) {
+    signal?.throwIfAborted();
+    const binding = await this.bindings.get(reference);
+    if (binding === null) return null;
+    const native = await this.native.diagnostics({submitKey: binding.dispatchId, machineId: binding.machineId}, {signal});
+    signal?.throwIfAborted();
+    return native === null ? null : projectNodeDiagnostics(binding, native);
   }
 
   async logs({machineId, dispatchId, ...cursor}, {signal} = {}) {

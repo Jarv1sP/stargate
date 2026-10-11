@@ -32,6 +32,7 @@ export class TaskReadLane {
 
   observe(reference, options) {return this.#run('observe', reference, options);}
   logs(reference, options) {return this.#run('logs', reference, options);}
+  diagnostics(reference, options) {return this.#run('diagnostics', reference, options);}
 
   async #run(operation, reference, {signal, check = async () => {}} = {}) {
     signal?.throwIfAborted();

@@ -13,12 +13,14 @@ export class GpuqJobObserver {
     this.socketPath = socketPath; this.python = python; this.timeoutMs = timeoutMs;
     this.logRoot = logRoot;
   }
-  async observe({submitKey}, {signal, timeoutMs = this.timeoutMs} = {}) {
+  observe(reference, options) {return this.#query('job_observation', reference, options);}
+  diagnostics(reference, options) {return this.#query('job_diagnostics', reference, options);}
+  async #query(operation, {submitKey}, {signal, timeoutMs = this.timeoutMs} = {}) {
     signal?.throwIfAborted();
     if (typeof submitKey !== 'string' || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(submitKey)) throw new ApplicationError('INVALID_NATIVE_SUBMIT_KEY');
     try {
       const response = await jsonProcess({program: this.python, args: ['-B', script], timeoutMs: Math.min(timeoutMs, this.timeoutMs), signal,
-        maxBytes: NODE_JOB_OBSERVATION_MAX_BYTES, input: {socketPath: this.socketPath, submitKey}});
+        maxBytes: NODE_JOB_OBSERVATION_MAX_BYTES, input: {socketPath: this.socketPath, submitKey, operation}});
       if (!response || !Object.hasOwn(response, 'result')) throw new Error('Missing native job observation');
       return response.result;
     } catch (cause) {
