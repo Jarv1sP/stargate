@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {rename, stat, writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
 import {computeFixture} from './helpers/v2-compute-fixture.mjs';
 import {trainingSubmission} from './helpers/v2-training-submission.mjs';
 import {createTrainingQueueSchema, SqliteTrainingQueue} from '../src/infrastructure/sqlite/training-queue.mjs';
@@ -91,7 +93,7 @@ test('overlapping queue passes recover one dispatch per job instead of double ch
   assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 2);
 });
 
-test('assembled queue advances a real native project and directory after logout into a durable dispatch', async t => {
+test('assembled queue waits for the original directory and prepares the same task after recovery and logout', async t => {
   const f = await fixture(t, []), project = await projectFixture(t);
   createTrainingCatalogSchema(f.database); createProjectRegistrationSchema(f.database);
   await new RegisterProjectRelease({registrations: new SqliteProjectRegistrations({database: f.database}), projects: project.reader})
@@ -99,14 +101,34 @@ test('assembled queue advances a real native project and directory after logout 
   const input = trainingSubmission(); input.project.release = project.release;
   input.dataSources = [{kind: 'directory', sourceId: 'images'}];
   const jobId = f.queue.enqueue(f.actor, input, f.now).request.jobId;
+  const originalRequest = f.database.prepare('SELECT * FROM v2_training_requests WHERE job_id=?').get(jobId);
+  const {host_path: source} = f.database.prepare("SELECT host_path FROM v2_source_bindings WHERE resource_id='images'").get();
+  const sample = join(source, 'sample.bin');
+  await writeFile(sample, 'existing training data');
+  const before = await stat(sample);
   const app = assembleTrainingQueue({database: f.database, projects: project.reader, python,
     sources: new LocalSourceReader({machineId: 'node-1', catalog: new SqliteSourceCatalog({database: f.database})}),
     pools: {async inspect() {return {machineId: 'node-1', gpuUuids: ['GPU-a', 'GPU-b'], freeGpuUuids: ['GPU-a', 'GPU-b'], dispatchEnabled: true};}}});
   f.database.exec('UPDATE v2_sessions SET revoked=1');
+  await rename(source, source + '-offline');
+  for (let pass = 0; pass < 2; pass++) {
+    const waiting = await app.execute();
+    assert.deepEqual(waiting.outcomes, [{jobId, kind: 'waiting', reason: 'no-current-exclusive-fit'}]);
+    assert.deepEqual(f.queue.pending().map(row => row.jobId), [jobId]);
+    assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_dispatches').get().n, 0);
+    assert.equal(f.database.prepare('SELECT count(*) n FROM v2_compute_claims').get().n, 0);
+    await assert.rejects(stat(source), {code: 'ENOENT'});
+  }
+  await rename(source + '-offline', source);
   const result = await app.execute();
   assert.equal(result.outcomes.length, 1); assert.equal(result.outcomes[0].jobId, jobId);
   assert.equal(result.outcomes[0].kind, 'prepared'); assert.equal(result.outcomes[0].dispatch.gpuCount, 2);
   assert.deepEqual(f.queue.pending(), []);
   assert.equal(f.claims.balancesForTask(jobId, ['node-1'])[0].heldTotal, 2);
   assert.deepEqual(await app.execute(), {outcomes: [], nextCursor: null});
+  assert.deepEqual(f.database.prepare('SELECT * FROM v2_training_requests WHERE job_id=?').get(jobId), originalRequest);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_requests').get().n, 1);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_dispatches').get().n, 1);
+  const after = await stat(sample);
+  assert.deepEqual([after.ino, after.mtimeMs, after.size], [before.ino, before.mtimeMs, before.size]);
 });

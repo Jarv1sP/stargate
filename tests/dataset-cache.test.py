@@ -637,6 +637,21 @@ class DatasetCacheTests(unittest.TestCase):
             reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind='cache')
         self.assertFalse((self.root / '.lock').exists())
 
+    def test_existing_reader_observes_selected_tier_once_without_discovery_probe(self):
+        version = self.register()
+        self.cache.materialize(OWNER, 'sample', version)
+        for kind, root in [('cache', self.root), ('warehouse', self.base / 'protected-original')]:
+            with self.subTest(kind=kind):
+                reader = self.existing_reader(root=root, kind=kind)
+                with patch.object(reader._cache, '_status_snapshot', wraps=reader._cache._status_snapshot) as observe:
+                    self.assertEqual(reader.inspect(user_id=OWNER.user_id, dataset='sample', version=version, kind=kind),
+                                     dict(dataset='sample', version=version, kind=kind, availability='available'))
+                    observe.assert_called_once()
+                    actor, dataset, observed_version = observe.call_args.args
+                    self.assertEqual((actor.user_id, actor.is_admin, dataset, observed_version),
+                                     (OWNER.user_id, False, 'sample', version))
+                    self.assertEqual(observe.call_args.kwargs, {'require_protected': kind == 'warehouse'})
+
     def test_existing_reader_checks_owner_readiness_and_protected_warehouse_tier(self):
         version = self.register()
         reader = self.existing_reader()
