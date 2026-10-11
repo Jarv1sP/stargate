@@ -2358,6 +2358,61 @@ class DatasetCache:
             leases.append(lease)
         return leases
 
+    def _job_lease_marker(self, owner, job_id):
+        key = hashlib.sha256(_json_bytes([owner, job_id])).hexdigest()
+        return self.root / '.job-lease-closures' / (key + '.json'), dict(schema=1, owner=owner, jobId=job_id)
+
+    def _job_leases_closed(self, owner, job_id):
+        path, expected = self._job_lease_marker(owner, job_id)
+        try:
+            stored = _read_json(path)
+        except FileNotFoundError:
+            return False
+        if stored != expected:
+            raise CacheError('job lease closure identity differs')
+        return True
+
+    def _require_job_leases_open(self, owner, job_id):
+        if self._job_leases_closed(owner, job_id):
+            raise CacheError('job data leases are closed; use a new job for another run')
+
+    def close_job_leases(self, actor, owner, job_id, references):
+        """Trusted scheduler only, AFTER fencing execution of this entire job.
+
+        Fence future acquisition before removing any matching holds. Both
+        operations share the ordinary cache lock, including across processes.
+        Replays finish partial cleanup of the supplied sources without reopening
+        the job or its data. The caller supplies its complete source set.
+        """
+        self._actor(actor, admin=True)
+        _identifier(owner, USER_RE); _identifier(job_id, USER_RE)
+        sources = list(dict.fromkeys((ref['dataset'], ref['version']) for ref in references))
+        if not sources:
+            raise CacheError('job lease closure requires its source references')
+        for dataset, version in sources:
+            self._paths(dataset, version)
+        removed = 0
+        with self._locked():
+            marker, record = self._job_lease_marker(owner, job_id)
+            if not self._job_leases_closed(owner, job_id):
+                _mkdir(marker.parent)
+                with _directory(self.root) as root:
+                    os.fsync(root)
+                _write_json(marker, record)
+            for dataset, version in sources:
+                matching = [lease for lease in self._leases(dataset, version)
+                            if lease['owner'] == owner and lease['jobId'] == job_id]
+                try:
+                    with _directory(self._paths(dataset, version)['.leases']) as directory:
+                        for lease in matching:
+                            os.unlink(lease['id'] + '.json', dir_fd=directory)
+                            removed += 1
+                        os.fsync(directory)
+                except FileNotFoundError:
+                    if matching:
+                        raise
+            return {'closed': True, 'released': True, 'removedLeases': removed}
+
     @contextlib.contextmanager
     def _lease_scope(self, actor, dataset, version, job_id, require_protected):
         if type(require_protected) is not bool:
@@ -2397,6 +2452,7 @@ class DatasetCache:
             raise CacheError('invalid lease ID')
         with contextlib.ExitStack() as handles:
             with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease, identity):
+                self._require_job_leases_open(actor.user_id, job_id)
                 if lease is None or lease['id'] != lease_id:
                     raise CacheError('dataset lease does not match the task')
                 descriptor = handles.enter_context(_directory(paths['ready'] / 'data'))
@@ -2407,6 +2463,7 @@ class DatasetCache:
     def acquire_lease(self, actor, dataset, version, job_id, *, require_protected=False):
         """Executor must validate job ownership before invoking this method."""
         with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease, _):
+            self._require_job_leases_open(actor.user_id, job_id)
             if lease is None:
                 # Existing READY reads do not consume copy/publication capacity.
                 # The small atomic lease write still has to succeed; real

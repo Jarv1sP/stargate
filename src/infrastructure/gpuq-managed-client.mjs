@@ -11,9 +11,10 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const time = value => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
 
-function completionReceipt(result, grantId, expectedDigest) {
+export function parseNativeCompletionReceipt(result, {submitKey, grantId, expectedDigest}) {
   if (!exact(result, ['protocol', 'job_id', 'submit_key', 'submit_digest', 'grant_id', 'grant_revision', 'state',
     'native_version', 'finished_at', 'sealed_at', 'latest_attempt']) || result.protocol !== 'managed-completion-v1'
+    || result.submit_key !== submitKey || typeof result.job_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(result.job_id)
     || !digest(result.submit_digest) || !uuid(result.grant_id)
     || (grantId !== undefined && result.grant_id !== grantId) || (expectedDigest !== undefined && result.submit_digest !== expectedDigest)
     || !Number.isSafeInteger(result.grant_revision) || result.grant_revision < 1
@@ -65,8 +66,8 @@ export class GpuqManagedClient {
         input: {socketPath: this.socketPath, operation, args, maxRequestBytes: this.maxRequestBytes,
           ...(expectedDigest === undefined ? {} : {expectedDigest})}});
       if (result === null && ['status', 'completion'].includes(operation)) return null;
+      if (['complete', 'completion'].includes(operation)) return parseNativeCompletionReceipt(result, {submitKey, grantId, expectedDigest: args.submit_digest});
       if (!result || result.submit_key !== submitKey || typeof result.job_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(result.job_id)) throw new Error('Managed reply identity mismatch');
-      if (['complete', 'completion'].includes(operation)) return completionReceipt(result, grantId, args.submit_digest);
       if (['native', 'external-v1'].includes(result.mode) && result.grant === null && operation === 'status') return result;
       const grant = result.grant;
       if (result.mode !== 'external-v1' || !grant || !uuid(grant.grant_id) || !Number.isSafeInteger(grant.revision) || grant.revision < 1

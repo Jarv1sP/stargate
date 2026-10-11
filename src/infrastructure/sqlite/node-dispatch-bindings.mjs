@@ -2,6 +2,7 @@ import {transaction, readTransaction} from './transaction.mjs';
 import {nodeDispatchBinding} from '../../domain/node-dispatch.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
 import {verifyRuntimePlan} from '../training-launch-compiler.mjs';
+import {nodeCompletionsSchema} from './node-completions.mjs';
 
 const runtimePlanSchema = `CREATE TABLE v2_node_runtime_plans (
   dispatch_id TEXT PRIMARY KEY REFERENCES v2_node_launch_specs(dispatch_id),
@@ -18,7 +19,7 @@ export function createNodeDispatchBindingsSchema(database) {
     dispatch_id TEXT PRIMARY KEY, binding_json TEXT NOT NULL
   ); CREATE TABLE v2_node_launch_specs (
     dispatch_id TEXT PRIMARY KEY REFERENCES v2_node_dispatch_bindings(dispatch_id), submission_json TEXT NOT NULL
-  ); ${runtimePlanSchema}`));
+  ); ${runtimePlanSchema}; ${nodeCompletionsSchema}`));
 }
 
 /** Node-local immutable mapping, written by the trusted launch builder, not public input. */

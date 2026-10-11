@@ -25,6 +25,14 @@ class LegacyDataLeaser:
     def lookup(self, *, user_id, job_id, dataset, version, kind):
         return self._call('lookup', user_id=user_id, job_id=job_id, dataset=dataset, version=version, kind=kind)
 
+    def close(self, *, user_id, job_id, dataset, version, kind):
+        """Internal finalizer only; its native completion proof precedes this call."""
+        if kind != self._kind:
+            raise ValueError('Managed lease differs from configured kind')
+        result = self._cache.close_job_leases(self._module.Principal('scheduler', True), user_id, job_id,
+                                              [{'dataset': dataset, 'version': version}])
+        return {**result, 'jobId': job_id, 'accountId': user_id, 'dataset': dataset, 'version': version, 'kind': kind}
+
     def _principal(self, user_id, dataset, version, kind):
         if kind != self._kind:
             raise ValueError('Managed lease differs from configured kind')
@@ -57,7 +65,7 @@ def main():
         if len(raw) > 8192:
             raise ValueError('Lease request too large')
         value = json.loads(raw)
-        if not isinstance(value, dict) or set(value) != {'config', 'request', 'operation'} or value['operation'] not in ('acquire', 'lookup'):
+        if not isinstance(value, dict) or set(value) != {'config', 'request', 'operation'} or value['operation'] not in ('acquire', 'lookup', 'close'):
             raise ValueError('Invalid lease envelope')
         config, request = value['config'], value['request']
         if not isinstance(config, dict) or set(config) != {'root', 'kind', 'mountPoint', 'leaseVersion'}:
@@ -67,7 +75,7 @@ def main():
         spec = importlib.util.spec_from_file_location('v2_dataset_lease_store', Path(__file__).resolve().parents[2] / 'deploy/dataset-cache.py')
         module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
         leaser = LegacyDataLeaser(module, root=config['root'], kind=config['kind'], mount_point=config['mountPoint'], lease_version=config['leaseVersion'])
-        method = leaser.acquire if value['operation'] == 'acquire' else leaser.lookup
+        method = getattr(leaser, value['operation'])
         result = method(user_id=request['userId'], job_id=request['jobId'], dataset=request['dataset'], version=request['version'], kind=request['kind'])
         print(json.dumps({'result': result}))
         return 0

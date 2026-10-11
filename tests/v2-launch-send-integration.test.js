@@ -50,6 +50,8 @@ import {createSourceInspectionHandler} from '../src/api/source-inspection-handle
 import {PROJECT_INSPECTION_ROUTE, PROJECT_RUNTIME_ROUTE} from '../src/contracts/project-inspection.mjs';
 import {SOURCE_INSPECTION_ROUTE} from '../src/contracts/source-inspection.mjs';
 import {GPU_POOL_ROUTE} from '../src/contracts/gpu-pool.mjs';
+import {assembleNodeFinalization} from '../src/bootstrap/node-finalization.mjs';
+import {SqliteNodeCompletions} from '../src/infrastructure/sqlite/node-completions.mjs';
 
 const python = process.env.V2_PYTHON || 'python3', run = promisify(execFile);
 async function nativeServer(t) {
@@ -103,6 +105,72 @@ async function fixture(t, {prepare = true, select = true} = {}) {
   return {...f, project, data, node, server, runner, submission, jobId, selected, receipt, dispatches, native, app, bindings,
     context, leaser, request, lease, reference: selected ? {machineId: 'node-1', dispatchId: selected.dispatchId} : null};
 }
+
+function finalizer(f) {
+  return assembleNodeFinalization({database: f.node, machineId: 'node-1', socketPath: f.server.socketPath,
+    roots: f.data.roots, python});
+}
+
+async function acceptAndCancel(f) {
+  const permit = f.dispatches.beginSend(f.jobId, f.now), accepted = await f.app.execute(f.reference);
+  f.dispatches.recordSendOutcome({dispatchId: f.selected.dispatchId, senderToken: permit.senderToken, nodeJobId: accepted.receipt.nodeJobId});
+  await run(python, ['-B', '-c',
+    "import sys; sys.path.insert(0,sys.argv[1]); from gpuq.protocol import Client; Client(sys.argv[2]).call('cancel',{'job_id':sys.argv[3]})",
+    fileURLToPath(new URL('../gpuq', import.meta.url)), f.server.socketPath, accepted.receipt.nodeJobId]);
+  return accepted.receipt.nodeJobId;
+}
+
+test('node finalization seals native execution and releases only its real data lease while preserving outputs and platform quota', async t => {
+  const f = await fixture(t), neighbourJob = randomUUID();
+  const neighbour = await f.leaser.acquire({...f.request, jobId: neighbourJob}, f.context);
+  const claimFile = join(f.project.root, 'projects-v2', '.run-claims', f.jobId + '.json');
+  const claimText = await readFile(claimFile, 'utf8'), claim = JSON.parse(claimText);
+  const output = join(f.project.root, 'projects-v2', claim.owner, 'training', 'runs', f.jobId, 'output', 'keep.txt');
+  await writeFile(output, 'retained training output');
+  const sample = join(f.data.directory, 'approved', 'sample.txt'), before = await stat(sample);
+  const nativeId = await acceptAndCancel(f);
+  f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
+  const done = await finalizer(f).execute(f.reference);
+  assert.equal(done.dataReleased, true); assert.equal(done.binding.jobId, f.jobId);
+  assert.equal(done.native.job_id, nativeId); assert.equal(done.native.state, 'CANCELED');
+  assert.equal((await f.native.allocation({submitKey: f.selected.dispatchId})).grant.max_gpu_count, 0);
+  assert.equal(await f.leaser.lookup(f.request, f.context), null);
+  assert.deepEqual(await f.leaser.lookup({...f.request, jobId: neighbourJob}, f.context), neighbour);
+  await assert.rejects(f.leaser.acquire(f.request, f.context), error => error.code === 'MANAGED_DATA_LEASE_UNAVAILABLE');
+  assert.deepEqual(await finalizer(f).execute(f.reference), done);
+  assert.equal(await readFile(output, 'utf8'), 'retained training output');
+  assert.equal(await readFile(claimFile, 'utf8'), claimText);
+  const after = await stat(sample);
+  assert.deepEqual([after.ino, after.size, after.mtimeMs], [before.ino, before.size, before.mtimeMs]);
+  assert.equal(f.database.prepare('SELECT state FROM v2_compute_claims').get().state, 'HELD');
+  assert.equal(f.node.prepare('SELECT count(*) n FROM v2_node_completions').get().n, 1);
+});
+
+test('a node receipt write failure after actual lease cleanup recovers from native and cache records', async t => {
+  const f = await fixture(t); await acceptAndCancel(f);
+  f.node.exec("CREATE TEMP TRIGGER fail_finalize BEFORE INSERT ON v2_node_completions BEGIN SELECT RAISE(ABORT,'fixture finalization write failure'); END");
+  await assert.rejects(finalizer(f).execute(f.reference), /fixture finalization write failure/);
+  assert.equal(new SqliteNodeCompletions({database: f.node, machineId: 'node-1'}).get(f.reference), null);
+  assert.equal(await f.leaser.lookup(f.request, f.context), null);
+  const original = await f.native.completion({submitKey: f.selected.dispatchId});
+  assert.ok(original);
+  f.node.exec('DROP TRIGGER fail_finalize');
+  const fresh = finalizer(f);
+  fresh.native.complete = async () => {throw new Error('must query the original native completion');};
+  const done = await fresh.execute(f.reference);
+  assert.deepEqual(done.native, original); assert.equal(done.dataReleased, true);
+  assert.equal(f.database.prepare('SELECT state FROM v2_compute_claims').get().state, 'HELD');
+});
+
+test('a native task still pending cannot close data or create a node completion', async t => {
+  const f = await fixture(t), permit = f.dispatches.beginSend(f.jobId, f.now);
+  const accepted = await f.app.execute(f.reference);
+  f.dispatches.recordSendOutcome({dispatchId: f.selected.dispatchId, senderToken: permit.senderToken, nodeJobId: accepted.receipt.nodeJobId});
+  await assert.rejects(finalizer(f).execute(f.reference), error => error.code === 'NATIVE_OUTCOME_UNCONFIRMED');
+  assert.deepEqual(await f.leaser.lookup(f.request, f.context), f.lease);
+  assert.equal(f.node.prepare('SELECT count(*) n FROM v2_node_completions').get().n, 0);
+  await assert.rejects(stat(join(f.data.directory, 'warehouse', '.job-lease-closures')), {code: 'ENOENT'});
+});
 
 test('real prepared inputs and coordinator authorization reach native acceptance once, without another preparation or capacity scan', async t => {
   const f = await fixture(t);

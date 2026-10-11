@@ -27,6 +27,8 @@ export class ManagedDataLeaser {
   }
   acquire(request, context) {return this.#call('acquire', request, context);}
   lookup(request, context) {return this.#call('lookup', request, context);}
+  /** Private finalizer: callers must already hold the original native completion. */
+  close(request, context) {return this.#call('close', request, context);}
   async #call(operation, request, {actor} = {}) {
     const input = parseManagedLeaseRequest(request), {source} = input;
     if (input.machineId !== this.machineId) throw new ApplicationError('SOURCE_NODE_MISMATCH');
@@ -41,6 +43,11 @@ export class ManagedDataLeaser {
       if (result === null && operation === 'lookup') return null;
       if (result.dataset !== source.datasetId || result.version !== source.version || result.kind !== source.kind
         || result.jobId !== input.jobId || result.accountId !== actor.id) throw new Error('Lease identity mismatch');
+      if (operation === 'close') {
+        if (typeof result.closed !== 'boolean' || typeof result.released !== 'boolean' || !Number.isSafeInteger(result.removedLeases)
+          || result.removedLeases < 0) throw new Error('Lease closure is not confirmed');
+        return {...input, accountId: actor.id, closed: result.closed, released: result.released, removedLeases: result.removedLeases};
+      }
       return parseManagedLeaseResult({machineId: this.machineId, source, jobId: result.jobId, accountId: result.accountId,
         leaseId: result.leaseId, readOnly: result.readOnly});
     } catch (cause) {
