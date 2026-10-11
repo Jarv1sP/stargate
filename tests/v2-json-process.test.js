@@ -73,7 +73,13 @@ for (const mode of ['timeout', 'stdout', 'stderr', 'parent-exit']) {
         let state;
         for (let attempt = 0; attempt < 100; attempt++) {
           try { state = (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1][0]; }
-          catch (error) { if (error.code !== 'ENOENT') throw error; state = null; }
+          catch (error) {
+            // A process may disappear between procfs open and read. Reopen to
+            // prove absence; ESRCH by itself is not a successful cleanup check.
+            if (error.code === 'ESRCH') continue;
+            if (error.code !== 'ENOENT') throw error;
+            state = null;
+          }
           if (state === null || (pid === pids[1] && state === 'Z')) break;
           await delay(10);
         }
