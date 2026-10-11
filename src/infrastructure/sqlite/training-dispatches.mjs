@@ -135,6 +135,20 @@ export class SqliteTrainingDispatches {
     });
   }
 
+  /** Quota authorization only; project/data leases and runtime admission are still separate. */
+  authorizeInitialAllocation(binding) {
+    return readTransaction(this.database, () => {
+      const row = this.#delivery(binding.dispatchId);
+      if (!row || row.state !== 'SENDING' || row.job_id !== binding.jobId || row.account_id !== binding.accountId
+        || row.machine_id !== binding.machineId || row.gpu_count !== binding.gpuCount || row.payload_hash !== binding.requestHash) {
+        throw new ApplicationError('NODE_LAUNCH_NOT_AUTHORIZED');
+      }
+      this.claims.requireHeldTaskClaimWithinTransaction(row.job_id, {machineId: row.machine_id, gpuCount: row.gpu_count});
+      return {scope: 'initial-quota', dispatchId: row.dispatch_id, jobId: row.job_id, accountId: row.account_id,
+        machineId: row.machine_id, gpuCount: row.gpu_count, requestHash: row.payload_hash, grantId: row.dispatch_id};
+    });
+  }
+
   /** Trusted node-query evidence, not a user-supplied status or permission to send. */
   confirmAcceptance(observed) {
     requireNodeJobId(observed?.nodeJobId);

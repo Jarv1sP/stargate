@@ -73,6 +73,7 @@
 - `GpuqManagedClient`：节点私有固定操作桥，仅提交受管任务、查许可和按修订更新许可；无普通提交回退或自动重试。原生明确拒绝与可能已提交的未知结果区分，网络／内部错误保持未确认；状态查询区分缺任务、普通任务和缺许可的受管任务。错误文本不回传命令／环境，尚未接实际节点发送用例。
 - `SubmitNodeDispatch`：只接受固定节点／派发引用，先恢复原接收回执，再读取私有持久规格并强制调用启动准入。许可身份须匹配原任务与额度，之后只调用受管提交并再次核对持久回执；不接受新 argv/env、不在调用内重试。准入实现和 HTTP 发送入口尚未组装，调用方仍需协调器发送许可。
 - 扩卡明确使用 `fromReservedGpuCount`（原预留额度）、`sourceGpuCount`（原生尝试实际卡数）和 `targetGpuCount`；额度差额按前者计算，原生计划的 from_gpu_count 按实际卡数核对。两种源值不能互相默认，旧实验记录需显式迁移并核实物理源值。
+- `authorizeInitialAllocation`：同一只读事务核对 SENDING 派发、完整平台身份、当前任务授权和未改变的 HELD 额度；不修复缺失预留、不放行 UNKNOWN／ACCEPTED 重发。输出 scope=initial-quota，只代表额度；节点发送要求 launch-ready，不能跳过尚待接入的项目／数据准入。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。

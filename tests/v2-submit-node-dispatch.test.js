@@ -27,7 +27,7 @@ function fixture(t) {
     return {job_id: nativeReceipt.job_id};
   }};
   let approvals = 0;
-  const admission = {async acquire(value) {approvals++; return {...value, grantId: value.dispatchId};}};
+  const admission = {async acquire(value) {approvals++; return {...value, scope: 'launch-ready', grantId: value.dispatchId};}};
   const app = new SubmitNodeDispatch({bindings, receipts: new LookupNodeDispatch({bindings, native: reader}), admission, native});
   return {db, bindings, binding, submission, nativeReceipt, calls, state, native, admission, app,
     approvals: () => approvals, reference: {machineId: 'node-1', dispatchId: binding.dispatchId}};
@@ -48,7 +48,14 @@ test('admission rejection and mismatched approval cannot reach native submission
   const f = fixture(t);
   f.admission.acquire = async () => {throw new ApplicationError('FORBIDDEN');};
   await assert.rejects(f.app.execute(f.reference), hasCode('FORBIDDEN'));
-  f.admission.acquire = async value => ({...value, grantId: value.dispatchId, gpuCount: 4});
+  f.admission.acquire = async value => ({...value, scope: 'launch-ready', grantId: value.dispatchId, gpuCount: 4});
+  await assert.rejects(f.app.execute(f.reference), hasCode('NODE_LAUNCH_NOT_AUTHORIZED'));
+  assert.equal(f.calls.length, 0);
+});
+
+test('quota-only authorization is not enough to bypass project and data launch admission', async t => {
+  const f = fixture(t);
+  f.admission.acquire = async value => ({...value, scope: 'initial-quota', grantId: value.dispatchId});
   await assert.rejects(f.app.execute(f.reference), hasCode('NODE_LAUNCH_NOT_AUTHORIZED'));
   assert.equal(f.calls.length, 0);
 });

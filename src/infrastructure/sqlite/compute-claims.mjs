@@ -87,6 +87,24 @@ export class SqliteComputeClaims {
     return transaction(this.database, () => this.claimWithinTransaction(actor, command, now));
   }
 
+  #requireCurrentLimits(actor, machineId, accountRole) {
+    const balance = this.#balance(actor, machineId, accountRole);
+    if (balance.heldOnMachine > balance.machineLimit || (balance.totalLimit !== null && balance.heldTotal > balance.totalLimit)) {
+      throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
+    }
+  }
+
+  /** Read-only check inside the caller's transaction; never repairs a missing hold. */
+  requireHeldTaskClaimWithinTransaction(jobId, selection) {
+    const context = new SqliteTaskAuthority({database: this.database}).contextWithinTransaction(jobId);
+    requireTaskPlacement(context.submission, selection);
+    const row = this.database.prepare('SELECT * FROM v2_compute_claims WHERE job_id=?').get(jobId);
+    if (!row || row.state !== 'HELD' || row.machine_id !== selection.machineId || row.gpu_count !== selection.gpuCount
+      || row.reserved_gpu_count < selection.gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CHANGED');
+    this.#requireCurrentLimits({id: context.accountId}, selection.machineId, context.accountRole);
+    return receipt(row);
+  }
+
   /** Caller owns BEGIN IMMEDIATE; new dispatch preparation also rechecks existing holds. */
   claimWithinTransaction(actor, command, now, {requireCurrentAccess = false} = {}) {
     const session = this.#authorize(actor, now);
@@ -110,10 +128,7 @@ export class SqliteComputeClaims {
     if (existing) {
       if (existing.machine_id !== machineId || existing.gpu_count !== gpuCount) throw new ApplicationError('COMPUTE_CLAIM_CONFLICT');
       if (requireCurrentAccess) {
-        const balance = this.#balance(actor, machineId, accountRole);
-        if (balance.heldOnMachine > balance.machineLimit || (balance.totalLimit !== null && balance.heldTotal > balance.totalLimit)) {
-          throw new ApplicationError('COMPUTE_QUOTA_EXCEEDED');
-        }
+        this.#requireCurrentLimits(actor, machineId, accountRole);
       }
       return receipt(existing);
     }

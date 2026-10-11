@@ -14,7 +14,7 @@ export class SubmitNodeDispatch {
     const {binding, submission} = launch;
     const approval = await this.admission.acquire({...binding});
     const fields = ['dispatchId', 'jobId', 'accountId', 'machineId', 'gpuCount', 'requestHash'];
-    if (!approval || fields.some(field => approval[field] !== binding[field]) || approval.grantId !== dispatchId) {
+    if (!approval || approval.scope !== 'launch-ready' || fields.some(field => approval[field] !== binding[field]) || approval.grantId !== dispatchId) {
       throw new ApplicationError('NODE_LAUNCH_NOT_AUTHORIZED');
     }
     // Native cap is the initial reserved quota, not the elastic submission maximum.
