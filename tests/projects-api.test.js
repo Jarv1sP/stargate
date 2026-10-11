@@ -86,7 +86,7 @@ test('catalog filters archived instances only in presentation and keeps unreacha
   await assert.rejects(f.service.invoke(f.user.token,'projects.catalog',{userId:f.member.id}));
  }finally{await f.close();}
 });
-test('lifecycle controls bind exact owner, revision and UUID; history cannot be retired and unknown dispatch cannot archive',async()=>{
+test('lifecycle controls bind exact owner, revision and UUID; completed history permits retirement and unknown dispatch cannot archive',async()=>{
  const f=await fixture();try{
   const ref={project:'alpha',revision:0},key=randomUUID(),digest='c'.repeat(64);
   for(const operation of ['projects.archive','projects.unarchive']){
@@ -97,7 +97,13 @@ test('lifecycle controls bind exact owner, revision and UUID; history cannot be 
   await f.call('projects.retire.status',{project:'alpha',key});
   for(const extra of [{revision:-1},{revision:'0'},{key:'invalid'},{manifestSha256:'short'},{hostPath:'/data1'},{machine:'gpu-2'}])await assert.rejects(f.call('projects.retire',{...ref,key,manifestSha256:digest,...extra}));
   f.service.store.jobs.push({id:randomUUID(),userId:f.member.id,machine:'gpu-1',project:'alpha',state:'SUCCEEDED',cards:1,key:randomUUID(),name:'fixture',spec:{argv:['true']}});
+  const history=structuredClone(f.service.store.jobs.at(-1)),before=f.calls.length;
+  await f.call('projects.retire',{...ref,key,manifestSha256:digest});
+  assert.equal(f.calls.length,before+1);assert.equal(f.calls.at(-1).operation,'projects.retire');
+  assert.deepEqual(f.service.store.jobs.at(-1),history);
+  f.service.store.jobs.at(-1).state='RUNNING';
   await assert.rejects(f.call('projects.retire',{...ref,key,manifestSha256:digest}),e=>e.status===409);
+  assert.equal(f.calls.length,before+1,'live references reject before dispatch');
   f.service.store.jobs.at(-1).state='UNKNOWN';await assert.rejects(f.call('projects.archive',ref),e=>e.status===409);
   f.service.store.jobs.at(-1).nodeJobId='confirmed-native';await f.call('projects.archive',ref);
   const revision=f.service.operationalMaintenance(f.admin.principal).revision;
