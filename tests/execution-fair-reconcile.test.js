@@ -105,8 +105,8 @@ test('a pending foreground job rechecks current authority after its lane becomes
   assert.equal(f.calls.length,1);assert.equal(f.job(second.id).dispatchPending,true);
   await f.service.enqueue(()=>{f.service.store.users.find(u=>u.id==='builtin-admin').enabled=false;f.service.save();});
   held.resolve();await work;
-  assert.equal(f.calls.length,1);assert.equal(f.job(second.id).dispatchPending,true);assert.match(f.job(second.id).error,/授权已改变/);
-  assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);
+  assert.equal(f.calls.length,1);assert.equal(f.job(second.id).state,'FAILED');assert.match(f.job(second.id).error,/授权已改变/);
+  assert.equal(f.job(second.id).notSubmitted,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
 });
 
 test('lost first reply is not re-observed or replayed in the active pass',{timeout:3000},async t=>{
