@@ -33,7 +33,7 @@ F = load('native_authority_fixture', 'tests/gpuq-priority.test.py')
 A = load('native_authority', 'src/infrastructure/native-execution-authority.py')
 R = load('authorized_training_runtime', 'src/infrastructure/training-runtime.py')
 RF = load('authorized_runtime_fixture', 'tests/v2-training-runtime-inputs.test.py')
-from gpuq.backends import BackendError, UserSystemdBackend
+from gpuq.backends import BackendError, UnitNotFoundError, UserSystemdBackend
 from gpuq.protocol import Client
 from gpuq.rpc import _ThreadingUnixServer
 
@@ -182,6 +182,49 @@ class NativeAuthorityTests(unittest.TestCase):
         self.assertIsNone(attempt['invocation_id'])
         self.assertIsNone(attempt['main_pid'])
         self.assertIsNone(attempt['start_ticks'])
+
+    def test_runner_authenticates_over_real_socket_before_systemd_start_receipt_is_committed(self):
+        self.store.update_attempt(self.attempt_id, state='PLANNED', main_pid=None, start_ticks=None, invocation_id=None)
+        self.store.update_job(self.job['id'], state='STARTING')
+        job, attempt = self.store.get_job(self.job['id']), self.store.get_attempt(self.attempt_id)
+        action = {'id': str(uuid.uuid4()), 'job_id': job['id'], 'attempt_id': attempt['id'],
+                  'payload': self.coordinator._start_payload(job, attempt)}
+        path = self.root / 'initial-runner.sock'
+        server = _ThreadingUnixServer(path, self.coordinator.handle_api, os.getuid(), 262144)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        observed = []
+        authority = self.authority(native=Client(path, timeout=3))
+        def starting(**kwargs):
+            pending = self.store.get_attempt(self.attempt_id)
+            self.assertEqual(pending['state'], 'STARTING')
+            self.assertIsNone(pending['invocation_id'])
+            self.assertIsNone(pending['main_pid'])
+            self.assertIsNone(pending['start_ticks'])
+            self.assertEqual(self.store.get_job(job['id'])['state'], 'STARTING')
+            self.assertEqual(kwargs['unit_name'], self.unit)
+            observed.append(authority.require_current())
+            return self.backend.status(unit_name=self.unit, description_token=attempt['unit_token'])
+        self.systemd.status.side_effect = UnitNotFoundError('unit not created yet')
+        self.systemd.start.side_effect = starting
+        try:
+            with self.assertRaisesRegex(A.NativeExecutionError, 'not current and runnable'):
+                authority.require_current()
+            with (patch.object(self.coordinator, '_fresh_devices_for_start'),
+                  patch('gpuq.coordinator.process_start_ticks', return_value=self.proc.start_ticks)):
+                # The native action really holds this lock during start. The
+                # separate socket handler must not wait for the action to end.
+                with self.coordinator._lock:
+                    self.coordinator._execute_start(action)
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(self.store.get_attempt(self.attempt_id)['state'], 'RUNNING')
+            self.assertEqual(self.store.get_job(job['id'])['state'], 'RUNNING')
+            self.assertEqual(authority.require_current(), observed[0])
+            self.assertEqual(len(self.store.list_attempts(job_id=job['id'])), 1)
+            self.assertEqual(len(self.store.list_leases(job_id=job['id'])), 2)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(5)
+        self.assertFalse(thread.is_alive())
 
     def test_actual_linux_process_observation_is_not_a_managed_unit_proof(self):
         if not Path('/proc/self/stat').exists():

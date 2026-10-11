@@ -3666,6 +3666,12 @@ class Coordinator:
             try:
                 self._require_start_allocation(job, attempt)
                 self._require_release_open()
+                if attempt['state'] == AttemptState.PLANNED.value:
+                    # Publish the start intent before the process can query its
+                    # identity; RUNNING still requires the actual unit receipt.
+                    self.store.update_attempt(attempt['id'], state=AttemptState.STARTING,
+                                              expected_states=[AttemptState.PLANNED])
+                self._require_release_open()
                 status = self.systemd.start(
                     unit_name=payload["unit_name"],
                     description_token=payload["unit_token"],
@@ -4795,6 +4801,11 @@ class Coordinator:
                     continue
 
     def handle_api(self, operation: str, arguments: dict[str, Any]) -> Any:
+        # This query observes only one SQLite statement. Do not make a newly
+        # started runner wait behind slow host probes/systemd operations. Store
+        # retains its own lock and transaction boundary; other APIs stay below.
+        if operation == 'execution_snapshot':
+            return self._api_execution_snapshot(arguments)
         with self._lock:
             if operation not in _READ_ONLY_OPERATIONS:
                 self._require_release_open()
@@ -4820,8 +4831,6 @@ class Coordinator:
                 return self._api_show(arguments)
             if operation == "submission_receipt":
                 return self._api_submission_receipt(arguments)
-            if operation == "execution_snapshot":
-                return self._api_execution_snapshot(arguments)
             if operation == "scale_up_receipt":
                 return self._api_scale_up_receipt(arguments)
             if operation == "job_watch":

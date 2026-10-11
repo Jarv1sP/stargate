@@ -173,6 +173,24 @@ class ExecutionSnapshotTests(unittest.TestCase):
         self.systemd.start.assert_not_called()
         self.assertEqual(len(self.store.list_jobs()), 1)
 
+    def test_snapshot_bypasses_coordinator_work_lock_without_writing_state(self):
+        job = self.managed()
+        attempt = self.attempt(job)
+        path = self.root / 'observation-lane.sock'
+        server = _ThreadingUnixServer(path, self.coordinator.handle_api, os.getuid(), 262144)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        connection = self.store._get_connection()
+        before = '\n'.join(connection.iterdump())
+        try:
+            with self.coordinator._lock:
+                result = Client(path, timeout=3).call('execution_snapshot', {'submit_key': job['submit_key'], 'attempt_id': attempt['id']})
+            self.assertEqual(result, self.store.get_execution_snapshot(job['submit_key'], attempt['id']))
+            self.assertEqual('\n'.join(connection.iterdump()), before)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(5)
+        self.assertFalse(thread.is_alive())
+
 
 if __name__ == '__main__':
     unittest.main()
