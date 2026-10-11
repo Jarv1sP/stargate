@@ -1,13 +1,24 @@
 import {transaction, readTransaction} from './transaction.mjs';
 import {nodeDispatchBinding} from '../../domain/node-dispatch.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
+import {verifyRuntimePlan} from '../training-launch-compiler.mjs';
+
+const runtimePlanSchema = `CREATE TABLE v2_node_runtime_plans (
+  dispatch_id TEXT PRIMARY KEY REFERENCES v2_node_launch_specs(dispatch_id),
+  plan_json TEXT NOT NULL, plan_digest TEXT NOT NULL
+)`;
+
+/** Explicit upgrade of an existing experimental node store; never called on read. */
+export function createNodeRuntimePlansSchema(database) {
+  transaction(database, () => database.exec(runtimePlanSchema));
+}
 
 export function createNodeDispatchBindingsSchema(database) {
   transaction(database, () => database.exec(`CREATE TABLE v2_node_dispatch_bindings (
     dispatch_id TEXT PRIMARY KEY, binding_json TEXT NOT NULL
   ); CREATE TABLE v2_node_launch_specs (
     dispatch_id TEXT PRIMARY KEY REFERENCES v2_node_dispatch_bindings(dispatch_id), submission_json TEXT NOT NULL
-  )`));
+  ); ${runtimePlanSchema}`));
 }
 
 /** Node-local immutable mapping, written by the trusted launch builder, not public input. */
@@ -37,17 +48,34 @@ export class SqliteNodeDispatchBindings {
 
   /** Called with normalized output from GpuqLaunchSpec; private execution material. */
   prepare(input, built) {
+    return transaction(this.database, () => this.#prepare(input, built));
+  }
+  #prepare(input, built) {
     const binding = nodeDispatchBinding(input), submission = built.submission;
     if (built.nativeDigest !== binding.nativeDigest || submission.submit_key !== binding.dispatchId
       || submission.owner !== binding.nativeOwner || submission.name !== binding.nativeName
       || submission.gpu_count !== binding.nativeMaxGpus) throw new ApplicationError('NODE_LAUNCH_IDENTITY_MISMATCH');
     const payload = JSON.stringify(submission);
+    this.#bind(binding);
+    const existing = this.database.prepare('SELECT submission_json FROM v2_node_launch_specs WHERE dispatch_id=?').get(binding.dispatchId);
+    if (existing && existing.submission_json !== payload) throw new ApplicationError('NODE_LAUNCH_SPEC_CONFLICT');
+    if (!existing) this.database.prepare('INSERT INTO v2_node_launch_specs VALUES(?,?)').run(binding.dispatchId, payload);
+    return {binding, submission: JSON.parse(existing?.submission_json ?? payload)};
+  }
+
+  /** Commit the plan, wrapper and mapping together; never retrofit another launch. */
+  prepareTraining(compiled) {
+    verifyRuntimePlan(compiled);
     return transaction(this.database, () => {
-      this.#bind(binding);
-      const existing = this.database.prepare('SELECT submission_json FROM v2_node_launch_specs WHERE dispatch_id=?').get(binding.dispatchId);
-      if (existing && existing.submission_json !== payload) throw new ApplicationError('NODE_LAUNCH_SPEC_CONFLICT');
-      if (!existing) this.database.prepare('INSERT INTO v2_node_launch_specs VALUES(?,?)').run(binding.dispatchId, payload);
-      return {binding, submission: JSON.parse(existing?.submission_json ?? payload)};
+      const {binding} = this.#prepare(compiled.binding, compiled.built);
+      const existing = this.database.prepare('SELECT plan_json,plan_digest FROM v2_node_runtime_plans WHERE dispatch_id=?').get(binding.dispatchId);
+      if (existing && (existing.plan_json !== compiled.planJson || existing.plan_digest !== compiled.planDigest)) {
+        throw new ApplicationError('NODE_RUNTIME_PLAN_CONFLICT');
+      }
+      if (!existing) this.database.prepare('INSERT INTO v2_node_runtime_plans VALUES(?,?,?)')
+        .run(binding.dispatchId, compiled.planJson, compiled.planDigest);
+      // A safe preparation receipt, not the user's argv/env or an execution grant.
+      return {binding, planDigest: compiled.planDigest};
     });
   }
 

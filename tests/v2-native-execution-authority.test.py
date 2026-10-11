@@ -97,6 +97,12 @@ class NativeAuthorityTests(unittest.TestCase):
         binding = {**self.binding, 'jobId': fixture.job, 'accountId': fixture.user}
         return fixture, self.authority(binding=binding)
 
+    def runtime_plan(self, fixture):
+        observed = fixture.reader.inspect_release_runtime(fixture.user, fixture.slug, fixture.version)
+        return {'schema': 1, 'identity': {'dispatchId': self.dispatch, 'jobId': fixture.job, 'accountId': fixture.user},
+            'project': {**deepcopy(fixture.reference), 'runtime': observed['runtime']}, 'inputs': deepcopy(fixture.inputs),
+            'submission': {'execution': {'argv': ['python', 'train.py'], 'workingDirectory': '.', 'env': {}}}}
+
     def test_current_attempt_matches_native_binding_kernel_process_and_real_systemd_parser_without_writes(self):
         before = '\n'.join(self.store._get_connection().iterdump())
         identity = self.authority().require_current()
@@ -253,14 +259,15 @@ class NativeAuthorityTests(unittest.TestCase):
 
     def test_runtime_uses_bound_task_and_rechecks_authority_around_real_input_handles(self):
         fixture, authority = self.inputs_fixture()
-        project, data = deepcopy(fixture.reference), deepcopy(fixture.inputs)
-        runtime = R.TrainingRuntime(authority=authority, inputs=fixture.runtime, project=project, data=data)
-        project['release'] = 'f' * 64
-        data[0]['source']['sourceId'] = 'changed'
+        plan = self.runtime_plan(fixture)
+        runtime = R.TrainingRuntime(authority=authority, inputs=fixture.runtime, plan=plan)
+        plan['project']['release'] = 'f' * 64
+        plan['inputs'][0]['source']['sourceId'] = 'changed'
         with runtime.open() as resources:
             self.assertEqual(resources['execution'].job_id, fixture.job)
             self.assertEqual(resources['execution'].account_id, fixture.user)
             self.assertEqual(resources['project']['meta']['release'], fixture.version)
+            self.assertEqual(resources['command']['argv'], ['python', 'train.py'])
             handles = [*resources['descriptors'].values(), *(fd for fd, _ in resources['dataMounts'])]
         self.assertEqual(len(self.calls), 2)
         fixture.assert_closed(handles)
@@ -270,7 +277,7 @@ class NativeAuthorityTests(unittest.TestCase):
         fixture, authority = self.inputs_fixture()
         denied = SimpleNamespace(require_current=Mock(side_effect=A.NativeExecutionError('denied')))
         resources = SimpleNamespace(open=Mock(side_effect=AssertionError('must not open')))
-        runtime = R.TrainingRuntime(authority=denied, inputs=resources, project=fixture.reference, data=fixture.inputs)
+        runtime = R.TrainingRuntime(authority=denied, inputs=resources, plan=self.runtime_plan(fixture))
         with self.assertRaises(A.NativeExecutionError):
             with runtime.open():
                 self.fail('unauthorized payload')
@@ -282,7 +289,7 @@ class NativeAuthorityTests(unittest.TestCase):
                 handles.extend([*opened['descriptors'].values(), *(fd for fd, _ in opened['dataMounts'])])
                 self.store.update_job(self.job['id'], state='CANCELED')
                 yield opened
-        runtime = R.TrainingRuntime(authority=authority, inputs=SimpleNamespace(open=revoke_after_open), project=fixture.reference, data=fixture.inputs)
+        runtime = R.TrainingRuntime(authority=authority, inputs=SimpleNamespace(open=revoke_after_open), plan=self.runtime_plan(fixture))
         with self.assertRaises(A.NativeExecutionError):
             with runtime.open():
                 self.fail('canceled attempt reached payload')
@@ -296,7 +303,7 @@ class NativeAuthorityTests(unittest.TestCase):
         initial = authority.require_current()
         for next_identity, allowed in [(replace(initial, invocation_id='b' * 32), False), (initial, True)]:
             source = SimpleNamespace(require_current=Mock(side_effect=[initial, next_identity]))
-            runtime = R.TrainingRuntime(authority=source, inputs=fixture.runtime, project=fixture.reference, data=fixture.inputs)
+            runtime = R.TrainingRuntime(authority=source, inputs=fixture.runtime, plan=self.runtime_plan(fixture))
             with self.subTest(allowed=allowed):
                 if allowed:
                     with runtime.open() as result:
@@ -312,6 +319,36 @@ class NativeAuthorityTests(unittest.TestCase):
             return result
         self.assertEqual(self.authority(native=SimpleNamespace(call=newer_grant),
             binding={**self.binding, 'jobId': fixture.job, 'accountId': fixture.user}).require_current(), initial)
+
+    def test_plan_task_identity_is_checked_before_opening_any_resource(self):
+        fixture, authority = self.inputs_fixture()
+        resources = SimpleNamespace(open=Mock(side_effect=AssertionError('wrong plan cannot open inputs')))
+        for field in ('dispatchId', 'jobId', 'accountId'):
+            plan = self.runtime_plan(fixture)
+            plan['identity'][field] = str(uuid.uuid4())
+            runtime = R.TrainingRuntime(authority=authority, inputs=resources, plan=plan)
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, 'another execution'):
+                with runtime.open():
+                    self.fail('different plan accepted')
+        resources.open.assert_not_called()
+
+    def test_opened_runtime_must_match_original_plan_and_failure_closes_handles_without_releasing(self):
+        fixture, authority = self.inputs_fixture()
+        plan, handles = self.runtime_plan(fixture), []
+        plan['project']['runtime']['identity'] = 'f' * 64
+        @contextmanager
+        def capture(**kwargs):
+            with fixture.runtime.open(**kwargs) as opened:
+                handles.extend([*opened['descriptors'].values(), *(fd for fd, _ in opened['dataMounts'])])
+                yield opened
+        runtime = R.TrainingRuntime(authority=authority, inputs=SimpleNamespace(open=capture), plan=plan)
+        with self.assertRaisesRegex(RuntimeError, 'original plan'):
+            with runtime.open():
+                self.fail('substituted environment accepted')
+        self.assertTrue(handles)
+        fixture.assert_closed(handles)
+        self.assertEqual(len(fixture.cache._leases('images', fixture.source['version'])), 1)
+        self.assertTrue((fixture.store.path / '.run-claims' / (fixture.job + '.json')).exists())
 
 
 if __name__ == '__main__':
