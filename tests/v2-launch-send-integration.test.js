@@ -30,6 +30,13 @@ import {GpuqManagedClient} from '../src/infrastructure/gpuq-managed-client.mjs';
 import {GpuqReceiptReader} from '../src/infrastructure/gpuq-receipt-reader.mjs';
 import {LookupNodeDispatch} from '../src/application/lookup-node-dispatch.mjs';
 import {SubmitNodeDispatch} from '../src/application/submit-node-dispatch.mjs';
+import http from 'node:http';
+import {assembleLaunchAuthorization, assembleNodeSubmission, assembleTrainingSender} from '../src/bootstrap/training-send.mjs';
+import {assembleDispatchReceipt} from '../src/bootstrap/dispatch-receipt.mjs';
+import {HttpDispatchReceipts} from '../src/infrastructure/http-dispatch-receipts.mjs';
+import {ReconcileTrainingDispatch} from '../src/application/reconcile-training-dispatch.mjs';
+import {NODE_SUBMISSION_ROUTE} from '../src/contracts/node-submission.mjs';
+import {LAUNCH_AUTHORIZATION_ROUTE, launchAuthorizationRequest} from '../src/contracts/launch-authorization.mjs';
 
 const python = process.env.V2_PYTHON || 'python3', run = promisify(execFile);
 async function nativeServer(t) {
@@ -75,7 +82,7 @@ async function fixture(t) {
   const native = new GpuqManagedClient({socketPath: server.socketPath, python});
   const lookup = new LookupNodeDispatch({bindings, native: new GpuqReceiptReader({socketPath: server.socketPath, python})});
   const app = new SubmitNodeDispatch({bindings, receipts: lookup, admission: new SqliteLaunchAuthorization({database: f.database}), native});
-  return {...f, project, data, node, jobId, selected, receipt, dispatches, native, app, bindings,
+  return {...f, project, data, node, server, jobId, selected, receipt, dispatches, native, app, bindings,
     context, leaser, request, lease, reference: {machineId: 'node-1', dispatchId: selected.dispatchId}};
 }
 
@@ -95,6 +102,123 @@ test('real prepared inputs and coordinator authorization reach native acceptance
   assert.deepEqual(await f.leaser.lookup(f.request, f.context), f.lease);
   assert.deepEqual({bytes: await readFile(claim, 'utf8'), mtime: (await stat(claim)).mtimeMs}, before);
   assert.equal(f.database.prepare('SELECT reserved_gpu_count FROM v2_compute_claims').get().reserved_gpu_count, 2);
+});
+
+const nodeKey = '1'.repeat(64), otherNodeKey = '2'.repeat(64), coordinatorKey = 'd'.repeat(64);
+async function listen(t, handler) {
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = false} = {}) {
+  const observed = {authorizations: [], authorizationReplies: 0, sends: 0};
+  let releaseAuthorization;
+  const authorizationReady = holdAuthorizationReply ? new Promise(resolve => {releaseAuthorization = resolve;}) : Promise.resolve();
+  t.after(() => releaseAuthorization?.());
+  const origin = await listen(t, assembleLaunchAuthorization({database: f.database, peers: [
+    {machineId: 'node-1', credential: nodeKey}, {machineId: 'node-2', credential: otherNodeKey}], reportError() {}}));
+  const shared = {database: f.node, machineId: 'node-1', credential: coordinatorKey, socketPath: f.server.socketPath, python, reportError() {}};
+  const receipts = assembleDispatchReceipt(shared);
+  const submit = assembleNodeSubmission({...shared, coordinator: {origin, credential: nodeKey,
+    fetch: async (url, options) => {
+      observed.authorizations.push(JSON.parse(options.body));
+      const response = await fetch(url, options); observed.authorizationReplies++;
+      await authorizationReady; return response;
+    }}});
+  const nodeOrigin = await listen(t, async (req, res) => {
+    if (req.url !== NODE_SUBMISSION_ROUTE) return receipts(req, res);
+    observed.sends++;
+    if (dropReply) res.end = () => {req.socket.destroy();};
+    return submit(req, res);
+  });
+  const nodes = [{machineId: 'node-1', origin: nodeOrigin, credential: coordinatorKey}];
+  return {origin, nodeOrigin, observed, releaseAuthorization, sender: assembleTrainingSender({database: f.database, nodes}),
+    recovery: new ReconcileTrainingDispatch({dispatches: f.dispatches, nodes: new HttpDispatchReceipts({nodes})})};
+}
+
+test('coordinator send journal crosses both HTTP directions and reaches one real native acceptance', async t => {
+  const f = await fixture(t), h = await endpoints(t, f);
+  f.database.exec('UPDATE v2_sessions SET revoked=1');
+  const result = await h.sender.execute(f.jobId);
+  assert.equal(result.kind, 'accepted'); assert.equal(result.dispatch.state, 'ACCEPTED');
+  assert.equal(result.dispatch.dispatchId, f.selected.dispatchId);
+  assert.equal(h.observed.sends, 1); assert.equal(h.observed.authorizations.length, 1);
+  const sent = h.observed.authorizations[0];
+  assert.deepEqual(Object.keys(sent).sort(), ['binding', 'inputs', 'project']);
+  assert.equal(Object.hasOwn(sent.binding, 'nativeDigest'), false);
+  assert.equal(Object.hasOwn(sent.project, 'runtime'), false);
+  assert.equal(JSON.stringify(sent).includes('argv'), false);
+  assert.equal(sent.inputs[0].leaseId, f.lease.leaseId);
+  assert.equal((await h.sender.execute(f.jobId)).kind, 'existing');
+  assert.equal(h.observed.sends, 1);
+  assert.equal((await f.native.allocation({submitKey: f.selected.dispatchId})).grant.max_gpu_count, 2);
+});
+
+test('lost HTTP send reply keeps UNKNOWN and recovers the original receipt without another send', async t => {
+  const f = await fixture(t), h = await endpoints(t, f, {dropReply: true});
+  await assert.rejects(h.sender.execute(f.jobId), error => error.code === 'DISPATCH_SEND_UNCONFIRMED');
+  assert.equal(f.dispatches.delivery(f.selected.dispatchId).state, 'UNKNOWN');
+  assert.equal((await h.sender.execute(f.jobId)).kind, 'existing');
+  f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
+  const recovered = await h.recovery.execute(f.selected.dispatchId);
+  assert.equal(recovered.kind, 'accepted'); assert.equal(recovered.dispatch.state, 'ACCEPTED');
+  assert.equal(h.observed.sends, 1); assert.equal(h.observed.authorizations.length, 1);
+  assert.equal(f.database.prepare('SELECT reserved_gpu_count FROM v2_compute_claims').get().reserved_gpu_count, 2);
+});
+
+test('node credential determines machine identity and the send route accepts no execution payload', async t => {
+  const f = await fixture(t), h = await endpoints(t, f);
+  const prepared = f.bindings.training(f.reference);
+  const request = launchAuthorizationRequest({binding: prepared.binding, project: prepared.plan.project, inputs: prepared.plan.inputs});
+  const post = (origin, route, value, credential) => fetch(origin + route, {method: 'POST',
+    headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + credential}, body: JSON.stringify(value)});
+  f.dispatches.beginSend(f.jobId, f.now);
+  assert.equal((await post(h.origin, LAUNCH_AUTHORIZATION_ROUTE, request, coordinatorKey)).status, 401);
+  assert.equal((await post(h.origin, LAUNCH_AUTHORIZATION_ROUTE, request, otherNodeKey)).status, 403);
+  assert.equal((await post(h.origin, LAUNCH_AUTHORIZATION_ROUTE, {...request, hostPath: '/private'}, nodeKey)).status, 400);
+  assert.equal((await post(h.nodeOrigin, NODE_SUBMISSION_ROUTE, f.reference, nodeKey)).status, 401);
+  assert.equal((await post(h.nodeOrigin, NODE_SUBMISSION_ROUTE, {...f.reference, argv: ['unapproved']}, coordinatorKey)).status, 400);
+  assert.equal((await post(h.nodeOrigin, NODE_SUBMISSION_ROUTE, {...f.reference, machineId: 'node-2'}, coordinatorKey)).status, 409);
+  assert.equal(await f.native.allocation({submitKey: f.selected.dispatchId}), null);
+});
+
+test('revoked data authorization over HTTP blocks native writes and cannot silently requeue the send', async t => {
+  const f = await fixture(t), h = await endpoints(t, f);
+  f.database.exec("DELETE FROM v2_data_resources WHERE id='warehouse-images'");
+  await assert.rejects(h.sender.execute(f.jobId), error => error.code === 'FORBIDDEN');
+  assert.equal(await f.native.allocation({submitKey: f.selected.dispatchId}), null);
+  assert.equal(f.dispatches.delivery(f.selected.dispatchId).state, 'UNKNOWN');
+  assert.equal((await h.sender.execute(f.jobId)).kind, 'existing');
+  assert.equal(h.observed.sends, 1);
+});
+
+test('caller disconnect after authorization does not cancel or duplicate the original in-flight send', async t => {
+  const f = await fixture(t), h = await endpoints(t, f, {holdAuthorizationReply: true});
+  const permit = f.dispatches.beginSend(f.jobId, f.now);
+  const request = http.request(h.nodeOrigin + NODE_SUBMISSION_ROUTE, {method: 'POST',
+    headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + coordinatorKey}});
+  request.on('error', () => {});
+  request.end(JSON.stringify(f.reference));
+  const deadline = Date.now() + 4000;
+  while (!h.observed.authorizationReplies && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(h.observed.authorizationReplies, 1);
+  request.destroy();
+  f.dispatches.recordSendOutcome({dispatchId: f.selected.dispatchId, senderToken: permit.senderToken, nodeJobId: null});
+  // This original operation was authorized before the reply loss. It may still
+  // finish; UNKNOWN denies another sender, not the in-flight native operation.
+  h.releaseAuthorization();
+  let native;
+  const finishDeadline = Date.now() + 4000;
+  do {
+    native = await f.native.allocation({submitKey: f.selected.dispatchId});
+    if (!native) await new Promise(resolve => setTimeout(resolve, 10));
+  } while (!native && Date.now() < finishDeadline);
+  assert.ok(native);
+  assert.equal(h.observed.sends, 1);
+  assert.equal(f.dispatches.delivery(f.selected.dispatchId).state, 'UNKNOWN');
+  assert.equal((await h.recovery.execute(f.selected.dispatchId)).kind, 'accepted');
 });
 
 test('a permission change or mismatched stored native command cannot mutate the native scheduler', async t => {

@@ -7,12 +7,12 @@ export function reply(res, status, body, headers = {}) {
   res.end(JSON.stringify(body));
 }
 
-export async function readJson(req) {
+export async function readJson(req, maxBytes = 8192) {
   let size = 0;
   const chunks = [];
   for await (const part of req.iterator({destroyOnReturn: false})) {
     size += part.length;
-    if (size > 8192) {
+    if (size > maxBytes) {
       req.resume();
       throw new InvalidRequest('body');
     }
@@ -41,7 +41,7 @@ export function createJsonRoutes({routes, authenticate, statuses, reportError = 
     let context;
     try {
       const actor = await authenticate(req);
-      const input = route.parse(await readJson(req));
+      const input = route.parse(await readJson(req, route.maxRequestBytes));
       context = route.readOnly ? readRequestContext(req, res) : null;
       context?.signal.throwIfAborted();
       const result = context ? await route.useCase.execute(actor, input, {signal: context.signal}) : await route.useCase.execute(actor, input);
