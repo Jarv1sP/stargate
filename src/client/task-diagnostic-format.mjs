@@ -1,4 +1,5 @@
 const descriptions = {
+  TASK_RESOURCES_RELEASED: '任务已完成收尾，数据租约和平台额度已释放；训练输出保留。',
   PLATFORM_QUOTA_HELD: '平台仍保留此任务的额度；诊断不会自动退还。',
   DISPATCH_ACK_PENDING: '原派发接收回执尚未确认；看到节点任务也不会自动重派。',
   NOT_DISPATCHED_FOR_READ: '尚未进入可查询的节点派发阶段。',
@@ -41,6 +42,8 @@ export function formatTaskDiagnostics(result) {
     if (node.latestAttempt?.failureReason) lines.push('轮次原因：' + JSON.stringify(node.latestAttempt.failureReason));
   }
   lines.push(...result.findings.map(finding => `[${finding.level}] ${descriptions[finding.code]}`));
-  lines.push('未采集：实时进程、当前节点容量、内核 OOM／PID 计数、worker 诊断、数据租约清理。');
+  const unknownLabels = {'live-processes': '实时进程', 'current-node-capacity': '当前节点容量',
+    'kernel-counters': '内核 OOM／PID 计数', 'worker-captures': 'worker 诊断', 'storage-lease-release': '数据租约清理'};
+  lines.push('未采集：' + result.unknowns.map(key => unknownLabels[key]).join('、') + '。');
   return lines;
 }

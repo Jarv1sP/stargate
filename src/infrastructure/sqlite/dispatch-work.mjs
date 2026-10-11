@@ -9,7 +9,8 @@ export class SqliteDispatchWork {
       SELECT d.dispatch_id,d.job_id,d.state,c.machine_id,q.priority,q.sequence
       FROM v2_training_queue q JOIN v2_training_dispatches d ON d.job_id=q.job_id
       JOIN v2_compute_claims c ON c.job_id=d.job_id
-      WHERE d.state<>'ACCEPTED'
+      LEFT JOIN v2_training_completions done ON done.dispatch_id=d.dispatch_id
+      WHERE done.dispatch_id IS NULL
         AND (? IS NULL OR q.priority<? OR (q.priority=? AND q.sequence>?))
       ORDER BY q.priority DESC,q.sequence ASC LIMIT ?`)
       .all(after?.priority ?? null, after?.priority ?? null, after?.priority ?? null, after?.sequence ?? null, limit)

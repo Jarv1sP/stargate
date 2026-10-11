@@ -41,11 +41,13 @@ export class SqliteTrainingQueue {
   get(actor, jobId, now) {
     return readTransaction(this.database, () => {
       this.#authorize(actor, jobId, now);
-      const row = this.database.prepare(`SELECT q.*,d.dispatch_id,d.state dispatch_state,c.canceled_at_ms FROM v2_training_queue q
+      const row = this.database.prepare(`SELECT q.*,d.dispatch_id,d.state dispatch_state,c.canceled_at_ms,
+        json_extract(done.completion_json,'$.state') completed_state FROM v2_training_queue q
         LEFT JOIN v2_training_dispatches d ON d.job_id=q.job_id
+        LEFT JOIN v2_training_completions done ON done.dispatch_id=d.dispatch_id
         LEFT JOIN v2_training_cancellations c ON c.job_id=q.job_id WHERE q.job_id=?`).get(jobId);
       return row ? {jobId, sequence: row.sequence, priority: row.priority, queuedAtMs: row.queued_at_ms,
-        state: row.canceled_at_ms !== null ? 'CANCELED' : row.dispatch_id ? row.dispatch_state : 'QUEUED', dispatchId: row.dispatch_id ?? null} : null;
+        state: row.completed_state ?? (row.canceled_at_ms !== null ? 'CANCELED' : row.dispatch_id ? row.dispatch_state : 'QUEUED'), dispatchId: row.dispatch_id ?? null} : null;
     });
   }
 

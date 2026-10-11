@@ -9,6 +9,7 @@ import {dispatchFixture} from './helpers/v2-dispatch-fixture.mjs';
 import {trainingSubmission} from './helpers/v2-training-submission.mjs';
 import {loginRequest} from './helpers/v2-session-fixture.mjs';
 import {SqliteTaskReads} from '../src/infrastructure/sqlite/task-reads.mjs';
+import {SqliteTrainingCompletions} from '../src/infrastructure/sqlite/training-completions.mjs';
 import {ReadTrainingTask} from '../src/application/read-training-task.mjs';
 import {ApplicationError} from '../src/domain/errors.mjs';
 import {HttpJobObserver} from '../src/infrastructure/http-job-observer.mjs';
@@ -226,6 +227,34 @@ test('node observations reject wrong service credentials and injected native sel
     assert.equal(response.status, status); await response.body.cancel();
   }
   assert.equal(await node.nodes.observe({machineId: 'node-1', dispatchId: randomUUID()}), null);
+});
+
+test('browser and CLI keep the same settled terminal status when its node is offline', async t => {
+  const f = await fixture(t), permit = f.send();
+  f.dispatches.recordSendOutcome({dispatchId: f.prepared.dispatchId, senderToken: permit.senderToken,
+    nodeJobId: f.state.value.receipt.nodeJobId});
+  new SqliteTrainingCompletions({database: f.database}).settle({receipt: f.state.value.receipt, state: 'SUCCEEDED',
+    nativeVersion: 5, finishedAtSeconds: 10, sealedAtSeconds: 11, dataReleased: true}, f.now);
+  f.state.failure = new ApplicationError('NODE_JOB_UNAVAILABLE');
+  const api = await publicServer(t, f), expected = await api.client.read({jobId: f.jobId});
+  assert.equal(expected.task.stage, 'SUCCEEDED'); assert.equal(expected.observation.kind, 'unavailable');
+  const browser = await chromium.launch({headless: true}); t.after(() => browser.close());
+  const page = await browser.newPage(); await page.goto(api.origin);
+  const result = await page.evaluate(async ({jobId, login}) => {
+    const {JsonHttpTransport} = await import('/modules/client/http-transport.mjs');
+    const {SessionClient} = await import('/modules/client/session-client.mjs');
+    const {TaskClient} = await import('/modules/client/task-client.mjs');
+    const transport = new JsonHttpTransport({baseUrl: location.origin});
+    await new SessionClient({transport, delivery: 'cookie'}).login(login);
+    return new TaskClient({transport}).read({jobId});
+  }, {jobId: f.jobId, login: loginRequest});
+  assert.deepEqual(result, expected);
+  const folder = await mkdtemp(join(tmpdir(), 'v2-completed-cli-')); t.after(() => rm(folder, {recursive: true, force: true}));
+  const args = ['--url', api.origin, '--credentials', join(folder, 'credentials.sqlite')];
+  const login = await cli([...args, 'login', '--username', 'alice', '--password-stdin'], loginRequest.password);
+  assert.equal(login.code, 0, login.stderr);
+  const command = await cli([...args, 'task', '--job', f.jobId]);
+  assert.equal(command.code, 0, command.stderr); assert.deepEqual(JSON.parse(command.stdout), expected);
 });
 
 test('shared response contract rejects private fields, mixed identity and malformed progress; returned objects are detached', async t => {

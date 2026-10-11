@@ -1,7 +1,7 @@
 import {ApplicationError} from '../domain/errors.mjs';
 import {requireSameTaskRead, projectNodeJobObservation} from '../domain/task-read.mjs';
 import {nativeDispatchAcceptance} from '../domain/node-dispatch.mjs';
-import {projectNodeDiagnostics, taskDiagnosticFindings} from '../domain/task-diagnostics.mjs';
+import {projectNodeDiagnostics, taskDiagnosticFindings, taskDiagnosticUnknowns} from '../domain/task-diagnostics.mjs';
 
 /** Independent observations: no dashboard rebuild, task mutation or retry of a write. */
 export class ReadTrainingTask {
@@ -17,7 +17,7 @@ export class ReadTrainingTask {
   async diagnostics(actor, {jobId}, options) {
     const {task, kind, value: node, quota} = await this.#read(actor, jobId, 'diagnostics', {}, options);
     return {task, diagnostics: {kind, node}, quota, findings: taskDiagnosticFindings({task, kind, node, quota}),
-      unknowns: ['live-processes', 'current-node-capacity', 'kernel-counters', 'worker-captures', 'storage-lease-release']};
+      unknowns: taskDiagnosticUnknowns(task)};
   }
   async #read(actor, jobId, operation, cursor, {signal} = {}) {
     signal?.throwIfAborted();

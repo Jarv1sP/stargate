@@ -1,6 +1,6 @@
 /** One coordinator instance owns these lanes. Durable dispatches own recovery.
  * Discovery never waits for remote work. Each node has one preparation/send
- * lane and one receipt-query lane, within a shared concurrency bound.
+ * lane, one receipt-query lane and one completion lane, within a shared bound.
  */
 export class TrainingDispatchWorker {
   #waiting = new Map();
@@ -10,13 +10,13 @@ export class TrainingDispatchWorker {
   #polling = null;
   #closing = false;
 
-  constructor({work, dispatches, prepare, send, reconcile, concurrency = 8, pageSize = 100}) {
+  constructor({work, dispatches, prepare, send, reconcile, finalize, concurrency = 8, pageSize = 100}) {
     if (!Number.isSafeInteger(concurrency) || concurrency < 1
       || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1000) {
       throw new TypeError('Invalid dispatch worker limits');
     }
     this.work = work; this.dispatches = dispatches;
-    this.prepare = prepare; this.send = send; this.reconcile = reconcile;
+    this.prepare = prepare; this.send = send; this.reconcile = reconcile; this.finalize = finalize;
     this.concurrency = concurrency; this.pageSize = pageSize;
   }
 
@@ -45,7 +45,7 @@ export class TrainingDispatchWorker {
     const ordered = [...this.#waiting].sort(([, a], [, b]) => b.priority - a.priority || a.sequence - b.sequence);
     for (const [dispatchId, row] of ordered) {
       if (this.#active.size >= this.concurrency) break;
-      const lane = row.state === 'PREPARED' ? 'send' : 'recover';
+      const lane = row.state === 'PREPARED' ? 'send' : row.state === 'ACCEPTED' ? 'finish' : 'recover';
       if ([...this.#active.values()].some(entry => entry.machineId === row.machineId && entry.lane === lane)) continue;
       this.#waiting.delete(dispatchId);
       const operation = this.#run(dispatchId).then(
@@ -59,8 +59,8 @@ export class TrainingDispatchWorker {
   async #run(dispatchId) {
     const current = await this.dispatches.delivery(dispatchId);
     if (!current) return {kind: 'missing'};
-    if (current.state === 'ACCEPTED') return {kind: 'accepted', dispatch: current};
     if (this.#closing) return {kind: 'deferred'};
+    if (current.state === 'ACCEPTED') return this.finalize.execute(dispatchId);
     if (current.state !== 'PREPARED') return this.reconcile.execute(dispatchId);
     await this.prepare.execute(current.jobId);
     // Graceful shutdown lets the original preparation finish, but starts no send.

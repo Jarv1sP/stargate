@@ -11,7 +11,7 @@ import {publicServer, nativeNode, cli} from './helpers/v2-task-read-servers.mjs'
 import {loginRequest} from './helpers/v2-session-fixture.mjs';
 import {ReadTrainingTask} from '../src/application/read-training-task.mjs';
 import {SqliteTaskReads} from '../src/infrastructure/sqlite/task-reads.mjs';
-import {taskDiagnosticFindings} from '../src/domain/task-diagnostics.mjs';
+import {taskDiagnosticFindings, taskDiagnosticUnknowns} from '../src/domain/task-diagnostics.mjs';
 import {ApplicationError} from '../src/domain/errors.mjs';
 import {TASK_DIAGNOSTICS_ROUTE, DIAGNOSTIC_UNKNOWNS, parseNodeDiagnostics, parseTaskDiagnosticResult} from '../src/contracts/task-diagnostics.mjs';
 import {formatTaskDiagnostics} from '../src/client/task-diagnostic-format.mjs';
@@ -33,7 +33,7 @@ function diagnostic() {
 }
 function result(value) {
   return {task: value.task, diagnostics: {kind: value.kind, node: value.node}, quota: value.quota,
-    findings: taskDiagnosticFindings(value), unknowns: [...DIAGNOSTIC_UNKNOWNS]};
+    findings: taskDiagnosticFindings(value), unknowns: taskDiagnosticUnknowns(value.task)};
 }
 
 test('a raw grant count above the declared minimum is still insufficient when it covers no legal world size', () => {
@@ -55,6 +55,20 @@ test('missing, unknown initial and mismatched allocation grants are distinct obs
   assert.ok(codes(taskDiagnosticFindings(changed)).includes('INITIAL_GRANT_UNCONFIRMED'));
   changed.node.resources.allocation.grant.initialMaxGpuCount = 2;
   assert.ok(codes(taskDiagnosticFindings(changed)).includes('INITIAL_GRANT_MISMATCH'));
+});
+
+test('settled tasks show released resources and do not mistake the sealed zero grant for a startup problem', () => {
+  const value = diagnostic();
+  value.task.stage = 'SUCCEEDED'; value.node.state = 'SUCCEEDED'; value.quota.state = 'RELEASED';
+  value.node.resources.allocation.grant.maxGpuCount = 0;
+  const output = parseTaskDiagnosticResult(result(value));
+  assert.ok(codes(output.findings).includes('TASK_RESOURCES_RELEASED'));
+  assert.equal(codes(output.findings).includes('NO_LEGAL_GRANTED_GPU_COUNT'), false);
+  assert.equal(output.unknowns.includes('storage-lease-release'), false);
+  assert.match(formatTaskDiagnostics(output).join('\n'), /数据租约和平台额度已释放/);
+  assert.equal(formatTaskDiagnostics(output).at(-1).includes('数据租约清理'), false);
+  value.kind = 'unavailable'; value.node = null;
+  assert.ok(codes(parseTaskDiagnosticResult(result(value)).findings).includes('TASK_RESOURCES_RELEASED'));
 });
 
 test('terminal state, older round leases and exit 137 never become an OOM verdict or resource release proof', () => {

@@ -3,11 +3,21 @@ import {requireNativeCompletion} from '../domain/node-completion.mjs';
 
 /** Native execution ends first; then fence/release only this task's data leases. */
 export class FinalizeNodeDispatch {
+  #pending = new Map();
   constructor({bindings, native, leaser, completions}) {
     this.bindings = bindings; this.native = native; this.leaser = leaser; this.completions = completions;
   }
 
-  async execute(reference) {
+  execute({machineId, dispatchId}) {
+    const key = `${machineId}/${dispatchId}`;
+    if (!this.#pending.has(key)) {
+      const operation = this.#finalize({machineId, dispatchId}).finally(() => this.#pending.delete(key));
+      this.#pending.set(key, operation);
+    }
+    return this.#pending.get(key);
+  }
+
+  async #finalize(reference) {
     const existing = await this.completions.get(reference);
     if (existing) return existing;
     const launch = await this.bindings.training(reference);

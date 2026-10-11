@@ -1,4 +1,10 @@
 import {projectNodeJobObservation} from './task-read.mjs';
+import {taskHasCompletion} from './training-completion.mjs';
+
+export function taskDiagnosticUnknowns(task) {
+  return ['live-processes', 'current-node-capacity', 'kernel-counters', 'worker-captures',
+    ...(taskHasCompletion(task) ? [] : ['storage-lease-release'])];
+}
 
 /** Native ledger facts only. No kernel/process sampling or automatic remediation. */
 export function projectNodeDiagnostics(binding, native) {
@@ -21,6 +27,8 @@ export function projectNodeDiagnostics(binding, native) {
 /** Explain recorded evidence; never turn a missing observation into a diagnosis. */
 export function taskDiagnosticFindings({task, kind, node, quota}) {
   const findings = [], add = (code, level = 'info') => findings.push({code, level});
+  const completed = taskHasCompletion(task);
+  if (completed) add('TASK_RESOURCES_RELEASED');
   if (quota?.state === 'HELD') add('PLATFORM_QUOTA_HELD');
   if (['SENDING', 'UNKNOWN'].includes(task.stage)) add('DISPATCH_ACK_PENDING');
   if (kind !== 'observed') {
@@ -42,7 +50,8 @@ export function taskDiagnosticFindings({task, kind, node, quota}) {
       if (r.allocation.grant.id !== node.receipt.dispatchId) add('ALLOCATION_GRANT_ID_MISMATCH', 'warning');
       if (r.allocation.grant.initialMaxGpuCount === null) add('INITIAL_GRANT_UNCONFIRMED', 'warning');
       else if (r.allocation.grant.initialMaxGpuCount !== node.receipt.gpuCount) add('INITIAL_GRANT_MISMATCH', 'warning');
-      if (!r.request.allowedGpuCounts.some(count => count <= r.allocation.grant.maxGpuCount)) add('NO_LEGAL_GRANTED_GPU_COUNT', 'warning');
+      if (!(completed && r.allocation.grant.maxGpuCount === 0)
+        && !r.request.allowedGpuCounts.some(count => count <= r.allocation.grant.maxGpuCount)) add('NO_LEGAL_GRANTED_GPU_COUNT', 'warning');
     }
   }
   const retained = r.leases.total + r.reservations.total > 0;

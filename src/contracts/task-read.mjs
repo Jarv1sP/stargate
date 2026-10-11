@@ -12,6 +12,7 @@ const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
 const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const nullable = (value, check) => value === null || check(value);
 const jobStates = ['PENDING', 'STARTING', 'RUNNING', 'PREEMPTING', 'SUCCEEDED', 'FAILED', 'CANCELED', 'LOST'];
+const completedTaskStates = ['SUCCEEDED', 'FAILED', 'CANCELED'];
 export const attemptStates = ['PLANNED', 'STARTING', 'RUNNING', 'SAVE_REQUESTED', 'SAVE_WITHDRAWING', 'CHECKPOINT_ACKED',
   'TERM_REQUESTED', 'KILL_REQUESTED', 'DRAINING', 'PREEMPTED', 'EXITED_SUCCESS', 'EXITED_FAILURE', 'CANCELED', 'LOST', 'STUCK'];
 
@@ -73,7 +74,7 @@ export function parseNodeJobObservation(value) {
 export function parseTaskView(task) {
   if (!exact(task, ['jobId', 'name', 'description', 'submitter', 'createdAtMs', 'stage', 'dispatch'])) throw new InvalidResponse();
   if (!uuid(task.jobId) || !text(task.name, 256) || !task.name || !text(task.description, 6000) || !integer(task.createdAtMs)
-    || !['RECORDED', 'QUEUED', 'CANCELED', 'PREPARED', 'SENDING', 'UNKNOWN', 'ACCEPTED'].includes(task.stage)
+    || !['RECORDED', 'QUEUED', 'PREPARED', 'SENDING', 'UNKNOWN', 'ACCEPTED', ...completedTaskStates].includes(task.stage)
     || !exact(task.submitter, ['accountId', 'username', 'displayName'])
     || Object.values(task.submitter).some(value => !text(value, 256) || !value)) throw new InvalidResponse();
   const dispatch = task.dispatch;
@@ -81,7 +82,8 @@ export function parseTaskView(task) {
     if (!exact(dispatch, ['dispatchId', 'machineId', 'gpuCount', 'state', 'nodeJobId']) || !integer(dispatch.gpuCount, 1)
       || dispatch.gpuCount > 4096 || !['PREPARED', 'SENDING', 'UNKNOWN', 'ACCEPTED'].includes(dispatch.state)
       || !nullable(dispatch.nodeJobId, value => text(value, 128) && value.length > 0)
-      || (dispatch.state === 'ACCEPTED') !== (dispatch.nodeJobId !== null) || task.stage !== dispatch.state) throw new InvalidResponse();
+      || (dispatch.state === 'ACCEPTED') !== (dispatch.nodeJobId !== null)
+      || (task.stage !== dispatch.state && !(dispatch.state === 'ACCEPTED' && completedTaskStates.includes(task.stage)))) throw new InvalidResponse();
     try {parseDispatchReceiptRequest({machineId: dispatch.machineId, dispatchId: dispatch.dispatchId});}
     catch {throw new InvalidResponse();}
   } else if (!['RECORDED', 'QUEUED', 'CANCELED'].includes(task.stage)) throw new InvalidResponse();

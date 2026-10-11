@@ -50,8 +50,13 @@ import {createSourceInspectionHandler} from '../src/api/source-inspection-handle
 import {PROJECT_INSPECTION_ROUTE, PROJECT_RUNTIME_ROUTE} from '../src/contracts/project-inspection.mjs';
 import {SOURCE_INSPECTION_ROUTE} from '../src/contracts/source-inspection.mjs';
 import {GPU_POOL_ROUTE} from '../src/contracts/gpu-pool.mjs';
-import {assembleNodeFinalization} from '../src/bootstrap/node-finalization.mjs';
+import {assembleNodeFinalization, assembleNodeFinalizationHandler} from '../src/bootstrap/node-finalization.mjs';
 import {SqliteNodeCompletions} from '../src/infrastructure/sqlite/node-completions.mjs';
+import {SqliteTrainingCompletions} from '../src/infrastructure/sqlite/training-completions.mjs';
+import {NODE_COMPLETION_ROUTES} from '../src/contracts/node-completion.mjs';
+import {assembleNodeTaskRead} from '../src/bootstrap/task-read.mjs';
+import {NODE_JOB_OBSERVATION_ROUTE, parseTaskView} from '../src/contracts/task-read.mjs';
+import {SqliteTaskReads} from '../src/infrastructure/sqlite/task-reads.mjs';
 
 const python = process.env.V2_PYTHON || 'python3', run = promisify(execFile);
 async function nativeServer(t) {
@@ -198,8 +203,8 @@ async function listen(t, handler) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = false, dropPreparationReply = false} = {}) {
-  const observed = {authorizations: [], authorizationReplies: 0, sends: 0, preparations: 0};
+async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = false, dropPreparationReply = false, dropFinalizationReply = false} = {}) {
+  const observed = {authorizations: [], authorizationReplies: 0, sends: 0, preparations: 0, finalizations: 0};
   let releaseAuthorization;
   const authorizationReady = holdAuthorizationReply ? new Promise(resolve => {releaseAuthorization = resolve;}) : Promise.resolve();
   t.after(() => releaseAuthorization?.());
@@ -210,6 +215,8 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
   const projects = assembleProjectInspection({...shared, root: f.project.root, basePath: f.project.basePath});
   const sources = createSourceInspectionHandler({...shared, sources: f.data.managed});
   const pool = assembleGpuPool(shared);
+  const tasks = assembleNodeTaskRead({...shared, logRoot: f.server.controlRoot});
+  const finalization = assembleNodeFinalizationHandler({...shared, roots: f.data.roots});
   const preparation = assembleNodePreparation({...shared, runner: f.runner, cwd: f.project.directory,
     root: f.project.root, basePath: f.project.basePath, roots: f.data.roots});
   const submit = assembleNodeSubmission({...shared, coordinator: {origin, credential: nodeKey,
@@ -222,6 +229,14 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
     if ([PROJECT_INSPECTION_ROUTE, PROJECT_RUNTIME_ROUTE].includes(req.url)) return projects(req, res);
     if (req.url === SOURCE_INSPECTION_ROUTE) return sources(req, res);
     if (req.url === GPU_POOL_ROUTE) return pool(req, res);
+    if (req.url === NODE_JOB_OBSERVATION_ROUTE) return tasks(req, res);
+    if (Object.values(NODE_COMPLETION_ROUTES).includes(req.url)) {
+      if (req.url === NODE_COMPLETION_ROUTES.finalize) {
+        observed.finalizations++;
+        if (dropFinalizationReply) res.end = () => {req.socket.destroy();};
+      }
+      return finalization(req, res);
+    }
     if (Object.values(NODE_PREPARATION_ROUTES).includes(req.url)) {
       if (req.url === NODE_PREPARATION_ROUTES.prepare) {
         observed.preparations++;
@@ -236,11 +251,63 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
   });
   const nodes = [{machineId: 'node-1', origin: nodeOrigin, credential: coordinatorKey}];
   return {origin, nodeOrigin, observed, releaseAuthorization, sender: assembleTrainingSender({database: f.database, nodes}),
+    nodes,
     prepare: assembleTaskPreparation({database: f.database, nodes}),
     worker: () => assembleTrainingDispatchWorker({database: f.database, nodes}),
     coordinator: () => assembleTrainingCoordinator({database: f.database, nodes, python}),
     recovery: new ReconcileTrainingDispatch({dispatches: f.dispatches, nodes: new HttpDispatchReceipts({nodes})})};
 }
+
+test('background completion crosses real node HTTP/RPC and returns quota without deleting data or outputs', {timeout: 20000}, async t => {
+  const f = await fixture(t), h = await endpoints(t, f);
+  await acceptAndCancel(f);
+  const worker = h.worker();
+  await worker.poll();
+  const outcomes = await worker.idle();
+  assert.equal(outcomes[0].kind, 'completed');
+  assert.equal(outcomes[0].completion.state, 'CANCELED');
+  assert.equal(h.observed.finalizations, 1);
+  assert.equal(f.claims.get(f.actor, f.jobId, f.now).state, 'RELEASED');
+  assert.equal(await f.leaser.lookup(f.request, f.context), null);
+  const view = parseTaskView(new SqliteTaskReads({database: f.database}).snapshot(f.actor, f.jobId, f.now).task);
+  assert.equal(view.stage, 'CANCELED'); assert.equal(view.dispatch.nodeJobId, outcomes[0].completion.receipt.nodeJobId);
+  assert.equal(f.claims.balance(f.actor, 'node-1', f.now).remainingGpus, 4);
+  assert.equal((await worker.poll()).active, 0);
+  assert.deepEqual(await worker.idle(), []);
+  assert.equal(h.observed.finalizations, 1);
+  await worker.close();
+});
+
+test('fresh background worker recovers a lost HTTP finalization reply after account revocation', {timeout: 20000}, async t => {
+  const f = await fixture(t), h = await endpoints(t, f, {dropFinalizationReply: true});
+  await acceptAndCancel(f);
+  const first = h.worker(); await first.poll();
+  const failed = await first.idle();
+  assert.equal(failed[0].error.code, 'NODE_COMPLETION_UNCONFIRMED');
+  await first.close();
+  assert.equal(new SqliteTrainingCompletions({database: f.database}).get(f.selected.dispatchId), null);
+  assert.equal(f.claims.get(f.actor, f.jobId, f.now).state, 'HELD');
+  assert.equal(new SqliteNodeCompletions({database: f.node, machineId: 'node-1'}).get(f.reference).dataReleased, true);
+  f.database.exec("UPDATE v2_accounts SET enabled=0 WHERE id='alice'");
+  const fresh = h.worker(); await fresh.poll();
+  const completed = await fresh.idle();
+  assert.equal(completed[0].kind, 'completed');
+  assert.equal(h.observed.finalizations, 1);
+  assert.equal(f.database.prepare('SELECT state FROM v2_compute_claims WHERE job_id=?').get(f.jobId).state, 'RELEASED');
+  await fresh.close();
+});
+
+test('background observation of a live queued native task does not try to finalize or release quota', {timeout: 20000}, async t => {
+  const f = await fixture(t), h = await endpoints(t, f);
+  await h.sender.execute(f.jobId);
+  const worker = h.worker(); await worker.poll();
+  const outcomes = await worker.idle();
+  assert.equal(outcomes[0].kind, 'active'); assert.equal(outcomes[0].state, 'PENDING');
+  assert.equal(h.observed.finalizations, 0);
+  assert.equal(f.claims.get(f.actor, f.jobId, f.now).state, 'HELD');
+  assert.equal((await f.leaser.lookup(f.request, f.context)).leaseId, f.lease.leaseId);
+  await worker.close();
+});
 
 test('the coordinator automatically admits a queued task through node HTTP and sends it once after logout', {timeout: 20000}, async t => {
   const f = await fixture(t, {prepare: false, select: false}), h = await endpoints(t, f);

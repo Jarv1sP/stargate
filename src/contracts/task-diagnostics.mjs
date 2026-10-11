@@ -10,7 +10,7 @@ const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,25
 const integer = (value, minimum = 0) => Number.isSafeInteger(value) && value >= minimum;
 const count = value => integer(value) && value <= 4096;
 const gpu = row => typeof row.gpuUuid === 'string' && /^GPU-[A-Za-z0-9][A-Za-z0-9-]*$/.test(row.gpuUuid) && integer(row.gpuIndex);
-const codes = new Set(['PLATFORM_QUOTA_HELD', 'DISPATCH_ACK_PENDING', 'NOT_DISPATCHED_FOR_READ', 'NATIVE_NOT_OBSERVED',
+const codes = new Set(['TASK_RESOURCES_RELEASED', 'PLATFORM_QUOTA_HELD', 'DISPATCH_ACK_PENDING', 'NOT_DISPATCHED_FOR_READ', 'NATIVE_NOT_OBSERVED',
   'NODE_READ_UNAVAILABLE', 'NATIVE_WAIT_REASON_RECORDED', 'NATIVE_WAIT_REASON_UNKNOWN', 'NATIVE_JOB_FAILED',
   'EXECUTION_UNCONFIRMED', 'ATTEMPT_NONZERO_EXIT', 'CHECKPOINT_HANDOFF', 'ATTEMPT_STOPPING', 'PROGRESS_STALLED',
   'PROGRESS_REPORTED_PROBLEM', 'ALLOCATION_GRANT_MISSING', 'NO_LEGAL_GRANTED_GPU_COUNT', 'NATIVE_RESOURCE_RECORDS_PRESENT',
@@ -79,7 +79,8 @@ export function parseTaskDiagnosticResult(value) {
   if (!Array.isArray(value.findings) || value.findings.length > codes.size || value.findings.some(row =>
     !exact(row, ['code', 'level']) || !codes.has(row.code) || !['info', 'warning', 'error'].includes(row.level))
     || new Set(value.findings.map(row => row.code)).size !== value.findings.length
-    || JSON.stringify(value.unknowns) !== JSON.stringify(DIAGNOSTIC_UNKNOWNS)) throw new InvalidResponse();
+    || JSON.stringify(value.unknowns) !== JSON.stringify(task.dispatch?.state === 'ACCEPTED'
+      && ['SUCCEEDED', 'FAILED', 'CANCELED'].includes(task.stage) ? DIAGNOSTIC_UNKNOWNS.slice(0, -1) : DIAGNOSTIC_UNKNOWNS)) throw new InvalidResponse();
   return {task, diagnostics: {...value.diagnostics, node}, quota: quota === null ? null : {...quota},
     findings: value.findings.map(row => ({...row})), unknowns: [...value.unknowns]};
 }

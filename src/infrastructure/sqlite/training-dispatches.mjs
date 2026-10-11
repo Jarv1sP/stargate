@@ -6,6 +6,7 @@ import {requireActiveSession} from '../../domain/session-policy.mjs';
 import {ApplicationError} from '../../domain/errors.mjs';
 import {SqliteTaskAuthority} from './task-authority.mjs';
 import {requireTaskPlacement} from '../../domain/task-placement.mjs';
+import {trainingCompletionsSchema} from './training-completions.mjs';
 
 export function createTrainingDispatchSchema(database) {
   transaction(database, () => database.exec(`CREATE TABLE v2_training_dispatches (
@@ -15,7 +16,7 @@ export function createTrainingDispatchSchema(database) {
     CHECK((state='PREPARED' AND sender_token IS NULL AND send_started_at_ms IS NULL AND node_job_id IS NULL)
       OR (state IN ('SENDING','UNKNOWN') AND sender_token IS NOT NULL AND send_started_at_ms IS NOT NULL AND node_job_id IS NULL)
       OR (state='ACCEPTED' AND sender_token IS NOT NULL AND send_started_at_ms IS NOT NULL AND node_job_id IS NOT NULL))
-  )`));
+  ); ${trainingCompletionsSchema}`));
 }
 
 const receipt = row => ({dispatchId: row.dispatch_id, jobId: row.job_id, machineId: row.machine_id,

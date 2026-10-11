@@ -46,6 +46,21 @@ test('native completion precedes all data closure, and a saved receipt skips eve
   assert.deepEqual(await f.app.execute(f.reference), first); assert.deepEqual(f.calls, before);
 });
 
+test('repeated requests during slow cleanup share one operation and failure leaves the original ID recoverable', async () => {
+  const f = fixture(), entered = Promise.withResolvers(), gate = Promise.withResolvers(), close = f.leaser.close;
+  f.leaser.close = async () => {entered.resolve(); await gate.promise; throw new Error('fixture slow cleanup failed');};
+  const first = f.app.execute(f.reference);
+  await entered.promise;
+  const second = f.app.execute({...f.reference});
+  assert.equal(first, second);
+  const failed = assert.rejects(first, /fixture slow cleanup failed/);
+  gate.resolve(); await failed;
+  assert.equal(f.state.local, null);
+  f.leaser.close = close;
+  assert.equal((await f.app.execute(f.reference)).dataReleased, true);
+  assert.equal(f.calls.filter(value => value === 'native-close').length, 1);
+});
+
 test('a lost native completion reply releases nothing until the original receipt is queried', async () => {
   const f = fixture(), complete = f.native.complete;
   f.native.complete = async input => {await complete(input); throw new ApplicationError('NATIVE_OUTCOME_UNCONFIRMED');};

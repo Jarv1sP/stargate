@@ -15,7 +15,7 @@ function fixture(specs, options = {}) {
   const rows = specs.map(([machineId, state = 'PREPARED'], index) => ({dispatchId: randomUUID(), jobId: randomUUID(),
     machineId, state, sequence: index + 1, priority: 2}));
   const records = new Map(rows.map(row => [row.dispatchId, row]));
-  const calls = {pages: [], prepared: [], sent: [], recovered: []};
+  const calls = {pages: [], prepared: [], sent: [], recovered: [], finalized: []};
   const work = {async pending(page) {
     calls.pages.push(page);
     return [...records.values()].filter(row => row.state !== 'ACCEPTED' && (!page.after || row.sequence > page.after.sequence))
@@ -29,8 +29,9 @@ function fixture(specs, options = {}) {
     return {kind: 'accepted', dispatch: {...row}};
   }};
   const reconcile = {async execute(dispatchId) {calls.recovered.push(dispatchId); return {kind: 'unconfirmed'};}};
-  const worker = new TrainingDispatchWorker({work, dispatches, prepare, send, reconcile, ...options});
-  return {rows, records, calls, work, dispatches, prepare, send, reconcile, worker};
+  const finalize = {async execute(dispatchId) {calls.finalized.push(dispatchId); return {kind: 'active', state: 'PENDING'};}};
+  const worker = new TrainingDispatchWorker({work, dispatches, prepare, send, reconcile, finalize, ...options});
+  return {rows, records, calls, work, dispatches, prepare, send, reconcile, finalize, worker};
 }
 
 test('slow node preparation leaves other nodes and its own receipt-query lane running', async () => {
@@ -67,6 +68,24 @@ test('shared concurrency is bounded and waiting jobs start when an earlier opera
   gates[1].resolve(); gates[2].resolve();
   await f.worker.idle(); assert.equal(f.calls.sent.length, 3);
   await f.worker.close();
+});
+
+test('completion has its own node lane, never resends, and shutdown waits for an in-flight settlement', async () => {
+  const f = fixture([['node-1', 'ACCEPTED'], ['node-1'], ['node-1', 'UNKNOWN']]);
+  const gate = Promise.withResolvers(), entered = Promise.withResolvers(), sent = Promise.withResolvers();
+  f.work.pending = async () => f.rows.map(row => ({...row}));
+  f.finalize.execute = async id => {f.calls.finalized.push(id); entered.resolve(); await gate.promise; return {kind: 'completed'};};
+  const send = f.send.execute;
+  f.send.execute = async id => {const result = await send(id); sent.resolve(); return result;};
+  await f.worker.poll(); await entered.promise; await sent.promise;
+  assert.equal(f.calls.recovered.length, 1);
+  assert.deepEqual(f.calls.sent, [f.rows[1].jobId]);
+  assert.deepEqual(f.calls.finalized, [f.rows[0].dispatchId]);
+  let closed = false;
+  const closing = f.worker.close().then(result => {closed = true; return result;});
+  await Promise.resolve(); assert.equal(closed, false);
+  gate.resolve();
+  assert.ok((await closing).some(row => row.kind === 'completed'));
 });
 
 test('one failed preparation does not stop the node lane or fabricate a terminal state', async () => {
@@ -177,7 +196,8 @@ test('stale discovery cannot resend accepted records or prepare a missing dispat
   f.work.pending = async () => f.rows.map(row => ({...row, state: 'PREPARED'}));
   f.rows[0].state = 'ACCEPTED'; f.records.delete(f.rows[1].dispatchId);
   const first = await f.worker.poll(), outcomes = [...first.outcomes, ...await f.worker.idle()];
-  assert.deepEqual(outcomes.map(row => row.kind).sort(), ['accepted', 'missing']);
+  assert.deepEqual(outcomes.map(row => row.kind).sort(), ['active', 'missing']);
+  assert.deepEqual(f.calls.finalized, [f.rows[0].dispatchId]);
   assert.equal(f.calls.sent.length, 0); assert.equal(f.calls.prepared.length, 0);
   await f.worker.close();
 });
@@ -233,10 +253,11 @@ test('SQLite work discovery is read-only, ordered, restartable and includes unce
   t.after(() => database.close());
   const work = new SqliteDispatchWork({database});
   const first = work.pending({limit: 2, after: null});
-  assert.deepEqual(first.map(row => row.state), ['UNKNOWN', 'SENDING']);
-  assert.deepEqual(first.map(row => row.priority), [4, 2]);
+  assert.deepEqual(first.map(row => row.state), ['UNKNOWN', 'ACCEPTED']);
+  assert.deepEqual(first.map(row => row.priority), [4, 3]);
   const last = first.at(-1), second = work.pending({limit: 2, after: {priority: last.priority, sequence: last.sequence}});
-  assert.equal(second.length, 1); assert.equal(second[0].dispatchId, jobs[0].dispatchId);
+  assert.equal(second.length, 2); assert.equal(second[0].dispatchId, jobs[2].dispatchId);
+  assert.equal(second[1].dispatchId, jobs[0].dispatchId);
   assert.equal(Object.hasOwn(first[0], 'senderToken'), false); assert.equal(Object.hasOwn(first[0], 'submission'), false);
   assert.equal(database.prepare('SELECT total_changes() n').get().n, 0);
   assert.equal(f.database.prepare("SELECT count(*) n FROM v2_compute_claims WHERE state='HELD'").get().n, 4);

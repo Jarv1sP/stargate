@@ -5,6 +5,10 @@ import {SqliteDispatchWork} from '../infrastructure/sqlite/dispatch-work.mjs';
 import {HttpDispatchReceipts} from '../infrastructure/http-dispatch-receipts.mjs';
 import {assembleTaskPreparation} from './node-preparation.mjs';
 import {assembleTrainingSender} from './training-send.mjs';
+import {FinalizeTrainingDispatch} from '../application/finalize-training-dispatch.mjs';
+import {SqliteTrainingCompletions} from '../infrastructure/sqlite/training-completions.mjs';
+import {HttpNodeCompletions} from '../infrastructure/http-node-completions.mjs';
+import {HttpJobObserver} from '../infrastructure/http-job-observer.mjs';
 
 /** Caller owns the database, schema and single coordinator service lifetime. */
 export function assembleTrainingDispatchWorker({database, nodes, concurrency, pageSize, clock, ...transport}) {
@@ -12,6 +16,8 @@ export function assembleTrainingDispatchWorker({database, nodes, concurrency, pa
   return new TrainingDispatchWorker({dispatches, work: new SqliteDispatchWork({database}), concurrency, pageSize,
     prepare: assembleTaskPreparation({database, nodes, ...transport}),
     send: assembleTrainingSender({database, nodes, clock, ...transport}),
+    finalize: new FinalizeTrainingDispatch({dispatches, clock, completions: new SqliteTrainingCompletions({database}),
+      nodes: new HttpNodeCompletions({nodes, ...transport}), observations: new HttpJobObserver({nodes, ...transport})}),
     reconcile: new ReconcileTrainingDispatch({dispatches, nodes: new HttpDispatchReceipts({nodes, ...transport})})});
 }
 
