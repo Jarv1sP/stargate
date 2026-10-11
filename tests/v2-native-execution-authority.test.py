@@ -322,9 +322,11 @@ class NativeAuthorityTests(unittest.TestCase):
     def test_run_holds_all_scopes_through_engine_and_preserves_its_exit_without_releasing_claims(self):
         fixture, runtime, control, budget, setter = self.execution_components()
         descriptors = []
-        def execute(*, resources, command, budget):
+        def execute(*, resources, command, budget, authorize_start):
             setter.assert_called_once()
             self.assertEqual(len(self.calls), 3)
+            authorize_start()
+            self.assertEqual(len(self.calls), 4)
             self.assertEqual(command['argv'], ['python', 'train.py'])
             self.assertEqual(command['environment']['GPUQ_CONSOLE_JOB_ID'], fixture.job)
             self.assertEqual(budget['budget']['gpuCount'], 2)

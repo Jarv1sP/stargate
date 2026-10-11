@@ -37,9 +37,12 @@ class TrainingRuntime:
         Apply limits before passing any user command to the engine. A changed
         attempt during preparation must not execute the old payload. Returning
         an exit code closes handles, not durable leases or scheduler claims.
+        Engines call authorize_start again after their setup, just before exec.
         """
         with self.open() as resources, budget.open(resources['execution']) as limits, \
                 command.open(resources, sharing=self._plan['submission']['resources']['sharing']) as payload:
-            if self._authority.require_current() != resources['execution']:
-                raise RuntimeError('Native execution identity changed before container launch')
-            return engine.run(resources=resources, command=payload, budget=limits)
+            def authorize_start():
+                if self._authority.require_current() != resources['execution']:
+                    raise RuntimeError('Native execution identity changed before container launch')
+            authorize_start()
+            return engine.run(resources=resources, command=payload, budget=limits, authorize_start=authorize_start)

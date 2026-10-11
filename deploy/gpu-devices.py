@@ -15,6 +15,12 @@ MAX_GPUS = 128
 MAX_INFORMATION_BYTES = 8192
 
 
+def mount_paths(uuids):
+    """Device mounts for the resolved allocation, including driver control nodes."""
+    assigned = device_paths(uuids)
+    return ['/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools', *assigned]
+
+
 def device_paths(uuids, *, proc_root=Path('/proc/driver/nvidia/gpus'), dev_root=Path('/dev')):
     """Fail closed on ambiguous/missing identity or an unexpected device node.
 

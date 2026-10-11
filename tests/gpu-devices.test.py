@@ -65,6 +65,12 @@ class GPUDevices(unittest.TestCase):
         self.assertEqual(self.paths([UUIDS[2]]), [str(self.dev / 'nvidia1')])
         self.assertEqual(self.paths([UUIDS[2], UUIDS[0]]), [str(self.dev / 'nvidia1'), str(self.dev / 'nvidia3')])
 
+    def test_mounts_include_driver_controls_and_only_resolved_assigned_devices(self):
+        with patch.object(D, 'device_paths', return_value=['/dev/nvidia7']) as resolve:
+            self.assertEqual(D.mount_paths([UUIDS[0]]),
+                             ['/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools', '/dev/nvidia7'])
+        resolve.assert_called_once_with([UUIDS[0]])
+
     def test_bad_or_duplicate_allocated_uuid_rejects_before_filesystem_read(self):
         with patch.object(D.os, 'open') as opened:
             for value in [None, (), [], ['GPU-2'], ['../nvidia2'], [True], UUIDS * 22, [UUIDS[0], UUIDS[0]]]:
