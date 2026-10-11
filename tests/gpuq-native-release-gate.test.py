@@ -72,7 +72,7 @@ class NativeReleaseGate(unittest.TestCase):
         with patch.object(C, '_read_release_gate', return_value=self.gate()):
             before = self.dump()
             for op in ('submit', 'cancel', 'retry', 'set_priority', 'set_priority_rank', 'set_job_display',
-                       'set_observe_only', 'sync_begin', 'sync_finish', 'fleet_offer', 'fleet_admit', 'fleet_retry', 'unknown'):
+                       'set_observe_only', 'complete_managed', 'sync_begin', 'sync_finish', 'fleet_offer', 'fleet_admit', 'fleet_retry', 'unknown'):
                 with self.subTest(op=op), self.assertRaises(ApiError) as caught:
                     self.coordinator.handle_api(op, {})
                 self.assertEqual(caught.exception.code, 'MAINTENANCE')

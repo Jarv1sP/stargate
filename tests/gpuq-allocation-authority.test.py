@@ -264,7 +264,7 @@ class AllocationAuthoritySchema(unittest.TestCase):
         try:
             self.assertIsNone(migrated._get_connection().execute('SELECT initial_max_gpu_count FROM allocation_grants').fetchone()[0])
             self.assertEqual(migrated.get_allocation_authorization(job['id'])['grant']['revision'], 3)
-            self.assertEqual(migrated.check_integrity()['schema_version'], 15)
+            self.assertEqual(migrated.check_integrity()['schema_version'], S.STORE_SCHEMA_VERSION)
             with self.assertRaises(StoreSchemaError):
                 migrated._validate_schema_version(migrated._get_connection(), version=14, expected_signature=S._EXPECTED_SCHEMA_SIGNATURE_V14)
         finally:

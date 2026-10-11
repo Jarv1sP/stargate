@@ -7,7 +7,7 @@ from enum import Enum
 SCHEMA_VERSION = 1
 # SQLite schema version.  Kept separate so DB migrations do not invalidate
 # checkpoint adapters or launch specifications.
-STORE_SCHEMA_VERSION = 15
+STORE_SCHEMA_VERSION = 16
 CHECKPOINT_EXIT_CODE = 75
 MAX_PRIORITY = 4
 MIN_PRIORITY = 0

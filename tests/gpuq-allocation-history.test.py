@@ -123,6 +123,7 @@ class History(unittest.TestCase):
         legacy = sqlite3.connect(old)
         source.backup(legacy)
         source.close()
+        legacy.execute('DROP TABLE managed_job_completions')
         legacy.execute('DROP TRIGGER jobs_allocation_authority_immutable')
         legacy.execute('DROP TABLE allocation_grants')
         legacy.execute('ALTER TABLE jobs DROP COLUMN allocation_authority')

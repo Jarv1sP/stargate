@@ -98,7 +98,8 @@ _REQUIRED_TABLES_V5 = frozenset(
 )
 _REQUIRED_TABLES_V6_TO_V10 = frozenset({*_REQUIRED_TABLES_V5, "attempt_progress"})
 _REQUIRED_TABLES_V11_TO_V13 = frozenset({*_REQUIRED_TABLES_V6_TO_V10, "gpu_allocation_history"})
-_REQUIRED_TABLES = frozenset({*_REQUIRED_TABLES_V11_TO_V13, "allocation_grants"})
+_REQUIRED_TABLES_V14_TO_V15 = frozenset({*_REQUIRED_TABLES_V11_TO_V13, "allocation_grants"})
+_REQUIRED_TABLES = frozenset({*_REQUIRED_TABLES_V14_TO_V15, "managed_job_completions"})
 
 
 class StoreError(RuntimeError):
@@ -1333,11 +1334,25 @@ _SCHEMA_V14_TO_V15_DDL = (
       WHEN NEW.initial_max_gpu_count IS NOT OLD.initial_max_gpu_count
       BEGIN SELECT RAISE(ABORT,'initial allocation grant is immutable'); END""",
 )
-_EXPECTED_SCHEMA_SIGNATURE = _build_expected_schema_signature((
+_EXPECTED_SCHEMA_SIGNATURE_V15 = _build_expected_schema_signature((
     *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
     *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
     *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
     *_SCHEMA_V11_TO_V12_DDL, *_SCHEMA_V12_TO_V13_DDL, *_SCHEMA_V13_TO_V14_DDL, *_SCHEMA_V14_TO_V15_DDL,
+))
+
+_SCHEMA_V15_TO_V16_DDL = (
+    """CREATE TABLE managed_job_completions (
+      job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json) AND json_type(receipt_json)='object')
+    )""",
+)
+_EXPECTED_SCHEMA_SIGNATURE = _build_expected_schema_signature((
+    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
+    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
+    *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
+    *_SCHEMA_V11_TO_V12_DDL, *_SCHEMA_V12_TO_V13_DDL, *_SCHEMA_V13_TO_V14_DDL,
+    *_SCHEMA_V14_TO_V15_DDL, *_SCHEMA_V15_TO_V16_DDL,
 ))
 
 
@@ -1555,6 +1570,9 @@ class Store:
                         version = 14
                     if version == 14:
                         self._migrate_v14_to_v15(connection)
+                        version = 15
+                    if version == 15:
+                        self._migrate_v15_to_v16(connection)
                     self._validate_schema(connection)
                     connection.commit()
                 except BaseException:
@@ -1626,8 +1644,10 @@ class Store:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        if version in {14, STORE_SCHEMA_VERSION}:
+        if version == STORE_SCHEMA_VERSION:
             required_tables = _REQUIRED_TABLES
+        elif version in {14, 15}:
+            required_tables = _REQUIRED_TABLES_V14_TO_V15
         elif version in {11, 12, 13}:
             required_tables = _REQUIRED_TABLES_V11_TO_V13
         elif version in {_SCHEMA_VERSION_V6, _SCHEMA_VERSION_V7, _SCHEMA_VERSION_V8, _SCHEMA_VERSION_V9, _SCHEMA_VERSION_V10}:
@@ -1958,6 +1978,14 @@ class Store:
             connection.execute(statement)
         connection.execute("UPDATE schema_meta SET schema_version=15 WHERE singleton=1")
         connection.execute("PRAGMA user_version=15")
+        self._validate_schema_version(connection, version=15, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V15)
+
+    def _migrate_v15_to_v16(self, connection: sqlite3.Connection) -> None:
+        self._validate_schema_version(connection, version=15, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V15)
+        for statement in _SCHEMA_V15_TO_V16_DDL:
+            connection.execute(statement)
+        connection.execute("UPDATE schema_meta SET schema_version=16 WHERE singleton=1")
+        connection.execute("PRAGMA user_version=16")
         self._validate_schema(connection)
 
     @staticmethod
@@ -2702,10 +2730,74 @@ class Store:
                 raise StoreConflictError('allocation grant revision changed')
             if row['max_gpu_count'] == max_gpu_count:
                 return current
+            self._require_managed_open(connection, job_id)
             if max_gpu_count < len(self._allocated_gpu_uuids(connection, job_id)):
                 raise AllocationGrantError('grant cannot shrink below held or reserved GPUs')
             connection.execute('UPDATE allocation_grants SET max_gpu_count=?,revision=revision+1 WHERE job_id=?', (max_gpu_count, job_id))
             return {'grant_id': grant_id, 'revision': expected_revision + 1, 'max_gpu_count': max_gpu_count}
+
+    @staticmethod
+    def _require_managed_open(connection: sqlite3.Connection, job_id: str) -> None:
+        if connection.execute('SELECT 1 FROM managed_job_completions WHERE job_id=?', (job_id,)).fetchone():
+            raise StoreConflictError('managed job has completed its resource lifecycle')
+
+    def get_managed_completion(self, job_id: str) -> dict[str, Any] | None:
+        with self._read_connection() as connection:
+            row = connection.execute('SELECT receipt_json FROM managed_job_completions WHERE job_id=?', (job_id,)).fetchone()
+        return None if row is None else _json_load(row['receipt_json'])
+
+    def managed_completion_attempts(self, job_id: str) -> list[dict[str, Any]]:
+        """Private physical-check inputs, including durable successful unit cleanup."""
+        with self._read_connection() as connection:
+            rows = connection.execute('''SELECT a.*,EXISTS(
+                SELECT 1 FROM actions x WHERE x.attempt_id=a.id AND x.action_type='CLEANUP_UNIT'
+                AND x.state='DONE' AND json_extract(x.result_json,'$.cleaned')=1) cleanup_confirmed
+                FROM attempts a WHERE a.job_id=? ORDER BY a.ordinal DESC''', (job_id,)).fetchall()
+        return [self._attempt(row) for row in rows]
+
+    def complete_managed_job(self, job_id: str, *, grant_id: str, submit_digest: str,
+                             expected_version: int) -> dict[str, Any]:
+        """Caller confirms stopped units under the coordinator lock before this write.
+
+        Seal the native allocation and persist one receipt atomically. This is
+        not dataset cleanup or release of an external coordinator's quota.
+        """
+        if not _plain_int(expected_version) or expected_version < 0:
+            raise ValueError('expected_version must be non-negative')
+        with self._transaction() as connection:
+            row = connection.execute('''SELECT j.*,g.grant_id,g.revision grant_revision
+                FROM jobs j LEFT JOIN allocation_grants g ON g.job_id=j.id WHERE j.id=?''', (job_id,)).fetchone()
+            if row is None:
+                raise StoreNotFoundError(f'job not found: {job_id}')
+            if row['allocation_authority'] != 'external-v1' or row['grant_id'] != grant_id or row['submit_digest'] != submit_digest:
+                raise StoreConflictError('managed completion identity differs')
+            existing = self.get_managed_completion(job_id)
+            if existing is not None:
+                return existing
+            if row['version'] != expected_version or row['state'] not in ('SUCCEEDED', 'FAILED', 'CANCELED'):
+                raise StoreConflictError('managed job is not in the observed terminal state')
+            if self._allocated_gpu_uuids(connection, job_id):
+                raise StoreConflictError('managed job still holds or reserves GPUs')
+            if connection.execute("SELECT 1 FROM attempts WHERE job_id=? AND state NOT IN ('EXITED_SUCCESS','EXITED_FAILURE','CANCELED','PREEMPTED') LIMIT 1", (job_id,)).fetchone():
+                raise StoreConflictError('managed job has unfinished attempts')
+            if connection.execute("SELECT 1 FROM actions WHERE job_id=? AND state='PENDING' LIMIT 1", (job_id,)).fetchone():
+                raise StoreConflictError('managed job has pending native actions')
+            if self.list_scale_up_plans(job_id=job_id, states=ACTIVE_SCALE_UP_STATES, limit=1):
+                raise StoreConflictError('managed job has an unfinished scale-up plan')
+            latest = connection.execute('''SELECT id,ordinal,state,exit_code
+                FROM attempts WHERE job_id=? ORDER BY ordinal DESC LIMIT 1''', (job_id,)).fetchone()
+            attempt = None if latest is None else dict(latest)
+            if row['state'] == 'SUCCEEDED' and (attempt is None or attempt['state'] != 'EXITED_SUCCESS' or attempt['exit_code'] != 0):
+                raise StoreConflictError('managed job has no successful final attempt')
+            receipt = {'protocol': 'managed-completion-v1', 'job_id': job_id, 'submit_key': row['submit_key'],
+                       'submit_digest': submit_digest, 'grant_id': grant_id, 'grant_revision': row['grant_revision'] + 1,
+                       'state': row['state'], 'native_version': row['version'], 'finished_at': row['finished_at'],
+                       'sealed_at': self._now(), 'latest_attempt': attempt}
+            connection.execute('UPDATE allocation_grants SET max_gpu_count=0,revision=revision+1 WHERE job_id=?', (job_id,))
+            connection.execute('INSERT INTO managed_job_completions VALUES(?,?)', (job_id, _json_dump(receipt)))
+            self.append_event('JOB_MANAGED_COMPLETED', job_id=job_id,
+                              payload={'grant_id': grant_id, 'grant_revision': receipt['grant_revision']})
+            return receipt
 
     def get_scale_up_receipt(self, submit_key: str, plan_id: str) -> dict[str, Any] | None:
         """One consistent observation; terminal plan state alone does not prove GPUs released."""
@@ -2812,6 +2904,8 @@ class Store:
             )
             parameters.extend(normalized_expected)
         with self._transaction() as connection:
+            if normalized_state is not None:
+                self._require_managed_open(connection, job_id)
             cursor = connection.execute(
                 f"UPDATE jobs SET {', '.join(updates)} "
                 f"WHERE {' AND '.join(clauses)}",

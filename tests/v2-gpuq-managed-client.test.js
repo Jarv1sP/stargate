@@ -32,7 +32,7 @@ async function fixture(t) {
   return {submitKey, grantId, calls, state, options, client: new GpuqManagedClient(options)};
 }
 
-test('managed adapter uses only the three fixed native operations and keeps exact grant identity', async t => {
+test('managed allocation calls use fixed native operations and keep exact grant identity', async t => {
   const f = await fixture(t);
   const submission = {submit_key: f.submitKey, gpu_count: 4, argv: ['fixture-only'], env: {PRIVATE: 'fixture'}};
   assert.equal((await f.client.submit({submission, grantId: f.grantId, maxGpus: 2})).grant.max_gpu_count, 2);
@@ -99,4 +99,65 @@ test('mismatched grant replies cannot confirm mutation results', async t => {
   await assert.rejects(f.client.updateAllocation({submitKey: f.submitKey, grantId: f.grantId, expectedRevision: 1, maxGpus: 4}), error => error.code === 'NATIVE_OUTCOME_UNCONFIRMED');
   f.state.result.grant.grant_id = f.grantId; f.state.result.grant.max_gpu_count = 3;
   await assert.rejects(f.client.updateAllocation({submitKey: f.submitKey, grantId: f.grantId, expectedRevision: 1, maxGpus: 4}), error => error.code === 'NATIVE_OUTCOME_UNCONFIRMED');
+});
+
+function completed(f) {
+  return {protocol: 'managed-completion-v1', job_id: 'J0123456789ab', submit_key: f.submitKey,
+    submit_digest: 'a'.repeat(64), grant_id: f.grantId, grant_revision: 2, state: 'SUCCEEDED', native_version: 4,
+    finished_at: 20, sealed_at: 21, latest_attempt: {id: 'A' + 'b'.repeat(32), ordinal: 1,
+      state: 'EXITED_SUCCESS', exit_code: 0}};
+}
+
+test('completion and receipt lookup cross the real Python bridge with only original references', async t => {
+  const f = await fixture(t), receipt = completed(f); f.state.result = receipt;
+  assert.deepEqual(await f.client.complete({submitKey: f.submitKey, grantId: f.grantId, expectedDigest: receipt.submit_digest}), receipt);
+  assert.deepEqual(await f.client.completion({submitKey: f.submitKey}), receipt);
+  assert.deepEqual(f.calls.map(row => row.op), ['complete_managed', 'managed_completion']);
+  assert.deepEqual(f.calls[0].args, {submit_key: f.submitKey, grant_id: f.grantId, submit_digest: receipt.submit_digest});
+  assert.deepEqual(f.calls[1].args, {submit_key: f.submitKey});
+});
+
+test('lost completion reply is recovered by query, while absent receipt stays unknown', async t => {
+  const f = await fixture(t); f.state.drop = true;
+  await assert.rejects(f.client.complete({submitKey: f.submitKey, grantId: f.grantId, expectedDigest: 'a'.repeat(64)}),
+    error => error.code === 'NATIVE_OUTCOME_UNCONFIRMED');
+  assert.equal(f.calls.length, 1);
+  f.state.drop = false; f.state.result = null;
+  assert.equal(await f.client.completion({submitKey: f.submitKey}), null);
+  f.state.result = completed(f);
+  assert.deepEqual(await f.client.completion({submitKey: f.submitKey}), f.state.result);
+  assert.deepEqual(f.calls.map(row => row.op), ['complete_managed', 'managed_completion', 'managed_completion']);
+});
+
+test('foreign or malformed completion evidence cannot authorize subsequent cleanup', async t => {
+  const f = await fixture(t), receipt = completed(f);
+  for (const result of [null, {...receipt, grant_id: randomUUID()}, {...receipt, submit_key: randomUUID()},
+    {...receipt, submit_digest: 'c'.repeat(64)}, {...receipt, state: 'LOST'}, {...receipt, grant_revision: 0},
+    {...receipt, latest_attempt: null}, {...receipt, latest_attempt: {...receipt.latest_attempt, exit_code: 1}},
+    {...receipt, latest_attempt: {...receipt.latest_attempt, ordinal: 0}}, {...receipt, argv: ['unexpected']},
+  ]) {
+    f.state.result = result;
+    await assert.rejects(f.client.complete({submitKey: f.submitKey, grantId: f.grantId, expectedDigest: receipt.submit_digest}),
+      error => error.code === 'NATIVE_OUTCOME_UNCONFIRMED');
+  }
+  f.state.result = {...receipt, protocol: 'unrecognized'};
+  await assert.rejects(f.client.completion({submitKey: f.submitKey}), error => error.code === 'NATIVE_COMPLETION_UNAVAILABLE');
+  f.state.result = {...receipt, state: 'CANCELED', latest_attempt: null, finished_at: null};
+  assert.deepEqual(await f.client.completion({submitKey: f.submitKey}), f.state.result);
+});
+
+test('invalid completion identity fails before RPC and private native errors stay private', async t => {
+  const f = await fixture(t);
+  for (const command of [{submitKey: 'bad', grantId: f.grantId, expectedDigest: 'a'.repeat(64)},
+    {submitKey: f.submitKey, grantId: 'bad', expectedDigest: 'a'.repeat(64)},
+    {submitKey: f.submitKey, grantId: f.grantId, expectedDigest: 'bad'}]) {
+    await assert.rejects(f.client.complete(command), error => error.code === 'INVALID_MANAGED_REQUEST');
+  }
+  assert.equal(f.calls.length, 0);
+  f.state.code = 'COMPLETION_UNCONFIRMED';
+  await assert.rejects(f.client.complete({submitKey: f.submitKey, grantId: f.grantId, expectedDigest: 'a'.repeat(64)}), error => {
+    assert.equal(error.code, 'NATIVE_OUTCOME_UNCONFIRMED');
+    assert.equal(error.cause.stdout.includes('secret-error-message'), false); return true;
+  });
+  assert.equal(f.calls.length, 1);
 });

@@ -61,6 +61,7 @@ class Display(unittest.TestCase):
     def test_v12_running_schema_migration_keeps_rows_attempts_leases_and_digest(self):
         job,attempt=self.running((0,1));path=self.root/'legacy12.db'
         current=sqlite3.connect(self.config.db_path);old=sqlite3.connect(path);current.backup(old);current.close()
+        old.execute('DROP TABLE managed_job_completions')
         old.execute('DROP TRIGGER jobs_allocation_authority_immutable');old.execute('DROP TABLE allocation_grants')
         old.execute('ALTER TABLE jobs DROP COLUMN allocation_authority')
         old.execute('ALTER TABLE jobs DROP COLUMN display_json');old.execute('UPDATE schema_meta SET schema_version=12');old.execute('PRAGMA user_version=12');old.commit()

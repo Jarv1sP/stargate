@@ -76,7 +76,7 @@ _MAX_LAUNCH_SPEC_BYTES = 512 * 1024
 _LAUNCH_FILE_NAME = "launch.json"
 _RELEASE_GATE_PATH = Path("/run/gpuq-native-release/gate.json")
 _MAX_RELEASE_GATE_BYTES = 4096
-_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status", "execution_snapshot", "job_observation", "attempt_log_reference", "job_diagnostics"})
+_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status", "execution_snapshot", "job_observation", "attempt_log_reference", "job_diagnostics", "managed_completion"})
 _ACTIVE_JOB_STATES = {
     JobState.PENDING.value,
     JobState.STARTING.value,
@@ -4849,6 +4849,8 @@ class Coordinator:
             return self._api_job_diagnostics(arguments)
         if operation == 'attempt_log_reference':
             return self._api_attempt_log_reference(arguments)
+        if operation == 'managed_completion':
+            return self._api_managed_completion(arguments)
         with self._lock:
             if operation not in _READ_ONLY_OPERATIONS:
                 self._require_release_open()
@@ -4866,6 +4868,8 @@ class Coordinator:
                 return self._api_allocation_status(arguments)
             if operation == "set_allocation_grant":
                 return self._api_set_allocation_grant(arguments)
+            if operation == "complete_managed":
+                return self._api_complete_managed(arguments)
             if operation == "set_job_display":
                 return self._api_set_job_display(arguments)
             if operation == "status":
@@ -5017,6 +5021,54 @@ class Coordinator:
         except StoreConflictError as exc:
             raise ApiError('ALLOCATION_CONFLICT', str(exc)) from exc
         return {'job_id': receipt['job_id'], 'submit_key': receipt['submit_key'], 'mode': 'external-v1', 'grant': grant}
+
+    def _api_managed_completion(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        _require_exact_fields(arguments, allowed={'submit_key'}, required={'submit_key'})
+        try:
+            submission = self.store.get_submission_receipt(arguments['submit_key'])
+        except ValueError as exc:
+            raise ApiError('BAD_REQUEST', str(exc)) from exc
+        return None if submission is None else self.store.get_managed_completion(submission['job_id'])
+
+    @_release_mutation
+    def _api_complete_managed(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        _require_exact_fields(arguments, allowed={'submit_key', 'grant_id', 'submit_digest'},
+                              required={'submit_key', 'grant_id', 'submit_digest'})
+        try:
+            submission = self.store.get_submission_receipt(arguments['submit_key'])
+            if submission is None:
+                raise ApiError('NOT_FOUND', 'submission not found')
+            job = self.store.get_job(submission['job_id'])
+            authorization = self.store.get_allocation_authorization(job['id'])
+            grant = authorization['grant']
+            if (authorization['mode'] != 'external-v1' or grant is None
+                    or grant['grant_id'] != arguments['grant_id'] or submission['submit_digest'] != arguments['submit_digest']):
+                raise ApiError('ALLOCATION_CONFLICT', 'managed completion identity differs')
+            existing = self.store.get_managed_completion(job['id'])
+            if existing is not None:
+                return existing
+            if job['state'] not in ('SUCCEEDED', 'FAILED', 'CANCELED'):
+                raise ApiError('COMPLETION_UNCONFIRMED', 'job is not terminal')
+            for attempt in self.store.managed_completion_attempts(job['id']):
+                if attempt['cleanup_confirmed'] or (attempt['boot_id'] and attempt['boot_id'] != self.boot_id):
+                    continue
+                try:
+                    status = self._verified_status(attempt)
+                except UnitNotFoundError:
+                    continue
+                if status is None or not status.is_cleanup_ready or status.main_pid != 0:
+                    raise ApiError('COMPLETION_UNCONFIRMED', 'attempt unit is not stopped')
+                if status.control_group and read_cgroup_tree_processes(status.control_group):
+                    raise ApiError('COMPLETION_UNCONFIRMED', 'attempt descendants remain')
+            self._require_release_open()
+            return self.store.complete_managed_job(job['id'], grant_id=arguments['grant_id'],
+                submit_digest=arguments['submit_digest'], expected_version=job['version'])
+        except ValueError as exc:
+            raise ApiError('BAD_REQUEST', str(exc)) from exc
+        except ApiError:
+            raise
+        except (RuntimeError, OSError) as exc:
+            raise ApiError('COMPLETION_UNCONFIRMED', 'native resource completion is not confirmed') from exc
 
     @_release_mutation
     def _api_set_job_display(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -5175,7 +5227,7 @@ class Coordinator:
                 "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1",
                     "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1",
                     "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1",
-                    "execution-snapshot-v1", "job-observation-v1", "attempt-log-reference-v1", "job-diagnostics-v1"],
+                    "execution-snapshot-v1", "job-observation-v1", "attempt-log-reference-v1", "job-diagnostics-v1", "managed-completion-v1"],
                 "observe_only": self._observe_only,
                 "managed_indices": managed_indices,
                 "managed_gpus": managed_gpus,
