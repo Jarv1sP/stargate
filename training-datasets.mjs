@@ -1,4 +1,30 @@
 import {MACHINES} from './dist/model.js';
+import {AsyncLocalStorage} from 'node:async_hooks';
+import {setTimeout as delay} from 'node:timers/promises';
+
+const retryScope=new AsyncLocalStorage();
+const RETRYABLE_READS=new Set(['datasets.training.status','storage.training.plan']);
+const RETRYABLE_ERRORS=new Set(['TRAINING_ADMISSION_BUSY','NODE_TRANSPORT_BUSY','NODE_CONNECT_FAILED',
+  'NODE_RESPONSE_TIMEOUT','EXECUTOR_UNAVAILABLE','EXECUTOR_TIMEOUT','EXECUTOR_UNCONFIRMED','TRAINING_ROUTE_UNCONFIRMED']);
+// Share the extra waiting across a submission; keep the existing 27s node and
+// 40s client deadlines. Only reads can be repeated, never a submission/write.
+export const withTrainingReadRetries=callback=>retryScope.getStore()?callback():retryScope.run({remainingMs:12000},callback);
+export async function retryTrainingRead(operation,read,{check=()=>{},now=Date.now,sleep=delay}={}){
+  if(!RETRYABLE_READS.has(operation))throw Error('Invalid training read retry operation');
+  const budget=retryScope.getStore()||{remainingMs:12000};
+  for(let attempt=0;;attempt++){
+    check();const started=now();
+    try{const value=await read();check();return value;}
+    catch(error){
+      check();
+      if(error?.status===401||error?.status===403||!RETRYABLE_ERRORS.has(error?.code))throw error;
+      budget.remainingMs=Math.max(0,budget.remainingMs-Math.max(0,now()-started));
+      const wait=250*2**attempt;
+      if(attempt>=2||budget.remainingMs<=wait)throw error;
+      budget.remainingMs-=wait;await sleep(wait);
+    }
+  }
+}
 
 const ID=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const HASH=/^[a-f0-9]{64}$/;
@@ -44,9 +70,9 @@ export async function trainingDatasetCapabilities(service,principal,args){
     return result('offline');
   if(typeof service.bridge!=='function')return result('protocol-unavailable');
   let status;
-  try{status=await service.bridge(machine,'datasets.training.status',{
+  try{status=await retryTrainingRead('datasets.training.status',()=>service.bridge(machine,'datasets.training.status',{
     userId:actor.userId,hostAdmin:false,dataset,version,datasetReadMode:'warehouse',
-  });}
+  }),{check});}
   catch(error){check();return result(error?.status===403?'forbidden':'unverified');}
   check();if(maintained())return result('maintenance');
   // A response from another version/node/mode is unverified even if it says
@@ -86,9 +112,9 @@ export async function resolveTrainingDataset(service,owner,machine,ref,readMode)
   };
   check();
   let status;
-  try{status=await service.bridge(machine,'datasets.training.status',{
+  try{status=await retryTrainingRead('datasets.training.status',()=>service.bridge(machine,'datasets.training.status',{
     userId:owner,hostAdmin:false,...ref,datasetReadMode:'warehouse',
-  });}
+  }),{check});}
   catch(error){
     check();
     if(error?.code==='TRAINING_ADMISSION_BUSY')fail('数据正在使用，请稍后用原提交键重试；未提交训练。',503,'TRAINING_ADMISSION_BUSY');
