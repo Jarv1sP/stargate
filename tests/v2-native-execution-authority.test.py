@@ -34,6 +34,8 @@ A = load('native_authority', 'src/infrastructure/native-execution-authority.py')
 R = load('authorized_training_runtime', 'src/infrastructure/training-runtime.py')
 C = load('authorized_training_control', 'deploy/training-control.py')
 T = load('authorized_training_command', 'src/infrastructure/training-command.py')
+B = load('authorized_training_budget', 'src/infrastructure/training-budget.py')
+L = load('authorized_budget_policy', 'deploy/job-resources.py')
 RF = load('authorized_runtime_fixture', 'tests/v2-training-runtime-inputs.test.py')
 from gpuq.backends import BackendError, UnitNotFoundError, UserSystemdBackend
 from gpuq.protocol import Client
@@ -104,6 +106,28 @@ class NativeAuthorityTests(unittest.TestCase):
         return {'schema': 1, 'identity': {'dispatchId': self.dispatch, 'jobId': fixture.job, 'accountId': fixture.user},
             'project': {**deepcopy(fixture.reference), 'runtime': observed['runtime']}, 'inputs': deepcopy(fixture.inputs),
             'submission': {'execution': {'argv': ['python', 'train.py'], 'workingDirectory': '.', 'env': {}}}}
+
+    def execution_components(self):
+        fixture, authority = self.inputs_fixture()
+        plan = self.runtime_plan(fixture)
+        plan['submission']['resources'] = {'sharing': None}
+        runtime = R.TrainingRuntime(authority=authority, inputs=fixture.runtime, plan=plan)
+        archive = self.root / 'execution-test-sdk.pyz'
+        archive.write_bytes(b'not executed by the engine test double')
+        control = T.TrainingCommand(C, config={'controlRoot': str(self.config.control_dir), 'gpuqArchive': str(archive)},
+                                    environment=self.environment)
+        root = self.root / 'cgroup-view'
+        leaf = root / self.group.lstrip('/')
+        leaf.mkdir(parents=True)
+        def apply(argv, **kwargs):
+            self.assertEqual(argv[5], self.unit)
+            properties = dict(value.split('=', 1) for value in argv[6:])
+            for name, value in [('cpu.max', str(int(properties['CPUQuota'][:-1]) * 1000) + ' 100000'),
+                                ('memory.max', properties['MemoryMax']), ('pids.max', properties['TasksMax'])]:
+                (leaf / name).write_text(value)
+            return subprocess.CompletedProcess(argv, 0)
+        setter = Mock(side_effect=apply)
+        return fixture, runtime, control, B.TrainingBudget(L, systemd=setter, cgroup_root=root), setter
 
     def test_current_attempt_matches_native_binding_kernel_process_and_real_systemd_parser_without_writes(self):
         before = '\n'.join(self.store._get_connection().iterdump())
@@ -294,6 +318,55 @@ class NativeAuthorityTests(unittest.TestCase):
             descriptors = [fd for fd, _, _ in prepared['mounts']]
         fixture.assert_closed(descriptors)
         self.assertEqual('\n'.join(self.store._get_connection().iterdump()), before)
+
+    def test_run_holds_all_scopes_through_engine_and_preserves_its_exit_without_releasing_claims(self):
+        fixture, runtime, control, budget, setter = self.execution_components()
+        descriptors = []
+        def execute(*, resources, command, budget):
+            setter.assert_called_once()
+            self.assertEqual(len(self.calls), 3)
+            self.assertEqual(command['argv'], ['python', 'train.py'])
+            self.assertEqual(command['environment']['GPUQ_CONSOLE_JOB_ID'], fixture.job)
+            self.assertEqual(budget['budget']['gpuCount'], 2)
+            self.assertEqual(budget['budget']['requested']['cpu'], 8)
+            descriptors.extend([*resources['descriptors'].values(), *(fd for fd, _ in resources['dataMounts']),
+                *(fd for fd, _, _ in command['mounts']), budget['cgroupFd'], budget['metadataFd']])
+            for descriptor in descriptors:
+                self.assertTrue(os.fstat(descriptor))
+            return 75
+        engine = SimpleNamespace(run=Mock(side_effect=execute))
+        before = '\n'.join(self.store._get_connection().iterdump())
+        self.assertEqual(runtime.run(budget=budget, command=control, engine=engine), 75)
+        engine.run.assert_called_once()
+        fixture.assert_closed(descriptors)
+        self.assertEqual('\n'.join(self.store._get_connection().iterdump()), before)
+        self.assertEqual(len(fixture.cache._leases('images', fixture.source['version'])), 1)
+
+    def test_run_budget_failure_never_prepares_control_or_calls_engine(self):
+        fixture, runtime, control, budget, setter = self.execution_components()
+        setter.side_effect = subprocess.CalledProcessError(1, 'fixture-systemctl')
+        engine = SimpleNamespace(run=Mock(side_effect=AssertionError('must not execute')))
+        with patch.object(control, 'open', wraps=control.open) as open_control:
+            with self.assertRaises(subprocess.CalledProcessError):
+                runtime.run(budget=budget, command=control, engine=engine)
+            open_control.assert_not_called()
+        engine.run.assert_not_called()
+        self.assertEqual(len(fixture.cache._leases('images', fixture.source['version'])), 1)
+
+    def test_cancellation_during_budget_setup_stops_before_engine_without_releasing_native_leases(self):
+        fixture, runtime, control, budget, setter = self.execution_components()
+        apply = setter.side_effect
+        def cancel_after_apply(*args, **kwargs):
+            result = apply(*args, **kwargs)
+            self.store.update_job(self.job['id'], state='CANCELED')
+            return result
+        setter.side_effect = cancel_after_apply
+        engine = SimpleNamespace(run=Mock(side_effect=AssertionError('must not execute')))
+        with self.assertRaises(A.NativeExecutionError):
+            runtime.run(budget=budget, command=control, engine=engine)
+        engine.run.assert_not_called()
+        self.assertEqual(len(self.store.get_execution_snapshot(self.dispatch, self.attempt_id)['leases']), 2)
+        self.assertEqual(len(fixture.cache._leases('images', fixture.source['version'])), 1)
 
     def test_initial_denial_makes_no_input_call_and_late_cancellation_closes_all_handles_without_releasing(self):
         fixture, authority = self.inputs_fixture()

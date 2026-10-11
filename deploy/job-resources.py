@@ -13,14 +13,21 @@ import sys
 GIB = 1024 ** 3
 RESOURCE_FILE = '/run/gpuq/resources.json'
 RAY_SPILL_DIR = '/tmp/gpuq-ray-spill'
+MAX_GPU_COUNT = 4096
+
+
+def allocation_limits(gpu_count):
+    """Budget the actual allocation, independent of a legacy submission shape."""
+    if type(gpu_count) is not int or not 1 <= gpu_count <= MAX_GPU_COUNT:
+        raise ValueError('Invalid allocated GPU count')
+    return {'cpu': gpu_count * 4, 'memory': gpu_count * 32 * GIB, 'pids': 2048}
 
 
 def requested_limits(spec, terminal=False):
     cards = spec.get('cards')
     if not terminal and (type(cards) is not int or not 1 <= cards <= 64):
         raise ValueError('Invalid GPU resource request')
-    return {'cpu': 2 if terminal else cards * 4,
-            'memory': (8 if terminal else cards * 32) * GIB, 'pids': 2048}
+    return {'cpu': 2, 'memory': 8 * GIB, 'pids': 2048} if terminal else allocation_limits(cards)
 
 
 def cgroup_path(group, root=Path('/sys/fs/cgroup')):
@@ -65,6 +72,20 @@ def read_budget(spec, group, uuids, terminal=False, *, root=Path('/sys/fs/cgroup
     requested = requested_limits(spec, terminal)
     if len(uuids) != (0 if terminal else spec['cards']) or len(set(uuids)) != len(uuids):
         raise ValueError('GPU allocation does not match resource request')
+    return _read_budget(spec['id'], requested, group, uuids, root=root,
+                        affinity_count=affinity_count, physical_memory=physical_memory)
+
+
+def read_allocation_budget(job_id, group, uuids, *, root=Path('/sys/fs/cgroup'),
+                           affinity_count=None, physical_memory=None):
+    requested = allocation_limits(len(uuids))
+    if len(set(uuids)) != len(uuids):
+        raise ValueError('Duplicate allocated GPU')
+    return _read_budget(job_id, requested, group, uuids, root=root,
+                        affinity_count=affinity_count, physical_memory=physical_memory)
+
+
+def _read_budget(job_id, requested, group, uuids, *, root, affinity_count, physical_memory):
     path = cgroup_path(group, root)
     names = {'cpu': 'cpu.max', 'memory': 'memory.max', 'pids': 'pids.max'}
     limits = {key: _limit(path, name, required=True) for key, name in names.items()}
@@ -87,7 +108,7 @@ def read_budget(spec, group, uuids, terminal=False, *, root=Path('/sys/fs/cgroup
         physical_memory = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
     limits['cpu'] = min(limits['cpu'], affinity_count)
     limits['memory'] = min(limits['memory'], physical_memory)
-    budget = {'schemaVersion': 1, 'jobId': spec['id'], 'cgroupVersion': 2,
+    budget = {'schemaVersion': 1, 'jobId': job_id, 'cgroupVersion': 2,
               'cpuLimit': limits['cpu'], 'memoryLimitBytes': limits['memory'],
               'pidsLimit': limits['pids'], 'gpuCount': len(uuids), 'gpuUuids': list(uuids),
               'requested': requested, 'cgroupPath': '/sys/fs/cgroup'}
@@ -104,7 +125,7 @@ def validate_budget(budget):
     for name in ('memoryLimitBytes', 'pidsLimit'):
         if type(budget.get(name)) is not int or budget[name] <= 0:
             raise ValueError('Invalid ' + name)
-    if type(budget.get('gpuCount')) is not int or not 0 <= budget['gpuCount'] <= 64:
+    if type(budget.get('gpuCount')) is not int or not 0 <= budget['gpuCount'] <= MAX_GPU_COUNT:
         raise ValueError('Invalid GPU budget')
     return budget
 

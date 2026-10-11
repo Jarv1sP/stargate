@@ -1,7 +1,8 @@
 """Guard the complete input lifetime with the fixed native execution identity.
 
 The caller supplies the plan read from NodeRuntimePlans, not public request
-fields. Container execution and stopped-consumer release are separate stages.
+fields. The injected engine owns container supervision; confirmed-consumer
+resource release remains a separate scheduler operation.
 """
 from contextlib import contextmanager
 from copy import deepcopy
@@ -29,3 +30,16 @@ class TrainingRuntime:
             if self._authority.require_current() != identity:
                 raise RuntimeError('Native execution identity changed while opening inputs')
             yield {**resources, 'execution': identity, 'command': deepcopy(plan['submission']['execution'])}
+
+    def run(self, *, budget, command, engine):
+        """Keep inputs and control views open through the engine's synchronous run.
+
+        Apply limits before passing any user command to the engine. A changed
+        attempt during preparation must not execute the old payload. Returning
+        an exit code closes handles, not durable leases or scheduler claims.
+        """
+        with self.open() as resources, budget.open(resources['execution']) as limits, \
+                command.open(resources, sharing=self._plan['submission']['resources']['sharing']) as payload:
+            if self._authority.require_current() != resources['execution']:
+                raise RuntimeError('Native execution identity changed before container launch')
+            return engine.run(resources=resources, command=payload, budget=limits)
