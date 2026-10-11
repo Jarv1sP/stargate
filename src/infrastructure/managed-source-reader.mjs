@@ -1,7 +1,7 @@
 import {jsonProcess} from './json-process.mjs';
 import {fileURLToPath} from 'node:url';
 import {isAbsolute} from 'node:path';
-import {ApplicationError} from '../domain/errors.mjs';
+import {ApplicationError, TransientReadError} from '../domain/errors.mjs';
 import {parseDataReadRequest} from '../contracts/data-read.mjs';
 
 const script = fileURLToPath(new URL('./legacy-cache-reader.py', import.meta.url));
@@ -30,8 +30,8 @@ export class ManagedSourceReader {
     this.timeoutMs = timeoutMs;
   }
 
-  async inspect(request, {actor} = {}) {
-    const result = await this.#call('inspect', request, actor);
+  async inspect(request, {actor, timeoutMs = this.timeoutMs} = {}) {
+    const result = await this.#call('inspect', request, actor, Math.min(timeoutMs, this.timeoutMs));
     if (result.availability === 'available' && Object.keys(result).length === 4) return {availability: 'available'};
     if (result.availability === 'unavailable' && result.reason === 'not-ready' && Object.keys(result).length === 5) return {availability: 'unavailable', reason: 'not-ready'};
     throw new ApplicationError('SOURCE_UNAVAILABLE');
@@ -47,7 +47,7 @@ export class ManagedSourceReader {
     return {machineId: request.machineId, source: {...request.source}, legacyOwners: [...result.legacyOwners], snapshotId: result.snapshotId};
   }
 
-  async #call(operation, request, actor) {
+  async #call(operation, request, actor, timeoutMs = this.timeoutMs) {
     if (request.machineId !== this.machineId) throw new ApplicationError('SOURCE_NODE_MISMATCH');
     if (!actor?.id) throw new ApplicationError('UNAUTHENTICATED');
     const source = request.source, config = this.#roots.get(source.kind);
@@ -55,7 +55,7 @@ export class ManagedSourceReader {
     try {
       const coordinatorVersion = this.#coordinatorVersions.has(`${source.kind}/${source.datasetId}/${source.version}`)
         ? {dataset: source.datasetId, version: source.version} : null;
-      const response = await jsonProcess({program: this.python, args: ['-B', script], timeoutMs: this.timeoutMs,
+      const response = await jsonProcess({program: this.python, args: ['-B', script], timeoutMs,
         input: {operation, config: {...config, coordinatorVersion}, request: {
         userId: actor.id, dataset: source.datasetId, version: source.version, kind: source.kind,
       }}});
@@ -66,6 +66,8 @@ export class ManagedSourceReader {
       let code;
       try {code = JSON.parse(cause.stdout).error?.code;} catch {}
       if (code === 'FORBIDDEN') throw new ApplicationError('FORBIDDEN');
+      if (code === 'SOURCE_BUSY') throw new TransientReadError('SOURCE_BUSY', {cause});
+      if (cause.code === 'ETIMEDOUT') throw new TransientReadError('SOURCE_READ_TIMEOUT', {cause});
       throw new ApplicationError('SOURCE_UNAVAILABLE', {cause});
     }
   }

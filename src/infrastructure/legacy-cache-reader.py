@@ -63,6 +63,7 @@ def main():
     import sys
 
     sys.dont_write_bytecode = True
+    module = None
     try:
         raw = sys.stdin.buffer.read(8193)
         if len(raw) > 8192:
@@ -90,9 +91,10 @@ def main():
     except PermissionError:
         print(json.dumps({'error': {'code': 'FORBIDDEN'}}))
         return 1
-    except Exception:
+    except Exception as error:
         # No paths, manifests, passwords or tracebacks cross this local boundary.
-        print(json.dumps({'error': {'code': 'SOURCE_UNAVAILABLE'}}))
+        code = 'SOURCE_BUSY' if isinstance(error, getattr(module, 'CacheBusy', ())) else 'SOURCE_UNAVAILABLE'
+        print(json.dumps({'error': {'code': code}}))
         return 1
 
 

@@ -41,6 +41,8 @@
 - `ProjectClient`／`assembleSqliteProjectRegistration`：网页和 CLI 共用项目登记与存量查询。CLI `register-project`、`project-registration` 参数见 `--help`，重试保留同一逻辑 ID 和引用；查询不联系节点、不提供新的运行证明，亦不启动训练。
 - `ObserveTrainingCandidates`：将目录和已登记实例与远端元数据、运行环境引用逐一匹配，每次 I/O 后检查目录上下文；节点局部异常不阻断其他候选，权限／上下文变化使整次观察失效。运行引用通过不等于用户代码可执行、空闲卡或占用额度足够，不创建租约。
 - `ResolveTrainingData`：复用数据直读用例，先检查整组来源授权，再观察已有目录／固定版本，结束后重查授权；同容器路径冲突直接拒绝。候选筛选只保留全部来源可读的机器，局部数据缺失／未授权不阻断其他机器，返回前重查成功候选的数据权限。不复制、准备缓存或取得挂载租约。
+- `TrainingReadBudget`：每次训练候选观察独立创建，只重试明确暂时失败的 source inspection；每个来源最多 3 次，所有来源／节点共享 12 秒额外等待预算。每次前后重验数据权限与候选上下文；持续锁忙保留为 data-busy，不阻断其他节点。普通浏览、项目／GPU 查询和全部写入不自动重试。
+- 数据锁忙／受监督读取超时保留为 `SOURCE_BUSY`／`SOURCE_READ_TIMEOUT`，经 Python、节点传输、统一 API 使用相同语义；来源登记和权限导入预检也复用错误映射，但不重放操作。`NodeJsonTransport` 仅分类确定的暂时错误、接受更短读取超时，本身始终单次发送；错误响应同样受字节上限限制，401／403 不因清理失败变成可重试网络错误。
 - `GpuqPoolReader`：通过 GPUQ 现有 Unix socket 协议读取托管 UUID 与调度器算出的可调度 UUID；发布门关闭、观察模式或不健康时不报告可分配卡。不是从截断的任务清单推算占用，不返回任务详情，不代表个人剩余额度或取得租约。
 - `HttpGpuPoolReader`／`assembleGpuPool`：复用节点认证及 NodeJsonTransport，固定内部 pool 路由只接受 machineId，不接受 socket 路径。共享契约核对节点身份、UUID 清单和派发状态。资源清单响应上限 2 MiB，其他节点接口默认仍为 8 KiB；不重试、不改投节点。
 - `ObserveTrainingResources`：先用原生 GPUQ 规则校验请求意图，再按节点池大小和配置上限筛选合法卡数；不改写原 batch／弹性边界。候选筛选组合此用例，忙池仍可等待，exclusiveFreeFitGpuCount 只表示瞬时独占空闲卡适配，不含抢占、共享显存、用户已占额度或租约。

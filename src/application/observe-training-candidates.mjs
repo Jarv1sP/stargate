@@ -1,6 +1,7 @@
 import {ApplicationError} from '../domain/errors.mjs';
 import {requireProjectObservation, requireProjectRuntimeObservation} from '../domain/project-observation.mjs';
 import {trainingQuotaFit} from '../domain/training-quota-fit.mjs';
+import {TrainingReadBudget} from './training-read-budget.mjs';
 
 /** Existing project/runtime references, not execution admission or GPU reservations. */
 export class ObserveTrainingCandidates {
@@ -14,6 +15,7 @@ export class ObserveTrainingCandidates {
       if (JSON.stringify(current) !== JSON.stringify(snapshot)) throw new ApplicationError('TRAINING_CONTEXT_CHANGED');
     };
     const candidates = [], excluded = [...snapshot.excluded];
+    const dataReads = new TrainingReadBudget({check: unchanged});
     let resourceRequest;
     try {resourceRequest = await this.resources.validate(request);}
     finally {await unchanged();}
@@ -65,10 +67,11 @@ export class ObserveTrainingCandidates {
       }
       let reads;
       try {
-        reads = await this.data.execute(actor, {machineId: candidate.machineId, sources: request.dataSources});
+        reads = await this.data.execute(actor, {machineId: candidate.machineId, sources: request.dataSources}, {reads: dataReads});
       } catch (error) {
-        if (!['FORBIDDEN', 'TRAINING_DATA_UNAVAILABLE', 'SOURCE_UNAVAILABLE', 'SOURCE_NODE_UNAVAILABLE'].includes(error.code)) throw error;
-        excluded.push({machineId: candidate.machineId, reason: error.code === 'FORBIDDEN' ? 'data-not-authorized' : 'data-unavailable'});
+        if (!['FORBIDDEN', 'TRAINING_DATA_UNAVAILABLE', 'SOURCE_UNAVAILABLE', 'SOURCE_NODE_UNAVAILABLE', 'SOURCE_BUSY', 'SOURCE_READ_TIMEOUT'].includes(error.code)) throw error;
+        excluded.push({machineId: candidate.machineId, reason: error.code === 'FORBIDDEN' ? 'data-not-authorized'
+          : error.code === 'SOURCE_BUSY' ? 'data-busy' : 'data-unavailable'});
         continue;
       } finally {await unchanged();}
       candidates.push({...candidate, ...instance, environmentMode: runtime.environmentMode,

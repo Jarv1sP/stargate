@@ -1,7 +1,8 @@
 import {DATA_READ_ROUTE,parseDataReadRequest} from '../contracts/data-read.mjs';
 import {readJson, reply, replyError} from './json-http.mjs';
+import {sourceReadStatuses} from './source-read-statuses.mjs';
 
-const statusByCode={UNAUTHENTICATED:401,FORBIDDEN:403,SOURCE_UNAVAILABLE:503,SOURCE_NODE_MISMATCH:503,SOURCE_NODE_UNAVAILABLE:503};
+const statusByCode={...sourceReadStatuses,UNAUTHENTICATED:401,FORBIDDEN:403,SOURCE_NODE_MISMATCH:503};
 
 /** Authentication supplies the actor; clients cannot choose an actor in JSON. */
 export function createDataReadHandler({authenticate,resolveDataRead,reportError=console.error}){

@@ -1,4 +1,6 @@
-import {ApplicationError} from '../domain/errors.mjs';
+import {ApplicationError, TransientReadError} from '../domain/errors.mjs';
+
+const transientConnections = new Set(['ECONNREFUSED', 'ECONNRESET', 'EAI_AGAIN', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET']);
 
 /** Bounded authenticated node RPC. No redirect, discovery, retry or failover. */
 export class NodeJsonTransport {
@@ -17,19 +19,21 @@ export class NodeJsonTransport {
     this.fetch = fetch; this.timeoutMs = timeoutMs; this.maxResponseBytes = maxResponseBytes;
   }
 
-  async request(machineId, route, input) {
+  async request(machineId, route, input, {timeoutMs = this.timeoutMs} = {}) {
     const node = this.#nodes.get(machineId);
     if (!node) throw new ApplicationError('NODE_UNAVAILABLE');
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('Invalid node timeout');
+    const signal = AbortSignal.timeout(Math.min(timeoutMs, this.timeoutMs));
     try {
       const url = new URL(route, node.origin);
       if (url.origin !== node.origin || url.username || url.password || !url.pathname.startsWith('/internal/v2/') || url.search || url.hash) throw new Error('Invalid node route');
-      const signal = AbortSignal.timeout(this.timeoutMs), send = this.fetch;
+      const send = this.fetch;
       const response = await send(url, {method: 'POST', redirect: 'error', signal,
         headers: {'Content-Type': 'application/json', Authorization: `Bearer ${node.credential}`}, body: JSON.stringify(input)});
-      if (!response.ok) {
-        await response.body?.cancel();
-        if (response.status === 403) throw new ApplicationError('FORBIDDEN');
-        throw new Error('Node request rejected');
+      if (response.status === 401 || response.status === 403) {
+        // Response cleanup cannot turn an explicit denial into a retryable reset.
+        try {await response.body?.cancel();}
+        finally {throw new ApplicationError(response.status === 403 ? 'FORBIDDEN' : 'NODE_CREDENTIAL_REJECTED');}
       }
       let size = 0;
       const chunks = [];
@@ -39,9 +43,21 @@ export class NodeJsonTransport {
         chunks.push(chunk);
       }
       signal.throwIfAborted();
-      return JSON.parse(Buffer.concat(chunks).toString('utf8')).result;
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (!response.ok) {
+        if (response.status === 503 && ['SOURCE_BUSY', 'SOURCE_READ_TIMEOUT'].includes(body?.error?.code)) {
+          throw new TransientReadError(body.error.code);
+        }
+        throw new Error('Node request rejected');
+      }
+      return body.result;
     } catch (cause) {
+      if (cause instanceof TransientReadError) throw cause;
       if (cause instanceof ApplicationError && cause.code === 'FORBIDDEN') throw cause;
+      if (cause instanceof ApplicationError && cause.code === 'NODE_CREDENTIAL_REJECTED') throw new ApplicationError('NODE_UNAVAILABLE', {cause});
+      if (signal.aborted || transientConnections.has(cause?.cause?.code) || transientConnections.has(cause?.code)) {
+        throw new TransientReadError('NODE_UNAVAILABLE', {cause});
+      }
       throw new ApplicationError('NODE_UNAVAILABLE', {cause});
     }
   }

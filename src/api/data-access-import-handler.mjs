@@ -1,5 +1,6 @@
 import {DATA_ACCESS_IMPORT_ROUTES, parseImportPlanRequest, parseImportApplyRequest, parseImportReceiptRequest} from '../contracts/data-access-import.mjs';
 import {createJsonRoutes} from './json-http.mjs';
+import {sourceReadStatuses} from './source-read-statuses.mjs';
 
 export function createDataAccessImportHandler({authenticate, imports, reportError}) {
   return createJsonRoutes({authenticate, reportError,
@@ -8,7 +9,7 @@ export function createDataAccessImportHandler({authenticate, imports, reportErro
       [DATA_ACCESS_IMPORT_ROUTES.apply, {parse: parseImportApplyRequest, useCase: {execute: (actor, input) => imports.apply(actor, input)}}],
       [DATA_ACCESS_IMPORT_ROUTES.receipt, {parse: parseImportReceiptRequest, useCase: {execute: (actor, input) => imports.receipt(actor, input)}}],
     ]),
-    statuses: {UNAUTHENTICATED: 401, FORBIDDEN: 403, DATA_RESOURCE_NOT_FOUND: 404, MANAGED_RESOURCE_REQUIRED: 400,
-      IMPORT_REQUEST_CONFLICT: 409, IMPORT_PLAN_CHANGED: 409, SOURCE_UNAVAILABLE: 503, SOURCE_NODE_UNAVAILABLE: 503},
+    statuses: {...sourceReadStatuses, UNAUTHENTICATED: 401, FORBIDDEN: 403, DATA_RESOURCE_NOT_FOUND: 404, MANAGED_RESOURCE_REQUIRED: 400,
+      IMPORT_REQUEST_CONFLICT: 409, IMPORT_PLAN_CHANGED: 409},
   });
 }

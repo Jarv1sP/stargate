@@ -3,6 +3,7 @@ import {SOURCE_INSPECTION_ROUTE, SOURCE_ACCESS_ROUTE, parseSourceInspection, par
 import {ApplicationError} from '../domain/errors.mjs';
 import {readObservation} from '../domain/data-source.mjs';
 import {createJsonRoutes} from './json-http.mjs';
+import {sourceReadStatuses} from './source-read-statuses.mjs';
 
 /** Dedicated coordinator credential: this endpoint cannot execute or mutate. */
 export function createSourceInspectionHandler({machineId, credential, sources, reportError}) {
@@ -24,6 +25,6 @@ export function createSourceInspectionHandler({machineId, credential, sources, r
       [SOURCE_INSPECTION_ROUTE, {parse: parseSourceInspection, useCase: inspect}],
       [SOURCE_ACCESS_ROUTE, {parse: parseSourceAccessRequest, useCase: exportAccess}],
     ]),
-    statuses: {UNAUTHENTICATED: 401, FORBIDDEN: 403, SOURCE_NODE_MISMATCH: 409, SOURCE_UNAVAILABLE: 503},
+    statuses: {...sourceReadStatuses, UNAUTHENTICATED: 401, FORBIDDEN: 403, SOURCE_NODE_MISMATCH: 409},
   });
 }

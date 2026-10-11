@@ -7,7 +7,7 @@ import {JsonHttpTransport} from '../src/client/http-transport.mjs';
 import {createTrainingCatalogSchema, SqliteTrainingCatalog} from '../src/infrastructure/sqlite/training-catalog.mjs';
 import {createProjectRegistrationSchema} from '../src/infrastructure/sqlite/project-registrations.mjs';
 import {ObserveTrainingCandidates} from '../src/application/observe-training-candidates.mjs';
-import {ApplicationError} from '../src/domain/errors.mjs';
+import {ApplicationError, TransientReadError} from '../src/domain/errors.mjs';
 import {ResolveTrainingData} from '../src/application/resolve-training-data.mjs';
 
 const release = 'a'.repeat(64), request = {project: {id: 'logical', release}, machines: {kind: 'any'}, resources: {minGpus: 1}, dataSources: []};
@@ -147,6 +147,32 @@ test('data missing on one machine excludes only that machine without preparing a
   assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'data-unavailable'}]);
   assert.deepEqual(result.candidates.map(row => row.machineId), ['node-2']);
   assert.deepEqual(result.candidates[0].dataReads[0].location, {containerPath: '/datasets/images', readOnly: true});
+});
+
+test('exhausted data contention remains local and explicit while healthy candidates share the same retry budget', async t => {
+  const f = await fixture(t), calls = [], scopes = [], original = f.data.execute.bind(f.data);
+  f.data.execute = (...args) => {scopes.push(args[2].reads); return original(...args);};
+  f.data.read.sources.inspect = async reference => {
+    calls.push(reference.machineId);
+    if (reference.machineId === 'node-1') throw new TransientReadError('SOURCE_BUSY');
+    return {availability: 'available'};
+  };
+  const result = await f.app.execute(f.actor, {...request, dataSources: [{kind: 'directory', sourceId: 'images'}]});
+  assert.deepEqual(result.excluded, [{machineId: 'node-1', reason: 'data-busy'}]);
+  assert.deepEqual(result.candidates.map(row => row.machineId), ['node-2']);
+  assert.deepEqual(calls, ['node-1', 'node-1', 'node-1', 'node-2']);
+  assert.equal(scopes.length, 2); assert.equal(scopes[0], scopes[1]);
+});
+
+test('project drift during a busy data read aborts before waiting or re-observing any node', async t => {
+  const f = await fixture(t), calls = [];
+  f.data.read.sources.inspect = async reference => {
+    calls.push(reference.machineId);
+    f.database.prepare('UPDATE v2_project_instances SET generation=? WHERE machine_id=?').run('e'.repeat(64), reference.machineId);
+    throw new TransientReadError('SOURCE_BUSY');
+  };
+  await assert.rejects(f.app.execute(f.actor, {...request, dataSources: [{kind: 'directory', sourceId: 'images'}]}), hasCode('TRAINING_CONTEXT_CHANGED'));
+  assert.deepEqual(calls, ['node-1']);
 });
 
 test('final authorization rejects a data grant revoked while observing a later candidate', async t => {
