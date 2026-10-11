@@ -25,7 +25,6 @@ export {datasetReferences} from './job-submission.mjs';
 export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
 export const PRIORITIES=new Set(['idle','normal','high']);
 export const SUBMISSION_SAFE_WINDOW_MS=120000;
-const SUBMISSION_RETRY_LIMIT=3;
 const SUBMISSION_CHECK_MESSAGE='正在确认节点状态（自动重查中）';
 const submissionError=job=>Date.now()-Date.parse(job.dispatchStartedAt||job.createdAt)>=SUBMISSION_SAFE_WINDOW_MS&&job.submissionReconciliation?.lastReason
   ?`节点尚未确认派发（${job.submissionReconciliation.lastReason}），正在自动核对。`:SUBMISSION_CHECK_MESSAGE;
@@ -195,13 +194,8 @@ export function installExecution(service,bridge){
             ...(confirmed?{absenceConfirmedAt:new Date(now).toISOString()}:{}),
           };
           if(confirmed){
-            if((old.dispatchRetries||0)>=SUBMISSION_RETRY_LIMIT){
-              current.state='FAILED';current.notSubmitted=true;current.failureCode='SUBMISSION_NOT_DISPATCHED';
-              current.finishedAt=new Date(now).toISOString();current.error=`节点确认未派发，自动重试 ${SUBMISSION_RETRY_LIMIT} 次仍未成功（${old.lastReason||'NOT_SUBMITTED'}）。`;
-            }else{
-              current.dispatchPending=true;current.submissionReconciliation.dispatchRetries=(old.dispatchRetries||0)+1;
-              current.error=null;service.audit('system','jobs.submit',current.id,'auto-retry-original-dispatch');
-            }
+            current.dispatchPending=true;current.submissionReconciliation.dispatchRetries=(old.dispatchRetries||0)+1;
+            current.error=null;service.audit('system','jobs.submit',current.id,'auto-retry-original-dispatch');
           }else current.error=submissionError(current);
           current.checkedAt=new Date(now).toISOString();service.save();
         });
@@ -571,6 +565,12 @@ export async function executionCall(service,principal,operation,args,readContext
     const previous=service.store.jobs.find(j=>j.userId===user.id&&j.key===request.key);
     if(previous){
       if(previous.digest!==digest)rejectSubmission('同一提交键不能用于不同任务。',409);
+      if(previous.state==='FAILED'&&previous.notSubmitted===true&&previous.failureCode==='SUBMISSION_NOT_DISPATCHED'&&!previous.nodeJobId&&!previous.cancelRequested){
+        previous.state='SUBMITTING';previous.dispatchPending=false;previous.error=SUBMISSION_CHECK_MESSAGE;
+        delete previous.notSubmitted;delete previous.failureCode;delete previous.finishedAt;
+        previous.submissionReconciliation={...previous.submissionReconciliation,state:'CHECKING',nextCheckAt:new Date(0).toISOString()};
+        service.audit(principal.username,'jobs.submit',previous.id,'recover-confirmed-non-dispatch');service.save();
+      }
       return jobView(previous);
     }
     if(service.store.jobs.length>=5000)rejectSubmission('任务历史达到归档上限，请联系管理员归档后提交。',503);

@@ -176,7 +176,7 @@ test('first dispatch uses completed admission without repeating lock-sensitive c
   await f.start();assert.equal(job.state,'PENDING');assert.equal(job.id,first.result.id);
   assert.deepEqual(f.calls.map(c=>c.op),['sync']);
 });
-test('repeated confirmed non-dispatch ends with a specific failure on the same UUID',async t=>{
+test('temporary non-dispatch keeps waiting and resumes the same UUID after more than three retries',async t=>{
   const f=await fixture(t),job=await f.original(),spec=structuredClone(job.spec);
   f.setHandler((_target,op)=>{if(op==='watch')return absent(job);throw Object.assign(Error('node refused'),{code:'EXECUTOR_UNCONFIRMED',status:502});});
   for(let n=0;n<4;n++){
@@ -185,10 +185,23 @@ test('repeated confirmed non-dispatch ends with a specific failure on the same U
     if(job.submissionReconciliation)job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
     await f.start();
   }
-  assert.equal(f.calls.filter(c=>c.op==='sync').length,3);assert.equal(job.state,'FAILED');
-  assert.equal(job.notSubmitted,true);assert.equal(job.failureCode,'SUBMISSION_NOT_DISPATCHED');
-  assert.match(job.error,/EXECUTOR_UNCONFIRMED/);assert.equal(usage([job],f.user.id),0);
+  assert.equal(f.calls.filter(c=>c.op==='sync').length,4);assert.equal(job.state,'SUBMITTING');
+  assert.notEqual(job.notSubmitted,true);assert.equal(usage([job],f.user.id),1);
+  job.dispatchFinishedAt=new Date(Date.now()-SUBMISSION_SAFE_WINDOW_MS-1000).toISOString();
+  job.dispatchStartedAt=job.dispatchFinishedAt;job.submissionReconciliation.nextCheckAt=new Date(0).toISOString();
+  f.setHandler((_target,op)=>op==='watch'?absent(job):{state:'PENDING',nodeJobId:nodeId});
+  await f.start();assert.equal(job.state,'PENDING');assert.equal(job.nodeJobId,nodeId);
   assert.equal(f.service.store.jobs.length,1);assert.deepEqual(job.spec,spec);
+});
+test('same key recovers an old retry-limit failure by observing before dispatch, without a new UUID',async t=>{
+  const f=await fixture(t),job=await f.original();
+  Object.assign(job,{state:'FAILED',notSubmitted:true,failureCode:'SUBMISSION_NOT_DISPATCHED',finishedAt:new Date().toISOString()});
+  const spec=structuredClone(job.spec);f.calls.length=0;
+  const response=await f.submit();assert.equal(response.result.id,job.id);assert.equal(job.state,'SUBMITTING');
+  assert.equal(job.dispatchPending,false);assert.deepEqual(f.calls,[]);assert.equal(f.service.store.jobs.length,1);
+  f.setHandler((_target,op)=>op==='watch'?absent(job):{state:'PENDING',nodeJobId:nodeId});
+  await f.start();assert.equal(job.state,'PENDING');assert.deepEqual(f.calls.map(c=>c.op),['watch','sync']);
+  assert.deepEqual(job.spec,spec);assert.equal(f.service.store.jobs.length,1);
 });
 test('an unconfirmed node receipt preserves quota and exposes the reason after the safety window',async t=>{
   const f=await fixture(t),job=await f.original();
