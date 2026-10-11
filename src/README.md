@@ -79,6 +79,7 @@
 - `LegacyDataLeaser`：原生已有版本的窄租约适配，仓库租约在写入锁内核对 protected 角色，缓存保持原权限。只返回租约标识和逻辑引用，不返回宿主路径、不提供复制／发布／释放。调用方须先验证任务归属；尚不继承只读元数据的 V2 委托权限。
 - `ManagedDataLeaser`／`AcquireManagedTaskLease`：已有缓存／仓库版本经固定 Node→Python 写入口获取租约，任务层前后重核数据权限。租约委托使用独立 leaseVersions 配置，精确限定种类／数据集／版本，不能由请求指定，也不继承 coordinatorVersions。失败或撤权不自动释放已经落盘的保护；原目录挂载走另一条尚待实现的路径。
 - 数据租约 `lookup` 与 `acquire` 共用原生权限／READY／来源保护检查，但 lookup 不写租约或刷新 last-used；任务层查询也前后重核权限。null 只表示没有观察到该账号／任务的匹配租约，不证明在途获取失败，不授权释放或复制。
+- `HttpManagedDataLeaser`／`assembleManagedDataLease`：协调器按固定节点取得或查询数据租约，复用节点认证与有界 HTTP 通道。内部账号来自持久任务，根目录与精确版本委托来自节点配置；响应严格匹配原账号／任务／机器／来源，不含宿主路径。获取丢回执只查原引用，不自动重试、换机或释放。已接真实本地 HTTP 与原生缓存／仓库，未部署生产；原目录挂载与完整启动准入仍待接入。
 
 托管子进程测试需要真实 Python 3.12，可通过 `V2_PYTHON` 指定解释器；V2 测试还包含真实 Chromium 登记场景。运行目录需保留 `src/infrastructure/legacy-cache-reader.py` 与配套 `deploy/dataset-cache.py` 及其元数据依赖的相对布局；发布打包尚待完成。
 - `infrastructure/sqlite/`：独立的会话、权限快照和来源查询。schema 初始化显式进行，查询类不会建表或迁移。
