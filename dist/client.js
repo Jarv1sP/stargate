@@ -21,7 +21,18 @@ export class DemoClient{
     })(),timeout,cancelled]);}finally{clearTimeout(timer);if(onAbort)signal.removeEventListener('abort',onAbort);}
   }
   track(promise){this.inflight.add(promise);promise.then(()=>this.inflight.delete(promise),()=>this.inflight.delete(promise));return promise;}
-  invoke(operation,args,token,options={}){return this.remote?this.transport('call',{operation,args},token,options):this.service.invoke(token,operation,args);}
+  async invoke(operation,args,token,options={}){
+    if(!this.remote)return this.service.invoke(token,operation,args);
+    const generation=this.authGeneration,request=structuredClone(args);
+    for(let attempt=0;;attempt++){
+      try{return await this.transport('call',{operation,args:request},token,options);}
+      catch(error){
+        if(attempt||!['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation)||
+          !(error instanceof TypeError||error.code==='REQUEST_TIMEOUT'||[502,503,504].includes(error.status))||
+          options.signal?.aborted||generation!==this.authGeneration)throw error;
+      }
+    }
+  }
   invokeTrainingCapabilities(args,token,options,generation){
     const capability=this.trainingCapabilities;
     // Serialize this optional read so multiple selected versions cannot all

@@ -1,4 +1,4 @@
-import {MACHINES,validUsername} from './dist/model.js';
+import {authorizationPolicy,MACHINES,validUsername} from './dist/model.js';
 import {createHash} from 'node:crypto';
 
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
@@ -27,10 +27,10 @@ function removalPending(service,machine,dataset,version){
 // exclusion is therefore written BEFORE dispatch, and survives a Portal swap.
 // Neither a failed HTTP response nor a missing operation ID proves no deletion.
 export function createDatasetRemovalGuard(service,principal,{readTimeoutMs=32000,now=Date.now,allowEmptyPersonalRegistration=false}={}){
-  const user=service.store.get(principal.userId),policy=JSON.stringify(user);
+  const user=service.store.get(principal.userId),policy=authorizationPolicy(user);
   const checkPolicy=()=>{
     const current=service.store.get(principal.userId);
-    if(service.closing||principal.role!=='admin'||!current?.enabled||current.role!=='admin'||JSON.stringify(current)!==policy)
+    if(service.closing||principal.role!=='admin'||!current?.enabled||current.role!=='admin'||authorizationPolicy(current)!==policy)
       fail('账号授权已改变，请刷新后重试。',403);
   };
   checkPolicy();
@@ -291,9 +291,9 @@ export async function datasetCatalogCall(service,principal,operation,args,{refre
   const machine=args.machine??null;
   if(machine!==null&&!MACHINES.some(m=>m.id===machine))fail('这台机器未授权。',403);
   const hasMachine=id=>user.limits?.[id]>0;
-  const policy=JSON.stringify(user),checkPolicy=()=>{
+  const policy=authorizationPolicy(user),checkPolicy=()=>{
     let current;try{current=service.store.get(principal.userId);}catch{}
-    if(service.closing||current?.enabled!==true||JSON.stringify(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
+    if(service.closing||current?.enabled!==true||authorizationPolicy(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
   };
   if(!service.bridge)fail('节点执行桥尚未配置。',503);
   const owner={userId:user.id,hostAdmin:false};

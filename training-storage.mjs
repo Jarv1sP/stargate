@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {datasetCatalogCall} from './dataset-catalog.mjs';
 import {resolveTrainingDataset,retryTrainingRead} from './training-datasets.mjs';
 
@@ -114,8 +114,8 @@ export function validateTrainingStoragePlan(value,machine,args,{now=Date.now()}=
 
 export async function trainingStoragePlan(service,user,machine,request,{projectProbe,from,catalog,captureRequest=false}={}){
   if(!known(machine)||user?.enabled!==true||!user.limits?.[machine])fail('这台机器未授权。','TRAINING_STORAGE_FORBIDDEN',403);
-  const policy=JSON.stringify(user),check=()=>{
-    if(service.closing||JSON.stringify(service.store.get(user.id))!==policy)fail('账号授权已改变；未启动准备。','TRAINING_STORAGE_FORBIDDEN',403);
+  const policy=authorizationPolicy(user),check=()=>{
+    if(service.closing||authorizationPolicy(service.store.get(user.id))!==policy)fail('账号授权已改变；未启动准备。','TRAINING_STORAGE_FORBIDDEN',403);
     if(service.maintenanceFor?.(machine))fail('目标服务器正在维护；未启动准备。');
   };
   // A node/transport exception may contain command lines, private paths, or

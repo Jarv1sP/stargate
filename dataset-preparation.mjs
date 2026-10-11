@@ -1,3 +1,4 @@
+import {authorizationPolicy} from './dist/model.js';
 // Durable data staging precedes scheduler submission. No GPU lease is held
 // during this phase, and a portal restart resumes observation, not a new job.
 import {personalCardQuotaExempt} from './job-submission.mjs';
@@ -27,9 +28,9 @@ function current(service,id,snapshot){
   try{user=service.store.get(job.userId);}catch{finish(service,job,'FAILED','账号已移除；数据准备未转入训练。');return null;}
   if(!user.enabled||!user.limits[job.machine]||user.limits[job.machine]<job.cards||user.total<job.cards){finish(service,job,'FAILED','账号或机器授权已改变；未启动训练。');return null;}
   if(job.projectPreparation&&!user.limits[job.projectPreparation.from]){finish(service,job,'FAILED','项目来源机器授权已撤销；未启动训练。');return null;}
-  // Any role/grant/profile revision or job-spec change invalidates the result
+  // An actual authority or immutable job-spec change invalidates the result
   // obtained under the earlier authority. Never promote such a stale result.
-  if(snapshot&&(JSON.stringify(user)!==snapshot.policy||fingerprint(job)!==snapshot.jobFingerprint)){
+  if(snapshot&&(authorizationPolicy(user)!==snapshot.policy||fingerprint(job)!==snapshot.jobFingerprint)){
     finish(service,job,'FAILED','账号授权或任务配置已改变；请重新提交，未启动训练。');return null;
   }
   return {job,user};
@@ -38,7 +39,7 @@ function current(service,id,snapshot){
 async function observe(service,id,usage){
   const snapshot=await service.enqueue(()=>{
     const live=current(service,id);if(!live)return null;
-    return {job:structuredClone(live.job),policy:JSON.stringify(live.user),jobFingerprint:fingerprint(live.job)};
+    return {job:structuredClone(live.job),policy:authorizationPolicy(live.user),jobFingerprint:fingerprint(live.job)};
   });
   if(!snapshot)return;
   const {job}=snapshot,identity={userId:job.userId,hostAdmin:false},states=[],references=[];

@@ -89,3 +89,13 @@ test('diagnostic failure keeps main log readable and overlapping requests do not
   await f.nodes.get('#job-log-view').fire('click');assert.equal(f.pre.hidden,false);assert.equal(f.pre.textContent,'late main log');
   f.store.call=async()=>{throw Error('offline');};await f.nodes.get('#job-diagnostic-open').fire('click');assert.match(f.nodes.get('#job-diagnostic-view').textContent,/offline/);assert.equal(f.pre.textContent,'late main log');
 });
+
+test('reopening the same job preserves confirmed logs during a failed refresh, but a different account clears them',async t=>{
+  const f=domFixture(t);await f.control.openLogs(JOB);assert.equal(f.pre.textContent,'main log');
+  f.dialog.close();let reject;f.store.call=()=>new Promise((_,no)=>reject=no);
+  const pending=f.control.openLogs(JOB);assert.equal(f.pre.textContent,'main log');reject(Error('offline'));await pending;
+  assert.equal(f.pre.textContent,'main log');assert.match(f.nodes.get('#job-view-status').textContent,/offline/);
+  f.store.principal=null;f.control.sync();assert.equal(f.pre.textContent,'');
+  f.store.principal={userId:'other',role:'member'};f.store.call=async()=>{throw Error('offline');};await f.control.openLogs(JOB);
+  assert.doesNotMatch(f.pre.textContent,/main log/);
+});

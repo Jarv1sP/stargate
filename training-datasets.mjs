@@ -1,4 +1,4 @@
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {setTimeout as delay} from 'node:timers/promises';
 
@@ -47,10 +47,10 @@ export async function trainingDatasetCapabilities(service,principal,args){
   if(!host||user?.enabled!==true||user.id!==actor.userId||user.username!==actor.username||
     (user.role||'member')!==actor.role||!(user.limits?.[machine]>0))
     fail('账号或所选服务器未授权。',403,'DATASET_TRAINING_FORBIDDEN');
-  const policy=JSON.stringify(user),check=()=>{
+  const policy=authorizationPolicy(user),check=()=>{
     let current;try{current=service.store.get(actor.userId);}catch{}
     if(current?.enabled!==true||current.id!==actor.userId||current.username!==actor.username||
-      (current.role||'member')!==actor.role||!(current.limits?.[machine]>0)||JSON.stringify(current)!==policy)
+      (current.role||'member')!==actor.role||!(current.limits?.[machine]>0)||authorizationPolicy(current)!==policy)
       fail('账号授权已改变，请重新登录或刷新后重试。',403,'DATASET_TRAINING_AUTH_CHANGED');
     if(service.closing)fail('服务正在关闭，仓库能力尚未确认。');
   };
@@ -103,10 +103,10 @@ export async function resolveTrainingDataset(service,owner,machine,ref,readMode)
     const status=await service.bridge(machine,'datasets.status',{userId:owner,hostAdmin:false,...ref});
     return {status,reference:status?.state==='READY'?{...ref}:null};
   }
-  const user=service.store.get(owner),policy=JSON.stringify(user);
+  const user=service.store.get(owner),policy=authorizationPolicy(user);
   const check=()=>{
     const current=service.store.get(owner);
-    if(service.closing||!current.enabled||!current.limits?.[machine]||JSON.stringify(current)!==policy)
+    if(service.closing||!current.enabled||!current.limits?.[machine]||authorizationPolicy(current)!==policy)
       fail('账号或所选服务器授权已改变；未读取仓库。',403,'DATASET_TRAINING_AUTH_CHANGED');
     if(service.maintenanceFor?.(machine))fail('所选服务器正在维护；未读取仓库。',503,'MAINTENANCE_ACTIVE');
   };

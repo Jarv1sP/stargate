@@ -1,3 +1,4 @@
+import {authorizationPolicy} from './dist/model.js';
 // Portal boundary for pinned snapshot reads and code-only imports. Both source
 // and target node calls use the authenticated account, never supplied identity.
 const hash=/^[a-f0-9]{64}$/;
@@ -28,7 +29,7 @@ export async function snapshotSyncCall(service,principal,user,operation,args,aut
     // Cancellation only fences this account's target draft. It neither reads
     // nor changes the original source, which may now be offline/revoked.
   }
-  const policy=mode==='sync'&&action==='begin'?JSON.stringify(user):null;
+  const policy=mode==='sync'&&action==='begin'?authorizationPolicy(user):null;
   if(action==='begin'){
     if(!hash.test(args.manifestSha256||'')||!Number.isSafeInteger(args.manifestBytes)||args.manifestBytes<1||args.manifestBytes>48*1024**2||!Number.isSafeInteger(args.totalBytes)||args.totalBytes<0||!Number.isSafeInteger(args.entries)||args.entries<0)fail('代码快照大小或校验信息无效。');
     const source=args.source;
@@ -46,14 +47,14 @@ export async function snapshotSyncCall(service,principal,user,operation,args,aut
     }
   }
   const {machine,...request}=args;
-  if(policy!==null&&service.store&&JSON.stringify(service.store.get(user.id))!==policy)fail('账号权限已改变，请查询原同步状态。',403);
+  if(policy!==null&&service.store&&authorizationPolicy(service.store.get(user.id))!==policy)fail('账号权限已改变，请查询原同步状态。',403);
   if(!physical&&mode==='snapshot'&&kind==='datasets'&&service.datasetPhysicalReference){
     const mapped=service.datasetPhysicalReference(user.id,machine,{dataset:request.dataset,version:request.version});
     if(!mapped||typeof mapped.dataset!=='string'||!dataset.test(mapped.dataset)||mapped.version!==request.version)fail('数据集逻辑引用尚未确认。',409);
     request.dataset=mapped.dataset;
   }
   const result=await service.bridge(machine,operation,{...request,userId:user.id,...(mode==='snapshot'&&kind==='datasets'?{hostAdmin:principal.role==='admin'}:{})});
-  if(policy!==null&&service.store&&JSON.stringify(service.store.get(user.id))!==policy)fail('账号权限已改变，请查询原同步状态。',403);
+  if(policy!==null&&service.store&&authorizationPolicy(service.store.get(user.id))!==policy)fail('账号权限已改变，请查询原同步状态。',403);
   if(mode==='sync'&&['begin','finish','cancel'].includes(action))service.audit(principal.username,operation,machine,args.project);
   return result;
 }

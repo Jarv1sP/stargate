@@ -38,7 +38,7 @@ export function completionHTML(value){
 }
 
 export function createJobDiagnostics(store,getDialog,toast,options={}){
-  let generation=0,diagnosticsRequest=0,jobId=null,bundle=null,bundleIdentity=null,displayIdentity=null,view='logs',installed=false,readingLogs=false,loadedLogs=false;
+  let generation=0,diagnosticsRequest=0,jobId=null,bundle=null,bundleIdentity=null,displayIdentity=null,view='logs',installed=false,readingLogs=false,loadedLogs=false,lastLog=null;
   const principal=()=>store.principal?`${store.principal.userId}:${store.principal.role}:${store.authGeneration}`:null;
   const element=selector=>getDialog()?.querySelector(selector);
   let recoveryRequest=0,recoveryController=null,observation=null,completion=null,resourcesReleased=false,recoveryBusy=false,recoveryError='';
@@ -81,7 +81,7 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
   function markViewed(){
     if(getDialog()?.open&&displayIdentity===principal()&&['overview','logs','diagnostics'].includes(view))document.dispatchEvent(new CustomEvent('gpuq-attention-viewed',{detail:{userId:store.principal?.userId,kind:'job',id:jobId}}));
   }
-  function reset(){clearRecovery();generation++;diagnosticsRequest++;if(options.drawer)document.dispatchEvent(new Event('gpuq-job-drawer-close'));jobId=null;bundle=null;bundleIdentity=null;displayIdentity=null;view='logs';const dialog=getDialog();if(dialog){dialog.close();element('#job-main-log').textContent='';element('#job-diagnostic-view').innerHTML='';element('#job-view-status').textContent='';element('#job-diagnostic-download').disabled=true;if(options.drawer){for(const key of ['overview','output','notes'])element('#job-'+key+'-view').replaceChildren();element('#job-log-title').textContent='训练详情';}}}
+  function reset(){lastLog=null;clearRecovery();generation++;diagnosticsRequest++;if(options.drawer)document.dispatchEvent(new Event('gpuq-job-drawer-close'));jobId=null;bundle=null;bundleIdentity=null;displayIdentity=null;view='logs';const dialog=getDialog();if(dialog){dialog.close();element('#job-main-log').textContent='';element('#job-diagnostic-view').innerHTML='';element('#job-view-status').textContent='';element('#job-diagnostic-download').disabled=true;if(options.drawer){for(const key of ['overview','output','notes'])element('#job-'+key+'-view').replaceChildren();element('#job-log-title').textContent='训练详情';}}}
   function switchView(next){
     view=next;options.onView?.(next);element('#job-main-log').hidden=next!=='logs';element('#job-diagnostic-view').hidden=next!=='diagnostics';element('#job-log-view').setAttribute('aria-pressed',String(next==='logs'));element('#job-diagnostic-open').setAttribute('aria-pressed',String(next==='diagnostics'));
     if(options.drawer){for(const key of ['overview','output','notes'])element('#job-'+key+'-view').hidden=next!==key;for(const button of getDialog().querySelectorAll('[data-job-tab]')){const selected=button.dataset.jobTab===next;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;}if(next==='output')options.output?.(jobId,element('#job-output-view'));if(next==='notes')options.notes?.(jobId,element('#job-notes-view'));}
@@ -100,8 +100,11 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
   }
   async function loadMainLog(){
     if(readingLogs||loadedLogs||!jobId)return;readingLogs=true;const id=jobId,identity=principal(),request=generation;
-    try{const result=await store.call('jobs.logs',{jobId:id});if(generation===request&&principal()===identity&&jobId===id){loadedLogs=true;element('#job-main-log').textContent=result.text;const preview=element('#job-log-preview');if(preview)preview.textContent=String(result.text||'暂无主日志。').split('\n').slice(0,18).join('\n');}}
-    catch(error){if(generation===request&&principal()===identity&&jobId===id){element('#job-main-log').textContent='主日志暂不可用：'+error.message;const preview=element('#job-log-preview');if(preview)preview.textContent=element('#job-main-log').textContent;toast(error.message);}}
+    try{const result=await store.call('jobs.logs',{jobId:id});if(generation===request&&principal()===identity&&jobId===id){loadedLogs=true;lastLog={id,identity,text:result.text};element('#job-main-log').textContent=result.text;if(['logs','overview'].includes(view))element('#job-view-status').textContent='';const preview=element('#job-log-preview');if(preview)preview.textContent=String(result.text||'暂无主日志。').split('\n').slice(0,18).join('\n');}}
+    catch(error){if(generation===request&&principal()===identity&&jobId===id){element('#job-view-status').textContent='日志读取失败：'+error.message;
+      if(lastLog?.id===id&&lastLog.identity===identity)element('#job-main-log').textContent=lastLog.text;
+      else element('#job-main-log').textContent='主日志暂不可用：'+error.message;
+      const preview=element('#job-log-preview');if(preview)preview.textContent=element('#job-main-log').textContent;toast(error.message);}}
     finally{if(generation===request)readingLogs=false;}
   }
   function install(){
@@ -133,7 +136,7 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
     install();clearRecovery();readingLogs=false;loadedLogs=false;const identity=principal(),request=++generation;diagnosticsRequest++;displayIdentity=identity;jobId=id;bundle=null;bundleIdentity=null;element('#job-diagnostic-download').disabled=true;element('#job-diagnostic-view').innerHTML='';
     const job=options.drawer?(store.jobs||[]).find(item=>item.id===id):null;
     if(options.drawer){if(!job)throw Error('任务暂未出现在当前账号的状态中，请刷新核对。');element('#job-log-title').innerHTML=options.header?.(job)||esc(job.name||'训练详情');element('#job-overview-view').innerHTML=options.overview?.(job)||'';if(recoveryJob()){const recovery=document.createElement('section');recovery.id='job-recovery';recovery.className='job-recovery';element('#job-overview-view').prepend(recovery);observation=job.nativeObservation||null;renderRecovery();}const url=new URL(location.href);url.searchParams.set('job',id);history.replaceState(null,'',url);}
-    switchView(options.drawer?next:'logs');element('#job-main-log').textContent='正在读取主日志…';element('#job-view-status').textContent='诊断包中可查看 worker 错误、资源事件和历史分配。';
+    switchView(options.drawer?next:'logs');element('#job-main-log').textContent=lastLog?.id===id&&lastLog.identity===identity?lastLog.text:'正在读取主日志…';element('#job-view-status').textContent='正在读取日志…';
     const dialog=getDialog();if(!dialog.open)dialog.showModal();
     markViewed();
     if(recoveryJob())readRecovery('jobs.watch');

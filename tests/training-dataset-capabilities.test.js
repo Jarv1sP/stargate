@@ -120,7 +120,7 @@ test('not-ready requires a current explicit negative warehouse proof, never a ho
 
 test('policy/login identity changes during success and failure reads reject instead of publishing stale capability',async()=>{
   for(const failed of [false,true])for(const change of [f=>{f.user.enabled=false;},f=>{f.user.limits={};},
-    f=>{f.user.username='renamed';},f=>{f.user.role='admin';},f=>{f.user.policyVersion=2;}]){
+    f=>{f.user.username='renamed';},f=>{f.user.role='admin';}]){
     const f=fixture();f.service.onReply=()=>change(f);if(failed)f.service.error=Object.assign(Error('denied'),{status:403});
     await assert.rejects(f.call(),e=>e.status===403);assert.equal(f.calls.length,1);
   }
@@ -130,4 +130,12 @@ test('maintenance and closing during an in-flight read cannot enable warehouse m
   const f=fixture();f.service.onReply=()=>{f.service.maintenanceFor=()=>true;};
   assert.deepEqual(await f.call(),view('maintenance'));
   const u=fixture();u.service.onReply=()=>{u.service.closing=true;};await assert.rejects(u.call(),e=>e.status===503);
+});
+
+
+test('warehouse capability tolerates display and approval changes without granting any extra authority',async()=>{
+  for(const change of [f=>{f.user.name='Renamed';},f=>{f.user.approvalNote='Updated';},f=>{f.user.policyVersion=2;}]){
+    const f=fixture();f.service.onReply=()=>change(f);
+    assert.deepEqual(await f.call(),view());assert.equal(f.calls.length,1);
+  }
 });

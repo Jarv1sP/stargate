@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
-import {MACHINES} from './dist/model.js';
+import {MACHINES,authorizationPolicy} from './dist/model.js';
 import {archiveUploadCapability,archiveUploadSpecification} from './dist/dataset-upload.js';
 
 // Independent from storageArchivePolicy: adding upload admission must never
@@ -106,7 +106,7 @@ export function installDatasetIngress(service,input){
     service.assertMaintenanceAllowed?.(operation,{...maintenanceArgs,machine:row.requestedMachine},principal);
     if(row.storageMachine&&operation!=='datasets.upload.admission.create')
       service.assertMaintenanceAllowed?.(operation,{...maintenanceArgs,machine:row.storageMachine},principal);
-    return hash(user);
+    return authorizationPolicy(user);
   };
   const call=async(principal,row,machine,operation,args,publicOperation=operation)=>{
     const snapshot=fence(principal,row,publicOperation);

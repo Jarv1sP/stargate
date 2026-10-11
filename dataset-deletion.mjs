@@ -1,5 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {DATASET_FENCE_REFUSAL} from './dataset-catalog.mjs';
 
 // Independent, durable version-deletion journal. It never mutates external
@@ -140,12 +140,12 @@ export function installDatasetDeletion(service,{clock=Date.now,pollMs=250,capabi
     if(previousBridge&&HASH.test(ref?.version)&&typeof identity?.userId==='string'&&typeof identity?.hostAdmin==='boolean'){
       const fence=service.db.prepare('SELECT operation_id FROM dataset_deletion_fences WHERE machine=? AND dataset=? AND version=?').get(host,ref.dataset,ref.version);
       const row=fence&&load(fence.operation_id),step=row?.steps.find(s=>s.machine===host&&s.dataset===ref.dataset);
-      const actor=service.store.get(identity.userId),policy=actor&&sha(actor);
+      const actor=service.store.get(identity.userId),policy=actor&&authorizationPolicy(actor);
       if(step?.plan&&actor?.enabled&&(actor.role==='admin')===identity.hostAdmin&&actor.limits?.[host]>0){
         let proof;
         try{proof=await previousBridge(host,'storage.dataset-delete.registration',{dataset:ref.dataset,version:ref.version,userId:identity.userId,hostAdmin:identity.hostAdmin});}catch{/* No proof never opens a fence. */}
         try{proof=parseNewRegistration(proof,step);}catch{proof=null;}
-        if(proof&&service.store.get(identity.userId)&&sha(service.store.get(identity.userId))===policy){
+        if(proof&&service.store.get(identity.userId)&&authorizationPolicy(service.store.get(identity.userId))===policy){
           if(service.closing)fail('服务正在关闭；结果未确认。',503);
           service.db.exec('BEGIN IMMEDIATE');
           try{
@@ -159,19 +159,19 @@ export function installDatasetDeletion(service,{clock=Date.now,pollMs=250,capabi
     }
     service.assertDatasetNotDeleting(host,ref);
   };
-  if(previousBridge)service.bridge=(host,operation,args)=>{
+  if(previousBridge)service.bridge=(host,operation,args,context)=>{
     if(['datasets.prepare','datasets.unregister','datasets.register','datasets.sync.begin','datasets.snapshot.begin'].includes(operation)
       &&service.datasetDeletionBlocked(host,args))
       return service.confirmDatasetNotDeleting(host,args,args).then(()=>previousBridge(host,operation,args));
     // Keep the original synchronous maintenance refusal for every untouched
     // operation. A proof read is asynchronous only for a fenced namespace.
-    return previousBridge(host,operation,args);
+    return context===undefined?previousBridge(host,operation,args):previousBridge(host,operation,args,context);
   };
   const checkFactory=(principal,assertCurrent,policy,inventory,row,read=false,allowCancellation=false)=>()=>{
     if(service.closing)fail('服务正在关闭；结果未确认。',503);
     assertCurrent();const current=account(service,principal);
     if(!read&&!allowCancellation&&row&&load(row.id)?.cancelRequested)fail('管理员已请求取消删除。',409,'DATASET_DELETE_CANCELED');
-    if(JSON.stringify(current)!==policy||sha(MACHINES.map(m=>m.id))!==inventory)fail('账号或服务器清单已改变；删除已暂停。',403);
+    if(authorizationPolicy(current)!==policy||sha(MACHINES.map(m=>m.id))!==inventory)fail('账号或服务器清单已改变；删除已暂停。',403);
     if(!read)for(const host of row?.steps?.map(s=>s.machine)||MACHINES.map(m=>m.id))service.assertMaintenanceAllowed?.(allowCancellation?'datasets.delete.cancel':'datasets.delete',{machine:host},principal);
   };
   const rpc=async(principal,check,host,action,args={})=>{
@@ -560,7 +560,7 @@ export function installDatasetDeletion(service,{clock=Date.now,pollMs=250,capabi
   }
   service.datasetDeletionCall=async(principal,operation,args,assertCurrent=()=>{})=>{
     assertCurrent();
-    const user=account(service,principal),policy=JSON.stringify(user),inventory=sha(MACHINES.map(m=>m.id));
+    const user=account(service,principal),policy=authorizationPolicy(user),inventory=sha(MACHINES.map(m=>m.id));
     if(operation==='datasets.delete'){
       fields(args,['dataset','version','key']);reference(args.dataset,args.version);uuid(args.key);
       let row=byKey(args.key);
@@ -638,7 +638,7 @@ export function installDatasetDeletion(service,{clock=Date.now,pollMs=250,capabi
       const creator={userId:row.owner,username:row.username,role:row.role};
       if(!isCancel&&(row.authorizationDenied||row.steps.some(s=>s.plan&&creator.role!=='admin'&&(!s.plan.memberAllowed||!same(s.plan.owners,[creator.userId])))))
         fail('原发起人无权删除这份数据；管理员需新建自己的删除任务。',403);
-      const creatorCheck=isCancel?()=>{}:checkFactory(creator,()=>{},JSON.stringify(account(service,creator)),inventory,row);
+      const creatorCheck=isCancel?()=>{}:checkFactory(creator,()=>{},authorizationPolicy(account(service,creator)),inventory,row);
       const check=()=>{adminCheck();creatorCheck();};check();
       await capabilities(principal,check);check();row=access(principal,load(args.operationId));
       if(restoring.has(row.id)||queries.has(row.id)||canceling.has(row.id)||!isCancel&&running.has(row.id))fail('原任务还在运行或查询。');
@@ -732,7 +732,7 @@ export function installDatasetDeletion(service,{clock=Date.now,pollMs=250,capabi
   // Awaitable for shutdown/tests; never scans/restarts historical tasks.
   service.waitDatasetDeletions=()=>Promise.allSettled([...running.values(),...restoring.values(),...canceling.values()]);
   service.datasetDeleteCapabilities=async principal=>{
-    const value=account(service,principal),policy=JSON.stringify(value),inventory=sha(MACHINES.map(m=>m.id));
+    const value=account(service,principal),policy=authorizationPolicy(value),inventory=sha(MACHINES.map(m=>m.id));
     try{await capabilities(principal,checkFactory(principal,()=>{},policy,inventory,null,true),{cached:true});return {datasetDelete:1};}
     catch{return {datasetDelete:0};}
   };

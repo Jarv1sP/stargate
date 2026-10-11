@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {datasetCatalogCall} from './dataset-catalog.mjs';
 
 const PROTOCOL='dataset-files-list-v1',ID=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,HASH=/^[a-f0-9]{64}$/;
@@ -12,9 +12,9 @@ export async function datasetFilesCall(service,principal,args){
   if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>!['dataset','version','path','cursor'].includes(key))||typeof args.dataset!=='string'||!ID.test(args.dataset)||typeof args.version!=='string'||!HASH.test(args.version)||!safePath(args.path===undefined?'':args.path)||args.cursor!==undefined&&(typeof args.cursor!=='string'||!args.cursor||args.cursor.length>16384))fail('固定版本目录参数无效。');
   let user;try{user=service.store.get(principal?.userId);}catch{}
   if(user?.enabled!==true||user.id!==principal?.userId)fail('账号不存在或已停用。',403);
-  const policy=JSON.stringify(user),check=()=>{
+  const policy=authorizationPolicy(user),check=()=>{
     let current;try{current=service.store.get(principal.userId);}catch{}
-    if(service.closing||current?.enabled!==true||JSON.stringify(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
+    if(service.closing||current?.enabled!==true||authorizationPolicy(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
   };
   const path=args.path??'',binding=createHash('sha256').update(JSON.stringify([user.id,args.dataset,args.version,path])).digest('hex');
   let cursor=null;
