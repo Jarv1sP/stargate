@@ -2522,6 +2522,43 @@ class Store:
             ).fetchone()
         return None if row is None else dict(row)
 
+    def get_execution_snapshot(self, submit_key: str, attempt_id: str) -> dict[str, Any] | None:
+        """One native observation for a fixed attempt, not permission to execute.
+
+        Unit identity and actual process membership must still be checked by the
+        runner. Historical state or empty leases are not a resource-release proof.
+        """
+        key = _nonempty(submit_key, 'submit_key', maximum=256)
+        attempt = _nonempty(attempt_id, 'attempt_id', maximum=256)
+        with self._read_connection() as connection:
+            rows = connection.execute('''
+                SELECT j.id job_id,j.submit_key,j.submit_digest,j.owner,j.name,j.state job_state,j.version job_version,
+                  j.allocation_authority,a.id attempt_id,a.ordinal,a.state attempt_state,a.version attempt_version,
+                  a.unit_name,a.unit_token,a.boot_id,a.invocation_id,a.main_pid,a.start_ticks,a.control_dir,
+                  a.gpu_uuids_json,a.gpu_indices_json,g.grant_id,g.revision grant_revision,g.max_gpu_count,
+                  (SELECT id FROM attempts latest WHERE latest.job_id=j.id ORDER BY ordinal DESC LIMIT 1) latest_attempt_id,
+                  l.gpu_uuid leased_gpu_uuid,l.gpu_index leased_gpu_index
+                FROM jobs j JOIN attempts a ON a.job_id=j.id AND a.id=?
+                LEFT JOIN allocation_grants g ON g.job_id=j.id
+                LEFT JOIN leases l ON l.job_id=j.id AND l.attempt_id=a.id
+                WHERE j.submit_key=? ORDER BY l.gpu_index,l.gpu_uuid''', (attempt, key)).fetchall()
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            'job': {'id': row['job_id'], 'submit_key': row['submit_key'], 'submit_digest': row['submit_digest'],
+                    'owner': row['owner'], 'name': row['name'], 'state': row['job_state'], 'version': row['job_version'],
+                    'allocation_authority': row['allocation_authority']},
+            'attempt': {'id': row['attempt_id'], 'ordinal': row['ordinal'], 'state': row['attempt_state'],
+                        'version': row['attempt_version'],
+                        **{field: row[field] for field in ('unit_name', 'unit_token', 'boot_id', 'invocation_id', 'main_pid', 'start_ticks', 'control_dir')},
+                        'gpu_uuids': _json_load(row['gpu_uuids_json']), 'gpu_indices': _json_load(row['gpu_indices_json'])},
+            'latest_attempt_id': row['latest_attempt_id'],
+            'grant': None if row['grant_id'] is None else {'grant_id': row['grant_id'], 'revision': row['grant_revision'], 'max_gpu_count': row['max_gpu_count']},
+            'leases': [{'gpu_uuid': value['leased_gpu_uuid'], 'gpu_index': value['leased_gpu_index']}
+                       for value in rows if value['leased_gpu_uuid'] is not None],
+        }
+
     def get_allocation_authorization(self, job_id: str) -> dict[str, Any]:
         """Distinguish native jobs from explicitly managed jobs with no grant yet."""
         with self._read_connection() as connection:

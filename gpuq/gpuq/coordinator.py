@@ -76,7 +76,7 @@ _MAX_LAUNCH_SPEC_BYTES = 512 * 1024
 _LAUNCH_FILE_NAME = "launch.json"
 _RELEASE_GATE_PATH = Path("/run/gpuq-native-release/gate.json")
 _MAX_RELEASE_GATE_BYTES = 4096
-_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status"})
+_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status", "execution_snapshot"})
 _ACTIVE_JOB_STATES = {
     JobState.PENDING.value,
     JobState.STARTING.value,
@@ -4793,6 +4793,8 @@ class Coordinator:
                 return self._api_show(arguments)
             if operation == "submission_receipt":
                 return self._api_submission_receipt(arguments)
+            if operation == "execution_snapshot":
+                return self._api_execution_snapshot(arguments)
             if operation == "scale_up_receipt":
                 return self._api_scale_up_receipt(arguments)
             if operation == "job_watch":
@@ -5091,7 +5093,7 @@ class Coordinator:
         return {
             "daemon": {
                 **self._health_payload(),
-                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1"],
+                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1", "execution-snapshot-v1"],
                 "observe_only": self._observe_only,
                 "managed_indices": managed_indices,
                 "managed_gpus": managed_gpus,
@@ -5135,6 +5137,13 @@ class Coordinator:
         _require_exact_fields(arguments, allowed={"submit_key"}, required={"submit_key"})
         try:
             return self.store.get_submission_receipt(arguments["submit_key"])
+        except ValueError as exc:
+            raise ApiError("BAD_REQUEST", str(exc)) from exc
+
+    def _api_execution_snapshot(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        _require_exact_fields(arguments, allowed={"submit_key", "attempt_id"}, required={"submit_key", "attempt_id"})
+        try:
+            return self.store.get_execution_snapshot(arguments["submit_key"], arguments["attempt_id"])
         except ValueError as exc:
             raise ApiError("BAD_REQUEST", str(exc)) from exc
 
