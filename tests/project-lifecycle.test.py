@@ -81,6 +81,25 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(set(x['kind'] for x in value['blockers']),{'writer','publication','upload','terminal'})
         with self.assertRaisesRegex(ValueError,'writers'):self.life.archive({**self.args,'revision':0},True)
 
+    def test_blocked_plan_does_not_scan_tree_or_issue_retirement_proof(self):
+        jobs=s.private_dir(self.root/'jobs',create=True)
+        s.atomic_json(jobs/(str(uuid.uuid4())+'.json'),{**self.args,'state':'SUCCEEDED'})
+        with patch.object(self.life,'manifest',side_effect=ValueError('Retirement plan exceeds bounded scan size')) as scan:
+            value=self.plan()
+            self.assertEqual(value['state'],'BLOCKED')
+            self.assertIn('job-history',[item['kind'] for item in value['blockers']])
+            for field in ('manifestSha256','rootIdentity','entries','bytes'):
+                self.assertNotIn(field,value)
+            with self.assertRaisesRegex(ValueError,'execution history'):
+                self.life.retire({**self.args,'key':str(uuid.uuid4()),'revision':0,'manifestSha256':'a'*64})
+            scan.assert_not_called()
+        self.assertTrue((self.dev['code']/'train.py').exists())
+
+    def test_eligible_plan_still_requires_full_bounded_manifest(self):
+        with patch.object(self.life,'manifest',side_effect=ValueError('Retirement plan exceeds bounded scan size')) as scan:
+            with self.assertRaisesRegex(ValueError,'bounded scan size'):self.plan()
+            scan.assert_called_once()
+
     def test_local_import_unknown_cannot_archive_even_if_old_release_ready(self):
         s.atomic_json(self.ops.folder/(self.ops.key(self.args)+'.local-import.json'),{'key':str(uuid.uuid4())})
         self.ops.local_imports=lambda:SimpleNamespace(project_writable=lambda args:(_ for _ in ()).throw(ValueError('UNKNOWN import')))

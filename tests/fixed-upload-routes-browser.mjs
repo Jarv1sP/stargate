@@ -26,7 +26,7 @@ try{
         res.writeHead(200,{'Content-Type':'text/html','Content-Security-Policy':`default-src 'none'; script-src 'self'; connect-src ${primary}${allowAlternate?' '+alternate:''};`});
         return res.end('<!doctype html><title>Local upload routing fixture</title>');
       }
-      if(!['/upload-routes.js','/dataset-upload.js'].includes(req.url)){res.writeHead(404);return res.end();}
+      if(!['/upload-routes.js','/dataset-upload.js','/campus-ticket-time.js'].includes(req.url)){res.writeHead(404);return res.end();}
       res.writeHead(200,{'Content-Type':'text/javascript'});res.end(await readFile(new URL('../dist'+req.url,import.meta.url)));
     }catch(error){errors.push(error.message);res.destroy();}
   });

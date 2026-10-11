@@ -138,7 +138,10 @@ class ProjectLifecycle:
         path, meta = self.store._project(args['userId'], args['project'])
         status = self.store.status(args['userId'], args['project'])
         blockers = self.writer_blockers(args) + self.history_blockers(args, path)
-        manifest = self.manifest(path)
+        # A blocked project cannot be retired. Scanning its entire tree can
+        # mask the actual blocker with the manifest size limit (and needlessly
+        # walk active outputs). Only eligible plans need a content CAS proof.
+        manifest = {} if blockers else self.manifest(path)
         return {'protocol': PROTOCOL, 'project': args['project'], 'state': 'BLOCKED' if blockers else 'ELIGIBLE',
                 'lifecycle': self.view(args['userId'], args['project']), 'blockers': blockers[:100], 'blockerCount': len(blockers),
                 'releases': [r['release'] for r in status['releases']], 'environmentMode': meta.get('environmentMode', 'shared'),
