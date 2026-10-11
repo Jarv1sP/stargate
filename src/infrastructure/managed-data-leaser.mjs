@@ -25,7 +25,9 @@ export class ManagedDataLeaser {
     }
     this.machineId = machineId; this.python = python; this.timeoutMs = timeoutMs;
   }
-  async acquire(request, {actor} = {}) {
+  acquire(request, context) {return this.#call('acquire', request, context);}
+  lookup(request, context) {return this.#call('lookup', request, context);}
+  async #call(operation, request, {actor} = {}) {
     const input = parseManagedLeaseRequest(request), {source} = input;
     if (input.machineId !== this.machineId) throw new ApplicationError('SOURCE_NODE_MISMATCH');
     if (typeof actor?.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$/.test(actor.id)) throw new ApplicationError('UNAUTHENTICATED');
@@ -35,7 +37,8 @@ export class ManagedDataLeaser {
       ? {dataset: source.datasetId, version: source.version} : null;
     try {
       const {result} = await jsonProcess({program: this.python, args: ['-B', script], timeoutMs: this.timeoutMs,
-        input: {config: {...root, leaseVersion}, request: {userId: actor.id, jobId: input.jobId, dataset: source.datasetId, version: source.version, kind: source.kind}}});
+        input: {operation, config: {...root, leaseVersion}, request: {userId: actor.id, jobId: input.jobId, dataset: source.datasetId, version: source.version, kind: source.kind}}});
+      if (result === null && operation === 'lookup') return null;
       if (result.dataset !== source.datasetId || result.version !== source.version || result.kind !== source.kind
         || result.jobId !== input.jobId || result.accountId !== actor.id) throw new Error('Lease identity mismatch');
       return parseManagedLeaseResult({machineId: this.machineId, source, jobId: result.jobId, accountId: result.accountId,

@@ -414,6 +414,27 @@ class DatasetCacheTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             adapter.LegacyDataLeaser(D, root=self.root, kind='cache', coordinator_version={'dataset': 'sample', 'version': newer})
 
+    def test_read_only_lease_lookup_recovers_identity_without_touching_metadata(self):
+        version = self.register(owners=[OWNER.user_id, OTHER.user_id]); self.publish(version)
+        lease = self.cache.acquire_lease(OWNER, 'sample', version, 'lookup-job')
+        reader = D.DatasetCache(self.root, initialize=False)
+        with patch.object(D, '_write_json', side_effect=AssertionError('lookup must not write')), \
+                patch.object(reader, '_touch_locked', side_effect=AssertionError('lookup must not touch')):
+            self.assertEqual(reader.lookup_lease(OWNER, 'sample', version, 'lookup-job'), lease)
+            self.assertIsNone(reader.lookup_lease(OTHER, 'sample', version, 'lookup-job'))
+            self.assertIsNone(reader.lookup_lease(OWNER, 'sample', version, 'unknown-job'))
+        self.assertEqual(len(self.cache._leases('sample', version)), 1)
+
+    def test_lookup_can_observe_a_lease_committed_before_a_later_metadata_error(self):
+        version = self.register(); self.publish(version)
+        with patch.object(self.cache, '_touch_locked', side_effect=OSError(28, 'metadata update failed')):
+            with self.assertRaises(OSError):
+                self.cache.acquire_lease(OWNER, 'sample', version, 'lost-reply-job')
+        reader = D.DatasetCache(self.root, initialize=False)
+        lease = reader.lookup_lease(OWNER, 'sample', version, 'lost-reply-job')
+        self.assertIsNotNone(lease)
+        self.assertEqual(lease['leaseId'], self.cache._leases('sample', version)[0]['id'])
+
     def test_revoking_owner_does_not_destroy_existing_lease(self):
         version = self.register()
         self.publish(version)

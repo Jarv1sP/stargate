@@ -2358,8 +2358,8 @@ class DatasetCache:
             leases.append(lease)
         return leases
 
-    def acquire_lease(self, actor, dataset, version, job_id, *, require_protected=False):
-        """Executor must validate job ownership before invoking this method."""
+    @contextlib.contextmanager
+    def _lease_scope(self, actor, dataset, version, job_id, require_protected):
         if type(require_protected) is not bool:
             raise CacheError('invalid protected-source requirement')
         _identifier(job_id, USER_RE)
@@ -2373,8 +2373,21 @@ class DatasetCache:
                 raise CacheError("cannot lease an unready version")
             if require_protected and self._tier(dataset, version)['role'] != 'protected':
                 raise CacheError('warehouse lease requires a protected original')
-            leases = self._leases(dataset, version)
-            lease = next((l for l in leases if l["jobId"] == job_id and l["owner"] == actor.user_id), None)
+            lease = next((l for l in self._leases(dataset, version) if l["jobId"] == job_id and l["owner"] == actor.user_id), None)
+            yield paths, lease
+
+    @staticmethod
+    def _lease_result(lease, dataset, version, paths):
+        return dict(leaseId=lease['id'], dataset=dataset, version=version, path=str(paths['ready'] / 'data'), readOnly=True)
+
+    def lookup_lease(self, actor, dataset, version, job_id, *, require_protected=False):
+        """Existing protected read only; absence is not permission to release or recreate."""
+        with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease):
+            return None if lease is None else self._lease_result(lease, dataset, version, paths)
+
+    def acquire_lease(self, actor, dataset, version, job_id, *, require_protected=False):
+        """Executor must validate job ownership before invoking this method."""
+        with self._lease_scope(actor, dataset, version, job_id, require_protected) as (paths, lease):
             if lease is None:
                 # Existing READY reads do not consume copy/publication capacity.
                 # The small atomic lease write still has to succeed; real
@@ -2383,7 +2396,7 @@ class DatasetCache:
                 lease = dict(schema=SCHEMA, id=str(uuid.uuid4()), owner=actor.user_id, jobId=job_id, createdAt=time.time())
                 _write_json(paths[".leases"] / (lease["id"] + ".json"), lease)
             self._touch_locked(dataset, version)
-            return dict(leaseId=lease["id"], dataset=dataset, version=version, path=str(paths["ready"] / "data"), readOnly=True)
+            return self._lease_result(lease, dataset, version, paths)
 
     def release_lease(self, actor, dataset, version, lease_id):
         """Trusted scheduler/admin only, AFTER confirming the job has stopped."""

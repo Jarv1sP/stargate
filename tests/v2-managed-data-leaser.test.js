@@ -17,7 +17,12 @@ test('real existing data lease is durable and idempotent without payload changes
   const f = await publishedFixture(t), leaser = new ManagedDataLeaser({machineId: 'node-1', roots: f.roots, python});
   const request = {...f.request('cache'), jobId: randomUUID()}, context = {actor: {id: 'alice'}};
   const file = join(f.directory, 'cache', 'ready', 'images', f.version, 'data', 'sample.txt'), before = await stat(file);
+  assert.equal(await leaser.lookup(request, context), null);
   const lease = await leaser.acquire(request, context);
+  const leasePath = join(f.directory, 'cache', '.leases', 'images', f.version, lease.leaseId + '.json');
+  const metadata = await stat(leasePath);
+  assert.deepEqual(await leaser.lookup(request, context), lease);
+  assert.equal((await stat(leasePath)).mtimeMs, metadata.mtimeMs);
   assert.deepEqual(await leaser.acquire(request, context), lease);
   assert.equal(lease.jobId, request.jobId); assert.equal(lease.accountId, 'alice'); assert.equal(lease.readOnly, true);
   assert.equal(JSON.stringify(lease).includes(f.directory), false);
@@ -58,6 +63,7 @@ test('task authorization surrounds a real delegated lease acquisition and revoca
   const app = new AcquireManagedTaskLease({authority, leaser});
   const result = await app.execute(jobId, data.request('cache'));
   assert.equal(result.accountId, 'alice'); assert.equal(result.jobId, jobId);
+  assert.deepEqual(await app.lookup(jobId, data.request('cache')), result);
   const acquire = leaser.acquire.bind(leaser);
   leaser.acquire = async (...args) => {
     const lease = await acquire(...args);
@@ -67,5 +73,6 @@ test('task authorization surrounds a real delegated lease acquisition and revoca
   const next = {...trainingSubmission(), dataSources: input.dataSources};
   const nextJobId = new SqliteTrainingQueue({database: f.database}).enqueue(f.actor, next, f.now).request.jobId;
   await assert.rejects(app.execute(nextJobId, data.request('cache')), hasCode('FORBIDDEN'));
+  await assert.rejects(app.lookup(jobId, data.request('cache')), hasCode('FORBIDDEN'));
   assert.equal((await readdir(join(data.directory, 'cache', '.leases', 'images', data.version))).length, 2);
 });
