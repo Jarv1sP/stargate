@@ -5,7 +5,7 @@ import {createHash,randomBytes,createCipheriv,createDecipheriv} from 'node:crypt
 import {DemoService,credential} from './dist/service.js';
 import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
 import {installExecution,executionCall,displayReadService,publicJob,usage,priorityCapable,priorityRankCapable} from './execution.mjs';
-import {MACHINES,validUsername} from './dist/model.js';
+import {authorizationPolicy,MACHINES,validUsername} from './dist/model.js';
 import {installCommunity,communityCall,maintainTaskNotes} from './community.mjs';
 import {installMaintenanceState,installMaintenance,maintenanceCall} from './maintenance.mjs';
 import {installJobNotifications} from './job-notifications.mjs';
@@ -128,6 +128,47 @@ export class PortalService extends DemoService{
     }catch(error){check();throw error;
     }finally{clearTimeout(timer);}
   }
+  async jobRead(token,operation,args,options={}){
+    if(!['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation))throw Error('Invalid job read operation');
+    if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>key!=='jobId'))
+      throw Object.assign(Error('任务查询仅接受任务 ID。'),{status:400});
+    const request=structuredClone(args),admitted=this.principal(token),policy=authorizationPolicy(this.store.get(admitted.userId));
+    const job=this.store.jobs.find(value=>value.id===request.jobId);
+    const identity=value=>JSON.stringify([value.id,value.userId,value.machine,value.spec]);
+    const binding=job&&identity(job),nativeId=job?.nodeJobId;
+    const controller=new AbortController(),deadline=Date.now()+40000;
+    const check=()=>{
+      if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
+      const current=this.principal(token),user=this.store.get(current.userId),live=this.store.jobs.find(value=>value.id===request.jobId);
+      if(current.userId!==admitted.userId||current.username!==admitted.username||current.role!==admitted.role||
+        !user.enabled||authorizationPolicy(user)!==policy||!live||current.role!=='admin'&&live.userId!==current.userId||
+        identity(live)!==binding||nativeId&&live.nodeJobId!==nativeId||live.machine&&!user.limits[live.machine])
+        throw Object.assign(Error('账号或任务授权已改变，请重新查询。'),{status:403});
+      this.assertMaintenanceAllowed?.(operation,request,current);
+      controller.signal.throwIfAborted();
+      return current;
+    };
+    check();this.jobReadPending??=0;this.jobReadMachines??=new Map();
+    const machine=job.machine,count=this.jobReadMachines.get(machine)||0;
+    if(this.jobReadPending>=8||count>=4)throw Object.assign(Error('任务查询繁忙，请稍后重试。'),{status:429});
+    this.jobReadPending++;this.jobReadMachines.set(machine,count+1);
+    const abort=()=>controller.abort(options.signal.reason);
+    options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
+    const work=Promise.resolve().then(()=>{check();return executionCall(this,admitted,operation,request,{check,signal:controller.signal,deadline});});
+    const release=()=>{
+      this.jobReadPending--;const remaining=this.jobReadMachines.get(machine)-1;
+      if(remaining)this.jobReadMachines.set(machine,remaining);else this.jobReadMachines.delete(machine);
+    };
+    work.then(release,release);
+    let timer;
+    try{
+      const result=await Promise.race([work,new Promise((_,reject)=>{
+        timer=setTimeout(()=>{const error=Object.assign(Error('任务查询超时，请查询原任务。'),{status:504,code:'NODE_READ_TIMEOUT'});controller.abort(error);reject(error);},40000);
+      })]);
+      return {result,principal:{...check()}};
+    }catch(error){check();throw error;}
+    finally{clearTimeout(timer);options.signal?.removeEventListener('abort',abort);}
+  }
   terminalPrincipal(token,args){
     if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
     const {username,role,userId}=this.principal(token);
@@ -203,11 +244,11 @@ export class PortalService extends DemoService{
   async datasetRead(token,operation,args){
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
     args=structuredClone(args);
-    const admitted=this.principal(token),policy=JSON.stringify(this.store.get(admitted.userId));
+    const admitted=this.principal(token),policy=authorizationPolicy(this.store.get(admitted.userId));
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
       const current=this.principal(token);
-      if(current.userId!==admitted.userId||current.role!==admitted.role||current.username!==admitted.username||JSON.stringify(this.store.get(current.userId))!==policy)
+      if(current.userId!==admitted.userId||current.role!==admitted.role||current.username!==admitted.username||authorizationPolicy(this.store.get(current.userId))!==policy)
         throw Object.assign(Error('账号授权已改变，请重新加载数据集。'),{status:403});
       return current;
     };
@@ -302,7 +343,8 @@ export class PortalService extends DemoService{
       this.audit(principal.username,operation,role,'ok');this.db.exec('COMMIT');return result;
     }catch(e){this.db.exec('ROLLBACK');throw e;}
   }
-  invoke(token,operation,args={}){
+  invoke(token,operation,args={},options={}){
+    if(['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation))return this.jobRead(token,operation,args,options);
     if(operation==='datasets.upload.admission.status'){
       if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
       const principal=this.principal(token);
@@ -339,11 +381,11 @@ export class PortalService extends DemoService{
       return this.datasetDeletionCall(principal,operation,structuredClone(args),check).then(result=>{check();return {result,principal:{...principal}};});
     }
     if(['storage.usage.mine','storage.usage.users'].includes(operation)){
-      const principal=this.principal(token),policy=JSON.stringify(this.store.get(principal.userId));
+      const principal=this.principal(token),policy=authorizationPolicy(this.store.get(principal.userId));
       const check=()=>{
         const current=this.principal(token);
         if(this.closing||current.userId!==principal.userId||current.role!==principal.role||current.username!==principal.username
-          ||JSON.stringify(this.store.get(current.userId))!==policy)
+          ||authorizationPolicy(this.store.get(current.userId))!==policy)
           throw Object.assign(Error('账号授权已改变，请刷新后重试。'),{status:403});
         return current;
       };

@@ -1,3 +1,4 @@
+import {authorizationPolicy} from './dist/model.js';
 // Personal display metadata only. Nodes remain the source of truth for data,
 // versions, ACLs and paths. A shared reader cannot rename another user's view.
 import {datasetCatalogCall} from './dataset-catalog.mjs';
@@ -35,10 +36,10 @@ export async function datasetLabelCall(service,principal,operation,args,revalida
   const admitted=service.store.get(principal.userId),viewer=service.store.get(owner);
   if(!admitted.enabled||!viewer.enabled)fail('账号已停用。',403);
   if(owner!==principal.userId&&admitted.role!=='admin')fail('此操作需要管理员权限。',403);
-  const actorPolicy=JSON.stringify(admitted),viewerPolicy=JSON.stringify(viewer);
+  const actorPolicy=authorizationPolicy(admitted),viewerPolicy=authorizationPolicy(viewer);
   const check=()=>{
     revalidate();
-    if(service.closing||JSON.stringify(service.store.get(principal.userId))!==actorPolicy||JSON.stringify(service.store.get(owner))!==viewerPolicy)
+    if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==actorPolicy||authorizationPolicy(service.store.get(owner))!==viewerPolicy)
       fail('账号授权已改变，请重新查询数据集。',403);
   };
   check();

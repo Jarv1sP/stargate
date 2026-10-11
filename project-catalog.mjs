@@ -1,5 +1,5 @@
 // Owner-scoped presentation only. No filesystem, release or run identities change.
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 const PROJECT=/^[a-z][a-z0-9_-]{0,47}$/;
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
@@ -21,8 +21,8 @@ export function installProjectCatalog(service){
 }
 export async function projectCatalogCall(service,principal,user,operation,args,authorize){
   if(!['projects.label.get','projects.label.set','projects.group.get','projects.group.set','projects.catalog'].includes(operation))return undefined;
-  const policy=JSON.stringify(user);
-  const check=()=>{const current=service.store.get(user.id);if(service.closing||!current.enabled||JSON.stringify(current)!==policy)fail('账号授权改变，请重新读取项目；未修改整理信息。',403);};
+  const policy=authorizationPolicy(user);
+  const check=()=>{const current=service.store.get(user.id);if(service.closing||!current.enabled||authorizationPolicy(current)!==policy)fail('账号授权改变，请重新读取项目；未修改整理信息。',403);};
   const proof=async ref=>{authorize(ref.machine);check();const result=await service.bridge(ref.machine,'projects.status',{userId:user.id,project:ref.project});check();if(result?.project!==ref.project||!['DRAFT','READY','PUBLISHING','FAILED','UNKNOWN','SYNCING','IMPORTING','COMMITTING'].includes(result.state))fail('项目实例尚未确认，未修改整理信息。',503);return result;};
   if(operation==='projects.catalog'){
     fields(args,['includeArchived']);if(args.includeArchived!==undefined&&typeof args.includeArchived!=='boolean')fail('includeArchived 须为布尔值。');

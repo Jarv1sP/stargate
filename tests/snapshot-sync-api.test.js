@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
-const hash='a'.repeat(64),principal={userId:'demo-user-1',username:'alice',role:'member'},user={id:principal.userId};
+const hash='a'.repeat(64),principal={userId:'demo-user-1',username:'alice',role:'member'},user={id:principal.userId,username:principal.username,enabled:true,role:'member',limits:{'gpu-1':1,'gpu-2':1},total:1};
 function fixture(){const calls=[],info={state:'READY',manifestBytes:100,manifestSha256:hash,totalBytes:30,entries:2};return {calls,info,service:{bridge:async(machine,op,args)=>{calls.push({machine,op,args});return info;},audit(){}},auth:machine=>{if(!['gpu-1','gpu-2'].includes(machine))throw Object.assign(Error('unauthorized'),{status:403});}};}
 test('fixed code provenance authorizes both nodes and checks manifest before target begin',async()=>{
   const f=fixture(),args={machine:'gpu-2',project:'new-project',key:randomUUID(),manifestBytes:100,manifestSha256:hash,totalBytes:30,entries:2,source:{kind:'release',machine:'gpu-1',project:'source',release:hash}};

@@ -185,11 +185,18 @@ test('unsafe scheduling capability, stale status, non-OCI or mismatched immutabl
   await assert.rejects(selectMachine(f.service,f.user,normalized(),priorityCapable),/不一致/);
 });
 
-test('permission revision during probing prevents selection without writes',async()=>{
+test('machine grant revocation during probing prevents selection without writes',async()=>{
   const f=fixture(),probe=f.service.projectCopyProbe;
-  f.service.projectCopyProbe=async(...args)=>{const value=await probe(...args);f.user.policyVersion++;return value;};
+  f.service.projectCopyProbe=async(...args)=>{const value=await probe(...args);f.user.limits[ids[0]]=0;return value;};
   await assert.rejects(selectMachine(f.service,structuredClone(f.user),normalized(),priorityCapable),e=>e.status===403);
   assert.equal(f.saved.length,0);assert.equal(f.calls.length,0);
+});
+
+test('display metadata and policy revision during probing do not revoke effective machine grants',async()=>{
+  const f=fixture(),probe=f.service.projectCopyProbe;
+  f.service.projectCopyProbe=async(...args)=>{const value=await probe(...args);f.user.name='Renamed';f.user.approvalNote='reviewed';f.user.policyVersion++;return value;};
+  const result=await selectMachine(f.service,structuredClone(f.user),normalized(),priorityCapable);
+  assert.ok(ids.includes(result.machine));assert.equal(f.saved.length,0);assert.equal(f.calls.length,0);
 });
 
 test('AUTO excludes connected degraded/unknown nodes without treating an empty free pool as unhealthy',async()=>{

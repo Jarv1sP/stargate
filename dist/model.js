@@ -3,6 +3,13 @@ export const validUsername = value => typeof value==='string' && /^[a-z\u3400-\u
 import {MACHINES} from './machines.js';
 import {displayName} from './task-metadata.js';
 export {MACHINES};
+// Display names, approval notes and revision counters do not grant access.
+// Compare effective grants in a stable order; quota changes still invalidate
+// work admitted under an earlier authorization.
+export const authorizationPolicy = user => JSON.stringify(user ? {
+  id:user.id,username:user.username,enabled:user.enabled===true,role:user.role||'member',
+  total:user.total,limits:Object.entries(user.limits||{}).filter(([,cards])=>cards>0).sort(([a],[b])=>a.localeCompare(b)),
+} : null);
 const clone = value => JSON.parse(JSON.stringify(value));
 const demoLimits = allocations => Object.fromEntries(allocations.flatMap(([index,cards])=>{
   const machine=MACHINES[index];return machine?[[machine.id,Math.min(cards,machine.cards)]]:[];

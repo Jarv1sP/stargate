@@ -1,6 +1,7 @@
 import {archiveUploadSpecification} from './dist/dataset-upload.js';
 import net from 'node:net';
-import {MACHINES} from './dist/model.js';
+import {setTimeout as readDelay} from 'node:timers/promises';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {taskIdentity,nativeTaskDisplay} from './dist/task-metadata.js';
 import {nativeJobRequest} from './native-task-metadata.mjs';
 import {applyJobFeedback,jobTiming} from './dist/job-progress.js';
@@ -120,18 +121,22 @@ async function firstDispatch(service,job){
   });
 }
 export function bridgeClient(socketPath){
-  return (machine,operation,args)=>new Promise((resolve,reject)=>{
+  return (machine,operation,args,options={})=>new Promise((resolve,reject)=>{
     const socket=net.createConnection(socketPath);let raw='',settled=false;
+    const boundedRead=['logs','watch','diagnostics'].includes(operation),signal=boundedRead?options.signal:undefined;
+    const timeoutMs=boundedRead&&Number.isInteger(options.rpcTimeoutMs)?Math.max(1,Math.min(32000,options.rpcTimeoutMs)):32000;
     let timer;
-    const finish=(error,result)=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):resolve(result);};
+    const finish=(error,result)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);error?reject(error):resolve(result);};
     const unavailable=()=>Object.assign(Error('节点执行桥暂时不可用；操作结果未确认，请查询原任务状态。'),{status:503,code:'EXECUTOR_UNAVAILABLE'});
     const timeout=()=>Object.assign(Error('节点响应超时；操作结果未确认，请查询原任务状态。'),{status:504,code:'EXECUTOR_TIMEOUT'});
+    const abort=()=>socket.destroy(signal.reason||Object.assign(Error('任务查询已取消。'),{status:499}));
+    signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted){abort();return;}
     // A bridge restart is infrastructure unavailability, not a bad user
     // request. Never reconnect/replay here: input or a mutation may be sent.
     // This is an elapsed deadline, not merely an inactivity timeout: partial
     // bytes cannot keep an abandoned remote query alive indefinitely.
-    timer=setTimeout(()=>socket.destroy(timeout()),32000);
-    socket.setTimeout(32000,()=>socket.destroy(timeout()));
+    timer=setTimeout(()=>socket.destroy(timeout()),timeoutMs);
+    socket.setTimeout(timeoutMs,()=>socket.destroy(timeout()));
     socket.on('connect',()=>socket.end(JSON.stringify({machine,operation,args})+'\n'));
     socket.on('data',part=>{raw+=part;if(Buffer.byteLength(raw)>2_000_000)socket.destroy(Object.assign(Error('节点执行桥响应过大；操作结果未确认。'),{status:502}));});
     socket.on('error',error=>finish(Number.isInteger(error.status)?error:unavailable()));
@@ -242,7 +247,7 @@ export function publicJob(job,users=[]){const {spec,digest,schedulerPolicy,dataP
   yieldPolicy:['legacy','never','now','save'].includes(schedulerPolicy?.yield_policy)?schedulerPolicy.yield_policy:null,
   restartPolicy:['never','on-preempt'].includes(schedulerPolicy?.restart_policy)?schedulerPolicy.restart_policy:null,
   dispatchMode:['queue','preempt-now','preempt-save'].includes(schedulerPolicy?.dispatch_mode)?schedulerPolicy.dispatch_mode:null};}
-export async function executionCall(service,principal,operation,args){
+export async function executionCall(service,principal,operation,args,readContext){
   if(!service.bridge&&!['datasets.upload.admission.create','datasets.upload.admission.status'].includes(operation))fail('节点执行桥尚未配置，未启动训练。',503,operation==='jobs.submit'?'SUBMISSION_REJECTED':undefined);
   const user=service.store.get(principal.userId);
   const jobView=job=>publicJob(job,service.store.users);
@@ -272,6 +277,34 @@ export async function executionCall(service,principal,operation,args){
     return service.bridge(machine,operation,{...request,userId:user.id,hostAdmin:true});
   }
   const jobById=id=>{const job=service.store.jobs.find(j=>j.id===id);if(!job||(principal.role!=='admin'&&job.userId!==user.id))fail('任务不存在或无权访问。',403);return job;};
+  // Only explicit observations retry. sync, submit, cancellation, terminal
+  // input and resource reconciliation keep their original one-shot dispatch.
+  const jobReadPolicy=authorizationPolicy(user);
+  const observeJob=async(job,kind,request)=>{
+    const identity=JSON.stringify([job.id,job.userId,job.machine,job.spec]);
+    const check=()=>{
+      readContext?.check?.();
+      if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==jobReadPolicy||
+        JSON.stringify([job.id,job.userId,job.machine,job.spec])!==identity)
+        fail('账号或任务授权已改变，请重新查询。',403);
+      authorizedMachine(job.machine);readContext?.signal?.throwIfAborted();
+    };
+    for(let attempt=0;;attempt++){
+      check();
+      try{
+        const options=readContext?{signal:readContext.signal,rpcTimeoutMs:Math.min(27000,Math.max(1,readContext.deadline-Date.now()))}:undefined;
+        const value=await (options?service.bridge(job.machine,kind,request,options):service.bridge(job.machine,kind,request));
+        check();return value;
+      }catch(error){
+        check();
+        const transient=['NODE_CONNECT_FAILED','NODE_TRANSPORT_BUSY','NODE_RESPONSE_TIMEOUT','EXECUTOR_UNAVAILABLE','EXECUTOR_TIMEOUT','EXECUTOR_UNCONFIRMED',
+          'ECONNRESET','ECONNREFUSED','EPIPE','ETIMEDOUT','EHOSTUNREACH'].includes(error?.code)||
+          !error?.code&&[502,503,504].includes(error?.status);
+        if(attempt||!transient||[401,403].includes(error?.status)||readContext?.deadline-Date.now()<=250)throw error;
+        await readDelay(250,undefined,{signal:readContext?.signal});
+      }
+    }
+  };
   if(/^(projects|datasets)\.(snapshot|sync)\./.test(operation)){
     const result=await snapshotSyncCall(service,principal,user,operation,args,authorizedMachine);
     if(result===undefined)fail('未知同步操作。');return result;
@@ -562,12 +595,12 @@ export async function executionCall(service,principal,operation,args){
       }
     }
     if(needsPreparation&&service.store.jobs.filter(j=>j.userId===user.id&&j.state===DATA_PREPARING).length>=10)rejectSubmission('最多保留 10 个准备中的训练，请先等待或取消。',429);
-    if(request.machineSelection&&(JSON.stringify(service.store.get(user.id))!==JSON.stringify(user)||service.maintenanceFor?.(request.machine)))rejectSubmission('账号授权或机器维护状态已改变；未提交训练。',409);
+    if(request.machineSelection&&(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine)))rejectSubmission('账号授权或机器维护状态已改变；未提交训练。',409);
     let storagePlan;
     if(project.project||datasets.length){
       try{storagePlan=await trainingStoragePlan(service,user,request.machine,request,{from:request.projectPreparation?.from});}
       catch(error){if(error.code!=='TRAINING_ADMISSION_BUSY')error.code='SUBMISSION_REJECTED';throw error;}
-      if(JSON.stringify(service.store.get(user.id))!==JSON.stringify(user)||service.maintenanceFor?.(request.machine))rejectSubmission('容量核对期间账号授权或机器维护状态已改变；未提交训练。',409);
+      if(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine))rejectSubmission('容量核对期间账号授权或机器维护状态已改变；未提交训练。',409);
     }
     if(!needsPreparation&&!personalCardQuotaExempt(user,request)){
       if(usage(service.store.jobs,user.id)+request.cards>user.total)rejectSubmission('超出跨机器用卡总额度（排队、运行和待核对任务均计入）。',409);
@@ -623,13 +656,13 @@ export async function executionCall(service,principal,operation,args){
     }
     return jobView(job);
   }
-  if(operation==='jobs.logs'){const job=jobById(args.jobId);if(job.state===DATA_PREPARING)return {text:job.queueReason||'正在准备本机数据；尚未申请 GPU。'};return service.bridge(job.machine,'logs',{job:job.spec});}
+  if(operation==='jobs.logs'){const job=jobById(args.jobId);if(job.state===DATA_PREPARING)return {text:job.queueReason||'正在准备本机数据；尚未申请 GPU。'};return observeJob(job,'logs',{job:job.spec});}
   if(operation==='jobs.reconcile-resources'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('资源对账仅接受任务 ID。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
     if(!TERMINAL.has(job.state)||!job.nodeJobId)fail('仅能对账已有原生任务的历史终态；不会取消或重跑任务。',409);
-    const snapshot=JSON.stringify(job),actorSnapshot=JSON.stringify(service.store.get(principal.userId));
-    const check=()=>{if(service.closing||JSON.stringify(service.store.get(principal.userId))!==actorSnapshot||JSON.stringify(job)!==snapshot)fail('授权或任务状态已改变，请重新查询后对账。',409);};
+    const snapshot=JSON.stringify(job),actorSnapshot=authorizationPolicy(service.store.get(principal.userId));
+    const check=()=>{if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==actorSnapshot||JSON.stringify(job)!==snapshot)fail('授权或任务状态已改变，请重新查询后对账。',409);};
     const before=await service.bridge(job.machine,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});check();
     const observation=terminalNativeObservation(job,before?.nativeObservation),attempt=observation.latestAttempt;
     if(observation.status!=='CONFIRMED'||!TERMINAL.has(observation.state)||!attempt||
@@ -649,10 +682,10 @@ export async function executionCall(service,principal,operation,args){
   if(operation==='jobs.completion'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('完成核验仅接受任务 ID。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
-    const snapshot=JSON.stringify(job),actorSnapshot=JSON.stringify(service.store.get(principal.userId));
+    const taskIdentity=()=>JSON.stringify([job.id,job.userId,job.machine,job.nodeJobId,job.spec,job.latestAttempt?.id,job.latestAttempt?.ordinal]),snapshot=taskIdentity(),actorSnapshot=authorizationPolicy(service.store.get(principal.userId));
     let result;
-    if(job.nodeJobId)try{result=await service.bridge(job.machine,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});}catch{}
-    if(service.closing||JSON.stringify(service.store.get(principal.userId))!==actorSnapshot||JSON.stringify(job)!==snapshot)
+    if(job.nodeJobId)try{result=await observeJob(job,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});}catch{}
+    if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==actorSnapshot||taskIdentity()!==snapshot)
       fail('授权或任务状态已改变，请重新查询完成状态。',409);
     return jobCompletion(job,result);
   }
@@ -665,13 +698,13 @@ export async function executionCall(service,principal,operation,args){
       const original=jobView(job);
       if(!job.nodeJobId)return {...original,nativeObservation:unavailableObservation('NATIVE_ID_UNAVAILABLE')};
       try{
-        const result=await service.bridge(job.machine,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});
+        const result=await observeJob(job,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});
         return {...original,nativeObservation:terminalNativeObservation(job,result?.nativeObservation)};
       }catch{return {...original,nativeObservation:unavailableObservation()};}
     }
     authorizedMachine(job.machine);
     let result;
-    try{result=await service.bridge(job.machine,'watch',{job:job.spec});}
+    try{result=await observeJob(job,'watch',{job:job.spec});}
     catch{return {...jobView(job),state:'UNKNOWN',error:'节点进度查询失败，任务状态待核对。',checkedAt:new Date().toISOString()};}
     if(!result?.nodeJobId)return jobView(job);
     try{persistSchedulerResult(service,job,result);return jobView(job);}
@@ -685,9 +718,9 @@ export async function executionCall(service,principal,operation,args){
   if(operation==='jobs.diagnostics'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('诊断参数无效。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
-    if(!TERMINAL.has(job.state))return service.bridge(job.machine,'diagnostics',{job:job.spec});
+    if(!TERMINAL.has(job.state))return observeJob(job,'diagnostics',{job:job.spec});
     try{
-      const result=await service.bridge(job.machine,'diagnostics',{job:job.spec,...(job.nodeJobId?{expectedNodeJobId:job.nodeJobId}:{})});
+      const result=await observeJob(job,'diagnostics',{job:job.spec,...(job.nodeJobId?{expectedNodeJobId:job.nodeJobId}:{})});
       return {...result,portalTerminal:portalTerminalSnapshot(job),nativeObservation:terminalNativeObservation(job,result?.nativeObservation)};
     }catch{return {jobId:job.id,state:'UNAVAILABLE',portalTerminal:portalTerminalSnapshot(job),nativeObservation:unavailableObservation()};}
   }

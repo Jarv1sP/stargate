@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 
 export const STORAGE_USAGE_TTL_MS=300000;
 export const STORAGE_USAGE_TIMEOUT_MS=4000;
@@ -91,9 +91,9 @@ export async function storageUsageCall(service,principal,operation,args){
   let user;try{user=service.store.get(principal?.userId);}catch{}
   if(user?.enabled!==true||user.id!==principal?.userId||(user.role||'member')!==principal?.role)fail('账号不存在或已停用。',403);
   if(operation==='storage.usage.users'&&principal.role!=='admin')fail('此操作需要管理员权限。',403);
-  const policy=JSON.stringify(user),check=()=>{
+  const policy=authorizationPolicy(user),check=()=>{
     let current;try{current=service.store.get(principal.userId);}catch{}
-    if(service.closing||current?.enabled!==true||JSON.stringify(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
+    if(service.closing||current?.enabled!==true||authorizationPolicy(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
   };
   check();
   const nodes=await Promise.all(MACHINES.map(({id})=>readNode(service,id)));

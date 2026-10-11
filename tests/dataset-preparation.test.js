@@ -31,8 +31,8 @@ test('slow node observation does not block mutations; cancellation prevents disp
   assert.equal(f.jobs[0].state,'CANCELED');assert.equal(usage(f.jobs,f.user.id),0);
 });
 
-test('role, grants, enabled state and full account fingerprint are rechecked after I/O',async()=>{
-  for(const change of [u=>u.role='admin',u=>u.total=2,u=>u.limits['gpu-1']=2,u=>u.enabled=false,u=>u.username='renamed',u=>u.policyVersion++]){
+test('identity, role, grants and enabled state are rechecked after I/O',async()=>{
+  for(const change of [u=>u.role='admin',u=>u.total=2,u=>u.limits['gpu-1']=2,u=>u.enabled=false,u=>u.username='renamed']){
     const f=fixture(),entered=deferred(),response=deferred();
     f.service.bridge=async()=>{entered.resolve();return response.promise;};
     const work=advanceDataPreparation(f.service,f.jobs[0],usage);await entered.promise;
@@ -249,4 +249,15 @@ test('missing warehouse binding cannot promote a preparation or reserve GPUs',as
   f.service.bridge=async()=>({...ref,state:'READY',warehouseReady:true});installDatasetReplication(f.service);
   await assert.rejects(advanceDataPreparation(f.service,f.jobs[0],usage),e=>e.code==='WAREHOUSE_REFERENCE_INVALID');
   assert.equal(f.jobs[0].state,DATA_PREPARING);assert.equal(usage(f.jobs,f.user.id),0);assert.equal(f.jobs[0].dataPreparationHold,undefined);
+});
+
+
+test('profile and approval revisions do not fail an authorized data preparation',async()=>{
+  for(const change of [u=>u.name='Renamed',u=>u.approvalNote='Updated',u=>u.policyVersion++]){
+    const f=fixture(),entered=deferred(),response=deferred();
+    f.service.bridge=async()=>{entered.resolve();return response.promise;};
+    const work=advanceDataPreparation(f.service,f.jobs[0],usage);await entered.promise;
+    await f.service.enqueue(()=>change(f.user));response.resolve({...ref,state:'READY'});await work;
+    assert.equal(f.jobs[0].state,'SUBMITTING');assert.equal(usage(f.jobs,f.user.id),1);
+  }
 });

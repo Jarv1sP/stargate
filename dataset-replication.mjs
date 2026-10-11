@@ -1,3 +1,4 @@
+import {authorizationPolicy} from './dist/model.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {datasetCatalogCall,warehouseCacheReference} from './dataset-catalog.mjs';
 import {prepareTrainingDataset} from './training-preparation.mjs';
@@ -16,7 +17,7 @@ export function installDatasetReplication(service){
   const save=row=>{if(service.closing)fail('服务正在关闭，请稍后重试。',503);service.db.prepare('INSERT INTO dataset_copies(id,owner,target,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(row.id,row.owner,row.target,JSON.stringify(row));};
   const authority=(owner,target)=>{const user=service.store.get(owner);if(!user.enabled||!user.limits[target])fail('这台机器未授权。',403);return user;};
   const principal=user=>({userId:user.id,username:user.username,role:'member'});
-  const check=(owner,target,policy)=>{const user=authority(owner,target);if(service.closing||JSON.stringify(user)!==policy)fail('账号授权已改变，请刷新后重试。',403);return user;};
+  const check=(owner,target,policy)=>{const user=authority(owner,target);if(service.closing||authorizationPolicy(user)!==policy)fail('账号授权已改变，请刷新后重试。',403);return user;};
   const receipt=row=>{
     if(!row)return null;
     if(row.transferId)return service.transferSnapshot?.(row.owner,row.transferId);
@@ -50,7 +51,7 @@ export function installDatasetReplication(service){
     return mapped?{dataset:mapped.dataset,version:mapped.version}:{...ref};
   };
   service.resolveDataset=async(owner,target,ref)=>{
-    const policy=JSON.stringify(authority(owner,target));let status,error;
+    const policy=authorizationPolicy(authority(owner,target));let status,error;
     try{status=await service.bridge(target,'datasets.status',{userId:owner,hostAdmin:false,...ref});}catch(value){error=value;}
     check(owner,target,policy);
     if(status?.dataset===ref.dataset&&status?.version===ref.version&&status.state==='READY')return {status,reference:warehouseCacheReference(status,ref)||{...ref}};
@@ -81,7 +82,7 @@ export function installDatasetReplication(service){
   async function prepare(owner,target,ref,{retry=true,trainingJobId}={}){
     if(!ID.test(ref.dataset)||!HASH.test(ref.version))fail('数据集版本无效。',400);
     service.assertDatasetNotDeleting?.(target,ref);
-    const user=authority(owner,target),policy=JSON.stringify(user),who=principal(user);
+    const user=authority(owner,target),policy=authorizationPolicy(user),who=principal(user);
     const localPrepare=physical=>trainingJobId?prepareTrainingDataset(service,trainingJobId,ref,physical):service.bridge(target,'datasets.prepare',{userId:owner,hostAdmin:false,...physical});
     let resolved;
     try{resolved=await service.resolveDataset(owner,target,ref);}catch(error){if(error.status===403||error.code==='WAREHOUSE_REFERENCE_INVALID')throw error;}

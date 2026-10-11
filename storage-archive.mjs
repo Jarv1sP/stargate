@@ -1,6 +1,6 @@
 import {createHash, randomUUID} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 
 // Durable control-plane orchestration only. Data bytes use the existing node
 // transfer service. Private authority grants are never saved in portal rows.
@@ -109,8 +109,8 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
     service.assertMaintenanceAllowed?.('storage.archive.advance',{machine:row.machine,from:row.sourceMachine});
     if(!currentPolicy(row))fail('Archive policy changed; existing intent requires administrator review');
     const user=enabledUser(row.owner,row.machine,{dataset:row.dataset,version:row.version});
-    if(snapshot!==undefined&&JSON.stringify(user)!==snapshot)fail('Archive owner policy changed during operation');
-    return JSON.stringify(user);
+    if(snapshot!==undefined&&authorizationPolicy(user)!==snapshot)fail('Archive owner policy changed during operation');
+    return authorizationPolicy(user);
   };
   const call=async(row,snapshot,machine,operation,args)=>{
     fence(row,snapshot);
@@ -196,7 +196,7 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
     const actor=service.store.get(principal.userId);
     if(!actor?.enabled||actor.role!=='admin'||principal.role!=='admin'||actor.username!==principal.username)
       fail('Intent cancellation requires a current administrator.',403);
-    const actorSnapshot=JSON.stringify(actor);
+    const actorSnapshot=authorizationPolicy(actor);
     if(service.closing)fail('Archive service is closing.',503);
     service.assertMaintenanceAllowed?.('datasets.archive.cancel-intent',{},principal);
     // No await/RPC occurs here. BEGIN IMMEDIATE serializes the full-row CAS,
@@ -272,7 +272,7 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
       row.error='未开始的归档请求已取消；数据未删除，仍须通过正常数据集删除流程处理。';
       save(row);
       service.audit(principal.username,'datasets.archive.cancel-intent',row.id,JSON.stringify(proof));
-      if(JSON.stringify(service.store.get(principal.userId))!==actorSnapshot)
+      if(authorizationPolicy(service.store.get(principal.userId))!==actorSnapshot)
         fail('Intent cancellation authorization changed.',403);
       service.db.exec('COMMIT');return response();
     }catch(error){service.db.exec('ROLLBACK');throw error;}
@@ -299,7 +299,7 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
     // A cross-machine replacement cannot safely retire the old source yet.
     if(old.sourceMachine!==replacement.sourceMachine||old.policyKey!==replacement.policyKey)
       fail('Cross-authority replacement retirement is unsupported; source protection is retained.',409);
-    const binding=key('authority-retire-v1',args.ownerId,old.id,replacement.id,args.recoveryId,args.key),snapshot=JSON.stringify(actor);
+    const binding=key('authority-retire-v1',args.ownerId,old.id,replacement.id,args.recoveryId,args.key),snapshot=authorizationPolicy(actor);
     const oldIdentity=archiveIdentity(old),replacementIdentity=archiveIdentity(replacement);
     if(old.retirement?.mode==='authority-retire-v1'){
       if(old.retirement.binding!==binding||old.failureStage!=='authority-retired')fail('Authority retirement identity cannot change.',409);
@@ -309,7 +309,7 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
       fail('Authority retirement identity or state changed.',409);
     const check=()=>{
       if(service.closing||!policy.enabled||key(service.storageArchivePolicy)!==policyKey)fail('Authority retirement is unavailable.');
-      if(JSON.stringify(service.store.get(principal.userId))!==snapshot)fail('Authority retirement authorization changed.',403);
+      if(authorizationPolicy(service.store.get(principal.userId))!==snapshot)fail('Authority retirement authorization changed.',403);
       enabledUser(args.ownerId,args.machine);enabledUser(args.ownerId,args.replacement.machine);
       service.assertMaintenanceAllowed?.('storage.archive.advance',{machine:old.machine,from:old.sourceMachine});
       service.assertMaintenanceAllowed?.('storage.archive.advance',{machine:replacement.machine,from:replacement.sourceMachine});
@@ -373,7 +373,7 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
       fail('Retirement requires the exact event, owner, reference and normal unregister receipt.',400);
     const actor=service.store.get(principal.userId);
     if(!actor?.enabled||actor.role!=='admin')fail('Archive retirement requires a current administrator.',403);
-    const snapshot=JSON.stringify(actor),ownerSnapshot=JSON.stringify(enabledUser(args.ownerId,args.machine));
+    const snapshot=authorizationPolicy(actor),ownerSnapshot=authorizationPolicy(enabledUser(args.ownerId,args.machine));
     const id=key(args.ownerId,args.machine,args.dataset,args.version,args.eventId),row=load(id);
     if(!row||!trustedHistory(row)||row.kind!=='ingest'||row.owner!==args.ownerId||row.machine!==args.machine||
       row.dataset!==args.dataset||row.version!==args.version||row.eventId!==args.eventId||row.eventAcknowledged)
@@ -382,7 +382,7 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
     const check=()=>{
       if(service.closing||!policy.enabled||!service.bridge||key(service.storageArchivePolicy)!==policyKey)fail('Archive retirement is unavailable.');
       service.assertMaintenanceAllowed?.('storage.archive.advance',{machine:row.machine,from:row.sourceMachine});
-      if(JSON.stringify(service.store.get(principal.userId))!==snapshot||JSON.stringify(enabledUser(args.ownerId,args.machine))!==ownerSnapshot)
+      if(authorizationPolicy(service.store.get(principal.userId))!==snapshot||authorizationPolicy(enabledUser(args.ownerId,args.machine))!==ownerSnapshot)
         fail('Archive retirement authorization changed.',403);
       if(archiveIdentity(load(id))!==identity)fail('Archive retirement identity changed.');
     };
@@ -446,12 +446,12 @@ export function installStorageArchive(service,input,{clock=Date.now,startTimer=t
     const {ownerId:owner,machine,dataset,version,key:requestKey}=args;
     const admitted=service.store.get(principal.userId);
     if(!admitted?.enabled||admitted.role!=='admin')fail('Archive enrollment requires a current administrator.',403);
-    const actorPolicy=JSON.stringify(admitted),ownerPolicy=JSON.stringify(enabledUser(owner,machine));
+    const actorPolicy=authorizationPolicy(admitted),ownerPolicy=authorizationPolicy(enabledUser(owner,machine));
     const check=()=>{
       if(service.closing||!policy.enabled||!service.bridge||key(service.storageArchivePolicy)!==policyKey)fail('Archive enrollment is unavailable.');
       service.assertMaintenanceAllowed?.('storage.archive.advance',{machine,from:policy.machine});
-      if(JSON.stringify(service.store.get(principal.userId))!==actorPolicy||
-         JSON.stringify(enabledUser(owner,machine))!==ownerPolicy)fail('Archive enrollment authorization changed.',403);
+      if(authorizationPolicy(service.store.get(principal.userId))!==actorPolicy||
+         authorizationPolicy(enabledUser(owner,machine))!==ownerPolicy)fail('Archive enrollment authorization changed.',403);
     };
     check();
     const copyIfMissing=args.copyIfMissing===true;

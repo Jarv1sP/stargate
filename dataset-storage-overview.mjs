@@ -1,4 +1,4 @@
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {datasetCatalogCall} from './dataset-catalog.mjs';
 
 export const STORAGE_OVERVIEW_TIMEOUT_MS=4000;
@@ -113,9 +113,9 @@ export async function datasetStorageOverviewCall(service,principal,args){
   let user;try{user=service.store.get(principal?.userId);}catch{}
   if(user?.enabled!==true||user.id!==principal?.userId)fail('账号不存在或已停用。',403);
   if(!service.bridge)fail('节点执行桥尚未配置。',503);
-  const policy=JSON.stringify(user),checkPolicy=()=>{
+  const policy=authorizationPolicy(user),checkPolicy=()=>{
     let current;try{current=service.store.get(principal.userId);}catch{}
-    if(service.closing||current?.enabled!==true||JSON.stringify(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
+    if(service.closing||current?.enabled!==true||authorizationPolicy(current)!==policy)fail('账号授权已改变，请刷新后重试。',403);
   };
   // Independent fixed metadata reads share one elapsed window. Waiting for
   // every catalog before starting capacities doubles an offline node's bridge

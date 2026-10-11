@@ -1,5 +1,5 @@
 // Presentation only: clients never supply owner, submit key, spec or submitter.
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {createHash} from 'node:crypto';
 import {nativeTaskDisplay,taskDescription} from './dist/task-metadata.js';
 import {nativeTaskPresentation} from './native-task-metadata.mjs';
@@ -36,13 +36,13 @@ export async function taskDisplayCall(service,token,operation,args){
     if(!nativeTaskPresentation({name:args.name,description:args.description,submitter:{name:'验证',username:'validation'}}))fail('任务名称或描述格式无效。');
     args={...args,description:taskDescription(args.description)};
   }
-  const principal=service.principal(token),actor=service.store.get(principal.userId),policy=JSON.stringify(actor);
+  const principal=service.principal(token),actor=service.store.get(principal.userId),policy=authorizationPolicy(actor);
   const matches=service.store.jobs.filter(j=>j.machine===args.machine&&j.nodeJobId===args.nodeJobId);
   if(matches.length>1)fail('任务关联不明确，不能编辑。',409);
   const job=matches[0],original=job?JSON.stringify({id:job.id,machine:job.machine,nodeJobId:job.nodeJobId,userId:job.userId,spec:job.spec}):null;
   const check=()=>{
     const current=service.principal(token),user=service.store.get(current.userId);
-    if(service.closing||current.userId!==principal.userId||current.username!==principal.username||current.role!==principal.role||JSON.stringify(user)!==policy)fail('账号授权已改变，请重新读取任务。',403);
+    if(service.closing||current.userId!==principal.userId||current.username!==principal.username||current.role!==principal.role||authorizationPolicy(user)!==policy)fail('账号授权已改变，请重新读取任务。',403);
     if(!user.enabled||!MACHINES.some(m=>m.id===args.machine)||!user.limits[args.machine])fail('这台机器未授权。',403);
     const now=service.store.jobs.filter(j=>j.machine===args.machine&&j.nodeJobId===args.nodeJobId);
     if(now.length!==matches.length||job&&(now[0]!==job||JSON.stringify({id:job.id,machine:job.machine,nodeJobId:job.nodeJobId,userId:job.userId,spec:job.spec})!==original))fail('原任务关联已改变，请重新读取。',409);

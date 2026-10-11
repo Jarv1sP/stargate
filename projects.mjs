@@ -1,3 +1,4 @@
+import {authorizationPolicy} from './dist/model.js';
 import {projectCatalogCall} from './project-catalog.mjs';
 // Project identities are always derived from the authenticated account. A
 // client chooses a node and an opaque project/release, never a host filesystem.
@@ -43,9 +44,9 @@ export async function projectCall(service,principal,user,operation,args,authoriz
   const priorJobs=service.store.jobs.filter(job=>job.userId===user.id&&job.machine===args.machine&&job.project===args.project);
   if(operation==='projects.retire'&&priorJobs.length)fail('项目有任务历史，不能退役；请归档以保留结果。',409);
   if(operation==='projects.archive'&&priorJobs.some(job=>!['SUCCEEDED','FAILED','CANCELED'].includes(job.state)&&!job.nodeJobId))fail('已有任务尚未确认派发到节点；先核对其原状态，再归档项目。',409);
-  const policy=JSON.stringify(user);
+  const policy=authorizationPolicy(user);
   const result=await service.bridge(args.machine,operation,{...reference,...(operation==='projects.create'?{environmentMode:'oci'}:{}),...(args.key!==undefined?{key:args.key}:{}),...(args.revision!==undefined?{revision:args.revision}:{}),...(args.manifestSha256!==undefined?{manifestSha256:args.manifestSha256}:{}),...(operation==='projects.local-import.begin'?{sourcePath:args.sourcePath,destinationPath:args.destinationPath}:{}),userId:user.id});
-  if(JSON.stringify(service.store.get(user.id))!==policy)fail('账号权限已改变，请重新查询原操作状态。',403);
+  if(authorizationPolicy(service.store.get(user.id))!==policy)fail('账号权限已改变，请重新查询原操作状态。',403);
   if(operation==='projects.create'&&(result?.project!==args.project||result.environmentMode!=='oci'))fail('服务器未确认个人容器项目；请查询原项目，不会回退或新建替代环境。',503);
   if(operation==='projects.quota')return quotaStatus(result,user.id);
   if(['projects.create','projects.publish','projects.local-import.begin','projects.local-import.cancel','projects.archive','projects.unarchive','projects.retire'].includes(operation))service.audit(principal.username,operation,args.machine,args.project);

@@ -1,5 +1,5 @@
 import {randomUUID,createHash} from 'node:crypto';
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {executionCall} from './execution.mjs';
 import {snapshotSyncCall} from './snapshot-sync.mjs';
 import {assertTrainingPreparation,bindTrainingPreparation,trainingPreparationCall} from './training-preparation.mjs';
@@ -310,10 +310,10 @@ export async function transferCall(service,principal,operation,args,assertCurren
   if(!args||typeof args!=='object'||Array.isArray(args))fail('传输参数无效。');
   args=structuredClone(args);principal={...principal};
   let maintenanceArgs=args;
-  const policy=JSON.stringify(service.store.get(principal.userId));
+  const policy=authorizationPolicy(service.store.get(principal.userId));
   const check=()=>{
     if(service.closing)throw Object.assign(Error('服务正在关闭。'),{status:503,transferFence:true});
-    try{assertCurrent();const user=service.store.get(principal.userId);if(!user.enabled||user.username!==principal.username||principal.role==='admin'&&user.role!=='admin'||JSON.stringify(user)!==policy)fail('账号授权已改变，请重新操作。',403);}
+    try{assertCurrent();const user=service.store.get(principal.userId);if(!user.enabled||user.username!==principal.username||principal.role==='admin'&&user.role!=='admin'||authorizationPolicy(user)!==policy)fail('账号授权已改变，请重新操作。',403);}
     catch(error){error.transferFence=true;error.status??=403;throw error;}
     try{service.assertMaintenanceAllowed?.(operation,maintenanceArgs,principal);}catch(error){error.transferFence=true;throw error;}
   };

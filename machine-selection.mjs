@@ -1,4 +1,4 @@
-import {MACHINES} from './dist/model.js';
+import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {elasticCapable,placementCapable} from './dist/gpu-allocation.js';
 import {yieldCapable} from './dist/scheduling-policy.js';
 import {datasetCatalogCall} from './dataset-catalog.mjs';
@@ -14,8 +14,8 @@ const readyProbe=(value,project)=>value?.protocol==='portable-project-v1'&&value
 // with the job before project/data workers may start. Queuing never reselects it.
 export async function selectMachine(service,user,request,priorityCapable,usage){
   if(!service.projectCopyProbe||!service.prepareProject)fail('跨机个人容器尚未启用；请先手选服务器。',503);
-  const policy=JSON.stringify(user),check=()=>{
-    if(service.closing||JSON.stringify(service.store.get(user.id))!==policy)fail('账号授权已改变，请重试；未提交训练。',403);
+  const policy=authorizationPolicy(user),check=()=>{
+    if(service.closing||authorizationPolicy(service.store.get(user.id))!==policy)fail('账号授权已改变，请重试；未提交训练。',403);
   };
   await service.refreshGPUQ();check();
   if(service.gpuq?.stale!==false)fail('机器状态已过期，暂不接受自动选机。',503);
