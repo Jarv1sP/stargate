@@ -396,6 +396,24 @@ class DatasetCacheTests(unittest.TestCase):
             leaser.acquire(user_id=OWNER.user_id, job_id='warehouse-job-2', dataset='sample', version=version, kind='warehouse')
         self.assertEqual(len(self.cache._leases('sample', version)), 1)
 
+    def test_explicit_lease_delegation_is_exact_and_does_not_rewrite_legacy_owners(self):
+        version = self.register(); self.publish(version)
+        loader = importlib.util.spec_from_file_location('v2_delegated_leaser', Path(__file__).resolve().parents[1] / 'src/infrastructure/legacy-data-leaser.py')
+        adapter = importlib.util.module_from_spec(loader); loader.loader.exec_module(adapter)
+        delegated = {'dataset': 'sample', 'version': version}
+        leaser = adapter.LegacyDataLeaser(D, root=self.root, kind='cache', lease_version=delegated)
+        delegated['dataset'] = 'changed-after-construction'
+        owners = self.cache._dataset(ADMIN, 'sample')['owners']
+        lease = leaser.acquire(user_id=OTHER.user_id, job_id='v2-authorized-job', dataset='sample', version=version, kind='cache')
+        self.assertEqual(lease['accountId'], OTHER.user_id)
+        self.assertEqual(self.cache._dataset(ADMIN, 'sample')['owners'], owners)
+        (self.source / 'labels.txt').write_bytes(b'new version')
+        newer = self.register(); self.publish(newer)
+        with self.assertRaises(PermissionError):
+            leaser.acquire(user_id=OTHER.user_id, job_id='not-delegated', dataset='sample', version=newer, kind='cache')
+        with self.assertRaises(TypeError):
+            adapter.LegacyDataLeaser(D, root=self.root, kind='cache', coordinator_version={'dataset': 'sample', 'version': newer})
+
     def test_revoking_owner_does_not_destroy_existing_lease(self):
         version = self.register()
         self.publish(version)
