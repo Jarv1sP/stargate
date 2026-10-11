@@ -36,7 +36,7 @@
 - `domain/training-candidates.mjs` 与 `sqlite/training-catalog.mjs`：检查项目归属、归档、release 登记和机器授权，输出目录级候选及配置额度上界，不猜测空闲卡或节点文件就绪。正式项目登记、物理实例观察和实际用量检查尚待接入。
 - `infrastructure/legacy-project-reader.py`：以无初始化方式读取已有项目 UUID、实例代次和固定 release 元数据；不创建生命周期目录／锁或验证运行环境，runtimeVerified 明确为 false。原生观察已测试，节点协议与项目登记事务尚待接入。
 - `application/register-project-release.mjs` 与 `sqlite/project-registrations.mjs`：将账号／机器绑定的观察原子登记到项目目录，UUID 与 generation 防止静默换实例；重复登记不会产生第二个绑定。已通过隔离 HTTP 节点连接原生 reader，仍不代表可启动。
-- `ExistingProjectReader` 与 `contracts/project-inspection.mjs`：inspect 读取项目元数据，verifyRuntime 检查已有环境引用；缺失基础环境不妨碍前者，但后者失败且不自动恢复。节点配置独立于请求，二者复用同一认证／HTTP／原生进程通道，不返回宿主路径。runtimeIdentityVerified 不代表训练准入或执行成功。`jsonProcess` 提供有界、无 shell、独立进程组监督的原生 JSON 通信。
+- `ExistingProjectReader`／`HttpProjectReader` 在进程／HTTP 输入边界使用 `contracts/project-inspection.mjs` 解析项目字段；`domain/project-observation.mjs` 只判断当前账号／请求匹配、项目是否可用及本步骤的运行确认，不再重复 UUID／哈希／枚举格式解析。inspect 读取元数据，verifyRuntime 检查已有环境引用；缺失基础环境不妨碍前者，后者失败且不自动恢复。节点配置独立于请求，不返回宿主路径；runtimeIdentityVerified 不代表训练准入或执行成功。
 - `HttpProjectReader`／`assembleProjectInspection`：项目远端观察复用数据来源的 `NodeJsonTransport` 和节点认证，绑定账号／机器／版本。只完成隔离 HTTP 验证，实际节点部署与运行环境检查仍待接。
 - `ProjectClient`／`assembleSqliteProjectRegistration`：网页和 CLI 共用项目登记与存量查询。CLI `register-project`、`project-registration` 参数见 `--help`，重试保留同一逻辑 ID 和引用；查询不联系节点、不提供新的运行证明，亦不启动训练。
 - `ObserveTrainingCandidates`：将目录和已登记实例与远端元数据、运行环境引用逐一匹配，每次 I/O 后检查目录上下文；节点局部异常不阻断其他候选，权限／上下文变化使整次观察失效。运行引用通过不等于用户代码可执行、空闲卡或占用额度足够，不创建租约。
