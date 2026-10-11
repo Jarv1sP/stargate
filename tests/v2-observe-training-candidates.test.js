@@ -81,6 +81,34 @@ test('permissions changing during a node query invalidate the whole result and s
   assert.deepEqual(f.calls, ['node-1']);
 });
 
+test('display metadata and equivalent grant ordering do not invalidate effective candidate authorization', async t => {
+  const f = await fixture(t), original = f.projects.inspect;
+  f.projects.inspect = async reference => {
+    const result = await original(reference);
+    f.database.exec(`UPDATE v2_accounts SET display_name='新的显示名' WHERE id='alice';
+      UPDATE v2_compute_policies SET revision=revision+1 WHERE account_id='alice';
+      DELETE FROM v2_machine_grants WHERE account_id='alice';
+      INSERT INTO v2_machine_grants VALUES('alice','node-2',4);
+      INSERT INTO v2_machine_grants VALUES('alice','node-1',4)`);
+    return result;
+  };
+  const result = await f.app.execute(f.actor, request);
+  assert.deepEqual(result.candidates.map(row => row.machineId), ['node-1', 'node-2']);
+  assert.deepEqual(result.excluded, []);
+  assert.deepEqual(f.calls, ['node-1', 'node-2']);
+});
+
+test('a real quota change still invalidates candidates during a node observation', async t => {
+  const f = await fixture(t), original = f.projects.inspect;
+  f.projects.inspect = async reference => {
+    const result = await original(reference);
+    f.database.exec("UPDATE v2_machine_grants SET max_cards=2 WHERE account_id='alice' AND machine_id='node-1'");
+    return result;
+  };
+  await assert.rejects(f.app.execute(f.actor, request), hasCode('TRAINING_CONTEXT_CHANGED'));
+  assert.deepEqual(f.calls, ['node-1']);
+});
+
 test('revocation masks a simultaneous node error and prevents stale eligibility', async t => {
   const f = await fixture(t);
   f.projects.inspect = async () => {f.database.exec('UPDATE v2_accounts SET enabled=0'); throw new ApplicationError('PROJECT_NODE_UNAVAILABLE');};

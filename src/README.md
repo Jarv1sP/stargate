@@ -85,6 +85,7 @@
 - `TrainingDataMounts`：运行器进程内持有原目录和已有租约的真实目录 FD，复用原生目录打开及租约检查。原目录不初始化缓存、不复制或检查发布空间；托管版本只打开匹配账号／任务／原租约的 READY 数据，并核对打开后的目录身份。作用域结束只关 FD、不释放租约；容器运行时必须只读挂载，调用方必须先验证任务身份与来源授权。隔离 Linux 命名空间已验证读取与 EROFS，尚未接入完整任务运行器或生产。
 - `TrainingRuntimeInputs`／原生 `ProjectStore.open_run`：同一进程内作用域管理精确项目运行目录和数据 FD。只打开已有运行声明，不补建或准备；项目共享生命周期锁覆盖使用阶段，code／env 要求封存只读、home／output 保留独立写入位置。任一阶段失败关闭本次句柄，保留输出、声明和租约；实际容器挂载、原生任务身份与停止后资源释放由完整运行器负责，尚未上线。
 - 原生 `execution_snapshot`：按原提交键和精确尝试 ID，一次 SQL 观察任务／执行单元／实际租约／当前额度许可。指定尝试与最新尝试分开、原分配与实际租约分开；空结果不是释放证明，回包本身也不是启动许可。当前仅原生受信 socket，由 `NativeExecutionAuthority` 组合进程身份检查，不提供用户可写的执行证明。
+- 原生 `job_observation`：按原提交键一次 SQL 观察任务、最新尝试、该尝试进度和事件游标，不等待 Coordinator 的慢工作锁。进度复用原生校验与展示格式，不返回宿主命令／路径，不继承旧轮次进度；观察不改任务、配额或租约。平台授权、节点 HTTP、网页／CLI 查询和日志通路仍待接入。
 - `NativeExecutionAuthority`／`TrainingRuntime`：固定节点私有派发绑定，核对原生摘要、当前尝试、实际 GPU 租约、额度许可、预留环境字段与控制目录；复用 GPUQ systemd 后端检查单元描述／InvocationID，再匹配本进程 PID、启动 tick、boot ID 和 cgroup。运行器只接受恢复的原计划，打开项目／数据前后重核任务、运行环境和同一执行身份，失败关闭本次句柄、保留持久保护。默认 systemctl 使用当前系统用户的固定总线环境。单元／进程对应关系目前由受控夹具验证，实际部署、容器执行和停止后释放仍待完成。
 - `TrainingLaunchCompiler`／`PrepareNodeTraining`：把原请求、项目实例／环境与原数据租约编译成私有计划，宿主 argv 只含配置的运行器及计划引用；复用原生资源校验，不把用户容器命令当作宿主命令。原生 ASCII 名与中文展示名分开，展示元数据发送仍待接入。编译不创建租约或提供 launch-ready 许可。
 - `SqliteNodeDispatchBindings.prepareTraining` 同事务保存计划、原生规格和映射；旧实验库通过 `createNodeRuntimePlansSchema` 显式升级。`NodeRuntimePlans` 只读恢复固定编号并核对 JSON 字节摘要、wrapper 与原生摘要，不补建或重提；计划不包含原生摘要，避免循环引用。恢复的计划供 `TrainingRuntime` 使用，实际 wrapper 入口和容器执行仍待组装。

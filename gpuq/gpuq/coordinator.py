@@ -76,7 +76,7 @@ _MAX_LAUNCH_SPEC_BYTES = 512 * 1024
 _LAUNCH_FILE_NAME = "launch.json"
 _RELEASE_GATE_PATH = Path("/run/gpuq-native-release/gate.json")
 _MAX_RELEASE_GATE_BYTES = 4096
-_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status", "execution_snapshot"})
+_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status", "execution_snapshot", "job_observation"})
 _ACTIVE_JOB_STATES = {
     JobState.PENDING.value,
     JobState.STARTING.value,
@@ -4838,11 +4838,13 @@ class Coordinator:
                     continue
 
     def handle_api(self, operation: str, arguments: dict[str, Any]) -> Any:
-        # This query observes only one SQLite statement. Do not make a newly
-        # started runner wait behind slow host probes/systemd operations. Store
-        # retains its own lock and transaction boundary; other APIs stay below.
+        # These queries observe one SQLite statement, independent of slow host
+        # probes/systemd operations. Store retains its lock and transaction
+        # boundary; no mutation or whole-dashboard refresh moves to this lane.
         if operation == 'execution_snapshot':
             return self._api_execution_snapshot(arguments)
+        if operation == 'job_observation':
+            return self._api_job_observation(arguments)
         with self._lock:
             if operation not in _READ_ONLY_OPERATIONS:
                 self._require_release_open()
@@ -5166,7 +5168,7 @@ class Coordinator:
         return {
             "daemon": {
                 **self._health_payload(),
-                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1", "execution-snapshot-v1"],
+                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1", "execution-snapshot-v1", "job-observation-v1"],
                 "observe_only": self._observe_only,
                 "managed_indices": managed_indices,
                 "managed_gpus": managed_gpus,
@@ -5220,6 +5222,18 @@ class Coordinator:
         except ValueError as exc:
             raise ApiError("BAD_REQUEST", str(exc)) from exc
 
+    def _api_job_observation(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        _require_exact_fields(arguments, allowed={"submit_key"}, required={"submit_key"})
+        try:
+            result = self.store.get_job_observation(arguments['submit_key'])
+        except ValueError as exc:
+            raise ApiError('BAD_REQUEST', str(exc)) from exc
+        if result is not None:
+            attempt = result['latest_attempt']
+            result['progress'] = None if attempt is None else self._format_progress_status(
+                result['progress'], self._progress_errors.get(attempt['id']))
+        return result
+
     def _api_scale_up_receipt(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
         _require_exact_fields(arguments, allowed={"submit_key", "plan_id"}, required={"submit_key", "plan_id"})
         try:
@@ -5272,6 +5286,9 @@ class Coordinator:
         attempt_id = str(attempt["id"])
         row = self.store.get_attempt_progress(attempt_id)
         error = self._progress_errors.get(attempt_id)
+        return self._format_progress_status(row, error)
+
+    def _format_progress_status(self, row: dict[str, Any] | None, error: str | None) -> dict[str, Any]:
         if row is None:
             return {
                 "reported": False,

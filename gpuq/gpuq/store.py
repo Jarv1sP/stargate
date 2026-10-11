@@ -2559,6 +2559,38 @@ class Store:
                        for value in rows if value['leased_gpu_uuid'] is not None],
         }
 
+    def get_job_observation(self, submit_key: str) -> dict[str, Any] | None:
+        """One job/attempt/progress snapshot, without a scheduler tick or private paths."""
+        key = _nonempty(submit_key, 'submit_key', maximum=256)
+        job_fields = ('id', 'submit_key', 'submit_digest', 'owner', 'name', 'gpu_count', 'state',
+                      'priority', 'state_reason', 'created_at', 'started_at', 'finished_at')
+        attempt_fields = ('id', 'ordinal', 'state', 'gpu_uuids_json', 'gpu_indices_json', 'exit_code', 'failure_reason')
+        columns = [f'j.{field} observed_job_{field}' for field in job_fields]
+        columns += [f'a.{field} observed_attempt_{field}' for field in attempt_fields]
+        with self._read_connection() as connection:
+            row = connection.execute(f'''
+                SELECT {','.join(columns)},p.*,
+                  (SELECT COALESCE(MAX(id),0) FROM events WHERE job_id=j.id) latest_event_id
+                FROM jobs j LEFT JOIN attempts a ON a.id=(
+                  SELECT id FROM attempts WHERE job_id=j.id ORDER BY ordinal DESC LIMIT 1)
+                LEFT JOIN attempt_progress p ON p.attempt_id=a.id AND p.job_id=j.id
+                WHERE j.submit_key=?''', (key,)).fetchone()
+        if row is None:
+            return None
+        attempt = None
+        if row['observed_attempt_id'] is not None:
+            attempt = {field: row['observed_attempt_' + field] for field in attempt_fields}
+            attempt['gpu_uuids'] = _json_load(attempt.pop('gpu_uuids_json'))
+            attempt['gpu_indices'] = _json_load(attempt.pop('gpu_indices_json'))
+        progress = self._attempt_progress(row) if row['attempt_id'] is not None else None
+        return {
+            'job': {field: row['observed_job_' + field] for field in job_fields},
+            'latest_attempt': attempt,
+            'progress': None if progress is None else {field: progress[field] for field in
+                ('snapshot', 'updated_at', 'heartbeat_at', 'advanced_at', 'stalled_at')},
+            'latest_event_id': row['latest_event_id'],
+        }
+
     def get_allocation_authorization(self, job_id: str) -> dict[str, Any]:
         """Distinguish native jobs from explicitly managed jobs with no grant yet."""
         with self._read_connection() as connection:
