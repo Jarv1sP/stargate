@@ -5,6 +5,21 @@ import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {bridgeClient} from '../execution.mjs';
+
+test('admission BUSY is typed only for the two read RPCs and never replays a request',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'training-busy-bridge-')),path=join(dir,'bridge.sock');
+ let calls=0;
+ const server=net.createServer(socket=>{let raw='';socket.on('data',part=>raw+=part);socket.on('end',()=>{
+  JSON.parse(raw);calls++;socket.end(JSON.stringify({ok:false,status:503,code:'TRAINING_ADMISSION_BUSY',error:'/private?ticket=secret',outcomeUnconfirmed:true}));
+ });});
+ await new Promise(r=>server.listen(path,r));
+ t.after(async()=>{await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});});
+ const bridge=bridgeClient(path);
+ for(const operation of ['datasets.training.status','storage.training.plan'])
+  await assert.rejects(bridge('node',operation,{}),e=>e.code==='TRAINING_ADMISSION_BUSY'&&e.status===503&&!/private|ticket|secret/.test(e.message));
+ await assert.rejects(bridge('node','sync',{}),e=>e.code==='EXECUTOR_UNCONFIRMED');
+ assert.equal(calls,3);
+});
 import {createPortalServer} from '../portal-server.mjs';
 import {apiPost} from '../client-http.mjs';
 

@@ -91,6 +91,7 @@ export async function resolveTrainingDataset(service,owner,machine,ref,readMode)
   });}
   catch(error){
     check();
+    if(error?.code==='TRAINING_ADMISSION_BUSY')fail('数据正在使用，请稍后用原提交键重试；未提交训练。',503,'TRAINING_ADMISSION_BUSY');
     if(error?.status===403)fail('仓库原件未授权；未改用缓存或其他机器。',403,'DATASET_TRAINING_FORBIDDEN');
     fail('仓库原件读取结果尚未确认；未改用缓存或其他机器。');
   }

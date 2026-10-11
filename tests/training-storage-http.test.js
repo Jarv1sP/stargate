@@ -22,6 +22,7 @@ async function fixture(t){
   const origin='http://127.0.0.1:'+port,f={calls:[],availableBytes:2**40,unknown:false};
   const bridge=async(target,operation,args)=>{
     f.calls.push({machine:target,operation,args:structuredClone(args)});
+    if(operation===f.busyOperation)throw Object.assign(Error('/private/device?ticket=secret'),{status:503,code:'TRAINING_ADMISSION_BUSY'});
     if(operation==='datasets.status')return {...ref,state:'READY'};
     if(operation==='projects.verify')return {project:args.project,release:args.release,state:'READY'};
     if(operation==='datasets.training.status')return trainingSource(target,args);
@@ -107,5 +108,25 @@ test('HTTP project probe errors are safe 503/403 refusals with no persisted task
     else assert.deepEqual(response.data.storage,{protocol:1,reasonCode:'TRAINING_STORAGE_UNKNOWN',requiredBytes:null,availableBytes:null,volumes:[]});
     assert.equal(f.service.store.jobs.length,0);
     assert.equal(f.calls.some(call=>['sync','projects.copy.begin','datasets.prepare'].includes(call.operation)),false);
+  }
+});
+
+test('HTTP training read contention keeps BUSY and the same unregistered submission key without fallback',async t=>{
+  const f=await fixture(t),key=randomUUID();
+  f.service.ociProjectAdmission=async()=>{};
+  f.service.projectCopyProbe=async()=>({protocol:'portable-project-v1',enabled:true,environmentMode:'oci',architecture:'amd64',
+    project:'vision',release:ref.version,image:'sha256:'+'b'.repeat(64),releaseReady:true,codeBytes:1,codeEntries:1,imageUnpackedBytes:1024,imageEntries:1024});
+  // Do not admit a write: every attempt stops at one of the two read phases.
+  for(const mode of ['warehouse','cache']){
+    for(const operation of ['datasets.training.status','storage.training.plan']){
+      f.busyOperation=operation;const before=f.calls.length;
+      const response=await f.call('jobs.submit',{machine,cards:1,argv:['true'],key,project:'vision',release:ref.version,datasets:[ref],datasetReadMode:mode},f.member.token);
+      assert.equal(response.status,503,JSON.stringify(response.data));assert.equal(response.data.code,'TRAINING_ADMISSION_BUSY');
+      assert.match(response.data.error,/数据正在使用/);assert.doesNotMatch(response.data.error,/能力.*未确认|容量.*未确认|private|ticket|secret/);
+      assert.equal(response.data.storage,undefined);assert.equal(f.service.store.jobs.length,0);
+      const calls=f.calls.slice(before);
+      assert.equal(calls.filter(c=>c.operation===operation).length,1);
+      assert.equal(calls.some(c=>['sync','datasets.prepare','datasets.list','datasets.catalog'].includes(c.operation)),false);
+    }
   }
 });

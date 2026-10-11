@@ -138,7 +138,7 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       if(inventoryRequest&&(e.status===401||e.status===403)){res.writeHead(401,{...headers,'Content-Length':'0'});return res.end();}
       // Authentication failure may belong to an older request from another
       // tab. Do not expire its shared cookie; only explicit logout clears it.
-      if(e.status===401)return json(401,{error:e.message});json(e.status||400,{error:e.message?.includes('SQLITE')?'保存失败，请联系管理员。':e.message,...(['LAST_COPY_UNPROVEN','DATASET_REMOVAL_PENDING','MAINTENANCE_ACTIVE','SUBMISSION_REJECTED'].includes(e.code)||e.status===404&&e.code==='DATASET_ADMISSION_ABSENT'?{code:e.code}:{}),...trainingStorageErrorBody(e)});
+      if(e.status===401)return json(401,{error:e.message});json(e.status||400,{error:e.message?.includes('SQLITE')?'保存失败，请联系管理员。':e.message,...(['LAST_COPY_UNPROVEN','DATASET_REMOVAL_PENDING','MAINTENANCE_ACTIVE','SUBMISSION_REJECTED','TRAINING_ADMISSION_BUSY'].includes(e.code)||e.status===404&&e.code==='DATASET_ADMISSION_ABSENT'?{code:e.code}:{}),...trainingStorageErrorBody(e)});
     }
   });
   server.headersTimeout=10000;server.requestTimeout=45000;server.keepAliveTimeout=5000;server.maxConnections=64;
