@@ -1,15 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
-import {spawn} from 'node:child_process';
-import {once} from 'node:events';
-import {createInterface} from 'node:readline';
-import {DatabaseSync} from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright';
 import {dispatchFixture} from './helpers/v2-dispatch-fixture.mjs';
 import {trainingSubmission} from './helpers/v2-training-submission.mjs';
@@ -17,16 +11,11 @@ import {loginRequest} from './helpers/v2-session-fixture.mjs';
 import {SqliteTaskReads} from '../src/infrastructure/sqlite/task-reads.mjs';
 import {ReadTrainingTask} from '../src/application/read-training-task.mjs';
 import {ApplicationError} from '../src/domain/errors.mjs';
-import {createNodeDispatchBindingsSchema, SqliteNodeDispatchBindings} from '../src/infrastructure/sqlite/node-dispatch-bindings.mjs';
-import {assembleNodeTaskRead, assembleSqliteTaskRead} from '../src/bootstrap/task-read.mjs';
-import {assembleSqliteSession} from '../src/bootstrap/sqlite-session.mjs';
 import {HttpJobObserver} from '../src/infrastructure/http-job-observer.mjs';
-import {TaskClient} from '../src/client/task-client.mjs';
-import {SessionClient} from '../src/client/session-client.mjs';
-import {JsonHttpTransport} from '../src/client/http-transport.mjs';
+import {credential, publicServer, nativeNode, cli} from './helpers/v2-task-read-servers.mjs';
 import {TASK_READ_ROUTE, NODE_JOB_OBSERVATION_ROUTE, parseTaskReadRequest, parseTaskReadResult, parseNodeJobObservation} from '../src/contracts/task-read.mjs';
 
-const credential = 'c'.repeat(64), hasCode = code => error => error.code === code;
+const hasCode = code => error => error.code === code;
 function submission() {
   return {...trainingSubmission(), name: 'ImageNet 两卡训练', description: '直接读取已有数据；保留训练输出'};
 }
@@ -45,28 +34,6 @@ async function fixture(t) {
   const tasks = new SqliteTaskReads({database: f.database}), app = new ReadTrainingTask({tasks, nodes, clock: () => f.now});
   const send = () => f.dispatches.beginSend(f.jobId, f.now);
   return {...f, state, tasks, app, nodes, send};
-}
-async function listen(t, handler) {
-  const server = http.createServer(handler);
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
-  return `http://127.0.0.1:${server.address().port}`;
-}
-async function publicServer(t, f, nodes = f.nodes) {
-  let tasks, sessions;
-  const modules = new Map(['client/task-client.mjs', 'client/session-client.mjs', 'client/http-transport.mjs', 'client/session.mjs', 'client/errors.mjs',
-    'contracts/task-read.mjs', 'contracts/dispatch-receipt.mjs', 'contracts/session.mjs', 'contracts/errors.mjs']
-    .map(name => ['/modules/' + name, new URL('../src/' + name, import.meta.url)]));
-  const origin = await listen(t, async (req, res) => {
-    if (req.url === '/') {res.writeHead(200, {'Content-Type': 'text/html'}); res.end('<!doctype html><title>Task SDK fixture</title>'); return;}
-    if (modules.has(req.url)) {res.writeHead(200, {'Content-Type': 'text/javascript'}); res.end(await readFile(modules.get(req.url))); return;}
-    return req.url.startsWith('/api/v2/session/') ? sessions(req, res) : tasks(req, res);
-  });
-  const options = {database: f.database, publicOrigin: origin, clock: () => f.now, reportError() {}};
-  tasks = assembleSqliteTaskRead({...options, nodes}); sessions = assembleSqliteSession(options);
-  const transport = new JsonHttpTransport({baseUrl: origin});
-  await new SessionClient({transport, delivery: 'token'}).login(loginRequest);
-  return {origin, transport, client: new TaskClient({transport})};
 }
 
 test('read returns original human task metadata and distinguishes preparation from native execution without writes', async t => {
@@ -203,34 +170,6 @@ test('public request accepts only a platform task ID and never native IDs, paths
   assert.equal(f.state.calls.length, 1);
 });
 
-async function nativeNode(t, f) {
-  const helper = fileURLToPath(new URL('./helpers/v2-job-observation-server.py', import.meta.url));
-  const child = spawn(process.env.V2_PYTHON || 'python3', ['-B', helper], {stdio: ['pipe', 'pipe', 'pipe']});
-  let stderr = ''; child.stderr.on('data', chunk => stderr += chunk);
-  const exited = once(child, 'exit');
-  t.after(async () => {child.stdin.end(); await exited;});
-  const lines = createInterface({input: child.stdout});
-  const ready = once(lines, 'line');
-  child.stdin.write(JSON.stringify({dispatchId: f.prepared.dispatchId}) + '\n');
-  const [line] = await Promise.race([ready, exited.then(() => {throw new Error(stderr || 'native fixture exited before readiness');})]);
-  const native = JSON.parse(line), database = new DatabaseSync(':memory:');
-  t.after(() => database.close()); createNodeDispatchBindingsSchema(database);
-  const binding = {dispatchId: f.prepared.dispatchId, jobId: f.jobId, accountId: 'alice', machineId: 'node-1', gpuCount: 2,
-    requestHash: observation(f).receipt.requestHash, nativeDigest: native.nativeDigest, nativeMaxGpus: native.nativeMaxGpus,
-    nativeOwner: native.nativeOwner, nativeName: native.nativeName};
-  new SqliteNodeDispatchBindings({database, machineId: 'node-1'}).bind(binding);
-  const origin = await listen(t, assembleNodeTaskRead({database, machineId: 'node-1', credential, socketPath: native.socketPath,
-    python: process.env.V2_PYTHON || 'python3', reportError() {}}));
-  return {native, origin, nodes: new HttpJobObserver({nodes: [{machineId: 'node-1', origin, credential}]})};
-}
-async function cli(args, input = '') {
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../scripts/v2-client.mjs', import.meta.url)), ...args], {stdio: ['pipe', 'pipe', 'pipe']});
-  let stdout = '', stderr = '';
-  child.stdout.on('data', chunk => stdout += chunk); child.stderr.on('data', chunk => stderr += chunk);
-  const exited = once(child, 'exit'); child.stdin.end(input);
-  const [code] = await exited;
-  return {code, stdout, stderr};
-}
 
 test('real native SQLite/socket, node HTTP, public API, browser SDK and CLI agree without mutating the task', async t => {
   const f = await fixture(t); f.send();

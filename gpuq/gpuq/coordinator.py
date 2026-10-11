@@ -76,7 +76,7 @@ _MAX_LAUNCH_SPEC_BYTES = 512 * 1024
 _LAUNCH_FILE_NAME = "launch.json"
 _RELEASE_GATE_PATH = Path("/run/gpuq-native-release/gate.json")
 _MAX_RELEASE_GATE_BYTES = 4096
-_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status", "execution_snapshot", "job_observation"})
+_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path", "submission_receipt", "scale_up_receipt", "allocation_status", "execution_snapshot", "job_observation", "attempt_log_reference"})
 _ACTIVE_JOB_STATES = {
     JobState.PENDING.value,
     JobState.STARTING.value,
@@ -4845,6 +4845,8 @@ class Coordinator:
             return self._api_execution_snapshot(arguments)
         if operation == 'job_observation':
             return self._api_job_observation(arguments)
+        if operation == 'attempt_log_reference':
+            return self._api_attempt_log_reference(arguments)
         with self._lock:
             if operation not in _READ_ONLY_OPERATIONS:
                 self._require_release_open()
@@ -5168,7 +5170,10 @@ class Coordinator:
         return {
             "daemon": {
                 **self._health_payload(),
-                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1", "execution-snapshot-v1", "job-observation-v1"],
+                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1",
+                    "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1",
+                    "gpu-sharing-v1", "submission-receipt-v1", "scale-up-receipt-v1", "allocation-authority-v1",
+                    "execution-snapshot-v1", "job-observation-v1", "attempt-log-reference-v1"],
                 "observe_only": self._observe_only,
                 "managed_indices": managed_indices,
                 "managed_gpus": managed_gpus,
@@ -5240,6 +5245,13 @@ class Coordinator:
             return self.store.get_scale_up_receipt(arguments["submit_key"], arguments["plan_id"])
         except ValueError as exc:
             raise ApiError("BAD_REQUEST", str(exc)) from exc
+
+    def _api_attempt_log_reference(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        _require_exact_fields(arguments, allowed={'submit_key', 'attempt_id'}, required={'submit_key', 'attempt_id'})
+        try:
+            return self.store.get_attempt_log_reference(arguments['submit_key'], arguments['attempt_id'])
+        except ValueError as exc:
+            raise ApiError('BAD_REQUEST', str(exc)) from exc
 
     def _api_show(self, arguments: dict[str, Any]) -> dict[str, Any]:
         _require_exact_fields(arguments, allowed={"job_id", "history_before_id", "history_limit"}, required={"job_id"})

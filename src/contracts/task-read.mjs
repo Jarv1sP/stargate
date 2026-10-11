@@ -12,7 +12,7 @@ const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
 const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const nullable = (value, check) => value === null || check(value);
 const jobStates = ['PENDING', 'STARTING', 'RUNNING', 'PREEMPTING', 'SUCCEEDED', 'FAILED', 'CANCELED', 'LOST'];
-const attemptStates = ['PLANNED', 'STARTING', 'RUNNING', 'SAVE_REQUESTED', 'SAVE_WITHDRAWING', 'CHECKPOINT_ACKED',
+export const attemptStates = ['PLANNED', 'STARTING', 'RUNNING', 'SAVE_REQUESTED', 'SAVE_WITHDRAWING', 'CHECKPOINT_ACKED',
   'TERM_REQUESTED', 'KILL_REQUESTED', 'DRAINING', 'PREEMPTED', 'EXITED_SUCCESS', 'EXITED_FAILURE', 'CANCELED', 'LOST', 'STUCK'];
 
 export function parseTaskReadRequest(value) {
@@ -70,9 +70,8 @@ export function parseNodeJobObservation(value) {
   return {...value, receipt, progress, latestAttempt: attempt === null ? null : {...attempt, assignedGpus: attempt.assignedGpus.map(gpu => ({...gpu}))}};
 }
 
-export function parseTaskReadResult(value) {
-  if (!exact(value, ['task', 'observation']) || !exact(value.task, ['jobId', 'name', 'description', 'submitter', 'createdAtMs', 'stage', 'dispatch'])) throw new InvalidResponse();
-  const {task, observation} = value;
+export function parseTaskView(task) {
+  if (!exact(task, ['jobId', 'name', 'description', 'submitter', 'createdAtMs', 'stage', 'dispatch'])) throw new InvalidResponse();
   if (!uuid(task.jobId) || !text(task.name, 256) || !task.name || !text(task.description, 6000) || !integer(task.createdAtMs)
     || !['RECORDED', 'QUEUED', 'CANCELED', 'PREPARED', 'SENDING', 'UNKNOWN', 'ACCEPTED'].includes(task.stage)
     || !exact(task.submitter, ['accountId', 'username', 'displayName'])
@@ -86,12 +85,23 @@ export function parseTaskReadResult(value) {
     try {parseDispatchReceiptRequest({machineId: dispatch.machineId, dispatchId: dispatch.dispatchId});}
     catch {throw new InvalidResponse();}
   } else if (!['RECORDED', 'QUEUED', 'CANCELED'].includes(task.stage)) throw new InvalidResponse();
+  return {...task, submitter: {...task.submitter}, dispatch: dispatch === null ? null : {...dispatch}};
+}
+
+export function requireTaskReceipt(task, receipt) {
+  const dispatch = task.dispatch;
+  if (!dispatch || receipt.jobId !== task.jobId || receipt.accountId !== task.submitter.accountId
+    || receipt.dispatchId !== dispatch.dispatchId || receipt.machineId !== dispatch.machineId
+    || receipt.gpuCount !== dispatch.gpuCount || (dispatch.nodeJobId !== null && dispatch.nodeJobId !== receipt.nodeJobId)) throw new InvalidResponse();
+}
+
+export function parseTaskReadResult(value) {
+  if (!exact(value, ['task', 'observation'])) throw new InvalidResponse();
+  const task = parseTaskView(value.task), {observation} = value, {dispatch} = task;
   if (!exact(observation, ['kind', 'node']) || !['not-queried', 'not-observed', 'unavailable', 'observed'].includes(observation.kind)
     || (observation.kind === 'observed') !== (observation.node !== null)) throw new InvalidResponse();
   if (observation.kind !== 'not-queried' && (!dispatch || dispatch.state === 'PREPARED')) throw new InvalidResponse();
   const node = parseNodeJobObservation(observation.node);
-  if (node && (!dispatch || node.receipt.jobId !== task.jobId || node.receipt.accountId !== task.submitter.accountId
-    || node.receipt.dispatchId !== dispatch.dispatchId || node.receipt.machineId !== dispatch.machineId
-    || node.receipt.gpuCount !== dispatch.gpuCount || (dispatch.nodeJobId !== null && dispatch.nodeJobId !== node.receipt.nodeJobId))) throw new InvalidResponse();
-  return {task: {...task, submitter: {...task.submitter}, dispatch: dispatch === null ? null : {...dispatch}}, observation: {...observation, node}};
+  if (node) requireTaskReceipt(task, node.receipt);
+  return {task, observation: {...observation, node}};
 }

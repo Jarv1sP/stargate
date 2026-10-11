@@ -15,8 +15,8 @@ export function assembleSqliteTaskRead({database, nodes, publicOrigin, clock = D
     readTask: new ReadTrainingTask({tasks: new SqliteTaskReads({database}), nodes: new TaskReadLane({...readBounds, nodes}), clock})});
 }
 
-export function assembleNodeTaskRead({database, machineId, credential, socketPath, python, timeoutMs, reportError, readBounds = {}}) {
+export function assembleNodeTaskRead({database, machineId, credential, socketPath, logRoot, python, timeoutMs, reportError, readBounds = {}}) {
   return createNodeTaskReadHandler({machineId, credential, reportError, observeJob: new ObserveNodeJob({
     bindings: new SqliteNodeDispatchBindings({database, machineId}),
-    native: new TaskReadLane({...readBounds, nodes: new GpuqJobObserver({socketPath, python, timeoutMs}), maxAttempts: 1})})});
+    native: new TaskReadLane({...readBounds, nodes: new GpuqJobObserver({socketPath, logRoot, python, timeoutMs}), maxAttempts: 1})})});
 }

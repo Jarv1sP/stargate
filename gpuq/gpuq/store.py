@@ -2603,6 +2603,22 @@ class Store:
         grant = None if row['grant_id'] is None else {key: row[key] for key in ('grant_id', 'revision', 'max_gpu_count')}
         return {'mode': row['allocation_authority'], 'grant': grant}
 
+    def get_attempt_log_reference(self, submit_key: str, attempt_id: str | None) -> dict[str, Any] | None:
+        """Resolve a fixed round, or select the latest once. No filesystem reads."""
+        key = _nonempty(submit_key, 'submit_key', maximum=256)
+        attempt = None if attempt_id is None else _nonempty(attempt_id, 'attempt_id', maximum=256)
+        with self._read_connection() as connection:
+            row = connection.execute('''SELECT j.id job_id,j.submit_key,j.submit_digest,j.owner,j.name,j.gpu_count,
+                a.id attempt_id,a.ordinal,a.state attempt_state,a.log_path
+                FROM jobs j LEFT JOIN attempts a ON a.job_id=j.id AND a.id=COALESCE(?,
+                  (SELECT id FROM attempts WHERE job_id=j.id ORDER BY ordinal DESC LIMIT 1))
+                WHERE j.submit_key=?''', (attempt, key)).fetchone()
+        if row is None:
+            return None
+        return {'job': {field: row[field] for field in ('job_id', 'submit_key', 'submit_digest', 'owner', 'name', 'gpu_count')},
+                'attempt': None if row['attempt_id'] is None else {'id': row['attempt_id'], 'ordinal': row['ordinal'],
+                    'state': row['attempt_state'], 'log_path': row['log_path']}}
+
     def submit_managed_job(self, submission: Mapping[str, Any], *, grant_id: str, max_gpu_count: int) -> dict[str, Any]:
         """Atomically create external authority plus its initial permit; never adopt a native job."""
         grant_id = _nonempty(grant_id, 'grant_id', maximum=256)

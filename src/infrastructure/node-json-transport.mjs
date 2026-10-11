@@ -47,6 +47,7 @@ export class NodeJsonTransport {
       signal.throwIfAborted();
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (!response.ok) {
+        if (response.status === 409 && body?.error?.code === 'TASK_LOG_CHANGED') throw new ApplicationError('TASK_LOG_CHANGED');
         if (response.status === 503 && ['SOURCE_BUSY', 'SOURCE_READ_TIMEOUT'].includes(body?.error?.code)) {
           throw new TransientReadError(body.error.code);
         }
@@ -59,6 +60,7 @@ export class NodeJsonTransport {
       callerSignal?.throwIfAborted();
       if (cause instanceof TransientReadError) throw cause;
       if (cause instanceof ApplicationError && cause.code === 'FORBIDDEN') throw cause;
+      if (cause instanceof ApplicationError && cause.code === 'TASK_LOG_CHANGED') throw cause;
       if (cause instanceof ApplicationError && cause.code === 'NODE_CREDENTIAL_REJECTED') throw new ApplicationError('NODE_UNAVAILABLE', {cause});
       if (signal.aborted || transientConnections.has(cause?.cause?.code) || transientConnections.has(cause?.code)) {
         throw new TransientReadError('NODE_UNAVAILABLE', {cause});

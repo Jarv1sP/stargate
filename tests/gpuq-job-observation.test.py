@@ -144,7 +144,9 @@ class JobObservationTests(unittest.TestCase):
         try:
             with self.coordinator._lock:
                 result = Client(path, timeout=3).call('job_observation', {'submit_key': job['submit_key']})
+                log = Client(path, timeout=3).call('attempt_log_reference', {'submit_key': job['submit_key'], 'attempt_id': attempt['id']})
             self.assertEqual(result, self.read(job))
+            self.assertEqual(log['attempt']['log_path'], attempt['log_path'])
             self.assertEqual('\n'.join(self.store._get_connection().iterdump()), before)
         finally:
             server.shutdown(); server.server_close(); thread.join(5)
@@ -185,6 +187,42 @@ class JobObservationTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join(5)
         self.assertFalse(thread.is_alive())
+
+    def test_log_reference_selects_latest_once_and_keeps_explicit_history_bound_to_the_original_job(self):
+        job = self.managed()
+        read = lambda attempt_id: self.coordinator.handle_api('attempt_log_reference', {'submit_key': job['submit_key'], 'attempt_id': attempt_id})
+        self.assertIsNone(read(None)['attempt'])
+        first = self.attempt(job)
+        self.store.release_leases(attempt_id=first['id'])
+        self.store.update_attempt(first['id'], state='PREEMPTED')
+        latest = self.attempt(job)
+        self.assertEqual(read(None)['attempt']['id'], latest['id'])
+        historical = read(first['id'])
+        self.assertEqual(historical['attempt'], {'id': first['id'], 'ordinal': 1, 'state': 'PREEMPTED', 'log_path': first['log_path']})
+        other = self.managed()
+        foreign = self.attempt(other, leased=False)
+        self.assertIsNone(read(foreign['id'])['attempt'])
+        self.assertEqual(historical['job']['submit_key'], job['submit_key'])
+        self.assertNotIn('private-env-not-returned', json.dumps(historical))
+
+    def test_log_reference_is_one_read_only_query_and_invalid_envelopes_do_not_change_state(self):
+        job = self.managed(); attempt = self.attempt(job)
+        connection = self.store._get_connection()
+        before, queries = '\n'.join(connection.iterdump()), []
+        connection.execute('PRAGMA query_only=ON'); connection.set_trace_callback(queries.append)
+        try:
+            result = self.coordinator.handle_api('attempt_log_reference', {'submit_key': job['submit_key'], 'attempt_id': attempt['id']})
+        finally:
+            connection.set_trace_callback(None); connection.execute('PRAGMA query_only=OFF')
+        self.assertEqual(len([query for query in queries if query.lstrip().upper().startswith('SELECT')]), 1)
+        self.assertEqual(result['attempt']['log_path'], attempt['log_path'])
+        for invalid in [{}, {'submit_key': job['submit_key']}, {'submit_key': job['submit_key'], 'attempt_id': []},
+                        {'submit_key': job['submit_key'], 'attempt_id': None, 'log_path': '/other'}]:
+            with self.subTest(invalid=invalid), self.assertRaises(ApiError) as error:
+                self.coordinator.handle_api('attempt_log_reference', invalid)
+            self.assertEqual(error.exception.code, 'BAD_REQUEST')
+        self.assertEqual('\n'.join(connection.iterdump()), before)
+        self.assertIn('attempt-log-reference-v1', self.coordinator.handle_api('status', {})['daemon']['capabilities'])
 
 
 if __name__ == '__main__':

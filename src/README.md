@@ -88,7 +88,9 @@
 - 原生 `job_observation`：按原提交键一次 SQL 观察任务、最新尝试、该尝试进度和事件游标，不等待 Coordinator 的慢工作锁。进度复用原生校验与展示格式，不返回宿主命令／路径字段，不继承旧轮次进度；观察不改任务、配额或租约。`GpuqJobObserver` 只调用此操作，没有旧全局查询回退。
 - `SqliteTaskReads`／`ReadTrainingTask`：独立平台任务读取，按当前会话、归属和机器权限在节点 I/O 前后确认原派发，返回任务名、描述与提交者快照；显示信息与额度余额不是读取授权。`ObserveNodeJob` 匹配私有绑定后投影状态／进度，`HttpJobObserver` 只传输一次，不改投或代替接收核对写状态；受限重试由 TaskReadLane 管理。
 - `TaskReadLane`：显式共享任务查询名额和截止时间，默认全局 8／每节点 4、总计 40 秒，适配器没有结束时不提前释放名额。协调器只重试一次已确认的暂时读取错误，节点本地不重试；原引用固定，重试前重查权限。任务 API 的 readOnly 上下文把断连传到节点和读取辅助进程，正常请求体结束不触发取消，写操作不接收该上下文。关闭辅助连接不等于原生 SQL 停止，原生 RPC 仍保留自己的执行中连接名额。
-- `contracts/task-read.mjs`／`TaskClient`／`bootstrap/task-read.mjs`：公共任务查询与内部节点观察共用明确契约，网页和实验 CLI 使用同一 SDK。未查询、未观察到、不可用与已观察到分开，平台派发阶段不冒充原生执行状态；查询不会自动确认派发、取消训练或退还额度。完整网页页面与日志／诊断仍待接。
+- `contracts/task-read.mjs`／`TaskClient`／`bootstrap/task-read.mjs`：公共任务查询与内部节点观察共用明确契约，网页和实验 CLI 使用同一 SDK。未查询、未观察到、不可用与已观察到分开，平台派发阶段不冒充原生执行状态；查询不会自动确认派发、取消训练或退还额度。完整网页页面与诊断仍待接。
+- `attempt_log_reference`／`gpuq-job-logs.py`：原生只解析同任务下的固定轮次，文件 IO 由节点辅助进程完成。必须配置与原生日志目录一致的 `logRoot`；不推断宿主路径或创建日志。一次至多 64 KiB 原始字节，文件标识与偏移阻止可观察的替换／截短后静默拼接；路径不进入公共结构，日志内容按原字节保留。
+- `contracts/task-logs.mjs`／`TaskLogReader`：同一授权与读取名额供状态和日志共用。查看器首次选定轮次后固定游标，增量解码 UTF-8，失败不推进，身份变化／关闭丢弃迟到结果。`TASK_LOG_CHANGED` 需要显式重新打开；这是追加日志查看，不是对任意原地改写的密码学验证。
 - `NativeExecutionAuthority`／`TrainingRuntime`：固定节点私有派发绑定，核对原生摘要、当前尝试、实际 GPU 租约、额度许可、预留环境字段与控制目录；复用 GPUQ systemd 后端检查单元描述／InvocationID，再匹配本进程 PID、启动 tick、boot ID 和 cgroup。运行器只接受恢复的原计划，打开项目／数据前后重核任务、运行环境和同一执行身份，失败关闭本次句柄、保留持久保护。默认 systemctl 使用当前系统用户的固定总线环境。单元／进程对应关系目前由受控夹具验证，实际部署、容器执行和停止后释放仍待完成。
 - `TrainingLaunchCompiler`／`PrepareNodeTraining`：把原请求、项目实例／环境与原数据租约编译成私有计划，宿主 argv 只含配置的运行器及计划引用；复用原生资源校验，不把用户容器命令当作宿主命令。原生 ASCII 名与中文展示名分开，展示元数据发送仍待接入。编译不创建租约或提供 launch-ready 许可。
 - `SqliteNodeDispatchBindings.prepareTraining` 同事务保存计划、原生规格和映射；旧实验库通过 `createNodeRuntimePlansSchema` 显式升级。`NodeRuntimePlans` 只读恢复固定编号并核对 JSON 字节摘要、wrapper 与原生摘要，不补建或重提；计划不包含原生摘要，避免循环引用。恢复的计划供 `TrainingRuntime` 使用，实际 wrapper 入口和容器执行仍待组装。
@@ -106,10 +108,13 @@
 
 ```sh
 node scripts/v2-client.mjs --url https://shadow.example --credentials /path/to/credentials.sqlite task --job <平台任务UUID>
+node scripts/v2-client.mjs --url https://shadow.example --credentials /path/to/credentials.sqlite task-logs --job <平台任务UUID> --follow
 ```
 
 先通过同一独立客户端登录，参数见 `--help`。结果为 JSON：`task` 是名称／描述／提交者与平台阶段，`observation.node` 是节点状态／进度。`unavailable` 或 `not-observed` 不代表训练失败；`dispatch.gpuCount` 是初始派发选择，当前尝试的分配记录看 `latestAttempt.assignedGpus`，后者也不证明资源已释放。
 
 Ctrl-C 只中断本次查询，不终止训练。`TASK_READ_BUSY` 是查询名额暂满，`TASK_READ_TIMEOUT` 是观察超时；两者都不修改原任务。
+
+日志默认从末尾看 64 KiB；`--start` 从头，`--bytes N` 控制分块，`--attempt ID` 指定轮次，`--json` 输出游标与字节结果。`--follow` 跟随首次成功读取的轮次，重启后需重新打开最新轮次；尚未产生日志时先用 `task` 查看状态。新日志接口需节点同时提供 `attempt-log-reference-v1` 并配置 `logRoot`，当前未部署到正式入口。
 
 本链路返回读取位置的观察，不创建挂载或数据租约。生产身份迁移、远端数据目录、容器挂载以及新网页／CLI 外壳仍待接入，不能据此宣布完整数据读取或整体重构已上线。

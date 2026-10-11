@@ -8,6 +8,10 @@ import {DirectoryClient} from '../client/directory-client.mjs';
 import {DataAccessImportClient} from '../client/data-access-import-client.mjs';
 import {ProjectClient} from '../client/project-client.mjs';
 import {TaskClient} from '../client/task-client.mjs';
+import {TaskLogReader} from '../client/task-log-reader.mjs';
+import {SESSION_POLICY} from '../domain/session-policy.mjs';
+import {setTimeout as delay} from 'node:timers/promises';
+import {once} from 'node:events';
 
 const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE login --username NAME --password-stdin
@@ -15,6 +19,7 @@ const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE logout
   --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
   --url ORIGIN --credentials FILE task --job UUID
+  --url ORIGIN --credentials FILE task-logs --job UUID [--attempt ID] [--bytes 65536] [--start] [--follow] [--json]
   --url ORIGIN --credentials FILE register-directory --machine ID --source CONFIGURED_ID
   --url ORIGIN --credentials FILE register-project --project-id ID --machine ID --project SLUG --release SHA256
   --url ORIGIN --credentials FILE project-registration --project-id ID --machine ID --project SLUG --release SHA256
@@ -37,6 +42,38 @@ async function readPassword(input) {
   return Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '');
 }
 
+async function printTaskLogs({transport, session, values, stdout}) {
+  const reader = new TaskLogReader({client: new TaskClient({transport}), jobId: values.job,
+    attemptId: values.attempt ?? null, from: values.start ? 'start' : 'tail',
+    ...(values.bytes === undefined ? {} : {maxBytes: Number(values.bytes)})});
+  let refreshAt = Date.now() + SESSION_POLICY.touchMs;
+  try {
+    for (;;) {
+      let result;
+      try {
+        if (Date.now() >= refreshAt) {await session.refresh(); refreshAt = Date.now() + SESSION_POLICY.touchMs;}
+        result = await reader.read();
+      } catch (error) {
+        if (!values.follow || reader.cursor.fileId === null
+          || !['TASK_READ_BUSY', 'TASK_READ_TIMEOUT', 'NETWORK_UNAVAILABLE'].includes(error.code)) throw error;
+        await delay(1000); continue;
+      }
+      const chunk = result.log.chunk;
+      if (values.json) {
+        if (stdout.write(JSON.stringify(result) + '\n') === false) await once(stdout, 'drain');
+      } else if (chunk) {
+        if (stdout.write(Buffer.from(chunk.dataBase64, 'base64')) === false) await once(stdout, 'drain');
+      }
+      if (!chunk && (!values.follow || reader.cursor.fileId === null)) {
+        if (!values.json) throw new Error('TASK_LOG_' + result.log.kind.toUpperCase().replaceAll('-', '_'));
+        return;
+      }
+      if (!values.follow || result.atEnd) return;
+      if (!chunk || chunk.nextOffset === chunk.observedSize) await delay(500);
+    }
+  } finally {reader.close();}
+}
+
 /** Explicit opt-in development entry. Does not start services or select a production default. */
 export async function runCli({argv, stdin, stdout}) {
   const {values, positionals} = parseArgs({args: argv, allowPositionals: true, options: {
@@ -48,6 +85,7 @@ export async function runCli({argv, stdin, stdout}) {
     resource: {type: 'string'}, plan: {type: 'string'}, request: {type: 'string'},
     'project-id': {type: 'string'}, project: {type: 'string'}, release: {type: 'string'},
     job: {type: 'string'},
+    attempt: {type: 'string'}, bytes: {type: 'string'}, start: {type: 'boolean'}, follow: {type: 'boolean'}, json: {type: 'boolean'},
   }});
   if (values.help) {stdout.write(usage); return;}
   const [command] = positionals;
@@ -62,6 +100,7 @@ export async function runCli({argv, stdin, stdout}) {
     current: ({identity, expiry}) => ({...identity, ...expiry}),
     accounts: () => new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)}),
     task: () => new TaskClient({transport}).read({jobId: values.job}),
+    'task-logs': ({session}) => printTaskLogs({transport, session, values, stdout}),
     'register-directory': () => new DirectoryClient({transport}).register({machineId: values.machine, sourceId: values.source}),
     'register-project': () => new ProjectClient({transport}).registerRelease(projectReference()),
     'project-registration': () => new ProjectClient({transport}).registration(projectReference()),
@@ -88,10 +127,10 @@ export async function runCli({argv, stdin, stdout}) {
       if (command === 'logout') result = await session.logout();
       else {
         const expiry = await session.refresh();
-        result = await actions[command]({identity, expiry});
+        result = await actions[command]({identity, expiry, session});
       }
     }
-    stdout.write(JSON.stringify(result) + '\n');
+    if (result !== undefined) stdout.write(JSON.stringify(result) + '\n');
   } finally {
     store.close();
   }

@@ -1,10 +1,19 @@
 import {ApplicationError} from '../domain/errors.mjs';
 import {requireSameTaskRead, projectNodeJobObservation} from '../domain/task-read.mjs';
+import {nativeDispatchAcceptance} from '../domain/node-dispatch.mjs';
 
 /** Independent observations: no dashboard rebuild, task mutation or retry of a write. */
 export class ReadTrainingTask {
   constructor({tasks, nodes, clock = Date.now}) {this.tasks = tasks; this.nodes = nodes; this.clock = clock;}
-  async execute(actor, {jobId}, {signal} = {}) {
+  async execute(actor, {jobId}, options) {
+    const {task, kind, value} = await this.#read(actor, jobId, 'observe', {}, options);
+    return {task, observation: {kind, node: value}};
+  }
+  async logs(actor, {jobId, ...cursor}, options) {
+    const {task, kind, value} = await this.#read(actor, jobId, 'logs', cursor, options);
+    return {task, log: {kind: kind === 'observed' ? 'chunk' : kind, chunk: value}};
+  }
+  async #read(actor, jobId, operation, cursor, {signal} = {}) {
     signal?.throwIfAborted();
     const before = await this.tasks.snapshot(actor, jobId, this.clock());
     const check = async () => {
@@ -15,7 +24,7 @@ export class ReadTrainingTask {
     try {
       if (before.task.dispatch && before.task.dispatch.state !== 'PREPARED') {
         signal?.throwIfAborted();
-        const node = await this.nodes.observe({machineId: before.binding.machineId, dispatchId: before.binding.dispatchId}, {signal, check});
+        const node = await this.nodes[operation]({...cursor, machineId: before.binding.machineId, dispatchId: before.binding.dispatchId}, {signal, check});
         observation = {kind: node === null ? 'not-observed' : 'observed', node};
       }
     } catch (error) {
@@ -31,7 +40,7 @@ export class ReadTrainingTask {
       if (['jobId', 'accountId', 'requestHash', 'dispatchId', 'machineId', 'gpuCount'].some(key => receipt[key] !== after.binding[key])
         || (after.binding.nodeJobId !== null && receipt.nodeJobId !== after.binding.nodeJobId)) throw new ApplicationError('TASK_OBSERVATION_MISMATCH');
     }
-    return {task: after.task, observation};
+    return {task: after.task, kind: observation.kind, value: observation.node};
   }
 }
 
@@ -45,5 +54,16 @@ export class ObserveNodeJob {
     const native = await this.native.observe({submitKey: binding.dispatchId, machineId: binding.machineId}, {signal});
     signal?.throwIfAborted();
     return native === null ? null : projectNodeJobObservation(binding, native);
+  }
+
+  async logs({machineId, dispatchId, ...cursor}, {signal} = {}) {
+    signal?.throwIfAborted();
+    const binding = await this.bindings.get({machineId, dispatchId});
+    if (binding === null) return null;
+    const result = await this.native.logs({machineId, binding, cursor}, {signal});
+    signal?.throwIfAborted();
+    if (result === null) return null;
+    const {nativeReceipt, ...chunk} = result;
+    return {...chunk, receipt: nativeDispatchAcceptance(binding, nativeReceipt)};
   }
 }

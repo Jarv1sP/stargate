@@ -73,7 +73,7 @@ async function remoteFixture(t) {
   await new Promise(resolve => daemon.listen(socketPath, resolve));
   t.after(async () => {for (const socket of sockets) socket.destroy(); await new Promise(resolve => daemon.close(resolve));});
   const nodeOrigin = await listen(t, assembleNodeTaskRead({database, machineId: 'node-1', credential, socketPath,
-    python: process.env.V2_PYTHON || 'python3', timeoutMs: 10000, readBounds: {totalLimit: 1, machineLimit: 1}, reportError: error => f.errors.push(error)}));
+    logRoot: directory, python: process.env.V2_PYTHON || 'python3', timeoutMs: 10000, readBounds: {totalLimit: 1, machineLimit: 1}, reportError: error => f.errors.push(error)}));
   const nodes = new HttpJobObserver({nodes: [{machineId: 'node-1', origin: nodeOrigin, credential}], timeoutMs: 10000});
   const api = await publicServer(t, f, nodes, {totalLimit: 1, machineLimit: 1});
   return {...f, ...api, directory, requests, entered, closed, state};
@@ -109,20 +109,31 @@ function cli(f, args, input = '') {
   return {child, done};
 }
 
-test('SIGINT of the actual CLI detaches the read through both servers and leaves the original dispatch intact', async t => {
+for (const operation of ['task', 'task-logs']) test(`SIGINT of CLI ${operation} detaches the read through both servers and leaves the original dispatch intact`, async t => {
   const f = await remoteFixture(t);
   const login = await cli(f, ['login', '--username', 'alice', '--password-stdin'], loginRequest.password).done;
   assert.equal(login.code, 0, login.stderr);
-  const command = cli(f, ['task', '--job', f.jobId]);
+  const command = cli(f, [operation, '--job', f.jobId, ...(operation === 'task-logs' ? ['--follow'] : [])]);
   t.after(() => {if (command.child.exitCode === null && command.child.signalCode === null) command.child.kill('SIGKILL');});
   await bounded(f.entered.promise);
   command.child.kill('SIGINT');
   const canceled = await bounded(command.done);
   assert.equal(canceled.signal, 'SIGINT'); assert.equal(canceled.stdout, '');
   await bounded(f.closed.promise);
-  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].op, 'job_observation');
+  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].op, operation === 'task' ? 'job_observation' : 'attempt_log_reference');
   assert.equal(f.dispatches.getForTask(f.jobId).state, 'SENDING');
   assert.deepEqual(f.errors, []);
+});
+
+test('log cancellation uses the same read-only cleanup and never calls native task cancellation', async t => {
+  const f = await remoteFixture(t), controller = new AbortController();
+  const request = {jobId: f.jobId, attemptId: null, fileId: null, offset: null, maxBytes: 65536};
+  const pending = f.client.logs(request, {signal: controller.signal});
+  const canceled = assert.rejects(pending, hasCode('REQUEST_ABORTED'));
+  await bounded(f.entered.promise); controller.abort(); await canceled; await bounded(f.closed.promise);
+  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].op, 'attempt_log_reference');
+  assert.deepEqual(f.requests[0].args, {submit_key: f.prepared.dispatchId, attempt_id: null});
+  assert.equal(f.dispatches.getForTask(f.jobId).state, 'SENDING'); assert.deepEqual(f.errors, []);
 });
 
 test('API deadline and capacity errors stay distinct and do not free a still-running read or GPU claim', async t => {

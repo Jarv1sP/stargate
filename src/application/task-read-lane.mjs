@@ -30,9 +30,12 @@ export class TaskReadLane {
     this.timeoutMs = timeoutMs; this.maxAttempts = maxAttempts; this.clock = clock;
   }
 
-  async observe(reference, {signal, check = async () => {}} = {}) {
+  observe(reference, options) {return this.#run('observe', reference, options);}
+  logs(reference, options) {return this.#run('logs', reference, options);}
+
+  async #run(operation, reference, {signal, check = async () => {}} = {}) {
     signal?.throwIfAborted();
-    reference = {...reference};
+    reference = structuredClone(reference);
     const count = this.#machines.get(reference.machineId) ?? 0;
     if (this.#active >= this.totalLimit || count >= this.machineLimit) throw new ApplicationError('TASK_READ_BUSY');
     this.#active++; this.#machines.set(reference.machineId, count + 1);
@@ -41,7 +44,7 @@ export class TaskReadLane {
     signal?.addEventListener('abort', abort, {once: true});
     if (signal?.aborted) abort();
     const timer = setTimeout(() => controller.abort(new ApplicationError('TASK_READ_TIMEOUT')), this.timeoutMs);
-    const work = this.#observe(reference, {signal: controller.signal, deadline, check});
+    const work = this.#read(operation, reference, {signal: controller.signal, deadline, check});
     const release = () => {
       this.#active--;
       const remaining = this.#machines.get(reference.machineId) - 1;
@@ -54,11 +57,11 @@ export class TaskReadLane {
     finally {clearTimeout(timer); signal?.removeEventListener('abort', abort);}
   }
 
-  async #observe(reference, {signal, deadline, check}) {
+  async #read(operation, reference, {signal, deadline, check}) {
     for (let attempt = 0; ; attempt++) {
       const remaining = this.#remaining(signal, deadline);
       try {
-        const value = await this.nodes.observe({...reference}, {signal, timeoutMs: Math.min(27000, Math.ceil(remaining))});
+        const value = await this.nodes[operation](structuredClone(reference), {signal, timeoutMs: Math.min(27000, Math.ceil(remaining))});
         this.#remaining(signal, deadline);
         return value;
       } catch (error) {
