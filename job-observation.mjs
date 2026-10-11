@@ -27,7 +27,8 @@ export function terminalNativeObservation(job,raw){
   // Pending retries need not have allocated a new attempt yet.
   const baseline=previous?.finishedAt;
   const retryDetected=!!event&&seconds(baseline)&&event.createdAt>baseline;
-  const changed=raw.state!==job.state||positive(previous?.ordinal)&&attempt?.ordinal>previous.ordinal;
+  const changed=['SUCCEEDED','FAILED','CANCELED'].includes(job.state)&&
+    (raw.state!==job.state||positive(previous?.ordinal)&&attempt?.ordinal>previous.ordinal);
   const reason=retryDetected?'HOST_RETRY_REQUIRES_EXPLICIT_RECOVERY':changed?'TERMINAL_DIVERGENCE_UNCONFIRMED':null;
   return {protocol:raw.protocol,readOnly:true,status:'CONFIRMED',nodeJobId:raw.nodeJobId,
     state:raw.state,nativeVersion:raw.nativeVersion,observedAt:raw.observedAt,
@@ -60,7 +61,8 @@ export function jobCompletion(job,result){
   if(!attempt||attempt.state!=='EXITED_SUCCESS'||attempt.exitCode!==0||attempt.failureReason!==null||
      !seconds(attempt.startedAt)||!seconds(attempt.finishedAt)||attempt.finishedAt<attempt.startedAt||attempt.finishedAt>observation.observedAt)
     return reject('SUCCESSFUL_ATTEMPT_NOT_CONFIRMED');
-  const changed=job.state!=='SUCCEEDED'||previous?.id!==attempt.id||previous?.ordinal!==attempt.ordinal;
+  const changed=['SUCCEEDED','FAILED','CANCELED'].includes(job.state)&&
+    (job.state!=='SUCCEEDED'||previous?.id!==attempt.id||previous?.ordinal!==attempt.ordinal);
   if(changed&&(!positive(previous?.ordinal)||attempt.ordinal<=previous.ordinal||
      !observation.retryDetected||observation.latestRetry.createdAt>attempt.startedAt))
     return reject('TRUSTED_RETRY_NOT_CONFIRMED');
