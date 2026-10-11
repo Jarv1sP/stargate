@@ -42,7 +42,7 @@ export async function projectCall(service,principal,user,operation,args,authoriz
   if(operation==='projects.create')await service.ociProjectAdmission?.(args.machine,user.id,args.project,{creatingOCI:true});
   if(operation==='projects.publish')await service.ociProjectAdmission?.(args.machine,user.id,args.project);
   const priorJobs=service.store.jobs.filter(job=>job.userId===user.id&&job.machine===args.machine&&job.project===args.project);
-  if(operation==='projects.retire'&&priorJobs.length)fail('项目有任务历史，不能退役；请归档以保留结果。',409);
+  if(operation==='projects.retire'&&priorJobs.some(job=>!['SUCCEEDED','FAILED','CANCELED','STOPPED'].includes(job.state)))fail('项目仍有进行中或待确认的任务，不能退役。',409);
   if(operation==='projects.archive'&&priorJobs.some(job=>!['SUCCEEDED','FAILED','CANCELED'].includes(job.state)&&!job.nodeJobId))fail('已有任务尚未确认派发到节点；先核对其原状态，再归档项目。',409);
   const policy=authorizationPolicy(user);
   const result=await service.bridge(args.machine,operation,{...reference,...(operation==='projects.create'?{environmentMode:'oci'}:{}),...(args.key!==undefined?{key:args.key}:{}),...(args.revision!==undefined?{revision:args.revision}:{}),...(args.manifestSha256!==undefined?{manifestSha256:args.manifestSha256}:{}),...(operation==='projects.local-import.begin'?{sourcePath:args.sourcePath,destinationPath:args.destinationPath}:{}),userId:user.id});

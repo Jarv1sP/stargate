@@ -62,9 +62,11 @@ AUTO 成功回执的 `machine` 是固定最终目标；`selectionSummary:{protoc
 `projects.list/status/create` 增加 `displayName,displayNameRevision,logicalProjectId,logicalProjectName`；
 有组时增加其 revision 与主实例。节点项目状态增加 `lifecycle:{protocol,state,revision}`，state 为
 ACTIVE/ARCHIVED；软退役回执为 RETIRING/RETIRED。metadata 不能冒充权限或训练身份。
-archive 前要求写入者全部确证停止；retire 还要求 Portal 和节点都无任何任务历史，完整目录
-no-follow CAS、一致原子 no-replace 与永久 slug tombstone。未知、历史输出、活动源 reader、
-128 同机导入双围栏均拒绝。归档中的旧已确认提交不改 spec、优先级或 GPUQ 身份。
+archive 前要求写入者停止；retire 只受活跃或未确认的任务、开发写入、缓存及复制源租约阻止。
+SUCCEEDED/FAILED/CANCELED/STOPPED 作业和已结束 run-claim 的记录与 release hash 保留为历史，
+不再阻止退役；项目及输出移入保留区，不在此操作中清除。完整目录 no-follow CAS、原子
+no-replace、永久 slug tombstone 与同机导入保护不变。latest 指针阻止单份发布退役；退役
+发布重跑须提示“发布已退役，7 天内可 restore”，恢复后可重新使用。
 维护模式允许只读 label/group/catalog/retire.plan/status，不允许整理写入。需同步部署实际桥
 白名单和 `project-lifecycle.py/project-store.py/project-ops.py`、相关 reader/执行器；无旧节点降级。
 

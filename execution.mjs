@@ -584,7 +584,7 @@ export async function executionCall(service,principal,operation,args,readContext
       await service.ociProjectAdmission?.(request.machine,user.id,project.project);
       let prepared;
       try{prepared=await service.bridge(request.machine,'projects.verify',{...project,userId:user.id});}
-      catch{rejectSubmission('所选服务器的项目版本不可用或基础环境已改变；请先完成项目发布。未占用 GPU。',409);}
+      catch(error){rejectSubmission(error?.message?.includes('发布已退役')?'发布已退役，7 天内可用原退役编号 restore。':'所选服务器的项目版本不可用或基础环境已改变；请先完成项目发布。未占用 GPU。',409);}
       if(prepared?.state!=='READY'||prepared.project!==project.project||prepared.release!==project.release)rejectSubmission('项目版本尚未准备完成，未占用 GPU。',409);
     }
     if(request.cards>user.limits[request.machine])rejectSubmission('任务卡数超出所选机器的用卡额度；不会自动切换服务器。',409);

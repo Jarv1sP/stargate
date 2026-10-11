@@ -29,6 +29,7 @@ class LifecycleTests(unittest.TestCase):
                                   workspace=lambda user:s.private_dir(self.root/'users'/user,create=True),atomic_json=s.atomic_json)
         # This fixture does not start systemd or read host service state.
         self.node.workspace=lambda user:user
+        __import__('retirement_job_fixture').install(self)
         self.ops=o.ProjectOperations(self.node);self.ops.store=self.store
         self.ops.active=lambda args:False
         self.ops.terminal_stopped=lambda key:True
@@ -62,13 +63,34 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.life.archive({**self.args,'revision':1},False)['state'],'ACTIVE')
         self.ops.writable(self.args)
 
-    def test_any_job_claim_or_output_blocks_retirement_even_finished(self):
+    def test_finished_job_claim_and_outputs_do_not_block_retirement(self):
         jobs=s.private_dir(self.root/'jobs',create=True);key=str(uuid.uuid4())
-        s.atomic_json(jobs/(key+'.json'),{**self.args,'state':'SUCCEEDED'})
-        self.assertIn('job-history',[x['kind'] for x in self.plan()['blockers']])
-        (jobs/(key+'.json')).unlink()
+        s.atomic_json(jobs/(key+'.json'),{**self.args,'id':key})
         version=self.publish()['release'];self.store.run_paths(self.user,self.slug,version,key)
-        self.assertEqual(set(x['kind'] for x in self.plan()['blockers']),{'run-claim','run-output'})
+        for state in ('SUCCEEDED','FAILED','CANCELED'):
+            with self.subTest(state=state):
+                self.native_state(key,state)
+                self.assertEqual(self.plan()['state'],'ELIGIBLE')
+        outputs=self.store.existing_run_paths(self.user,self.slug,version,key)['output']
+        (outputs/'result.txt').write_text('saved result')
+        args,value=self.retire_with_fixture()
+        self.assertEqual(value['state'],'RETIRED')
+        retained=self.store.lifecycle_folder(self.user,self.slug)/'.trash'/args['key']
+        self.assertEqual((retained/'runs'/key/'output/result.txt').read_text(),'saved result')
+        self.assertTrue((jobs/(key+'.json')).exists())
+        self.assertTrue((self.store.path/'.run-claims'/(key+'.json')).exists())
+
+    def test_live_unknown_and_undrained_jobs_still_block(self):
+        jobs=s.private_dir(self.root/'jobs',create=True);key=str(uuid.uuid4())
+        s.atomic_json(jobs/(key+'.json'),{**self.args,'id':key,'state':'SUCCEEDED'})
+        for state in ('PENDING','RUNNING','UNKNOWN'):
+            with self.subTest(state=state):
+                self.native_state(key,state)
+                self.assertIn('job-history',[x['kind'] for x in self.plan()['blockers']])
+        self.native_state(key,'CANCELED',leases=[{'gpu_index':0}])
+        self.assertEqual(self.plan()['state'],'BLOCKED')
+        self.node.gpu=lambda *args:(_ for _ in ()).throw(ValueError('coordinator unavailable'))
+        self.assertEqual(self.plan()['state'],'BLOCKED')
 
     def test_unknown_terminal_publication_upload_and_sync_block(self):
         terminals=s.private_dir(self.root/'terminals',create=True);key=str(uuid.uuid4())
