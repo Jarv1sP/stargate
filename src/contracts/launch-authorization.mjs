@@ -31,10 +31,14 @@ export function parseLaunchProject(project) {
 }
 
 /** Only permission evidence crosses back to the coordinator, not execution material. */
-export function launchAuthorizationRequest({binding, project, inputs}) {
-  return parseLaunchAuthorization({binding: {dispatchId: binding.dispatchId, jobId: binding.jobId, accountId: binding.accountId,
+export function launchReferences({binding, project, inputs}) {
+  return {binding: {dispatchId: binding.dispatchId, jobId: binding.jobId, accountId: binding.accountId,
     machineId: binding.machineId, gpuCount: binding.gpuCount, requestHash: binding.requestHash},
-    project: {id: project.id, project: project.project, release: project.release, projectUUID: project.projectUUID, generation: project.generation}, inputs});
+    project: {id: project.id, project: project.project, release: project.release, projectUUID: project.projectUUID, generation: project.generation}, inputs};
+}
+
+export function launchAuthorizationRequest(value) {
+  return parseLaunchAuthorization(launchReferences(value));
 }
 
 export function parseLaunchApproval(value) {

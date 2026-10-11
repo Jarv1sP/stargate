@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {DatabaseSync} from 'node:sqlite';
-import {TrainingLaunchCompiler} from '../src/infrastructure/training-launch-compiler.mjs';
+import {TrainingLaunchCompiler, verifyRuntimePlan} from '../src/infrastructure/training-launch-compiler.mjs';
 import {GpuqLaunchSpec} from '../src/infrastructure/gpuq-launch-spec.mjs';
 import {GpuqPolicy} from '../src/infrastructure/gpuq-policy.mjs';
 import {ValidateTrainingResources} from '../src/application/validate-training-resources.mjs';
@@ -64,6 +64,7 @@ async function fixture(t) {
 
 test('private plan preserves exact task/project/data intent; native command contains only the fixed wrapper and plan reference', async t => {
   const f = await fixture(t), compiled = await f.compiler.compile(f.input, pool), plan = JSON.parse(compiled.planJson);
+  assert.deepEqual(verifyRuntimePlan(compiled), plan);
   assert.equal(compiled.planDigest, hash(compiled.planJson));
   assert.equal(plan.submission.name, '多卡训练 🧪');
   assert.equal(plan.submission.description, '原目录直读\n不复制');

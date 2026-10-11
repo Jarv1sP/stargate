@@ -21,7 +21,6 @@ export class LocalSourceReader{
     let directory;
     try{
       directory=await open(source.hostPath,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-      if(!(await directory.stat()).isDirectory())return {availability:'unavailable',reason:'not-directory'};
       return {availability:'available'};
     }catch(error){
       switch(error.code){

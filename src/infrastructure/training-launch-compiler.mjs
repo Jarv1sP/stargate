@@ -95,4 +95,5 @@ export function verifyRuntimePlan({binding, built, planJson, planDigest}) {
     || JSON.stringify(argv.slice(-4)) !== JSON.stringify(['--dispatch-id', binding.dispatchId, '--plan-digest', planDigest])) {
     throw new ApplicationError('NODE_RUNTIME_PLAN_IDENTITY_MISMATCH');
   }
+  return plan;
 }

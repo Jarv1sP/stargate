@@ -1,6 +1,6 @@
 import {parseDispatchIdentity, parseDispatchReceiptRequest} from './dispatch-receipt.mjs';
 import {parseTrainingSubmission} from './training-submission.mjs';
-import {parseLaunchProject, parseLaunchAuthorization, launchAuthorizationRequest} from './launch-authorization.mjs';
+import {parseLaunchProject, parseLaunchAuthorization, launchReferences} from './launch-authorization.mjs';
 import {InvalidRequest, InvalidResponse} from './errors.mjs';
 
 export const NODE_PREPARATION_ROUTES = {prepare: '/internal/v2/dispatch/prepare', lookup: '/internal/v2/dispatch/prepared'};
@@ -26,5 +26,5 @@ export function parseNodePreparationResult(value) {
 }
 
 export function nodePreparationResult(value) {
-  return value === null ? null : parseNodePreparationResult({...launchAuthorizationRequest(value), planDigest: value.planDigest});
+  return value === null ? null : parseNodePreparationResult({...launchReferences(value), planDigest: value.planDigest});
 }

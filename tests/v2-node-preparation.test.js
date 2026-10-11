@@ -108,3 +108,21 @@ test('coordinator recovers after a lost preparation reply and rechecks current p
   await assert.rejects(app.execute(f.input.binding.jobId), hasCode('FORBIDDEN'));
   assert.equal(writes, 1);
 });
+
+test('preparation response rejects malformed references and detaches projected data', () => {
+  const f = fixture();
+  const value = {binding: f.input.binding, project: f.input.project, planDigest: 'd'.repeat(64),
+    inputs: [{source: f.input.submission.dataSources[1], leaseId: randomUUID()}]};
+  const result = nodePreparationResult(value);
+  assert.deepEqual(result, value);
+  result.inputs[0].source.datasetId = 'caller-change';
+  result.project.project = 'caller-change';
+  assert.equal(value.inputs[0].source.datasetId, 'images');
+  assert.equal(value.project.project, 'training');
+  for (const invalid of [{...value, planDigest: 'bad'},
+    {...value, binding: {...value.binding, dispatchId: 'bad'}},
+    {...value, project: {...value.project, projectUUID: 'bad'}},
+    {...value, inputs: [{source: value.inputs[0].source}]},
+    {...value, inputs: [{...value.inputs[0], hostPath: '/private'}]},
+  ]) assert.throws(() => nodePreparationResult(invalid), hasCode('INVALID_API_RESPONSE'));
+});

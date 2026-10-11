@@ -100,8 +100,8 @@ export class SqliteNodeDispatchBindings {
         FROM v2_node_launch_specs s JOIN v2_node_runtime_plans p USING(dispatch_id) WHERE s.dispatch_id=?`).get(dispatchId);
       if (!row) return null;
       const submission = JSON.parse(row.submission_json);
-      verifyRuntimePlan({binding, built: {submission}, planJson: row.plan_json, planDigest: row.plan_digest});
-      return {binding, submission, plan: JSON.parse(row.plan_json), planDigest: row.plan_digest};
+      const plan = verifyRuntimePlan({binding, built: {submission}, planJson: row.plan_json, planDigest: row.plan_digest});
+      return {binding, submission, plan, planDigest: row.plan_digest};
     });
   }
   get({machineId, dispatchId}) {
