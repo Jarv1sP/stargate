@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('request_fixture',ROOT/'tests/gpuq-priority.test.py')
 F=importlib.util.module_from_spec(spec);spec.loader.exec_module(F)
 from gpuq.policy import select_victims,VictimCandidate
-from gpuq.store import StoreConflictError,Store
+from gpuq.store import StoreConflictError,Store,STORE_SCHEMA_VERSION,_schema_signature,_EXPECTED_SCHEMA_SIGNATURE_V11
 from gpuq.submission import validate_submission
 
 class RequestModes(F.SchedulerPriorityTests):
@@ -45,17 +45,22 @@ class RequestModes(F.SchedulerPriorityTests):
         job,attempt=self.running(priority=1,yield_policy='save',checkpoint_capability='epoch-v1')
         old=self.root/'v11.db';source=sqlite3.connect(self.config.db_path);target=sqlite3.connect(old)
         source.backup(target);source.close()
+        target.execute('DROP TRIGGER jobs_allocation_authority_immutable')
+        target.execute('DROP TABLE allocation_grants')
+        target.execute('ALTER TABLE jobs DROP COLUMN allocation_authority')
         target.execute('ALTER TABLE jobs DROP COLUMN preempt_opt_in_only')
         target.execute('ALTER TABLE jobs DROP COLUMN display_json')
         target.execute('UPDATE schema_meta SET schema_version=11')
         target.execute('PRAGMA user_version=11')
+        self.assertEqual(_schema_signature(target), _EXPECTED_SCHEMA_SIGNATURE_V11)
         before=target.execute('SELECT * FROM leases').fetchall();target.commit();target.close()
         migrated=Store(old).initialize()
         try:
             self.assertFalse(migrated.get_job(job['id'])['preempt_opt_in_only'])
             self.assertEqual(migrated.get_attempt(attempt['id']),self.store.get_attempt(attempt['id']))
             self.assertEqual(migrated.list_leases(),self.store.list_leases())
-            self.assertEqual(migrated.check_integrity()['schema_version'],13)
+            self.assertEqual(migrated.check_integrity()['schema_version'],STORE_SCHEMA_VERSION)
+            self.assertIsNone(migrated.get_job(job['id'])['allocation_authority'])
         finally:migrated.close()
 
 class ScopePolicy(unittest.TestCase):
