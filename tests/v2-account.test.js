@@ -243,10 +243,15 @@ test('creation receipt loss keeps the original account identifier available for 
 
 test('account list returns names and bounded stable-ID pages without writing or exposing credentials', async t => {
   const f = await fixture(t);
+  // Seed in one transaction rather than stalling the HTTP event loop with
+  // 103 individual disk commits while an authenticated connection sits idle.
+  const insert = f.database.prepare('INSERT INTO v2_accounts(id,username,display_name) VALUES(?,?,?)');
+  f.database.exec('BEGIN');
   for (let n = 0; n < 103; n++) {
     const id = 'member-' + String(n).padStart(3, '0');
-    f.database.prepare('INSERT INTO v2_accounts(id,username,display_name) VALUES(?,?,?)').run(id, id, '成员' + n);
+    insert.run(id, id, '成员' + n);
   }
+  f.database.exec('COMMIT');
   const writes = f.database.prepare('SELECT total_changes() n').get().n;
   let after = null;
   const all = [];

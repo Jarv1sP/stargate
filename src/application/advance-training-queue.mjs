@@ -9,10 +9,13 @@ const taskFailures = new Set([
 export class AdvanceTrainingQueue {
   constructor({queue, prepare}) {this.queue = queue; this.prepare = prepare;}
 
-  async execute({limit = 100, after = null} = {}) {
-    const page = await this.queue.pending({limit, after});
+  async execute({limit = 100, after = null, signal} = {}) {
     const outcomes = [];
+    if (signal?.aborted) return {outcomes, nextCursor: null};
+    const page = await this.queue.pending({limit, after});
     for (const row of page) {
+      // Finish an already started admission, but start no next task on shutdown.
+      if (signal?.aborted) return {outcomes, nextCursor: null};
       try {outcomes.push({jobId: row.jobId, ...await this.prepare.execute(row.jobId)});}
       catch (error) {
         if (!(error instanceof ApplicationError) || !taskFailures.has(error.code)) throw error;

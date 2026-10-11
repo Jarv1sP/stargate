@@ -93,6 +93,32 @@ test('overlapping queue passes recover one dispatch per job instead of double ch
   assert.equal(f.claims.balance(f.actor, 'node-1', f.now).heldTotal, 2);
 });
 
+test('shutdown finishes the original admission, leaves the rest queued, and a fresh pass resumes without duplicate holds', async t => {
+  const f = await fixture(t, [4, 2]), stopping = new AbortController();
+  const prepare = f.app.prepare.execute.bind(f.app.prepare), entered = Promise.withResolvers(), release = Promise.withResolvers();
+  f.app.prepare.execute = async jobId => {entered.resolve(); await release.promise; return prepare(jobId);};
+  const pending = f.app.execute({signal: stopping.signal});
+  await entered.promise; stopping.abort(); release.resolve();
+  const first = await pending;
+  assert.deepEqual(first.outcomes.map(row => row.jobId), [f.jobs[0]]);
+  assert.equal(first.outcomes[0].kind, 'prepared'); assert.equal(first.nextCursor, null);
+  assert.deepEqual(f.queue.pending().map(row => row.jobId), [f.jobs[1]]);
+  assert.equal(f.claims.balancesForTask(f.jobs[0], ['node-1'])[0].heldTotal, 1);
+  assert.deepEqual(await f.app.execute({signal: stopping.signal}), {outcomes: [], nextCursor: null});
+  const next = await f.app.execute();
+  assert.deepEqual(next.outcomes.map(row => row.jobId), [f.jobs[1]]);
+  assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_dispatches').get().n, 2);
+  assert.equal(f.claims.balancesForTask(f.jobs[0], ['node-1'])[0].heldTotal, 2);
+});
+
+test('shutdown during queue discovery does not start an admission', async () => {
+  const page = Promise.withResolvers(), stopping = new AbortController(); let calls = 0;
+  const app = new AdvanceTrainingQueue({queue: {pending: () => page.promise}, prepare: {async execute() {calls++;}}});
+  const pending = app.execute({signal: stopping.signal});
+  stopping.abort(); page.resolve([{jobId: 'not-started'}]);
+  assert.deepEqual(await pending, {outcomes: [], nextCursor: null}); assert.equal(calls, 0);
+});
+
 test('assembled queue waits for the original directory and prepares the same task after recovery and logout', async t => {
   const f = await fixture(t, []), project = await projectFixture(t);
   createTrainingCatalogSchema(f.database); createProjectRegistrationSchema(f.database);

@@ -43,6 +43,13 @@ import {NODE_PREPARATION_ROUTES} from '../src/contracts/node-preparation.mjs';
 import {assembleTrainingDispatchWorker, startTrainingDispatchWorker} from '../src/bootstrap/training-dispatch-worker.mjs';
 import {assembleTrainingQueue} from '../src/bootstrap/training-queue.mjs';
 import {GpuqPoolReader} from '../src/infrastructure/gpuq-pool-reader.mjs';
+import {assembleTrainingCoordinator, startTrainingCoordinator} from '../src/bootstrap/training-coordinator.mjs';
+import {assembleProjectInspection} from '../src/bootstrap/project-inspection.mjs';
+import {assembleGpuPool} from '../src/bootstrap/gpu-pool.mjs';
+import {createSourceInspectionHandler} from '../src/api/source-inspection-handler.mjs';
+import {PROJECT_INSPECTION_ROUTE, PROJECT_RUNTIME_ROUTE} from '../src/contracts/project-inspection.mjs';
+import {SOURCE_INSPECTION_ROUTE} from '../src/contracts/source-inspection.mjs';
+import {GPU_POOL_ROUTE} from '../src/contracts/gpu-pool.mjs';
 
 const python = process.env.V2_PYTHON || 'python3', run = promisify(execFile);
 async function nativeServer(t) {
@@ -132,6 +139,9 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
     {machineId: 'node-1', credential: nodeKey}, {machineId: 'node-2', credential: otherNodeKey}], reportError() {}}));
   const shared = {database: f.node, machineId: 'node-1', credential: coordinatorKey, socketPath: f.server.socketPath, python, reportError() {}};
   const receipts = assembleDispatchReceipt(shared);
+  const projects = assembleProjectInspection({...shared, root: f.project.root, basePath: f.project.basePath});
+  const sources = createSourceInspectionHandler({...shared, sources: f.data.managed});
+  const pool = assembleGpuPool(shared);
   const preparation = assembleNodePreparation({...shared, runner: f.runner, cwd: f.project.directory,
     root: f.project.root, basePath: f.project.basePath, roots: f.data.roots});
   const submit = assembleNodeSubmission({...shared, coordinator: {origin, credential: nodeKey,
@@ -141,6 +151,9 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
       await authorizationReady; return response;
     }}});
   const nodeOrigin = await listen(t, async (req, res) => {
+    if ([PROJECT_INSPECTION_ROUTE, PROJECT_RUNTIME_ROUTE].includes(req.url)) return projects(req, res);
+    if (req.url === SOURCE_INSPECTION_ROUTE) return sources(req, res);
+    if (req.url === GPU_POOL_ROUTE) return pool(req, res);
     if (Object.values(NODE_PREPARATION_ROUTES).includes(req.url)) {
       if (req.url === NODE_PREPARATION_ROUTES.prepare) {
         observed.preparations++;
@@ -157,8 +170,60 @@ async function endpoints(t, f, {dropReply = false, holdAuthorizationReply = fals
   return {origin, nodeOrigin, observed, releaseAuthorization, sender: assembleTrainingSender({database: f.database, nodes}),
     prepare: assembleTaskPreparation({database: f.database, nodes}),
     worker: () => assembleTrainingDispatchWorker({database: f.database, nodes}),
+    coordinator: () => assembleTrainingCoordinator({database: f.database, nodes, python}),
     recovery: new ReconcileTrainingDispatch({dispatches: f.dispatches, nodes: new HttpDispatchReceipts({nodes})})};
 }
+
+test('the coordinator automatically admits a queued task through node HTTP and sends it once after logout', {timeout: 20000}, async t => {
+  const f = await fixture(t, {prepare: false, select: false}), h = await endpoints(t, f);
+  const done = Promise.withResolvers(), observed = [];
+  const original = f.database.prepare('SELECT payload_json FROM v2_training_requests WHERE job_id=?').get(f.jobId).payload_json;
+  f.database.exec('UPDATE v2_sessions SET revoked=1');
+  const service = startTrainingCoordinator({...h.coordinator(), intervalMs: 10,
+    onOutcome(result) {
+      observed.push(result);
+      if (result.kind === 'error') done.reject(result.error);
+      if (result.phase === 'dispatch' && result.kind === 'accepted') done.resolve(result);
+    }, reportError: done.reject});
+  try {
+    const result = await done.promise;
+    assert.equal(result.jobId, f.jobId);
+    assert.ok(observed.some(row => row.phase === 'admission' && row.kind === 'prepared' && row.jobId === f.jobId));
+    assert.equal(h.observed.preparations, 1); assert.equal(h.observed.sends, 1);
+    assert.equal(f.database.prepare('SELECT count(*) n FROM v2_training_dispatches').get().n, 1);
+    assert.equal(f.database.prepare('SELECT count(*) n FROM v2_compute_claims').get().n, 1);
+    assert.equal(f.database.prepare('SELECT payload_json FROM v2_training_requests WHERE job_id=?').get(f.jobId).payload_json, original);
+    assert.equal((await f.native.allocation({submitKey: result.dispatchId})).grant.max_gpu_count, result.dispatch.gpuCount);
+  } finally {await service.stop();}
+});
+
+test('stopping immediately after admission leaves the original dispatch for a fresh coordinator to send', {timeout: 20000}, async t => {
+  const f = await fixture(t, {prepare: false, select: false}), h = await endpoints(t, f), halted = Promise.withResolvers();
+  let original, service;
+  service = startTrainingCoordinator({...h.coordinator(), intervalMs: 10,
+    onOutcome(result) {
+      if (result.phase === 'admission' && result.kind === 'prepared') {
+        original = result.dispatch; service.stop().then(halted.resolve, halted.reject);
+      }
+      if (result.kind === 'error') halted.reject(result.error);
+    }, reportError: halted.reject});
+  try {await halted.promise;} finally {await service.stop();}
+  assert.equal(f.dispatches.delivery(original.dispatchId).state, 'PREPARED');
+  assert.equal(h.observed.sends, 0);
+  assert.equal(await f.native.allocation({submitKey: original.dispatchId}), null);
+  const done = Promise.withResolvers();
+  service = startTrainingCoordinator({...h.coordinator(), intervalMs: 10,
+    onOutcome(result) {
+      if (result.kind === 'error') done.reject(result.error);
+      if (result.phase === 'dispatch' && result.kind === 'accepted') done.resolve(result);
+    }, reportError: done.reject});
+  try {
+    const result = await done.promise;
+    assert.equal(result.dispatchId, original.dispatchId); assert.equal(result.jobId, f.jobId);
+    assert.equal(h.observed.preparations, 1); assert.equal(h.observed.sends, 1);
+    assert.equal(f.database.prepare('SELECT count(*) n FROM v2_compute_claims').get().n, 1);
+  } finally {await service.stop();}
+});
 
 test('queued task selects through native pool RPC and the periodic worker prepares and sends it after logout', {timeout: 15000}, async t => {
   const f = await fixture(t, {prepare: false, select: false}), h = await endpoints(t, f);
