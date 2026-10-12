@@ -18,7 +18,7 @@ import {progressText,jobTimingText} from './dist/job-progress.js';
 import {elasticAllocation,allocationLabel,gpuPlacement} from './dist/gpu-allocation.js';
 import {displayName,taskDescription} from './dist/task-metadata.js';
 import {apiPost} from './client-http.mjs';
-import {downloadFile} from './client-file-download.mjs';
+import {downloadPath} from './client-directory-download.mjs';
 
 // Member metadata is untrusted even after submission validators improve: old
 // stored records and older servers can still contain C1/ANSI or bidi controls.
@@ -800,7 +800,7 @@ async function main(){
       result=await uploadCodeFiles(call,{machine,context,local:positionals[2],remote:positionals[3]||basename(positionals[2]),inspectOnly:command==='upload-status'});
     }else if(command==='download'&&positionals.length===4){
       const context=fileArgs(positionals[1]);
-      result=await downloadFile(call,{machine:positionals[1],context,path:positionals[2],destination:positionals[3],origin:base.origin,userId:session.principal.userId});
+      result=await downloadPath(call,{machine:positionals[1],context,path:positionals[2],destination:positionals[3],origin:base.origin,userId:session.principal.userId});
     }else if(command==='grant'&&positionals.length===2){
       const userId=find(positionals[1]),policyVersion=state.users.find(u=>u.id===userId).policyVersion;
       if(options.full){result=(await call('policy.full',{userId,policyVersion})).result;}

@@ -22,7 +22,7 @@ async function checkpoint(path,value,previous){
 
 // A partial belongs to one authenticated account and exact remote file. It is
 // never adopted from a pre-existing destination without this private receipt.
-export async function downloadFile(call,{machine,context={},path,destination,origin,userId}){
+export async function downloadFile(call,{machine,context={},path,destination,origin,userId,retainReceipt=false}){
   const target=resolve(destination),receiptPath=target+'.gpuctl-download.json';
   const identity={origin,userId,machine,path,project:context.project??null,area:context.area??null,runId:context.runId??null};
   let receipt,receiptStamp,file,localStamp,offset=0,fingerprint,size,resumed=false;
@@ -94,7 +94,7 @@ export async function downloadFile(call,{machine,context={},path,destination,ori
           ||!same(stamp(await lstat(target,{bigint:true})),localStamp))fail('Local download checksum changed; file and receipt preserved');
         if(receiptStamp){
           if(!same(stamp(await lstat(receiptPath,{bigint:true})),receiptStamp))fail('Download receipt changed; file preserved');
-          await unlink(receiptPath);
+          if(!retainReceipt)await unlink(receiptPath);
         }
         return {downloaded:destination,bytes:offset,sha256:digest.digest('hex'),resumed};
       }
