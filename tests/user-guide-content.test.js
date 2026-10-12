@@ -24,10 +24,10 @@ test('guide explains authorization labels and keeps personal model inputs separa
   assert.match(guide,/各机授权不同/);assert.match(guide,/旧节点未完整提供归属/);
   assert.match(guide,/个人预训练权重、tokenizer 和模型配置.*`\/workspace\/weights`/);
   assert.match(guide,/`\/workspace\/models`/);assert.match(guide,/`\/workspace\/tokenizers`/);
-  assert.match(guide,/只读的固定输入/);assert.match(guide,/数据集只登记训练、验证、测试样本/);
+  assert.match(guide,/训练直接读取/);assert.match(guide,/数据集只登记训练、验证、测试样本/);
   assert.match(guide,/不登记为数据集/);assert.match(guide,/不要覆盖输入权重/);
   assert.match(guide,/不用每次从电脑重新上传/);assert.match(guide,/服务器内部复制快照/);
-  assert.match(guide,/新训练产生的 checkpoint 和其他输出仍写每个任务独立的 `\/outputs`/);
+  assert.match(guide,/新 checkpoint 可写共享的 `\/outputs` 或自选项目子目录/);
 });
 
 test('data organization guidance favors reusable collections without changing immutable identity', () => {
@@ -107,26 +107,26 @@ test('first-time users can install and select an actual machine without joining 
   assert.doesNotMatch(guide, /\bgpu-\d+\b/, 'server arguments use the catalog ID parameter, never an example server name');
 });
 
-test('training walkthrough distinguishes local edits, published snapshots and output files', () => {
-  for (const command of ['gpuctl push .', 'gpuctl project publish', 'gpuctl project status', 'gpuctl run -g 1 --', 'gpuctl pull --job JOB_ID']) {
+test('training walkthrough documents direct workspace execution and persistent GPU shells', () => {
+  for (const command of ['gpuctl push .', 'gpuctl run -g 1 --interactive', 'gpuctl ssh --job JOB_ID', 'gpuctl run -g 1 --', 'gpuctl pull --job JOB_ID']) {
     assert.ok(guide.includes(command), `Missing workflow command: ${command}`);
   }
-  assert.match(guide, /所有开发终端/);
-  assert.match(guide, /默认使用最新的 `READY` 版本/);
-  assert.match(guide, /可能用到旧代码/);
-  assert.match(guide, /结果、日志文件和 checkpoint 要写入 `\/outputs`/);
+  assert.match(guide, /无需发布或关闭开发终端/);
+  assert.match(guide, /默认直接使用当前工作区/);
+  assert.match(guide, /断开后进程和 GPU 占用保留/);
+  assert.match(guide, /输出目录自行组织/);
   assert.match(guide, /不会自动搬运代码、环境、数据或结果/);
   assert.doesNotMatch(guide, /Podman/, 'Keep engine administration out of the user guide');
 });
 
-test('run sync guide distinguishes verified publication from a mirror or environment installer', () => {
+test('run sync uploads verified files without a publication or mirror', () => {
   assert.match(guide, /gpuctl run --sync -g 1 --/);
   assert.match(guide, /--sync-dir "C:\\研究代码\\我的项目"/);
-  assert.match(guide, /本次发布的 UUID/);
-  assert.match(guide, /不可变版本清单/);
+  assert.match(guide, /上传成功后直接运行工作区/);
+  assert.match(guide, /不发布镜像或复制代码快照/);
   assert.match(guide, /不提交训练/);
-  assert.match(guide, /不是增量镜像或删除同步/);
-  assert.match(guide, /不会替你结束终端、安装依赖/);
+  assert.match(guide, /不是镜像同步或删除同步/);
+  assert.match(guide, /不替你安装依赖/);
 });
 
 test('terminal instructions correctly separate new sessions, detach and explicit reconnect', () => {
@@ -205,13 +205,13 @@ test('new projects use OCI without a mode choice and distinguish container from 
   assert.match(guide,/不需要选择共享、隔离等环境模式/);
   assert.match(guide,/gpuctl project create system-project`/);
   assert.doesNotMatch(guide,/gpuctl project create [^\n`]+--env-mode/);
-  assert.match(guide,/容器内 root 不是服务器 root，开发阶段无 GPU/);
+  assert.match(guide,/容器内 root 不是服务器 root/);
   assert.doesNotMatch(guide,/宿主机 root/);
   assert.match(guide,/机器授权或容器能力尚未确认时会明确拒绝，不会换成另一种环境/);
   assert.match(guide,/先联系管理员核对/);
   assert.match(guide,/网页从「我的项目」进入个人容器/);
   assert.match(guide,/切换顶栏服务器不会搬迁当前容器、文件或开发终端/);
-  assert.match(guide,/训练固定该镜像版本并只见调度分配的 GPU/);
+  assert.match(guide,/GPU 仍由调度器分配/);
   assert.match(guide,/项目终端的 `\$HOME` 是可写的 `\/home\/gpuq`/);
   assert.match(guide,/缓存、环境与容器可写层使用工作区磁盘，不是额外免费空间/);
   assert.match(guide,/个人硬限额是否开启以实际配置为准/);
@@ -220,15 +220,15 @@ test('new projects use OCI without a mode choice and distinguish container from 
 
 test('personal container guidance separates creation, no-GPU development, ending and a pinned training version',()=>{
   assert.match(guide,/给项目／容器起能说明研究内容和用途的名字/);
-  assert.match(guide,/同一个逻辑项目复用一个个人项目和容器，不为每次实验新建小容器/);
-  assert.match(guide,/不同实验用项目内的目录、配置、代码版本和发布版本（release）区分/);
-  assert.match(guide,/每次训练（run）的结果各自写入 `\/outputs`/);
+  assert.match(guide,/同一个逻辑项目复用一个工作区，不为每次实验新建容器/);
+  assert.match(guide,/实验目录、配置、代码版本和输出路径由你组织/);
+  assert.match(guide,/共享的 `\/outputs` 或自选项目子目录/);
   const section=guide.split('### 个人容器\n')[1]?.split('\n### ')[0];
   assert.ok(section,'personal containers have their own concise section');
-  assert.match(section,/「新建项目」.*都创建个人容器/);assert.match(section,/容器内 root 不是服务器 root，开发阶段无 GPU/);
-  assert.match(section,/同一项目只保留一个开发终端/);assert.match(section,/断开.*不能用于发布/);
-  assert.match(section,/本次发布已确认/);assert.match(section,/结果未确认时先重新查询/);
-  assert.match(section,/先选好要训练的版本.*训练固定该镜像版本/);assert.match(section,/不会改动已经提交的训练/);
+  assert.match(section,/「新建项目」.*都创建个人容器/);assert.match(section,/容器内 root 不是服务器 root/);
+  assert.match(section,/多个终端与训练共用代码、环境、HOME 和输出/);assert.match(section,/不再生成训练版本/);
+  assert.match(section,/修改依赖可能影响同时运行的程序/);assert.match(section,/开发终端不占卡/);
+  assert.match(section,/GPU 仍由调度器分配/);assert.match(section,/申请 GPU 交互终端/);
   assert.match(guide,/输入未确认，未自动重发.*暂停输入，直到你明确重连/);
   assert.match(guide,/接管会让另一处失去输入权，已发出的命令不能撤回/);
 });
@@ -283,7 +283,7 @@ test('troubleshooting separates confirmed misunderstandings from unavailable fea
   assert.ok(section);
   assert.match(section, /失败记录会保留，不代表必须重跑/);
   assert.match(section, /gpuctl completion JOB_ID --json/);
-  assert.match(section, /只有 `completed:true` 且任务、项目、发布版本都符合预期/);
+  assert.match(section, /只有 `completed:true` 且任务、项目符合预期（历史固定版本还需核对发布版本）/);
   assert.match(section, /节点能力未确认.*503/);
   assert.match(section, /不等于训练程序已经运行并失败/);
   assert.match(section, /保留原任务编号和 `Submission key`，不要另建一份训练/);
@@ -293,8 +293,8 @@ test('troubleshooting separates confirmed misunderstandings from unavailable fea
   assert.match(section, /两者都不等于独立备份/);
   assert.match(section, /已经永久取消的归档要由管理员核查/);
   assert.match(section, /要另开独立会话，选「新建终端」或运行 `gpuctl ssh`/);
-  assert.match(section, /同一个人容器项目仍只保留一个开发终端/);
-  assert.match(section, /发布代码和环境前，相关终端须确认 `STOPPED`/);
+  assert.match(section, /同项目可同时打开多个终端/);
+  assert.match(section, /新工作区不要求先结束终端再运行/);
   assert.match(section, /gpuctl terminal status SESSION_ID/);
   assert.match(section, /`UNKNOWN` 不能当成已结束/);
   assert.doesNotMatch(section, /确认已结束才新建/);

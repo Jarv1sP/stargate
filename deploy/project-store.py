@@ -118,6 +118,11 @@ def workspace_reserve_bytes(config):
     return value
 
 
+def workspace_start_reserve(config):
+    """Opening existing files is not a bulk upload or image-copy admission."""
+    return min(workspace_reserve_bytes(config), 16*1024**2)
+
+
 def require_workspace_space(root, reserve_bytes, needed=0, *, target_fd=None):
     """Admission, not a quota. Pin the guarded root and use ordinary-user space.
 
@@ -436,6 +441,12 @@ class ProjectStore:
     @project_lifetime
     def status(self, user, slug):
         path, project = self._project(user, slug)
+        if project.get('runtime') == 'workspace':
+            return {'project': slug, 'state': 'AVAILABLE', 'createdAt': project['createdAt'],
+                    'environmentMode': project.get('environmentMode', 'shared'),
+                    'workspace': {'protocol': 1, 'persistent': True, 'codeWritable': True,
+                                  'homeShared': True, 'outputsShared': True},
+                    'offlineAssetsPath': '/workspace/offline'}
         releases = []
         private_dir(path / 'releases')
         for name in os.listdir(path / 'releases'):
@@ -471,6 +482,17 @@ class ProjectStore:
         self._quota(user, path.parent)
         private_dir(path / 'dev')
         return {name: private_dir(path / 'dev' / name) for name in ('code', 'env', 'home', 'scratch')}
+
+    @project_lifetime
+    def activate_workspace(self, user, slug):
+        """Adopt existing mutable files in place; never migrate user data."""
+        self.admit(user, slug)
+        with self.locked(user, slug):
+            path, project = self._project(user, slug)
+            if project.get('runtime') != 'workspace':
+                project['runtime'] = 'workspace'
+                atomic_json(path/'project.json', project)
+        return self.workspace_paths(user, slug)
 
     def _safe_base_target(self, value):
         """Resolve only within the approved base, including its internal links."""
@@ -826,6 +848,8 @@ class ProjectStore:
     def publish(self, user, slug, progress=None):
         self.admit(user, slug)
         path, project = self._project(user, slug)
+        if project.get('runtime') == 'workspace':
+            fail('environment_conflict', 'Workspace projects run directly; publication is no longer required or supported')
         self._quota(user, path.parent)
         environment_mode = project.get('environmentMode', 'shared')
         sections = ('code',) if environment_mode == 'oci' else ('code', 'env')
@@ -1019,14 +1043,11 @@ class ProjectStore:
                     fail('unsafe_path', 'Published project trees must remain service-owned and read-only')
         return {'code': target / 'code', 'env': target / 'env', 'meta': meta}
 
-    @project_lifetime
-    def run_paths(self, user, slug, version, jobid):
+    @contextlib.contextmanager
+    def _claimed_run(self, claim):
+        jobid = claim['jobId']
         if not isinstance(jobid, str) or not JOB_ID.fullmatch(jobid):
             fail('invalid_input', 'Invalid project job ID')
-        self.release(user, slug, version)
-        path, project = self._project(user, slug)
-        self._quota(user, path.parent)
-        claim = {'owner': project['owner'], 'project': slug, 'release': version, 'jobId': jobid}
         claims = private_dir(self.path / '.run-claims')
         with self._file_lock(claims / '.lock'):
             claim_file = claims / (jobid + '.json')
@@ -1035,6 +1056,51 @@ class ProjectStore:
                     fail('job_conflict', 'Job ID already belongs to another user, project, or release')
             else:
                 atomic_json(claim_file, claim)
+            yield
+
+    @project_lifetime
+    def workspace_paths(self, user, slug, jobid=None):
+        """The same mutable project for terminals and all subsequent jobs.
+
+        A job claim records ownership only. It creates no code/image snapshot,
+        task HOME, or task output tree. Historical run_paths stays independent.
+        """
+        path, project = self._project(user, slug)
+        self._quota(user, path.parent)
+        paths = self.dev_paths(user, slug)
+        if jobid is not None:
+            with self._claimed_run({'owner': project['owner'], 'project': slug,
+                                    'jobId': jobid, 'workspace': True}):
+                pass
+        return {'code': paths['code'], 'env': paths['env'], 'home': paths['home'],
+                'output': paths['scratch'], 'readonly': False,
+                'environmentMode': project.get('environmentMode', 'shared'),
+                'workspace': True}
+
+    def runtime_paths(self, spec, jobid, terminal=False):
+        """One execution contract; saved release jobs retain their old paths."""
+        user, slug = spec['userId'], spec['project']
+        live = spec.get('workspace') is True or terminal and self._project(user, slug)[1].get('runtime') == 'workspace'
+        if live:
+            self.admit(user, slug)
+            return self.workspace_paths(user, slug, None if terminal else jobid)
+        if terminal:
+            paths = self.dev_paths(user, slug)
+            return {**paths, 'output': paths['scratch'], 'readonly': False,
+                    'environmentMode': self.environment_mode(user, slug)}
+        release = self.release(user, slug, spec['release'])
+        return {**release, **self.run_paths(user, slug, spec['release'], jobid),
+                'readonly': True, 'environmentMode': release['meta'].get('environmentMode', 'shared')}
+
+    @project_lifetime
+    def run_paths(self, user, slug, version, jobid):
+        if not isinstance(jobid, str) or not JOB_ID.fullmatch(jobid):
+            fail('invalid_input', 'Invalid project job ID')
+        self.release(user, slug, version)
+        path, project = self._project(user, slug)
+        self._quota(user, path.parent)
+        claim = {'owner': project['owner'], 'project': slug, 'release': version, 'jobId': jobid}
+        with self._claimed_run(claim):
             runs = private_dir(path / 'runs')
             run = private_dir(runs / jobid, create=True)
             result = {name: private_dir(run / name, create=True) for name in ('home', 'output')}
@@ -1048,14 +1114,17 @@ class ProjectStore:
         required to download historical outputs. Authentication belongs to the
         caller; the durable claim still binds all four supplied identifiers.
         """
-        if not isinstance(jobid, str) or not JOB_ID.fullmatch(jobid) or not isinstance(version, str) or not VERSION.fullmatch(version):
+        if not isinstance(jobid, str) or not JOB_ID.fullmatch(jobid) or version is not None and (not isinstance(version, str) or not VERSION.fullmatch(version)):
             fail('invalid_input', 'Invalid project run reference')
         path, project = self._project(user, slug)
         claims = private_dir(self.path / '.run-claims')
-        expected = {'owner': project['owner'], 'project': slug, 'release': version, 'jobId': jobid}
+        expected = {'owner': project['owner'], 'project': slug, 'jobId': jobid,
+                    **({'workspace': True} if version is None else {'release': version})}
         try:
             if read_json(claims / (jobid + '.json')) != expected:
                 fail('job_conflict', 'Job ID belongs to another user, project, or release')
+            if version is None:
+                return {'home': private_dir(path/'dev'/'home'), 'output': private_dir(path/'dev'/'scratch')}
             runs = private_dir(path / 'runs')
             run = private_dir(runs / jobid)
             return {name: private_dir(run / name) for name in ('home', 'output')}

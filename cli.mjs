@@ -54,7 +54,7 @@ const CLI_OPTIONS=new Map([
   ['via','value'],['data-read','value'],
   ...['sha256','file-id','password-code','source-url'].map(key=>[key,'value']),
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','ack-unknown','sync','data-workspace'].map(key=>[key,'flag']),
-  ['sync-dir','value'],['candidates','value'],['owner-id','value'],
+  ['sync-dir','value'],['candidates','value'],['owner-id','value'],['interactive','flag'],
   ...['url','session-file','total','cards','as','role','name','description','display-name','min-vram','key','project','release','job','priority','cwd','timeout','reconnect','env-mode','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','ref','target-project','gpu','vram-mib','sm-percent','reason','script-file','revision','preview-token','parent','cursor','limit','members','primary','manifest-sha256'].map(key=>[key,'value']),
   ['machine','machines'],['data','datasets'],
 ]);
@@ -566,6 +566,12 @@ async function main(){
       if(options.takeover&&!options.reconnect)fail('--takeover requires --reconnect SESSION');
       if(options.reconnect&&!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(options.reconnect))fail('Reconnect requires a complete terminal UUID');
       const context=dataTerminal?{dataWorkspace:true}:hostAdmin?{}:projectArgs(machine);
+      if(options.job){
+        const job=state.jobs.find(job=>job.id===options.job&&job.userId===session.principal.userId);
+        if(!job?.interactive||job.machine!==machine||dataTerminal||hostAdmin)fail('请选择本账号在这台服务器上的 GPU 交互任务。');
+        if(job.state!=='RUNNING')fail('GPU 交互任务尚未运行；使用 gpuctl jobs 查看排队状态。');
+        context.project=job.project;options.reconnect=job.id;
+      }
       const key=randomUUID(),clientId=randomUUID(),id=options.reconnect||key,openMode=options.reconnect?'reconnect':'new';
       const scope=dataTerminal?['--data-workspace']:hostAdmin?['--root']:context.project?['--project',context.project]:['--legacy'];
       const commandText=parts=>parts.map(value=>/^[A-Za-z0-9_.:-]+$/.test(value)?value:"'"+value.replaceAll("'","'\\''")+"'").join(' ');
@@ -764,6 +770,10 @@ async function main(){
       if(options.as)fail('--as cannot be used for real execution');
       const automatic=positionals[1]==='auto';
       if(options.candidates!==undefined&&!automatic)fail('--candidates requires --machine auto');
+      if(options.interactive){
+        if(training.length||options.release||options.legacy)fail('--interactive 使用项目工作区，不接受命令、固定版本或旧工作区。');
+        training=['/bin/bash','--noprofile','--norc','-i'];
+      }
       if(!training.length)fail('Put the training command after --');
       const developmentMachine=automatic?selectedMachine():positionals[1],context=projectArgs(developmentMachine);
       if(automatic&&!context.project)fail('自动选机需要已发布的个人容器项目；先选择开发服务器和项目。旧工作区请手选服务器。');
@@ -780,15 +790,19 @@ async function main(){
       const placement=placementKeys.some(k=>Object.hasOwn(options,k))?gpuPlacement({gpuIndices:indices,shared:options.share===true,...(options['vram-mib']?{vramMiB:Number(options['vram-mib'])}:{}),hami:options.hami===true,...(options['sm-percent']?{smPercent:Number(options['sm-percent'])}:{})},cards,elastic,scheduling,options.priority):null;
       if(options.description!==undefined&&state.taskMetadata?.version!==1)fail('当前后台尚未支持任务描述；不会忽略你填写的内容。');
       if(context.project){
-        if(options.sync)context.release=await synchronizeProjectRun(call,{machine:developmentMachine,project:context.project,directory:options['sync-dir']||process.cwd()});
-        else{
+        if(options.release){
           const current=(await call('projects.status',{machine:developmentMachine,project:context.project})).result;
-          const release=options.release||current.latestReadyRelease;
+          const release=options.release;
           if(!release||!/^[a-f0-9]{64}$/.test(release)||!current.releases?.some(r=>r.release===release&&r.state==='READY'))fail('项目还没有指定的 READY 版本。先执行 gpuctl project publish，再用 gpuctl project status 确认；run 不会自动发布。');
           context.release=release;
+        }else{
+          if(automatic)fail('工作区不自动跨机迁移；请同步到目标服务器后指定该服务器运行。');
+          await call('projects.workspace',{machine:developmentMachine,project:context.project});
+          if(options.sync)await uploadCodeFiles(call,{machine:developmentMachine,context:{project:context.project,area:'code'},local:options['sync-dir']||process.cwd(),remote:'.',verifyTree:true});
         }
-        process.stderr.write(`Project: ${context.project} · release: ${context.release}\n`);
+        process.stderr.write(`Project: ${context.project} · ${context.release?'release: '+context.release:'持久工作区'}\n`);
       }
+      if(options.interactive)context.interactive=true;
       result=(await call('jobs.submit',{machine:positionals[1],...(automatic?{machineSelection:{mode:'auto',...(candidates?{candidates}:{})}}:{}),cards,minVramGiB:Number(options['min-vram']||0),name:options.name||'train',...(options.description!==undefined?{description:taskDescription(options.description)}:{}),argv:training,key,...(options.priority?{priority:options.priority}:{}),...(scheduling?{scheduling}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...context,...(datasets.length?{datasets,prepareData:true}:{}),...(options['data-read']==='warehouse'?{datasetReadMode:'warehouse'}:{})})).result;
     }else if(command==='jobs'&&positionals.length===1)result=state.jobs;
     else if(command==='priority'&&positionals.length===3){

@@ -8,7 +8,7 @@ import {taskDescription,displayName} from './dist/task-metadata.js';
 const FIELDS=new Set([
   'machine','cards','minVramGiB','argv','name','description','key',
   'datasets','project','release','priority','scheduling','elastic','placement',
-  'prepareData','machineSelection','datasetReadMode',
+  'prepareData','machineSelection','datasetReadMode','interactive',
 ]);
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 
@@ -50,7 +50,10 @@ export function normalizeJobSubmission(args,principal){
     if(candidates!==undefined&&(!Array.isArray(candidates)||!candidates.length||candidates.length>MACHINES.length||candidates.some(id=>!MACHINES.some(m=>m.id===id))||new Set(candidates).size!==candidates.length))fail('候选服务器须为不重复的有效机器列表。');
     machineSelection={mode:'auto',...(candidates?{candidates:[...candidates].sort()}: {})};
   }else if(!Object.hasOwn(args,'machine')||typeof args.machine!=='string'||!MACHINES.some(m=>m.id===args.machine))fail('请选择有效的服务器，或使用 auto 自动选机。');
-  const datasets=datasetReferences(args.datasets),project=projectReference(args,{release:true});
+  const datasets=datasetReferences(args.datasets),project=projectReference(args,{release:args.release!==undefined});
+  if(project.project&&args.release===undefined)project.workspace=true;
+  if(machineSelection&&project.workspace)fail('工作区保留在所选服务器；跨机请先同步，再选择目标服务器运行。');
+  if(args.interactive!==undefined&&(args.interactive!==true||!project.workspace||JSON.stringify(args.argv)!==JSON.stringify(['/bin/bash','--noprofile','--norc','-i'])))fail('GPU 交互终端需要当前项目工作区和交互 shell。');
   if(args.datasetReadMode==='warehouse'&&(!datasets.length||!project.project))fail('仓库直读需要个人项目和明确的固定数据集版本。');
   if(machineSelection&&!project.project)fail('自动选机需要已发布的个人容器项目和固定版本；旧工作区请手选服务器。');
   if(typeof args.key!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(args.key))fail('需提供 UUID 提交键，重试必须复用。');
@@ -67,7 +70,7 @@ export function normalizeJobSubmission(args,principal){
   const description=taskDescription(args.description);
   const request={machine:machineSelection?'auto':args.machine,cards:args.cards,minVramGiB,argv:[...args.argv],name,description,key:args.key,
     datasets,project,priority,priorityProvided:args.priority!==undefined,explicit,prepareData:args.prepareData===true||!!machineSelection,
-    ...(machineSelection?{machineSelection}:{}),
+    ...(machineSelection?{machineSelection}:{}),...(args.interactive?{interactive:true}:{}),
     ...(args.datasetReadMode==='warehouse'?{datasetReadMode:'warehouse'}:{}),
     ...(placement?{placement}:{}),
     ...(allocation?{elastic:allocation.elastic,allowedGpuCounts:allocation.allowed}:{})};
@@ -83,13 +86,14 @@ export function normalizeJobSubmission(args,principal){
   if(description)identity.push({description});
   if(machineSelection)identity.push({machineSelection});
   if(request.datasetReadMode==='warehouse')identity.push({datasetReadMode:'warehouse'});
+  if(request.interactive)identity.push({interactive:true});
   request.digest=createHash('sha256').update(JSON.stringify(identity)).digest('hex');
   return request;
 }
 
 export function createSubmittedJob(request,user,prioritySupported,{id=randomUUID(),now=new Date().toISOString()}={}){
   const {machine,cards,minVramGiB,name,key,digest,project,datasets,priority,explicit}=request;
-  const context={...project,...(datasets.length?{datasets:structuredClone(datasets)}:{}),...(request.datasetReadMode==='warehouse'?{datasetReadMode:'warehouse'}:{}),...(request.elastic?{elastic:structuredClone(request.elastic)}:{}),...(request.placement?{placement:structuredClone(request.placement)}:{})};
+  const context={...project,...(request.interactive?{interactive:true}:{}),...(datasets.length?{datasets:structuredClone(datasets)}:{}),...(request.datasetReadMode==='warehouse'?{datasetReadMode:'warehouse'}:{}),...(request.elastic?{elastic:structuredClone(request.elastic)}:{}),...(request.placement?{placement:structuredClone(request.placement)}:{})};
   const policy=explicit?{scheduling:structuredClone(explicit)}:prioritySupported?{priority,preemptIdleOnly:true}:{};
   const spec={id,userId:user.id,username:user.username,cards,argv:[...request.argv],name,minVramGiB,...context,...policy};
   // Human-facing metadata belongs to the portal record, not the immutable

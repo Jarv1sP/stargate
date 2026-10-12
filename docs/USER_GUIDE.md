@@ -1,6 +1,6 @@
 # 使用指南
 
-用 `gpuctl` 完成一次训练：安装并登录 → 建项目、push 代码 → 数据入库 → 发布固定版本 → run → 拉取结果。
+用 `gpuctl` 完成一次训练：登录 → 建项目、push 代码 → 准备数据 → run → 查看结果。代码、环境和输出持续保留，不要求发布项目。
 
 日常只需使用个人工作区和完整数据仓库。三个板块分别是个人项目／容器（代码、依赖、个人权重）、集中数据仓库（完整训练样本）和算力排队（训练）；不需要自己选择磁盘或宿主目录。
 
@@ -47,7 +47,7 @@ gpuctl use MACHINE_ID
 
 1. [项目开发](/guide/development)：创建或选用项目，push 代码，进入终端安装依赖，再用 `exit` 结束。
 2. [数据集](/guide/data)：查看现有数据，或校内直传；保存返回的数据集 ID 和完整版本，准备训练缓存。
-3. [提交训练](/guide/training)：发布并查询本次回执；确认 `READY`，再固定版本提交 `run`。
+3. [提交训练](/guide/training)：直接 `run`，或申请 GPU 交互终端后连续运行多个命令。
 4. [日志与结果](/guide/results)：logs、watch；确认完成后 files、pull。需要中止时单独 cancel。
 
 ! 每一步确认后再继续；`UNKNOWN` 先查原编号，不重建任务。
@@ -55,7 +55,7 @@ gpuctl use MACHINE_ID
 
 ### 网页入口
 
-- 我的工作台：选机器、创建项目、开发终端、发布和提交训练。
+- 我的工作台：选机器、创建项目、开发终端和运行训练。
 - 算力总览：逐卡占用和采集时间；未知或过期不代表空闲。
 - 数据集：上传到集中仓库、查看版本、准备训练缓存。
 - 传输任务（管理员启用后）：固定数据集复制、核对进度、终止和恢复。
@@ -75,7 +75,7 @@ gpuctl profile --display-name "张三"
 
 ### 1 建项目、上传代码和安装依赖
 
-给项目／容器起能说明研究内容和用途的名字。同一个逻辑项目复用一个个人项目和容器，不为每次实验新建小容器；不同实验用项目内的目录、配置、代码版本和发布版本（release）区分，每次训练（run）的结果各自写入 `/outputs`。
+给项目／容器起能说明研究内容和用途的名字。同一个逻辑项目复用一个工作区，不为每次实验新建容器；实验目录、配置、代码版本和输出路径由你组织。
 
 先选已授权的开发服务器，在自己电脑的代码目录执行：
 
@@ -83,7 +83,7 @@ gpuctl profile --display-name "张三"
 gpuctl project create my-project
 ```
 
-已有项目用 `gpuctl project use my-project`。CLI 新建项目使用刚选的机器；自动选择训练服务器在发布后设置。
+已有项目用 `gpuctl project use my-project`。项目在所选机器运行，不自动迁移环境。
 
 ```sh local
 gpuctl push .
@@ -116,15 +116,15 @@ exit
 
 网页「新建项目」和 `gpuctl project create system-project` 都创建个人容器。机器授权或容器能力尚未确认时会明确拒绝，不会换成另一种环境；先联系管理员核对。
 
-- 用项目的「新建开发终端」进入；容器内 root 不是服务器 root，开发阶段无 GPU，可以在自己的容器安装 apt 等系统包。同一项目只保留一个开发终端，再次进入应明确重连。
-- 发布前先结束所有开发终端；「断开」会保留终端，不能用于发布。只有本次发布已确认，才显示训练版本已生成；结果未确认时先重新查询，不另发新的发布请求。
-- 先选好要训练的版本；训练固定该镜像版本并只见调度分配的 GPU，之后修改容器不会改动已经提交的训练。
+- 用「新建开发终端」进入；容器内 root 不是服务器 root，可安装自己的 Python 包和系统依赖。
+- 多个终端与训练共用代码、环境、HOME 和输出，不再生成训练版本。修改依赖可能影响同时运行的程序。
+- GPU 仍由调度器分配；开发终端不占卡，需要连续调试时申请 GPU 交互终端。
 
 ### 工作区与依赖
 
-继续使用前面创建的同一个项目，不需要再建一套容器或选择环境模式。安装依赖后用 `exit` 结束开发终端，再按[提交训练](/guide/training)发布、确认版本并运行。
+继续使用同一个项目，安装依赖后直接[运行](/guide/training)，无需新建容器、退出终端或发布。
 
-开发终端不占卡，只有 `run` 经平台排队分配 GPU。每个个人项目只能同时打开一个开发终端；重连原终端或关闭后再新开，环境仍保留。项目创建成功不代表所有外网下载源均可访问，网络报错先按[常见问题](/guide/troubleshooting)检查。
+开发终端不占卡，`run` 经平台排队分配 GPU。同一项目可以有多个独立终端，共用文件和安装环境。网络报错按[常见问题](/guide/troubleshooting)检查。
 
 管理员开通磁盘硬配额后，可用 `gpuctl project quota --machine MACHINE_ID` 查看本人实际 byte/inode 用量、上限和剩余。这里的 inode 是文件和目录的计数，不是用卡额度。显示“未启用”或查询失败不代表零用量或无限容量；数据目录与工作区在同一个物理卷时共用该卷的个人硬上限。
 
@@ -137,7 +137,7 @@ TMPDIR="$HOME/.cache/build-tmp" python -m pip install -r requirements.txt
 
 继续已有项目用 `gpuctl project use my-project`；查看项目用 `gpuctl project list`。`push .` 跳过常见环境和秘密文件，但不能识别所有敏感内容，上传前自己检查；不会删除服务器多出来的旧文件，也不会登记或发布数据集、替你迁移本机环境。它不会自动排除数据目录，不要把数据集混进代码目录。
 
-个人预训练权重、tokenizer 和模型配置放在项目 `/workspace/weights` 或 `/workspace/models`（tokenizer 也可放 `/workspace/tokenizers`），随项目发布成只读的固定输入，训练从本地路径读取。已经在服务器项目中的这些文件不用每次从电脑重新上传；发布可能在服务器内部复制快照，这与电脑上传不同。新训练产生的 checkpoint 和其他输出仍写每个任务独立的 `/outputs`，不要覆盖输入权重。
+个人预训练权重、tokenizer 和模型配置可放 `/workspace/weights`、`/workspace/models`、`/workspace/tokenizers`，训练直接读取，不用每次从电脑重新上传或在服务器内部复制快照。新 checkpoint 可写共享的 `/outputs` 或自选项目子目录，不要覆盖输入权重；是否按实验分目录由自己决定。
 
 ### 终端断开与重连
 
@@ -147,7 +147,7 @@ TMPDIR="$HOME/.cache/build-tmp" python -m pip install -r requirements.txt
 
 如果提示目标被修改、上传身份冲突或旧上传缺少安全恢复记录，停止重试并联系管理员；不要换名字绕过。上传期间不要在个人终端或容器内同时修改同一路径：目标变化检测不等于对终端写入加锁，正常 `push` 本身会替换目标文件。配套新 CLI 和节点允许超过 4 GiB 的项目文件并提示容量警告，完整恢复核验需要读取一次目标文件，大文件或慢盘可能需要等待；数据集仍用数据上传流程。
 
-文件已在该服务器个人数据区时，可用 `gpuctl project import 源目录 新目标目录` 直接复制到本项目草稿，不绕门户传字节。两个路径相对，目标须新建、父目录已存在；先结束项目和个人数据终端。`gpuctl project import-status UUID` 等到 `IMPORTED` 后再编辑依赖和发布。任意宿主路径和只读数据集不支持。停止用 `project import-cancel UUID`；UNKNOWN 保留原 UUID，不换新操作。
+文件已在该服务器个人数据区时，可用 `gpuctl project import 源目录 新目标目录` 直接复制到本项目草稿，不绕门户传字节。两个路径相对，目标须新建、父目录已存在；先结束项目和个人数据终端。`gpuctl project import-status UUID` 等到 `IMPORTED` 后编辑依赖并直接运行。任意宿主路径和只读数据集不支持。停止用 `project import-cancel UUID`；UNKNOWN 保留原 UUID，不换新操作。
 
 旧上传卡住且本机原文件找不到时，`gpuctl project uploads` 查看 UUID，再 `gpuctl project upload-cancel UUID`。只清理确认尚未提交的临时上传，不删除项目代码；提交结果不明或目标变化时仍需按原操作核查。
 
@@ -164,44 +164,44 @@ gpuctl ssh --reconnect SESSION_ID
 
 连接中断或输入回执丢失时，网页显示「输入未确认，未自动重发」，暂停输入，直到你明确重连。先检查输出再决定下一条命令；接管会让另一处失去输入权，已发出的命令不能撤回。连接过期时也要重连，不会新建替代终端。
 
-开发终端**没有 GPU**，限 2 核 CPU 额度、8 GiB 内存；连续无输入 1 小时或累计 6 小时结束。CUDA 检查也应提交训练任务。容器内可安装 Python 包和系统依赖，只修改自己的环境，不修改宿主系统。
+开发终端**没有 GPU**，限 2 核 CPU 额度、8 GiB 内存；断开或无输入不自动结束。CUDA 检查使用 GPU 交互终端或训练任务。容器内可安装自己的依赖，不修改宿主系统。
 
 ## 提交训练 {#training}
 
-### 1 发布并确认固定版本
-
-! 先结束所有开发终端，不能只断开。
+### 1 直接使用当前工作区
 
 ```sh local
-gpuctl project publish
-gpuctl project status
+gpuctl run -g 1 -- python train.py --output /outputs
 ```
 
-保留本次发布编号。`project status` 必须确认本次发布 `READY`，再复制返回的完整 release；结果不明只查原项目，不另发发布。
+无需发布或关闭开发终端。代码、已安装环境、HOME 与输出跨任务保留。`--` 后是程序参数，`--output` 按自己的程序调整；也可把结果写到 `/workspace` 自选目录。需要数据时按[数据集](/guide/data)准备，并加 `--data DATASET_ID@VERSION`。
 
-### 2 固定版本提交训练
+并发任务共享工作区，自己安排输出子目录，避免覆盖同名文件。
+
+### 2 申请一次 GPU，连续使用
 
 ```sh local
-gpuctl run --release FULL_HASH -g 1 -- python train.py --output /outputs
+gpuctl run -g 1 --interactive
+gpuctl jobs
+# RUNNING 后，使用返回的原任务 ID
+gpuctl ssh --job JOB_ID
 ```
 
-`FULL_HASH` 用刚确认的完整发布版本，`--` 后才是程序参数；`--output` 按自己的训练程序调整。需要数据时，先按[数据集](/guide/data)准备，再在这条命令加完整 `--data DATASET_ID@VERSION`。
+网页勾选「GPU 交互终端」，任务运行后点「连接 GPU 终端」。同一 shell 内连续运行多个脚本，无需每次重新提交。断开后进程和 GPU 占用保留，原 `ssh --job JOB_ID` 可重连；`exit` 或 `gpuctl cancel JOB_ID` 才释放 GPU，文件仍保留。它是 HTTPS 终端，不是宿主 root 或原生 SSH。
 
-! 结果、日志文件和 checkpoint 要写入 `/outputs`。
-
-默认使用最新的 `READY` 版本；新发布失败时直接运行可能用到旧代码。仅在已核对该版本时，才省略 `--release`：
+默认直接使用当前工作区，不选择旧发布版本：
 
 ```sh local
 gpuctl run -g 1 -- python train.py --output /outputs
 gpuctl jobs
 ```
 
-### 自动选择训练服务器
+### 历史固定版本的自动选机
 
-个人容器项目发布后，可以让平台在你有权限的机器中选择。当前开发服务器和项目保持不变，只给运行命令增加 `--machine auto`：
+以下仅适用于已有固定发布版本，需显式指定完整 `--release`。新可写工作区不自动跨机搬运；在工作区所在服务器运行：
 
 ```sh local
-gpuctl run --machine auto -g 2 --min-vram 24 -- python train.py --output /outputs
+gpuctl run --machine auto --release FULL_HASH -g 2 --min-vram 24 -- python train.py --output /outputs
 ```
 
 配套容量准入新版会先排除项目和训练缓存空间不足、容量未知或能力未确认的机器，再比较个人额度、空闲显卡和项目／数据是否已在本地。管理员免个人累计用卡额度，不豁免磁盘容量和实际显卡占用。需要搬运时先准备代码、容器环境和数据，期间不占 GPU。若所有兼容机器都忙，会在选定机器排队；空闲状态可能变化，不保证立即启动。选定后不会因忙碌、断线或重启偷偷换机。`gpuctl jobs` 可查看最终机器；输出仍保存在那台机器。
@@ -225,9 +225,9 @@ gpuctl run --machine auto -g 2 --min-vram 24 -- python train.py --output /output
 gpuctl pull --machine TARGET --project my-project --job JOB_ID result.pt ./result.pt
 ```
 
-### 退出项目终端后同步运行
+### 同步本地代码后运行
 
-先选好服务器和个人项目，准备服务器环境，并退出该项目的开发终端。再在电脑代码目录运行同步，合并上传、发布和等待。
+先选好服务器和项目、准备依赖，再在电脑代码目录执行同步并运行；不要求退出开发终端。
 
 ```sh local
 gpuctl run --sync -g 1 -- python train.py --output /outputs
@@ -239,17 +239,17 @@ gpuctl run --sync -g 1 -- python train.py --output /outputs
 gpuctl run --sync --sync-dir "C:\研究代码\我的项目" --project my-project -g 1 -- python train.py --output /outputs
 ```
 
-`--sync` 复用 `push` 的分块上传与 SHA256 校验，然后按本次发布的 UUID 等待 READY 回执，并核对不可变版本清单中的已上传文件；只提交这个版本，不回退到以前的 READY。上传失败、本地文件中途变化、发布失败／状态未知、并发发布替换、校验不一致或等待超时（最多两小时）都会停止，**不提交训练**。它不会替你结束终端、安装依赖或变更权限；默认不切机，明确加 `--machine auto` 时仍先在当前开发服务器发布，再自动选择训练服务器。旧节点尚不支持发布确认时，在上传前明确拒绝。
+`--sync` 复用 `push` 的分块上传与 SHA256 校验，上传成功后直接运行工作区，不发布镜像或复制代码快照。上传失败、本地文件中途变化或校验不一致时不提交训练。不替你安装依赖、删除远端文件或自动切机。
 
-这是现有代码上传流程的快捷入口，**不是增量镜像或删除同步**：文件按完整校验和上传或续传；已有匹配上传回执的完整文件会核验后复用，与 `push` 相同的秘密／环境目录会跳过，远端多余文件保留；空目录或全部被排除时不会发布旧草稿。不要把数据集混在代码目录中。服务器已有的小体积 `weights/` 可以保留，不必为本命令重新搬回电脑；发布可能在服务器内部复制代码和环境。`--sync` 不能与 `--release`、`--legacy` 或管理员宿主模式合用。
+这不是镜像同步或删除同步：已匹配文件核验后复用，远端多余文件保留；空目录或全部被排除时不提交。不要把数据集混进代码目录。`--sync` 不能与 `--release`、`--legacy` 或管理员宿主模式合用。
 
-若最后提交请求断线，先用 `gpuctl jobs` 核对输出的 Submission key；不要换新键盲目再运行。发布进程不会因为本地命令退出而被强行结束，进度和失败原因仍可通过 `gpuctl project status` 查看。
+若提交请求断线，先用 `gpuctl jobs` 核对输出的 Submission key，不换新键重复提交。
 
 带数据集提交时，可以先准备数据再训练。`PREPARING_DATA` 表示正在准备所选机器的训练缓存，暂不占 GPU 额度；全部就绪后重新核验项目、授权和额度，才进入显卡队列。没有可用来源或权限不足时拒绝提交，不会偷偷换机器。取消等待中的训练不会取消可能被其他任务共用的数据准备。
 
 基础 `run -g 1` 默认使用兼容预设 `normal`：节点确认新版策略时为 P2、`yield=never`、`mode=queue`、不自动重跑，只可让明确同意中断的低档 `idle` 任务让位；节点未确认时显示旧策略／未核验。需要明确的让位与恢复约定，使用[自定义调度](/guide/queue)。
 
-`-g` 是申请卡数，`--` 后才是自己的程序参数。示例 `--output` 需按训练程序修改；结果、日志文件和 checkpoint 要写入 `/outputs`。训练的代码和环境只读，改代码后重新上传、安装依赖、退出终端、发布。关闭网页或自己的电脑不会停止服务器训练。
+`-g` 是申请卡数，`--` 后是程序参数。`--output` 按训练程序修改；代码和环境可写，输出目录自行组织。改好代码可直接再运行；关闭网页或电脑不会停止服务器训练。
 
 任务信息新版可填写任务名与自写描述，描述最多 2000 字／6000 bytes：
 
@@ -396,10 +396,10 @@ gpuctl data prepare DATASET_ID@VERSION
 gpuctl data status DATASET_ID@VERSION
 ```
 
-确认所选机器的项目显示 `READY`，数据已就绪或目录明确有可用来源后，运行：
+确认所选机器已有项目工作区，数据已就绪或目录明确有可用来源后，运行，不要求项目发布版本：
 
 ```sh local
-gpuctl run --release FULL_HASH -g 1 --data DATASET_ID@VERSION -- python train.py --data /data2/DATASET_ID --output /outputs
+gpuctl run -g 1 --data DATASET_ID@VERSION -- python train.py --data /data2/DATASET_ID --output /outputs
 ```
 
 上传完成仍须准备到本次训练机器；只有该机训练缓存已为 `READY` 才不必重复准备。「仓库数据可用」「已登记」「准备中」或「未知」不等于本机缓存就绪。准备不占显卡；失败时先在数据集页或 `data prepare` 明确重试，不能靠反复提交训练无限重试。`--` 前的 `--data` 是平台挂载声明，后面的参数由自己的程序处理，路径以平台返回值为准。训练数据只读，预处理产物写 `/outputs`。
@@ -408,10 +408,10 @@ gpuctl run --release FULL_HASH -g 1 --data DATASET_ID@VERSION -- python train.py
 
 ### 在仓库所在服务器直接训练
 
-仅当所选服务器已确认支持、固定版本在它自己的仓库为 `READY`，且本人有数据读取与机器权限时，可省去数据缓存副本：
+仅当所选服务器已确认支持、固定版本在它自己的仓库为 `READY`，且本人有数据读取与机器权限时，可省去数据缓存副本。先在该仓库所在服务器选用并准备项目工作区；指定 `WAREHOUSE_MACHINE` 不会迁移另一台机器的代码、依赖或输出：
 
 ```sh local
-gpuctl run --machine WAREHOUSE_MACHINE --release FULL_HASH -g 1 --data DATASET_ID@VERSION --data-read warehouse -- python train.py --data /data2/DATASET_ID --output /outputs
+gpuctl run --machine WAREHOUSE_MACHINE -g 1 --data DATASET_ID@VERSION --data-read warehouse -- python train.py --data /data2/DATASET_ID --output /outputs
 ```
 
 `WAREHOUSE_MACHINE` 换成这份数据实际所在、已开放的仓库服务器。挂载仍是只读 `/data2/DATASET_ID`，不暴露宿主仓库路径；项目、容器环境和结果仍使用项目空间。仓库磁盘读取通常比训练缓存慢，随机小文件和多任务争用尤其明显。默认不加 `--data-read` 即使用缓存；两种方式都不把仓库当输出目录。
@@ -446,7 +446,7 @@ gpuctl run --machine WAREHOUSE_MACHINE --release FULL_HASH -g 1 --data DATASET_I
 - 不要故意登记没有独立复用用途的零散临时小数据集，包括临时实验或 smoke 数据；同一集合的主体或分片尽量合并，训练程序按需选取子集。协助操作的 AI 也须遵守上述项目复用、命名和版本约定，不以反复新建绕过错误或未知状态。
 - 预训练权重、tokenizer 和模型配置放个人项目的 `weights/`、`models/` 或 `tokenizers/`；新训练产物写 `/outputs`，不登记为数据集。
 
-调试可以在现有项目的 `debug-data/` 放少量人工样本或原数据子集，随同一项目发布；不要为一次调试新建容器或登记小数据集。调试结束及时移走样本、下载结果并清理临时文件。平台验收使用的专用测试材料由验收者正常退役，不混入成员的正式数据列表。
+调试可以在现有项目的 `debug-data/` 放少量人工样本或原数据子集，直接从该项目读取；不要为一次调试新建容器或登记小数据集。调试结束及时移走样本、下载结果并清理临时文件。平台验收使用的专用测试材料由验收者正常退役，不混入成员的正式数据列表。
 
 页面默认显示上传时填写的有意义名称；`u-…`、`w-…` 是用于隔离归属的内部 ID，在详情或命令里保留。不要为了去掉前缀重新上传、改目录或登记新集合。内部 ID 和完整 64 位版本保持不变；下面的 `data label` 只改自己的显示名。
 
@@ -502,7 +502,7 @@ gpuctl transfer watch TRANSFER_UUID
 gpuctl transfer cancel TRANSFER_UUID
 ```
 
-训练通过 `run` 已经持续运行，不靠 tmux；网页交互终端仍有时限。传输任务负责版本的上传、下载和节点间复制，不是任意长 CPU 脚本执行入口。旧 push、sync git/code 保持原行为；配套新版单文件 pull 的断线恢复见“下载结果”。
+训练通过 `run` 已经持续运行，不靠 tmux；新版工作区终端断开或无输入也不自动结束。传输任务负责版本的上传、下载和节点间复制，不是任意长 CPU 脚本执行入口。旧 push、sync git/code 保持原行为；配套新版单文件 pull 的断线恢复见“下载结果”。
 
 ## 日志与结果 {#results}
 
@@ -512,11 +512,11 @@ gpuctl transfer cancel TRANSFER_UUID
 gpuctl completion JOB_ID --json
 ```
 
-只有 `completed:true` 且任务、项目与发布版本一致，才算确认完成。
+只有 `completed:true` 且任务、项目符合预期，才算确认完成；历史固定版本任务还需核对发布版本。
 
 ! 确认完成，再下载。
 
-先从 `jobs` 核对实际执行机器，选回同一项目。文件名从第一条命令的输出复制：
+先从 `jobs` 核对实际执行机器，选回同一项目。新工作区的 JOB_ID 指向项目当前 `/outputs`，不是任务结束时的快照；旧任务仍读原独立输出目录。文件名从第一条命令的输出复制：
 
 ```sh local
 gpuctl use MACHINE_ID
@@ -540,7 +540,7 @@ gpuctl diagnostics JOB_ID --json
 
 若曾由管理员在节点上用原生 `gpu retry` 重试同一任务，门户历史终态不会被自动改写。`watch` 与 `diagnostics` 可另外返回该节点的只读观察及已确认重试事件；缺少身份或事件证据时显示未确认。`watch` 会明确区分“门户历史结果”和“节点只读观察”，退出码仍按原门户终态，不代表新一次运行已结束；此查询不会清除取消标记、重新申请数据保护或批准重试。需要恢复执行时请管理员核对原 UUID 的当前状态与保护边界，不要反复重试或另建任务绕过。
 
-若原生重试已经成功，但后续任务仍被门户旧 FAILED 记录挡住，用 `gpuctl completion JOB_ID --json` 核验同一任务的最新完成状态。只有返回 `completed:true` 且任务 ID、项目、发布版本符合预期才可作为完成依据；旧失败历史保留，不需要重复训练。该命令成功核实退出 0、未确认退出 2、请求错误退出 1，不替代结果质量检查。
+若原生重试已经成功，但后续任务仍被门户旧 FAILED 记录挡住，用 `gpuctl completion JOB_ID --json` 核验同一任务的最新完成状态。只有返回 `completed:true` 且任务 ID、项目符合预期才可作为完成依据；历史固定版本任务还需核对发布版本；旧失败历史保留，不需要重复训练。该命令成功核实退出 0、未确认退出 2、请求错误退出 1，不替代结果质量检查。
 
 网页核实本人任务成功后显示「拉取结果」，并提醒及时下载到自己的电脑。没有该入口不等于文件被删；状态未确认、失败或取消的任务仍可从已有「输出」入口查看保留文件。平台不会因显示提醒自动备份或清理结果。
 
@@ -659,25 +659,25 @@ gpuctl run --rank P2 --mode preempt2 -g 1 -- python urgent.py
 
 ### 报错了，先确认是哪一步
 
-- **历史显示 `FAILED`，最新尝试却成功了**：失败记录会保留，不代表必须重跑。用 `gpuctl completion JOB_ID --json` 核对；只有 `completed:true` 且任务、项目、发布版本都符合预期，才按最新完成状态处理，结果质量仍要自己检查。
+- **历史显示 `FAILED`，最新尝试却成功了**：失败记录会保留，不代表必须重跑。用 `gpuctl completion JOB_ID --json` 核对；只有 `completed:true` 且任务、项目符合预期（历史固定版本还需核对发布版本），才按最新完成状态处理，结果质量仍要自己检查。
 - **提示“节点能力未确认”（503）**：平台暂时不能确认所需功能，不等于训练程序已经运行并失败。先用 `gpuctl jobs` 查已有任务；回复不明时保留原任务编号和 `Submission key`，不要另建一份训练。持续无法确认时联系管理员检查节点。
 - **磁盘还有空位，却拒绝上传或发布**：可用空间还须满足本次写入或复制，并留下节点配置的安全预留；这不是个人容量额度用完。按报错中的可用、预留和本次需要的字节数核对，再联系管理员处理，不要删别人的文件或正在使用的数据。
 
 ### 提交超时、任务 UNKNOWN 或无法取消
 
-先查 `jobs/watch`、日志和诊断。`UNKNOWN` 不表示已结束，额度仍保留；不要重复建任务或删目录。提交重试用原输出的 `Submission key`，加原 `--key UUID`、同一个完整 `--release` 和原参数，不能换策略重试。仍无法确认就把任务 ID 交给管理员。
+先查 `jobs/watch`、日志和诊断。`UNKNOWN` 不表示已结束，额度仍保留；不要重复建任务或删目录。提交重试用原输出的 `Submission key`，加原 `--key UUID` 和原参数；只有原提交显式指定了 `--release` 时才保留同一个完整版本，不能换策略重试。仍无法确认就把任务 ID 交给管理员。
 
 ### 这些状态不能互相代替
 
 - **上传 `READY` 不等于可以立即训练**：它表示数据已完整存入仓库；所选机器的本地训练缓存也须准备到 `READY`。两者都不等于独立备份，未确认仓库数据与恢复证明时不要清掉旧源。
 - **取消不等于稍后自动恢复**：训练不会自动保存 checkpoint 或重跑；传输保留已写出的内容，但不自动继续。后台归档不是普通传输，已经永久取消的归档要由管理员核查，不能用普通 `transfer resume` 绕过。
-- **终端断开不等于 `STOPPED`**：在原服务器和项目用 `gpuctl ssh --reconnect SESSION_ID` 接回；要另开独立会话，选「新建终端」或运行 `gpuctl ssh`，不是接管别人正在用的会话。同一个人容器项目仍只保留一个开发终端。发布代码和环境前，相关终端须确认 `STOPPED`；用 `gpuctl terminal status SESSION_ID` 查询，`UNKNOWN` 不能当成已结束。个人容器内 root 只管理自己的容器，管理员 ROOT 运维是另一个入口。
+- **终端断开不等于 `STOPPED`**：在原服务器和项目用 `gpuctl ssh --reconnect SESSION_ID` 接回；要另开独立会话，选「新建终端」或运行 `gpuctl ssh`，不是接管别人正在用的会话。同项目可同时打开多个终端，共用文件和环境，新工作区不要求先结束终端再运行；用 `gpuctl terminal status SESSION_ID` 查询，`UNKNOWN` 不能当成已结束。个人容器内 root 只管理自己的容器，管理员 ROOT 运维是另一个入口。
 - **HAMi 显存限制不等于 SM 限额**：显存和计算份额是两项能力。`--hami` 可用不代表 `--sm-percent 50` 已开通；未确认支持时会拒绝，也不保证“半张卡”的性能。
 - **项目分组不等于搬家**：同组只是把不同服务器的实例关联展示，代码、环境和结果仍留在原实例。归档保留历史，不做物理合并；旧环境不会因分组或归档自动变成个人容器。
 
-### 发布或模型加载失败
+### 模型加载失败
 
-发布前结束所有项目开发终端，不能只断开；检查错误提示中属于自己的文件和链接。不要给系统目录批量改权限。训练和开发终端的 HOME 不同，默认缓存不会自动带进训练；个人预训练权重、tokenizer 和模型配置按[项目开发](/guide/development)放在项目内并发布，无需每次重新上传。
+新工作区的终端和训练共用 HOME、依赖和项目文件，无需发布。检查模型路径、依赖版本和文件是否完整，不要给系统目录批量改权限。只有历史固定版本任务仍使用原独立 HOME 和发布快照。
 
 项目网络检查与一次性代理：
 
@@ -700,7 +700,7 @@ gpuctl sync code --from SOURCE --to TARGET --project my-project --release FULL_H
 
 将 `SOURCE/TARGET` 换成获授权机器 ID，去掉 `--dry-run` 才传输。Git 仓库须干净并支持 `check-attr --source`，只导出固定提交；已有节点代码只复制固定 release。目标须是新项目，重复同一命令可续传，不覆盖旧项目、不删除目标其他内容。
 
-代码显示 `CODE_READY` 还不能训练：在目标 `use`、`project use`、`ssh` 准备依赖，退出后 `project publish/status`，等 `READY`，使用目标的完整 `--release`。同步不迁移 Conda/venv、草稿或结果。个人容器的完整训练版本用[项目开发](/guide/development)中的 `project copy`；数据集则在目标机器执行 `data prepare`，不通过代码同步搬运。
+代码显示 `CODE_READY` 后，在目标 `use`、`project use`、`ssh` 准备依赖，然后直接 `run`，不用发布。代码同步不迁移 Conda/venv 或结果；历史固定版本仍可用 `project copy`。数据集在目标机器用 `data prepare` 显式准备，不通过代码同步搬运。
 
 ### 缺少系统依赖
 

@@ -50,7 +50,7 @@ def transfer(ready,writable):
    if len(buffer)>524288:cut=len(buffer)-524288;buffer=buffer[cut:];start+=cut
 
 try:
- while time.monotonic()-began<21600 and time.monotonic()-last_input<3600:
+ while True:
   if child.poll() is not None:
    ended=ended or time.monotonic()
    if time.monotonic()-ended>60:break

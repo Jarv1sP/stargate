@@ -40,6 +40,14 @@ class NodeProjects(unittest.TestCase):
                 if not path.is_symlink():os.chmod(path,0o600)
         self.temp.cleanup()
     def call(self,op,**args):return self.n.process(op,{**self.args,**args})
+    def test_live_workspace_adoption_is_owner_bound_and_retains_lifecycle(self):
+        result=self.call('projects.workspace')
+        self.assertEqual(result['state'],'AVAILABLE')
+        self.assertTrue(result['workspace']['persistent'])
+        self.assertEqual(result['lifecycle']['state'],'ACTIVE')
+        self.assertEqual(self.call('projects.workspace')['workspace'],result['workspace'])
+        with self.assertRaises(ValueError):self.call('projects.workspace',release='a'*64)
+        with self.assertRaises(ValueError):self.call('projects.workspace',userId='demo-user-4')
     def publication_worker(self, operation):
         task=self.ops.receipt(self.args)
         return self.ops.worker(operation,task['publicationId'],task['projectGeneration'])

@@ -73,7 +73,8 @@ def workspace_storage_check(needed=0, *, target_fd=None, admission=False):
         spec=importlib.util.spec_from_file_location('gpuq_workspace_storage',HERE/'project-store.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         WORKSPACE_STORAGE=module
-    WORKSPACE_STORAGE.require_workspace_space(ROOT,WORKSPACE_STORAGE.workspace_reserve_bytes(CONFIG),needed,target_fd=target_fd)
+    reserve=WORKSPACE_STORAGE.workspace_start_reserve(CONFIG) if admission else WORKSPACE_STORAGE.workspace_reserve_bytes(CONFIG)
+    WORKSPACE_STORAGE.require_workspace_space(ROOT,reserve,needed,target_fd=target_fd)
 
 def job_diagnostics(job,data):
     global DIAGNOSTICS
@@ -1104,7 +1105,7 @@ def file_op(operation,args,root=None):
 
 def validate_job(job,readonly=False):
     required={'id','userId','username','cards','argv','name','minVramGiB'}
-    if not isinstance(job,dict) or not required<=set(job) or set(job)-required-{'datasets','datasetReadMode','project','release','priority','preemptIdleOnly','scheduling','elastic','placement'}:raise ValueError('Invalid job specification')
+    if not isinstance(job,dict) or not required<=set(job) or set(job)-required-{'datasets','datasetReadMode','project','release','workspace','interactive','priority','preemptIdleOnly','scheduling','elastic','placement'}:raise ValueError('Invalid job specification')
     if not UUID.fullmatch(job['id']):raise ValueError('Invalid job ID')
     if readonly:
         if not isinstance(job['userId'],str) or not re.fullmatch(r'(builtin-admin|demo-user-[0-9]+)',job['userId']):raise ValueError('Invalid identity')
@@ -1117,8 +1118,11 @@ def validate_job(job,readonly=False):
     policy=SCHEDULING.normalize_job_policy(job)
     SCHEDULING.elastic_allocation(job)
     SCHEDULING.gpu_placement(job)
-    if 'project' in job or 'release' in job:
+    if 'workspace' in job:
+        if job['workspace'] is not True or 'release' in job or not isinstance(job.get('project'),str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,47}',job['project']):raise ValueError('Invalid live workspace identity')
+    elif 'project' in job or 'release' in job:
         if not isinstance(job.get('project'),str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,47}',job['project']) or not isinstance(job.get('release'),str) or not DATASET_VERSION.fullmatch(job['release']):raise ValueError('Invalid project release')
+    if 'interactive' in job and (job['interactive'] is not True or job.get('workspace') is not True or job['argv']!=['/bin/bash','--noprofile','--norc','-i']):raise ValueError('Invalid GPU workspace shell')
     return policy
 
 def terminal_pointer(args):
@@ -1192,6 +1196,14 @@ def terminal_file_identity(path):
 
 def terminal_unit_observation(jid):
     unit='amax-term-'+jid+'.service'
+    spec=terminal_metadata(ROOT/'terminals'/(jid+'.json'))
+    if spec.get('interactive'):
+        with closing(sqlite3.connect(f'file:{CONFIG["database"]}?mode=ro',uri=True)) as db:
+            row=db.execute('SELECT a.unit_name FROM attempts a JOIN jobs j ON j.id=a.job_id WHERE j.submit_key=? ORDER BY a.ordinal DESC LIMIT 1',(jid,)).fetchone()
+        if row is None:raise ValueError('GPU shell is still waiting for allocation')
+        unit=row[0]
+        if not re.fullmatch(r'gpuq-a[a-f0-9]{32}(\.service)?',unit):raise ValueError('Invalid GPU shell attempt unit')
+        if not unit.endswith('.service'):unit+='.service'
     fields={'LoadState','ActiveState','SubState','MainPID','ControlGroup','InvocationID'}
     result=subprocess.run(['/usr/bin/systemctl','--user','show',unit,'--property='+','.join(sorted(fields))],
         env=ENV,text=True,capture_output=True,timeout=5)
@@ -1273,6 +1285,17 @@ def terminal_close_stopped(args):
     finally:os.close(fd)
 
 def stop_terminal(jid):
+    path=ROOT/'terminals'/(jid+'.json')
+    spec=terminal_metadata(path) if path.exists() else {}
+    if spec.get('interactive'):
+        process('cancel',{'job':json.loads((ROOT/'jobs'/(jid+'.json')).read_text())})
+        # GPUQ cancellation is asynchronous; acknowledge closure only after
+        # its exact attempt cgroup is empty, just like systemctl stop below.
+        deadline=time.monotonic()+8
+        while not terminal_unit_observation(jid)[2]:
+            if time.monotonic()>=deadline:raise ValueError('GPU shell is stopping; query its original task before reconnecting')
+            time.sleep(.1)
+        return
     # Stable unit protocol shared with existing terminal pointers; not branding.
     unit='amax-term-'+jid+'.service'
     result=subprocess.run(['/usr/bin/systemctl','--user','stop',unit],env=ENV,text=True,capture_output=True,timeout=12)
@@ -1325,6 +1348,11 @@ def terminal_op(operation,args):
         receipt=terminal_metadata(receipt_path) if receipt_path.exists() else None
         if opening:
             if mode=='new' and not (folder/(jid+'.json')).exists():
+                if args.get('project'):
+                    # The project operation guard is already held by process().
+                    store=projects().store
+                    paths=store.activate_workspace(args['userId'],args['project'])
+                    if paths['environmentMode']=='oci':store._oci(args['userId']).workspace_container(args['project'])
                 if args.get('hostAdmin') is not True:workspace_storage_check(admission=True)
                 oci_properties=terminal_oci_properties(args)
                 unit='amax-term-'+jid
@@ -1338,7 +1366,7 @@ def terminal_op(operation,args):
                 directory=os.open(folder,os.O_RDONLY|os.O_DIRECTORY)
                 try:os.fsync(directory)
                 finally:os.close(directory)
-                command=['/usr/bin/systemd-run','--user','--collect','--unit',unit,'--property=RuntimeMaxSec=21600','--property=KillMode=control-group','--property=TimeoutStopSec=5']
+                command=['/usr/bin/systemd-run','--user','--collect','--unit',unit,'--property=KillMode=control-group','--property=TimeoutStopSec=5']
                 if not spec['hostAdmin']:command+=['--property=MemoryMax=8G','--property=CPUQuota=200%','--property=TasksMax=2048']
                 command+=oci_properties
                 run(command+['/usr/bin/python3',str(HERE/'terminal-helper.py'),jid])
@@ -1384,7 +1412,7 @@ def terminal_op(operation,args):
             return {'detached':True,'id':jid}
         if operation=='terminal.close':
             stop_terminal(jid)
-            if args.get('project') and not projects().terminal_stopped(jid):raise ValueError('Cannot confirm project terminal termination; retry when node services recover')
+            if args.get('project') and not terminal_unit_observation(jid)[2]:raise ValueError('Cannot confirm project terminal termination; retry when node services recover')
             if args.get('dataWorkspace') and not data_workspaces().unit_stopped('amax-term-'+jid+'.service'):raise ValueError('Cannot confirm data terminal termination; retry when node services recover')
             (folder/(jid+'.sock')).unlink(missing_ok=True);pointer.unlink(missing_ok=True)
             if legacy.exists() and legacy.read_text()==jid:legacy.unlink()
@@ -1969,8 +1997,13 @@ def process(operation,args):
                 if not SCHEDULING.allocation_ready(CONFIG,HERE,2) or 'gpu-placement-v1' not in caps or placement['shared'] and 'gpu-sharing-v1' not in caps:raise ValueError('GPU placement/sharing channel is not ready; no submission attempted')
                 if placement.get('hami') and not SCHEDULING.hami_ready(CONFIG,HERE,placement['smPercent']):raise ValueError('HAMi runtime is not ready; no submission attempted')
             if job.get('project'):
-                projects().store.release(job['userId'],job['project'],job['release'])
-                projects().store.run_paths(job['userId'],job['project'],job['release'],jid)
+                projects().store.runtime_paths(job,jid)
+            if job.get('interactive'):
+                if not personal_oci_project(job):raise ValueError('GPU interactive workspace requires a personal OCI project')
+                folder=ROOT/'terminals';folder.mkdir(mode=0o700,exist_ok=True)
+                atomic_json(folder/(jid+'.json'),{**job,'hostAdmin':False})
+                if not (folder/(jid+'.session.json')).exists():
+                    atomic_json(folder/(jid+'.session.json'),{'schema':2,'originClient':None,'clientId':None,'state':'DETACHED','leaseExpiresAt':0})
             if dataset_refs(job):
                 try:acquire_datasets(job)
                 except DatasetNotReady:

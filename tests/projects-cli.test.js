@@ -62,7 +62,7 @@ test('non-training --machine auto fails locally without requests or changing the
 
 test('run --machine auto retains the existing AUTO submission contract',async t=>{
   const f=await fixture(t);await f.save({projectsByMachine:{'gpu-1':'alpha'}});
-  const value=await f.cli(['run','--machine','auto','-g','1','--','python','train.py']);
+  const value=await f.cli(['run','--machine','auto','--release',RELEASE,'-g','1','--','python','train.py']);
   assert.equal(value.code,0,value.stderr);
   const submit=f.calls.find(call=>call.operation==='jobs.submit');assert.ok(submit);
   assert.equal(submit.args.machine,'auto');assert.deepEqual(submit.args.machineSelection,{mode:'auto'});
@@ -157,7 +157,7 @@ test('pending upload cleanup discovers UUIDs without original source and never f
 test('auto run pins the development release but sends opt-in target selection without changing saved context',async t=>{
   const f=await fixture(t);await f.save({projectsByMachine:{'gpu-1':'alpha'}});
   for(const alias of ['--machine','--on']){
-    const value=await f.cli(['run',alias,'auto','--candidates','2,1','--key',JOB,'-g','2','--','python','train.py']);
+    const value=await f.cli(['run',alias,'auto','--release',RELEASE,'--candidates','2,1','--key',JOB,'-g','2','--','python','train.py']);
     assert.equal(value.code,0,value.stderr);
     assert.deepEqual(f.calls.at(-2),{operation:'projects.status',args:{machine:'gpu-1',project:'alpha'}});
     assert.deepEqual(f.calls.at(-1).args.machineSelection,{mode:'auto',candidates:['gpu-2','gpu-1']});
@@ -281,11 +281,12 @@ test('terminal status/close are noninteractive exact-ID recovery commands, never
  assert.equal(f.calls.some(c=>['terminal.open','terminal.exchange'].includes(c.operation)),false);
 });
 
-test('run selects latest READY release without publishing; exact argv and dataset refs preserved',async t=>{
+test('run uses live workspace without publishing; exact argv and dataset refs preserved',async t=>{
   const f=await fixture(t);await f.save({projectsByMachine:{'gpu-1':'alpha'}});
   const result=await f.cli(['run','-g','2','--key',JOB,'--data','images@'+OLDER,'--','python','train.py','-g','private','--json']);
   assert.equal(result.code,0,result.stderr);
-  assert.deepEqual(f.calls.at(-1),{operation:'jobs.submit',args:{machine:'gpu-1',cards:2,minVramGiB:0,name:'train',argv:['python','train.py','-g','private','--json'],key:JOB,project:'alpha',release:RELEASE,datasets:[{dataset:'images',version:OLDER}],prepareData:true}});
+  assert.deepEqual(f.calls.at(-2),{operation:'projects.workspace',args:{machine:'gpu-1',project:'alpha'}});
+  assert.deepEqual(f.calls.at(-1),{operation:'jobs.submit',args:{machine:'gpu-1',cards:2,minVramGiB:0,name:'train',argv:['python','train.py','-g','private','--json'],key:JOB,project:'alpha',datasets:[{dataset:'images',version:OLDER}],prepareData:true}});
   assert.equal(f.calls.some(c=>c.operation==='projects.publish'),false);
   assert.equal((await f.cli(['run','--release',OLDER,'--','python','train.py'])).code,0);
   assert.equal(f.calls.at(-1).args.release,OLDER);
@@ -294,7 +295,7 @@ test('run selects latest READY release without publishing; exact argv and datase
 test('run refuses missing or unready release before jobs.submit and never chooses another machine',async t=>{
   const f=await fixture(t);await f.save({projectsByMachine:{'gpu-1':'alpha'}});
   f.setReleases([{release:RELEASE,state:'PUBLISHING'}],RELEASE);
-  let result=await f.cli(['run','--','true']);assert.equal(result.code,1);assert.match(result.stderr,/project publish/);
+  let result=await f.cli(['run','--release',RELEASE,'--','true']);assert.equal(result.code,1);assert.match(result.stderr,/project publish/);
   assert.equal(f.calls.some(c=>c.operation==='jobs.submit'),false);
   f.calls.length=0;result=await f.cli(['run','auto','--legacy','--','true']);assert.equal(result.code,1);assert.match(result.stderr,/手选服务器/);
   assert.equal(f.calls.some(c=>c.operation!=='state'),false);

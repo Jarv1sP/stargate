@@ -404,6 +404,12 @@ export function terminalUI(store,toast){
     if(session?.id===id){ensureDialog();if(!dialog.open){dialog.showModal();revealMotion();}fit?.fit();term?.focus();return;}
     openTerminal({id:'terminal-'+(known.dataWorkspace?'data-':known.hostAdmin?'root-':'')+'reconnect',disabled:false},known);
   });
+  document.addEventListener('click',event=>{
+    const button=event.target.closest('[data-gpu-shell]');if(!button)return;
+    const job=store.data?.jobs?.find(job=>job.id===button.dataset.gpuShell);
+    if(!job?.interactive||job.userId!==store.principal?.userId||job.state!=='RUNNING')return;
+    openTerminal({id:'terminal-reconnect',disabled:false},{id:job.id,machine:job.machine,project:job.project,userId:job.userId});
+  });
   document.addEventListener('gpuq-terminal-state-request',announce);
   document.addEventListener('gpuq-maintenance-state',syncMaintenance);
   document.addEventListener('gpuq-maintenance-root',event=>{

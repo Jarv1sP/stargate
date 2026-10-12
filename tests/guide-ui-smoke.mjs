@@ -179,9 +179,9 @@ try{
       assert.equal(await explanation.getAttribute('class'),'guide-explanation');
       assert.equal(await explanation.evaluate(node=>node.open),false,'container details stay out of the first-screen explanation budget');
       await explanation.locator('summary').click();
-      assert.match(await explanation.innerText(),/容器内 root 不是服务器 root，开发阶段无 GPU/);
-      assert.match(await explanation.innerText(),/发布前先结束所有开发终端/);
-      assert.match(await explanation.innerText(),/先选好要训练的版本.*训练固定该镜像版本/);
+      assert.match(await explanation.innerText(),/容器内 root 不是服务器 root/);
+      assert.match(await explanation.innerText(),/多个终端与训练共用代码、环境、HOME 和输出/);
+      assert.match(await explanation.innerText(),/GPU 仍由调度器分配/);
       const containerCommand=explanation.locator('p>code').filter({hasText:'gpuctl project create system-project'});
       assert.equal(await containerCommand.evaluate(node=>getComputedStyle(node).whiteSpace),'nowrap','desktop inline command stays on one line');
       assert.equal(await containerCommand.evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);return range.getClientRects().length;}),1);

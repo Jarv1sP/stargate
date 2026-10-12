@@ -322,7 +322,9 @@ class ProjectOperations:
     def status(self, args):
         result = self.store.status(*self.identity(args))
         result['lifecycle'] = self.lifecycle().view(*self.identity(args))
-        result['publicationProtocol'] = 1
+        if result.get('environmentMode') == 'oci':
+            result['workspace'] = {'protocol': 1, 'persistent': True, 'codeWritable': True,
+                                   'homeShared': True, 'outputsShared': True}
         local = None
         pointer=self.folder/(self.key(args)+'.local-import.json')
         if pointer.exists():
@@ -335,6 +337,10 @@ class ProjectOperations:
             result['codeSync']['warnings']=self.store.size_warnings(session['totalBytes'])
             if canceled is not None:result['codeSync'].update(state='CANCELED',key=session['key'],snapshotId=session['session'],preservesBytes=True)
             elif session['state']!='CODE_READY':result.update(state='SYNCING',error='Code sync incomplete; resume or cancel its original UUID')
+        if result.get('workspace', {}).get('protocol') == 1:
+            result['developmentTerminals'] = self.development_terminals(args)
+            return result
+        result['publicationProtocol'] = 1
         pending = self.pending(args)
         observed = pending
         if pending.get('state') == 'PUBLISHING':
@@ -444,13 +450,26 @@ class ProjectOperations:
             return result
         identity = self.identity(args)
         if operation == 'projects.status': return self.status(args)
+        if operation == 'projects.workspace':
+            with self.guard(args):
+                # Only migration from an unfinished legacy operation waits.
+                # Existing terminals and unrelated files are not a run gate.
+                self.writable(args)
+                paths = self.store.activate_workspace(*identity)
+                if paths['environmentMode'] == 'oci':
+                    self.store._oci(identity[0]).workspace_container(identity[1])
+                return self.status(args)
         if operation == 'projects.verify':
             self.store.admit(*identity)
+            if self.store._project(*identity)[1].get('runtime') == 'workspace':
+                raise ValueError('This project uses its live workspace; submit without a release')
             release = self.store.release(*identity, args['release'])
             return {'project':args['project'],'release':args['release'],'state':'READY'}
         with self.guard(args):
             if operation == 'projects.create': return self.store.create(*identity, environment_mode=args.get('environmentMode'))
             if operation != 'projects.publish': raise ValueError('Unknown project operation')
+            if self.store._project(*identity)[1].get('runtime') == 'workspace':
+                raise ValueError('Workspace projects run directly; publication is no longer required or supported')
             pending = self.pending(args)
             original = self.receipt(args)
             if ('key' in args and original.get('publicationId') == args['key']
@@ -578,7 +597,7 @@ class ProjectOperations:
             spec = json.loads((self.n.ROOT/'jobs'/(jid+'.json')).read_text())
             if spec.get('userId') != user or spec.get('project') != project:
                 raise ValueError('Run is not owned by this project')
-            root = self.store.existing_run_paths(user, project, spec['release'], jid)['output']
+            root = self.store.existing_run_paths(user, project, spec.get('release'), jid)['output']
             return self.n.file_op(operation,args,root=root)
         if area != 'code' or args.get('runId') is not None: raise ValueError('Invalid project file area')
         root = self.store.dev_paths(user,project)['code']

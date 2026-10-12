@@ -18,6 +18,7 @@ async function fixture(){
   calls.push({machine,operation,args});
   if(operation==='projects.quota')return {enabled:false,enforcement:null,owner:args.userId,volumes:null};
   if(operation==='projects.verify')return {project:args.project,release:args.release,state:ready?'READY':'DRAFT'};
+  if(operation==='projects.workspace')return {project:args.project,state:ready?'AVAILABLE':'DRAFT',workspace:{protocol:1,persistent:true}};
   if(operation==='projects.copy.probe'){
    assert.deepEqual(Object.keys(args).sort(),['project','release','userId']);
    assert.equal(service.store.get(args.userId).enabled,true);assert.ok(service.store.get(args.userId).limits[machine]>0);
@@ -26,6 +27,10 @@ async function fixture(){
     project:args.project,release:args.release,releaseReady:ready,image,sources:[],...projectFootprint};
   }
   if(operation==='storage.training.plan'){
+   if(args.workspace){
+    assert.equal(args.projectFootprint,null);assert.equal(Object.hasOwn(args,'release'),false);
+    return trainingPlan(machine,args);
+   }
    assert.deepEqual(Object.keys(args).sort(),['datasetFootprints','datasetReadMode','datasets','hostAdmin','project','projectFootprint','release','userId']);
    assert.equal(service.store.get(args.userId).enabled,true);assert.ok(service.store.get(args.userId).limits[machine]>0);
    assert.equal(args.hostAdmin,false);assert.equal(args.project,'my-project');assert.equal(args.release,release);
@@ -236,7 +241,20 @@ test('project jobs pin one release and verify it before quota reservation',async
   assert.equal(Object.hasOwn(result,'trainingStoragePlan'),false);assert.equal(Object.hasOwn(f.calls.find(c=>c.operation==='sync').args.job,'trainingStoragePlan'),false);
   assert.equal((await f.call('jobs.submit',args)).result.id,result.id);
   await assert.rejects(f.call('jobs.submit',{...args,release:'b'.repeat(64)}),e=>e.status===409);
-  for(const bad of [{project:undefined},{release:undefined},{project:'../bad'},{release:'latest'}])await assert.rejects(f.call('jobs.submit',{...args,key:randomUUID(),...bad}));
+  for(const bad of [{project:undefined},{project:'../bad'},{release:'latest'}])await assert.rejects(f.call('jobs.submit',{...args,key:randomUUID(),...bad}));
+ }finally{await f.close();}
+});
+test('live workspace submission reaches dispatch without release verification or image-copy probes',async()=>{
+ const f=await fixture();try{
+  const args={project:'my-project',cards:1,argv:['python','test.py'],key:randomUUID()};
+  f.ready(false);await assert.rejects(f.call('jobs.submit',args),e=>e.status===409);
+  assert.equal(f.service.store.jobs.length,0);
+  f.ready(true);const result=(await f.call('jobs.submit',args)).result;await f.settle();
+  assert.equal(result.workspace,true);assert.equal(Object.hasOwn(result,'release'),false);
+  assert.equal(f.calls.find(c=>c.operation==='sync').args.job.workspace,true);
+  assert.equal(f.calls.some(c=>['projects.verify','projects.copy.probe','projects.publish'].includes(c.operation)),false);
+  assert.equal((await f.call('jobs.submit',args)).result.id,result.id);
+  await assert.rejects(f.call('jobs.submit',{...args,workspace:true}),e=>e.status===400);
  }finally{await f.close();}
 });
 test('publication key is publish-only and cannot supply another owner or host privileges',async()=>{

@@ -138,7 +138,7 @@ export async function trainingStoragePlan(service,user,machine,request,{projectP
   const mode=request.datasetReadMode||'cache',project=request.project||{},logical=request.datasets||[];
   if(!['cache','warehouse'].includes(mode))fail('数据读取模式无效。','TRAINING_STORAGE_INVALID',400);
   let projectFootprint=null;
-  if(project.project){
+  if(project.project&&!project.workspace){
     from=from||machine;
     if(!projectProbe)projectProbe=await read(()=>service.projectCopyProbe(user.id,from,project),'固定项目版本或镜像容量尚未确认；未启动准备。');
     check();projectFootprint=projectStorageFootprint(projectProbe,project,from);

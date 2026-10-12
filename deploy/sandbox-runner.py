@@ -108,11 +108,7 @@ def project_runtime(spec,root,cfg,jid,terminal):
     module=importlib.util.spec_from_file_location('gpuq_project_store',HERE/'project-store.py')
     store_module=importlib.util.module_from_spec(module);sys.modules[module.name]=store_module;module.loader.exec_module(store_module)
     store=store_module.ProjectStore(root,cfg['conda'],reserve_bytes=store_module.workspace_reserve_bytes(cfg),config=cfg)
-    if terminal:
-        paths=store.dev_paths(spec['userId'],spec['project'])
-        return {**paths,'output':paths['scratch'],'readonly':False,'environmentMode':store.environment_mode(spec['userId'],spec['project'])}
-    release=store.release(spec['userId'],spec['project'],spec['release'])
-    return {**release,**store.run_paths(spec['userId'],spec['project'],spec['release'],jid),'readonly':True,'environmentMode':release['meta'].get('environmentMode','shared')}
+    return store.runtime_paths(spec,jid,terminal)
 
 def project_path(mode,resources=False):
     if mode not in ('shared','isolated'):raise ValueError('Invalid project environment mode')
@@ -152,7 +148,7 @@ def workspace_admission(cfg,root):
     # Host-root terminals do not use this sandbox runner. No periodic policing.
     if 'workspaceReserveBytes' not in cfg:return
     module=local_module('gpuq_workspace_storage','project-store.py')
-    module.require_workspace_space(root,module.workspace_reserve_bytes(cfg))
+    module.require_workspace_space(root,module.workspace_start_reserve(cfg))
 
 def oci_runtime_spec(spec,jid,terminal):
     # Legacy terminal metadata has no job ID. The validated on-disk filename

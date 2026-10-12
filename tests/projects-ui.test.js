@@ -55,7 +55,11 @@ test('training pins only a READY immutable release, never latest or the publishi
   const project={project:'vision',state:'PUBLISHING',latestReadyRelease:release,releases:[{release,state:'READY'},{release:future,state:'PUBLISHING'},{release:'latest',state:'READY'},{release,state:'READY'}]};
   assert.deepEqual(readyReleases(project),[{release,state:'READY'}]);
   assert.deepEqual(trainingProject(project,release),{project:'vision',release});
-  for(const version of ['latest',future,undefined,''])assert.throws(()=>trainingProject(project,version),/版本/);
+  for(const version of ['latest',future])assert.throws(()=>trainingProject(project,version),/版本/);
+  for(const version of [undefined,'']){
+    assert.throws(()=>trainingProject(project,version),/版本/);
+    assert.deepEqual(trainingProject({...project,workspace:{protocol:1}},version),{project:'vision'});
+  }
   assert.deepEqual(trainingProject(null,release),{});
   assert.deepEqual(readyReleases({releases:{release,state:'READY'}}),[]);
   assert.deepEqual(readyReleases({releases:[{release:[release],state:'READY'}]}),[]);

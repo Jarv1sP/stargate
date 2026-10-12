@@ -26,7 +26,7 @@ test('guide CLI examples use registered options and a single data preparation wo
     if(argv[0]==='transfer')transfers++;
     if(argv[0]==='task-label')taskLabels.push(argv);
     const result=parseCLIOptions(argv);assert.ok(result.positionals.length,line);parsed++;
-    if(argv[0]==='run')assert.ok(result.training.length,'run needs executable argv after --: '+line);
+    if(argv[0]==='run'){if(result.options.interactive)assert.equal(result.training.length,0);else assert.ok(result.training.length,'run needs executable argv after --: '+line);}
   }
   assert.ok(parsed>=27);assert.equal(metadata,5);assert.ok(transfers>=6);
   assert.deepEqual(taskLabels,[['task-label','get','MACHINE_ID','NODE_JOB_ID','--json'],
@@ -80,7 +80,7 @@ test('CLI-first path binds login, fixed releases and original upload recovery',(
   assert.equal(parsedLogin.options.url,'https://gpu.example.com');
   assert.match(chapters.get('start'),/Windows 与 WSL 分别安装、分别登录/);
   const firstRun=chapters.get('training').match(/^gpuctl run .+$/m)?.[0];
-  assert.equal(parseCLIOptions(words(firstRun).slice(1)).options.release,'FULL_HASH');
+  assert.equal(parseCLIOptions(words(firstRun).slice(1)).options.release,undefined);
   const data=chapters.get('data');
   assert.match(data,/现役 CLI 接收本机目录；压缩包先在本机解压/);
   assert.ok(data.indexOf('Expand-Archive')<data.indexOf('gpuctl data upload ./my-data'));

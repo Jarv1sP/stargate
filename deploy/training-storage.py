@@ -49,14 +49,22 @@ def load(executor, name):
 
 def validate(args):
     fields = {'userId', 'hostAdmin', 'datasets', 'datasetReadMode', 'projectFootprint', 'datasetFootprints'}
-    need(isinstance(args, dict) and fields <= set(args) <= fields | {'project', 'release'}
+    need(isinstance(args, dict) and fields <= set(args) <= fields | {'project', 'release', 'workspace'}
          and OWNER.fullmatch(args.get('userId', '')) and args['hostAdmin'] is False
          and args['datasetReadMode'] in ('cache', 'warehouse'), 'Invalid private training storage fields')
-    need(('project' in args) == ('release' in args), 'Incomplete fixed project identity')
+    live = 'workspace' in args
+    if live:
+        need(args['workspace'] is True and 'project' in args and 'release' not in args,
+             'Invalid live workspace identity')
+    else:
+        need(('project' in args) == ('release' in args), 'Incomplete fixed project identity')
     project = args.get('project')
     footprint = args['projectFootprint']
     if project is None:
         need(footprint is None, 'Unexpected project footprint')
+    elif live:
+        need(isinstance(project, str) and SLUG.fullmatch(project) and footprint is None,
+             'Live workspace must not request a project copy')
     else:
         need(isinstance(project, str) and SLUG.fullmatch(project)
              and isinstance(args['release'], str) and HASH.fullmatch(args['release'])
@@ -95,6 +103,11 @@ def _project_need(executor, args):
     if 'project' not in args:
         return 65536, 16
     store = executor.projects().store
+    if args.get('workspace') is True:
+        store.admit(args['userId'], args['project'])
+        need(store._project(args['userId'], args['project'])[1].get('runtime') == 'workspace',
+             'Workspace has not been initialized')
+        return 65536, 16
     try:
         release = store.release(args['userId'], args['project'], args['release'])
     except Exception as error:
@@ -311,7 +324,7 @@ def plan(executor, args, *, _existing_upload=None):
     guard = s.check_platform_root(executor.ROOT)
     need(isinstance(guard, dict) and guard.get('guarded') is True, 'Training workspace root is not guarded')
     project_bytes, project_inodes = _project_need(executor, args)
-    reserve = s.workspace_reserve_bytes(executor.CONFIG)
+    reserve = s.workspace_start_reserve(executor.CONFIG) if args.get('workspace') else s.workspace_reserve_bytes(executor.CONFIG)
     cache_budget = {'enabled': False, 'budgetBytes': None, 'usedOrReservedBytes': 0, 'requiredBytes': 0}
     with s.directory(executor.ROOT) as workspace:
         workspace_identity = os.fstat(workspace)

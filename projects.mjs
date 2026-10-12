@@ -16,7 +16,7 @@ export async function projectCall(service,principal,user,operation,args,authoriz
   const presentation=await projectCatalogCall(service,principal,user,operation,args,authorizedMachine);
   if(presentation!==undefined)return presentation;
   const lifecycle=['projects.archive','projects.unarchive','projects.retire.plan','projects.retire','projects.retire.status'].includes(operation);
-  if(!lifecycle&&!['projects.list','projects.quota','projects.create','projects.status','projects.publish','projects.local-import.begin','projects.local-import.status','projects.local-import.cancel'].includes(operation))return undefined;
+  if(!lifecycle&&!['projects.list','projects.quota','projects.create','projects.status','projects.workspace','projects.publish','projects.local-import.begin','projects.local-import.status','projects.local-import.cancel'].includes(operation))return undefined;
   authorizedMachine(args.machine);
   const ownerOnly=['projects.list','projects.quota'].includes(operation);
   const allowed=ownerOnly?['machine']:['machine','project'];
@@ -40,7 +40,7 @@ export async function projectCall(service,principal,user,operation,args,authoriz
   if(operation.startsWith('projects.local-import.')&&args.key===undefined)fail('同机导入必须使用固定 UUID 操作标识。');
   const reference=ownerOnly?{}:projectReference(args,{optional:false});
   if(operation==='projects.create')await service.ociProjectAdmission?.(args.machine,user.id,args.project,{creatingOCI:true});
-  if(operation==='projects.publish')await service.ociProjectAdmission?.(args.machine,user.id,args.project);
+  if(['projects.publish','projects.workspace'].includes(operation))await service.ociProjectAdmission?.(args.machine,user.id,args.project);
   const priorJobs=service.store.jobs.filter(job=>job.userId===user.id&&job.machine===args.machine&&job.project===args.project);
   if(operation==='projects.retire'&&priorJobs.some(job=>!['SUCCEEDED','FAILED','CANCELED','STOPPED'].includes(job.state)))fail('项目仍有进行中或待确认的任务，不能退役。',409);
   if(operation==='projects.archive'&&priorJobs.some(job=>!['SUCCEEDED','FAILED','CANCELED'].includes(job.state)&&!job.nodeJobId))fail('已有任务尚未确认派发到节点；先核对其原状态，再归档项目。',409);

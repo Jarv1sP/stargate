@@ -595,7 +595,11 @@ class PersonalOCI:
             # leave an unused container, but never loses the acknowledged image.
             self.s.atomic_json(self.state_path(slug), value)
             self.run('rm', old)
-        elif not IMAGE.fullmatch(value['image']):
+        return self.ensure_base_image(slug, value)
+
+    def ensure_base_image(self, slug, value):
+        """Resolve the initial template once, not the user's live environment."""
+        if not IMAGE.fullmatch(value['image']):
             image = self.offline_base()
             if image is None:
                 self.run('pull', '--signature-policy', str(SIGNATURE_POLICY), '--quiet', '--policy=missing',
@@ -604,6 +608,37 @@ class PersonalOCI:
             value['image'] = image
             self.s.atomic_json(self.state_path(slug), value)
         return value
+
+    def workspace_container(self, slug):
+        """Keep the writable filesystem. Opening another shell never commits it."""
+        with self.locked(slug):
+            head=self.load(slug)
+            if head['container'] is None:
+                head=self.ensure_base_image(slug,head)
+                head['container']='gpuq-dev-'+uuid.uuid4().hex
+                self.s.atomic_json(self.state_path(slug),head)
+                self.run('create','--name',head['container'],'--network=none',
+                         '--label','io.gpuq.owner='+self.owner,'--label','io.gpuq.project='+slug,
+                         '--entrypoint','/bin/sh',head['image'])
+            rows=json.loads(self.run('container','inspect',head['container']))
+            need(len(rows)==1 and rows[0].get('Config',{}).get('Labels',{}).get('io.gpuq.owner')==self.owner
+                 and rows[0].get('Config',{}).get('Labels',{}).get('io.gpuq.project')==slug,
+                 'Workspace container ownership is unconfirmed')
+            return head
+
+    def execute_workspace(self, spec, flags, registry_env):
+        head=self.workspace_container(spec['project'])
+        request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
+                 'container':head['container'],'owner':self.owner,'project':spec['project'],
+                 'execution':'gpuq-live-'+uuid.uuid4().hex,'flags':flags,'argv':spec['argv']}
+        if spec.get('interactive'):
+            request['terminalSocket']=str(self.root/'terminals'/(spec['id']+'.sock'))
+        path=self.folder/'tmp'/('live-'+uuid.uuid4().hex+'.json')
+        self.s.atomic_json(path,request)
+        try:
+            return self.call(self.command('unshare','/usr/bin/python3',str(HERE/'workspace-rootfs.py'),str(path)),
+                             env=registry_env,pass_fds=())
+        finally:path.unlink(missing_ok=True)
 
     def publish(self, slug):
         self.verify_host()
@@ -873,8 +908,8 @@ class PersonalOCI:
                 '--env=GPUQ_PROJECT_ENV_MODE=oci', '--env=GPUQ_OFFLINE_ASSETS=/workspace/offline',
                 '--env=GPUQ_CONSOLE_JOB_ID='+spec.get('id', ''), '--env=NCCL_CUMEM_HOST_ENABLE=0',
                 '--env=LANG=C.UTF-8', '--env=PYTHONUNBUFFERED=1',
-                '--env=NVIDIA_VISIBLE_DEVICES=void', '--unsetenv=CUDA_VISIBLE_DEVICES',
-                '--env=GPUQ_PROJECT_RELEASE='+spec.get('release', 'development')]
+                '--env=NVIDIA_VISIBLE_DEVICES=void', '--unsetenv=CUDA_VISIBLE_DEVICES']
+        args += ['--unsetenv=GPUQ_PROJECT_RELEASE'] if project.get('workspace') else ['--env=GPUQ_PROJECT_RELEASE='+spec.get('release', 'development')]
         for fd, target, readonly in mounts:
             need(type(fd) is int and fd >= 0 and isinstance(target, str) and target.startswith('/')
                  and '..' not in Path(target).parts and ':' not in target, 'Unsafe OCI mount')
@@ -890,6 +925,7 @@ class PersonalOCI:
             protected_file(CDI, self.policy['cdiSHA256'])
             for device in cdi_devices(CDI.read_bytes(), uuids):
                 args += ['--device', device]
+            if spec.get('interactive'):args+=['--interactive','--tty','--env=TERM=xterm-256color']
         args += translate_control(list(control), getattr(self, '_mount_sources', {}))
         return args
 
@@ -1011,6 +1047,8 @@ class PersonalOCI:
         # Read the kernel limits too; Delegate=yes or systemctl metadata alone
         # cannot establish the CPU, memory and PID budget of this payload.
         module('job-resources').read_budget(spec, group, uuids, terminal)
+        if project.get('workspace') is True:
+            return self.execute_workspace(spec,flags,registry_env)
         if terminal:
             with self.locked(spec['project']):
                 head = self.checkpoint(spec['project'])
@@ -1040,7 +1078,7 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
     """Both existing scheduler profiles enter here after allocation/limits."""
     owner = PersonalOCI(config, spec['userId'])
     owner.stderr_sink = stderr_sink
-    mounts = [(workfd, '/workspace', not terminal), (project_fds['home'], '/home/gpuq', False),
+    mounts = [(workfd, '/workspace', project.get('readonly', not terminal)), (project_fds['home'], '/home/gpuq', False),
               (project_fds['output'], '/outputs', False)]
     mounts += [(fd, target, True) for fd, target in dataset_fds]
     if datafd is not None:
@@ -1058,7 +1096,8 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
     try:
         # Add helpers without hiding an image's own Conda/venv PATH. No host
         # environment forwarding: the immutable image supplies its base PATH.
-        image = project['meta']['oci']['image'] if not terminal else owner.load(spec['project'])['image']
+        image = (owner.workspace_container(spec['project'])['image'] if project.get('workspace') is True
+                 else project['meta']['oci']['image'] if not terminal else owner.load(spec['project'])['image'])
         if not IMAGE.fullmatch(image):
             # A new development base is pulled/checkpointed by execute(). A
             # conservative standard PATH suffices until the first checkpoint.

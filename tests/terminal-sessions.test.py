@@ -45,6 +45,7 @@ class TerminalSessions(unittest.TestCase):
             def connect(self,path):self.jid=Path(path).stem
             def sendall(self,data):outer.inputs.append((self.jid,json.loads(data)))
             def recv(self,size):return b'{"offset":0,"data":"","exited":false}\n'
+        self.original_stop=self.n.stop_terminal
         self.patches=[patch.object(self.n,'run',side_effect=start),patch.object(self.n,'stop_terminal',side_effect=stop),
                       patch.object(self.n,'terminal_alive',side_effect=lambda folder,jid:jid in self.alive),
                       patch.object(self.n.socket,'socket',side_effect=lambda *a:Socket())]
@@ -155,16 +156,29 @@ class TerminalSessions(unittest.TestCase):
             self.n.process('terminal.open',{**self.context,'key':uid()})
         self.assertEqual(self.starts,[]);self.assertEqual(self.stops,[])
 
-    def test_project_publication_sees_all_independent_session_fences(self):
+    def test_gpu_shell_close_waits_for_its_native_attempt_without_stopping_other_units(self):
+        jid=uid();folder=self.n.ROOT/'terminals';folder.mkdir(exist_ok=True)
+        job={'id':jid,'userId':'demo-user-1','interactive':True}
+        self.n.atomic_json(folder/(jid+'.json'),job)
+        jobs=self.n.ROOT/'jobs';jobs.mkdir(exist_ok=True);self.n.atomic_json(jobs/(jid+'.json'),job)
+        with patch.object(self.n,'process',return_value={'state':'CANCELING'}) as cancel, \
+                patch.object(self.n,'terminal_unit_observation',side_effect=[({},None,False),({},None,True)]) as observe, \
+                patch.object(self.n.time,'sleep'),patch.object(self.n.subprocess,'run',side_effect=AssertionError('No unrelated unit stop')):
+            self.original_stop(jid)
+        cancel.assert_called_once_with('cancel',{'job':job})
+        self.assertEqual(observe.call_count,2)
+
+    def test_workspace_adoption_preserves_independent_sessions_and_disables_publication(self):
         context={**self.context,'hostAdmin':False,'project':'test'}
         self.n.process('projects.create',{'userId':context['userId'],'project':'test'})
         a,ar=self.open(context);b,br=self.open(context)
         self.assertEqual(len(self.n.terminal_pointers(context)),2)
         with patch.object(self.n.projects(),'terminal_stopped',return_value=True):
             self.n.process('terminal.close',self.connection(a,ar))
-        with self.assertRaisesRegex(ValueError,'Close'):
+        with self.assertRaisesRegex(ValueError,'Workspace projects run directly'):
             self.n.process('projects.publish',{'userId':context['userId'],'project':'test'})
         self.assertIn(br['id'],self.alive)
+        self.assertEqual(self.n.projects().store.status(context['userId'],'test')['workspace']['protocol'],1)
 
     def test_new_key_does_not_replace_a_dead_or_unknown_existing_key(self):
         request,result=self.open();self.alive.clear()

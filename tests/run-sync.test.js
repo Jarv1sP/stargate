@@ -110,7 +110,7 @@ test('an earlier uploaded file changing while a later file uploads prevents publ
   assert.equal(f.calls.some(c=>c.operation==='projects.publish'),false);
 });
 
-test('real CLI loopback: Unicode/space cwd, literal argv, own READY and one submit; invalid modes do not write',async t=>{
+test('real CLI loopback: upload directly to workspace and submit once without publishing',async t=>{
   const f=await fixture(t),directory=join(f.directory,'研究 project & space');await mkdir(directory);await writeFile(join(directory,'train.py'),'new');
   const session=join(f.directory,'session.json'),calls=[],principal={userId:'member-test',role:'member',username:'测试'};
   let publication=null,failed=false,lostSubmit=false;const uploaded=new Map();
@@ -119,7 +119,11 @@ test('real CLI loopback: Unicode/space cwd, literal argv, own READY and one subm
     res.setHeader('Content-Type','application/json');assert.equal(req.headers.authorization,'Bearer fixture-only');
     if(operation==='state')return res.end(JSON.stringify({state:{demo:false,gpuqConnected:true,machines:[{id:'gpu-1'}],users:[],jobs:[]}}));
     let result;
-    if(operation==='files.upload.status')result={protocol:2,state:'ABSENT',complete:false,path:args.path,receivedBytes:0};
+    if(operation==='projects.workspace'){
+      if(failed){res.statusCode=409;return res.end(JSON.stringify({error:'workspace unavailable'}));}
+      result={project:args.project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
+    }
+    else if(operation==='files.upload.status')result={protocol:2,state:'ABSENT',complete:false,path:args.path,receivedBytes:0};
     else if(operation==='files.put'){uploaded.set(args.path,{path:args.path,size:args.totalSize,sha256:args.sha256});result={complete:args.final,size:args.totalSize,sha256:args.sha256};}
     else if(operation.startsWith('projects.snapshot.')){
       assert.equal(args.release,FRESH);const raw=Buffer.from(JSON.stringify({schema:1,directories:[],files:[...uploaded.values()]}));
@@ -140,7 +144,8 @@ test('real CLI loopback: Unicode/space cwd, literal argv, own READY and one subm
   });
   let result=await cli(['run','--sync','--key',key,'--','python','train.py','--name','hello & world']);assert.equal(result.code,0,result.stderr);
   assert.equal(calls.filter(c=>c.operation==='jobs.submit').length,1);
-  assert.deepEqual(calls.at(-1).args,{machine:'gpu-1',cards:1,minVramGiB:0,name:'train',argv:['python','train.py','--name','hello & world'],key,project:'alpha',release:FRESH});
+  assert.deepEqual(calls.at(-1).args,{machine:'gpu-1',cards:1,minVramGiB:0,name:'train',argv:['python','train.py','--name','hello & world'],key,project:'alpha'});
+  assert.equal(calls.some(c=>c.operation==='projects.publish'||c.operation.startsWith('projects.snapshot.')),false);
   const before=await readFile(session,'utf8');calls.length=0;failed=true;
   result=await cli(['run','--sync','--sync-dir',directory,'--','python','train.py']);assert.equal(result.code,1);assert.equal(calls.some(c=>c.operation==='jobs.submit'),false);
   assert.equal(await readFile(session,'utf8'),before);

@@ -50,6 +50,27 @@ test('one submission normalizer preserves persisted legacy digest layouts',()=>{
   assert.throws(()=>normalizeJobSubmission(inherited,principal));
 });
 
+test('a project without a release runs its live workspace and never silently moves nodes',()=>{
+  const args={machine:MACHINES[0].id,project:'vision',cards:1,argv:['python','test.py'],key:randomUUID()};
+  const request=normalizeJobSubmission(args,{role:'member'});
+  assert.deepEqual(request.project,{project:'vision',workspace:true});
+  const job=createSubmittedJob(request,{id:'demo-user-1',username:'alice'},true);
+  assert.equal(job.spec.workspace,true);assert.equal(Object.hasOwn(job.spec,'release'),false);
+  assert.throws(()=>normalizeJobSubmission({...args,machine:'auto'},{role:'member'}),/跨机/);
+  assert.throws(()=>normalizeJobSubmission({...args,workspace:true},{role:'member'}),/提交参数/);
+});
+
+test('GPU shell is a normal scheduled workspace job, not an unscheduled terminal',()=>{
+  const args={machine:MACHINES[0].id,project:'vision',interactive:true,cards:1,
+    argv:['/bin/bash','--noprofile','--norc','-i'],key:randomUUID()};
+  const request=normalizeJobSubmission(args,{role:'member'});
+  const job=createSubmittedJob(request,{id:'demo-user-1',username:'alice'},true);
+  assert.equal(job.spec.interactive,true);assert.equal(job.spec.workspace,true);assert.equal(job.cards,1);
+  assert.notEqual(request.digest,normalizeJobSubmission({...args,interactive:undefined},{role:'member'}).digest);
+  for(const extra of [{release:'a'.repeat(64)},{project:undefined},{argv:['bash']},{interactive:false}])
+    assert.throws(()=>normalizeJobSubmission({...args,...extra},{role:'member'}));
+});
+
 test('validated request is independent of caller mutations and has one job/spec constructor',()=>{
   const args={machine:MACHINES[0].id,cards:1,argv:['python','train.py'],key:randomUUID(),scheduling:{rank:'P1'},datasets:[{dataset:'a',version:'a'.repeat(64)}]};
   const request=normalizeJobSubmission(args,{role:'member'}),digest=request.digest;

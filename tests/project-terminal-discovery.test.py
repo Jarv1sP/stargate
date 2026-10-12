@@ -98,7 +98,7 @@ class ProjectTerminalDiscovery(unittest.TestCase):
         self.assertEqual(next(row for row in value['sessions'] if row['id']==first['id'])['attachmentState'],'CLOSED')
         with patch.object(self.n, 'terminal_alive', side_effect=lambda _,jid:jid==second['id']), \
              patch.object(self.n, 'stop_terminal'), patch.object(self.ops, 'terminal_stopped', return_value=True):
-            with self.assertRaisesRegex(ValueError, 'Close.*'+second['id']):
+            with self.assertRaisesRegex(ValueError, 'Workspace projects run directly'):
                 self.ops.process('projects.publish', self.args)
         self.assertTrue((self.folder/(second['id']+'.sock')).exists())
 
