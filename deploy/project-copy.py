@@ -170,7 +170,7 @@ class ProjectCopies(t.TransferJobs):
              and source['project']==args['project'] and source['release']==args['release']
              and isinstance(source['token'],str) and re.fullmatch('[A-Za-z0-9_-]{43}',source['token'])
              and isinstance(source['manifestSha256'],str) and t.HASH.fullmatch(source['manifestSha256'])
-             and type(source['manifestBytes']) is int and 1<=source['manifestBytes']<=p.MAX_MANIFEST
+             and type(source['manifestBytes']) is int and 1<=source['manifestBytes']<=self.store.MAX_BYTES
              and type(source['totalBytes']) is int and 0<=source['totalBytes']<=self.store.MAX_BYTES
              and type(source['entries']) is int and 0<=source['entries']<=self.store.max_entries+7,'Invalid immutable project source grant')
         ProjectPeer(self.n.CONFIG.get('transferPeers',{}).get(machine),source).close()

@@ -3,6 +3,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {MACHINES} from './dist/model.js';
 import {projectReference,UUID} from './projects.mjs';
 const terminal=new Set(['SUCCEEDED','FAILED','CANCELED']);
+const phaseLabels={SOURCE_PREPARATION:'源端准备',TARGET_ADMISSION:'目标准入',TARGET_DISPATCH:'目标派发',CANCELLATION:'取消',CLEANUP:'清理'};
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const lanes=new WeakMap();
@@ -40,6 +41,9 @@ async function advance(service,id){return lane(service,id,async()=>{
     catch{row=save(service,row,'CANCELING',{cancelRequested:true,cancellationReason:'AUTHORIZATION_REVOKED'});}
   }
   const data=row.data;
+  let phase=data.sourceTicket?'TARGET_ADMISSION':'SOURCE_PREPARATION';
+  if(data.cancelRequested)phase='CANCELLATION';
+  else if(terminal.has(row.state))phase='CLEANUP';
   const maintained=()=>service.maintenanceFor?.(data.from)||service.maintenanceFor?.(data.machine);
   try{
     if((data.cancelRequested||terminal.has(row.state))&&!row.data.sourceRevoked){
@@ -80,26 +84,31 @@ async function advance(service,id){return lane(service,id,async()=>{
       const ticket=result.source;
       if(ticket?.id!==id||ticket.protocol!=='portable-project-v1'||ticket.state!=='READY'||ticket.project!==data.project||ticket.release!==data.release||
          typeof ticket.token!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(ticket.token))throw Error('项目源授权回执不匹配。');
-      row=save(service,row,'DISPATCHING',{sourceTicket:ticket});
+      row=save(service,row,'DISPATCHING',{sourceTicket:ticket,sourceState:'READY',error:null,errorCode:null,errorPhase:null});
     }
     authorized(service,row.owner_id,row.data);
     if(maintained()||read(service,id).data.cancelRequested)return view(row);
+    phase='TARGET_ADMISSION';
     await service.ociProjectAdmission?.(data.machine,row.owner_id,data.project,{creatingOCI:true});
     authorized(service,row.owner_id,row.data);
     if(maintained()||read(service,id).data.cancelRequested)return view(read(service,id));
+    phase='TARGET_DISPATCH';
     const result=await service.bridge(data.machine,'projects.copy.start',{...control,project:data.project,release:data.release,
       sourceMachine:data.from,source:row.data.sourceTicket});
     assertCopyResult(row,result);
     row=save(service,row,result.state==='READY'?'SUCCEEDED':result.state,
-      {bytes:result.bytes,totalBytes:result.totalBytes,error:result.error||null});
+      {sourceState:'READY',bytes:result.bytes,totalBytes:result.totalBytes,error:result.error||null,errorCode:null,errorPhase:null});
     return view(row);
   }catch(error){
     if(!terminal.has(row.state)){
       try{authorized(service,row.owner_id,row.data);}
-      catch{return view(save(service,row,'CANCELING',{cancelRequested:true,cancellationReason:'AUTHORIZATION_REVOKED'}));}
+      catch{return view(save(service,row,'CANCELING',{cancelRequested:true,cancellationReason:'AUTHORIZATION_REVOKED',
+        errorCode:'PROJECT_COPY_'+phase+'_UNCONFIRMED',errorPhase:phase}));}
     }
     return view(save(service,row,terminal.has(row.state)?row.state:'UNKNOWN',{
-      error:terminal.has(row.state)?row.data.error||null:'原节点结果未确认；请检查原复制任务，不会改派或重复创建。'}));
+      error:terminal.has(row.state)?row.data.error||null:`${phaseLabels[phase]}结果未确认；请查询原复制任务，不会改派或重复创建。`,
+      errorCode:terminal.has(row.state)?row.data.errorCode||null:'PROJECT_COPY_'+phase+'_UNCONFIRMED',
+      errorPhase:terminal.has(row.state)?row.data.errorPhase||null:phase}));
   }
 });}
 

@@ -57,11 +57,38 @@ test('fixed owner OCI copies are durable, idempotent, private and never use data
 test('accepted-but-lost response never creates another target or operation after restart',async t=>{
   const f=await fixture(t),args=request();f.lose();const first=await f.call('projects.replicate',args);
   assert.equal(first.state,'UNKNOWN');assert.equal(JSON.stringify(first).includes('private lost'),false);
+  assert.equal(first.errorPhase,'TARGET_DISPATCH');
+  assert.equal(first.errorCode,'PROJECT_COPY_TARGET_DISPATCH_UNCONFIRMED');
+  // Existing deployments could persist the READY ticket but leave the old
+  // source RUNNING projection. Recovery must normalize it without re-export.
+  const prior=JSON.parse(f.service.db.prepare('SELECT data FROM project_copies WHERE id=?').get(first.id).data);
+  prior.sourceState='RUNNING';
+  f.service.db.prepare('UPDATE project_copies SET data=? WHERE id=?').run(JSON.stringify(prior),first.id);
   await f.restart();const next=await f.call('projects.replicate',args);
   assert.equal(next.id,first.id);assert.equal(next.state,'RUNNING');assert.equal(f.nodes.size,1);
+  assert.equal(next.errorPhase,null);assert.equal(next.errorCode,null);
+  assert.equal(next.sourceState,'READY');
   assert.deepEqual(new Set(f.calls.filter(c=>c.op==='projects.copy.start').map(c=>c.host)),new Set([machine]));
   assert.equal(f.calls.filter(c=>c.op==='projects.copy.prepare').length,1);
   await assert.rejects(f.call('projects.replicate',{...args,project:'changed'}),e=>e.status===409);
+});
+test('source READY stays visible when target admission fails and resumes the same original copy',async t=>{
+  const f=await fixture(t),args=request();let blocked=true;
+  f.service.ociProjectAdmission=async(host,user,project,options)=>{
+    if(host===machine&&options?.creatingOCI&&blocked)throw Error('private admission diagnostic');
+  };
+  const first=await f.call('projects.replicate',args);
+  assert.equal(first.state,'UNKNOWN');assert.equal(first.sourceState,'READY');
+  assert.equal(first.errorPhase,'TARGET_ADMISSION');
+  assert.equal(first.errorCode,'PROJECT_COPY_TARGET_ADMISSION_UNCONFIRMED');
+  assert.equal(JSON.stringify(first).includes('private admission'),false);
+  assert.equal(f.calls.filter(c=>c.op==='projects.copy.start').length,0);
+  blocked=false;
+  const next=await f.call('projects.replication.status',{id:first.id});
+  assert.equal(next.id,first.id);assert.equal(next.state,'RUNNING');
+  assert.equal(next.errorPhase,null);
+  assert.equal(f.calls.filter(c=>c.op==='projects.copy.prepare').length,1);
+  assert.equal(f.calls.filter(c=>c.op==='projects.copy.start').length,1);
 });
 test('source, target, owner and strict fields are enforced for member and administrator',async t=>{
   const f=await fixture(t),args=request();
@@ -221,6 +248,8 @@ test('authorization revocation fences source even while target is unreachable; p
   assert.equal(attempted.some(c=>c.host===from&&c.op==='projects.copy.cancel'),false);
   let row=f.service.db.prepare('SELECT state,data FROM project_copies WHERE id=?').get(first.id),data=JSON.parse(row.data);
   assert.equal(row.state,'CANCELING');assert.equal(data.sourceRevoked,true);assert.notEqual(data.cleanupComplete,true);
+  assert.equal(data.errorPhase,'CANCELLATION');
+  assert.equal(data.errorCode,'PROJECT_COPY_CANCELLATION_UNCONFIRMED');
   unavailable=false;await f.service.reconcileProjectCopies();
   row=f.service.db.prepare('SELECT state,data FROM project_copies WHERE id=?').get(first.id);data=JSON.parse(row.data);
   assert.equal(row.state,'CANCELED');assert.equal(data.cleanupComplete,true);

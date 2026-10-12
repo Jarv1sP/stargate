@@ -94,6 +94,30 @@ class ProjectCopyTests(unittest.TestCase):
         self.assertTrue(self.dst.release(self.control())['cleaned'])
         self.assertTrue(release['code'].exists())
 
+    def test_target_admission_does_not_depend_on_removed_manifest_quota_constant(self):
+        ticket=self.prepare()['source']
+        args={**self.control(),'project':PROJECT,'release':self.release,'sourceMachine':'gpu-1','source':ticket}
+        portable=SimpleNamespace(**{key:value for key,value in vars(C.p).items() if key!='MAX_MANIFEST'})
+        with patch.object(C,'p',portable):
+            first=self.dst.start(args)
+            launches=len(self.calls)
+            again=self.dst.start(args)
+        self.assertEqual(first['id'],self.key)
+        self.assertEqual(again['id'],self.key)
+        self.assertEqual(len(self.calls),launches)
+        self.assertEqual(self.dst.worker(self.key,1),0)
+        self.assertEqual(self.dst.status(self.control())['state'],'SUCCEEDED')
+
+    def test_manifest_byte_count_is_exact_integer_not_arbitrary_capacity_quota(self):
+        ticket=self.prepare()['source']
+        args={**self.control(),'project':PROJECT,'release':self.release,'sourceMachine':'gpu-1','source':ticket}
+        with patch.object(self.dst,'start_spec',return_value={'validated':True}) as start:
+            for size in (True,0,-1,1.5,2**53):
+                with self.subTest(size=size),self.assertRaisesRegex(ValueError,'source grant'):
+                    self.dst.start({**args,'source':{**ticket,'manifestBytes':size}})
+            start.assert_not_called()
+            self.assertEqual(self.dst.start({**args,'source':{**ticket,'manifestBytes':64*1024**2+1}}),{'validated':True})
+
     def test_shared_export_cache_waits_for_all_references(self):
         first=self.prepare();other=str(uuid.uuid4());second=self.prepare(other)
         parent=self.src.portable.folder(USER,'exports',PROJECT)
