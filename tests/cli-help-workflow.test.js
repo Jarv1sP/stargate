@@ -9,7 +9,8 @@ const offline=args=>spawnSync(process.execPath,[cli,'--url','http://127.0.0.1:1'
 
 test('default help exposes one personal-project and warehouse-first workflow',()=>{
   const text=cliHelp();
-  for(const command of ['gpuctl login','gpuctl project create my-project','gpuctl push .','gpuctl ssh','gpuctl project publish','gpuctl project status','gpuctl run -g 1','gpuctl watch JOB','gpuctl diagnostics JOB','gpuctl pull --job JOB_ID','gpuctl data upload FILE.tar.gz --name NAME --via direct','gpuctl data prepare NAME@VERSION'])assert.ok(text.includes(command),command);
+  for(const command of ['gpuctl login','gpuctl project create my-project','gpuctl push .','gpuctl ssh','gpuctl run -g 1 --interactive','gpuctl ssh --job JOB_ID','gpuctl project status','gpuctl run -g 1','gpuctl watch JOB','gpuctl diagnostics JOB','gpuctl pull --job JOB_ID','gpuctl data upload FILE.tar.gz --name NAME --via direct','gpuctl data prepare NAME@VERSION'])assert.ok(text.includes(command),command);
+  assert.doesNotMatch(text,/gpuctl project publish|上传、发布/);
   assert.ok(text.indexOf('data upload FILE.tar.gz')<text.indexOf('data prepare NAME@VERSION'));
   assert.match(text,/确认对应版本 READY/);assert.match(text,/当前服务回包/);
   assert.doesNotMatch(text,/--env-mode|--legacy|--via relay|data (?:cloud|import|put|shell|publish|unregister)|--hami|--sm-percent|Slurm|SSH 密钥|VS Code Remote/);

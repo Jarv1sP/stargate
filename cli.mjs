@@ -891,7 +891,7 @@ async function main(){
     return;
   }
   if(command==='project'&&['import','import-status','import-cancel'].includes(positionals[1])){
-    console.log(`${result.state} · ${result.key} · ${result.machine} / ${result.project}\n${result.phase||'待确认'} · ${result.files||0} 文件 · ${result.bytes||0} B${result.error?'\n'+result.error:''}\n查看：gpuctl project import-status ${result.key}${result.state==='IMPORTED'?'\n项目草稿已导入；代码和环境尚未发布，确认内容后再 project publish。':''}`);return;
+    console.log(`${result.state} · ${result.key} · ${result.machine} / ${result.project}\n${result.phase||'待确认'} · ${result.files||0} 文件 · ${result.bytes||0} B${result.error?'\n'+result.error:''}\n查看：gpuctl project import-status ${result.key}${result.state==='IMPORTED'?'\n项目文件已导入；核对内容和依赖后可直接 run，无需发布。':''}`);return;
   }
   if(command==='project'&&positionals[1]==='uploads'){
     for(const row of result.uploads||[])console.log(`${row.uploadId} · ${row.state} · ${row.receivedBytes} / ${row.totalSize} B · ${row.path}${row.cancelable?'\n  取消：gpuctl project upload-cancel '+row.uploadId:'\n  提交结果未确认，保留原操作进行检查。'}`);

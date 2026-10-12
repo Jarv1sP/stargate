@@ -18,11 +18,13 @@ gpuctl ssh
 开发终端没有 GPU。exit 结束终端；Ctrl+] 只断开。
 gpuctl ssh --reconnect SESSION_ID  明确重连原会话
 
-3. 发布固定版本，确认 READY 后提交训练
-gpuctl project publish
+3. 直接运行持久工作区，无需发布
 gpuctl project status
 gpuctl run -g 1 -- python train.py --output /outputs
-gpuctl run --sync -g 1 -- python train.py  上传、发布并固定本次版本
+gpuctl run --sync -g 1 -- python train.py  上传后直接运行
+gpuctl run -g 1 --interactive             申请 GPU 交互会话
+gpuctl ssh --job JOB_ID                  RUNNING 后连接或重连
+GPU 会话断开仍占卡，exit 或 cancel 才释放；文件和环境保留。
 gpuctl jobs / logs JOB / cancel JOB
 gpuctl watch JOB
 gpuctl diagnostics JOB --json
@@ -40,7 +42,7 @@ gpuctl run -g 1 --data NAME@VERSION -- python train.py --data /data2/NAME --outp
 
 代码、个人权重和结果属于项目；数据集只放完整训练/评测样本。
 直传入口须由平台明确提供且实际可达；失败不自动改走 VPS。
-上传、发布、准备须确认对应版本 READY；UNKNOWN 不等于失败或已停止。
+数据集入库和准备须确认对应版本 READY；工作区无需发布，UNKNOWN 不等于已停止。
 能力以当前服务回包为准，不从客户端版本推断已开通。
 gpuctl help admin       管理员操作与兼容记录
 gpuctl help community   帖子、公告与聊天
