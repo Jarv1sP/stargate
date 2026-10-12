@@ -189,6 +189,8 @@ gpuctl ssh --job JOB_ID
 
 网页勾选「GPU 交互终端」，任务运行后点「连接 GPU 终端」。同一 shell 内连续运行多个脚本，无需每次重新提交。断开后进程和 GPU 占用保留，原 `ssh --job JOB_ID` 可重连；`exit` 或 `gpuctl cancel JOB_ID` 才释放 GPU，文件仍保留。它是 HTTPS 终端，不是宿主 root 或原生 SSH。
 
+交互终端不会自动重放手动命令，不支持自动恢复和自动扩卡；需要这些功能请直接提交训练命令并接入 checkpoint。
+
 默认直接使用当前工作区，不选择旧发布版本：
 
 ```sh local

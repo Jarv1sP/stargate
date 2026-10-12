@@ -69,6 +69,7 @@ test('GPU shell is a normal scheduled workspace job, not an unscheduled terminal
   assert.notEqual(request.digest,normalizeJobSubmission({...args,interactive:undefined},{role:'member'}).digest);
   for(const extra of [{release:'a'.repeat(64)},{project:undefined},{argv:['bash']},{interactive:false}])
     assert.throws(()=>normalizeJobSubmission({...args,...extra},{role:'member'}));
+  assert.throws(()=>normalizeJobSubmission({...args,scheduling:{rank:'P1',yieldPolicy:'save',restartPolicy:'on-preempt',checkpointable:true}},{role:'member'}),/不能自动重放/);
 });
 
 test('validated request is independent of caller mutations and has one job/spec constructor',()=>{

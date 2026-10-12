@@ -54,6 +54,7 @@ export function normalizeJobSubmission(args,principal){
   if(project.project&&args.release===undefined)project.workspace=true;
   if(machineSelection&&project.workspace)fail('工作区保留在所选服务器；跨机请先同步，再选择目标服务器运行。');
   if(args.interactive!==undefined&&(args.interactive!==true||!project.workspace||JSON.stringify(args.argv)!==JSON.stringify(['/bin/bash','--noprofile','--norc','-i'])))fail('GPU 交互终端需要当前项目工作区和交互 shell。');
+  if(args.interactive&&explicit?.restartPolicy==='on-preempt')fail('交互终端不能自动重放手动命令；需要自动恢复或扩卡，请直接提交训练命令。');
   if(args.datasetReadMode==='warehouse'&&(!datasets.length||!project.project))fail('仓库直读需要个人项目和明确的固定数据集版本。');
   if(machineSelection&&!project.project)fail('自动选机需要已发布的个人容器项目和固定版本；旧工作区请手选服务器。');
   if(typeof args.key!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(args.key))fail('需提供 UUID 提交键，重试必须复用。');

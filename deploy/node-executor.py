@@ -1123,6 +1123,7 @@ def validate_job(job,readonly=False):
     elif 'project' in job or 'release' in job:
         if not isinstance(job.get('project'),str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,47}',job['project']) or not isinstance(job.get('release'),str) or not DATASET_VERSION.fullmatch(job['release']):raise ValueError('Invalid project release')
     if 'interactive' in job and (job['interactive'] is not True or job.get('workspace') is not True or job['argv']!=['/bin/bash','--noprofile','--norc','-i']):raise ValueError('Invalid GPU workspace shell')
+    if job.get('interactive') and policy['restart_policy']!='never':raise ValueError('Interactive shell commands cannot be replayed automatically; submit the training command for automatic resume')
     return policy
 
 def terminal_pointer(args):

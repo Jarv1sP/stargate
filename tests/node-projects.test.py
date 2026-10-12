@@ -48,6 +48,13 @@ class NodeProjects(unittest.TestCase):
         self.assertEqual(self.call('projects.workspace')['workspace'],result['workspace'])
         with self.assertRaises(ValueError):self.call('projects.workspace',release='a'*64)
         with self.assertRaises(ValueError):self.call('projects.workspace',userId='demo-user-4')
+    def test_interactive_shell_cannot_claim_automatic_command_replay(self):
+        job={'id':str(uuid.uuid4()),'userId':'demo-user-42','username':'alice','cards':1,
+             'name':'shell','minVramGiB':0,'project':'test-project','workspace':True,'interactive':True,
+             'argv':['/bin/bash','--noprofile','--norc','-i']}
+        self.assertEqual(self.n.validate_job(job,readonly=True)['restart_policy'],'never')
+        job['scheduling']={'rank':'P1','yieldPolicy':'save','restartPolicy':'on-preempt','checkpointable':True}
+        with self.assertRaisesRegex(ValueError,'cannot be replayed'):self.n.validate_job(job,readonly=True)
     def publication_worker(self, operation):
         task=self.ops.receipt(self.args)
         return self.ops.worker(operation,task['publicationId'],task['projectGeneration'])

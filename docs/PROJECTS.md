@@ -34,6 +34,8 @@ gpuctl ssh --job JOB_ID
 
 同一个 shell 可以连续测试、调试和训练，不必每条命令重新提交。网络断开后用同一 `ssh --job JOB_ID` 重连。断开不释放 GPU；输入 `exit` 或执行 `gpuctl cancel JOB_ID` 才结束本次占用。文件和已安装的环境保留。
 
+交互终端不会自动重放手动命令，不支持自动恢复或自动扩卡；需要这些能力时，用普通 `run -- 训练命令` 并接入 checkpoint。
+
 这是 HTTPS 交互终端，不是宿主 SSH/root，也不表示支持 VS Code Remote SSH 或 SFTP。CPU 开发终端仍不占 GPU。
 
 ## 路径
