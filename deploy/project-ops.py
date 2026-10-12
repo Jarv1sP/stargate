@@ -38,6 +38,9 @@ class ProjectOperations:
         spec.loader.exec_module(module)
         self.store = module.ProjectStore(executor.ROOT, executor.CONFIG['conda'],
                                         reserve_bytes=module.workspace_reserve_bytes(executor.CONFIG), config=executor.CONFIG)
+        data_spec = importlib.util.spec_from_file_location('gpuq_local_data', executor.HERE/'local-data.py')
+        self.local_data = importlib.util.module_from_spec(data_spec)
+        data_spec.loader.exec_module(self.local_data)
         self.folder = executor.ROOT/'project-ops'
         self.folder.mkdir(mode=0o700, exist_ok=True)
 
@@ -169,20 +172,7 @@ class ProjectOperations:
         return events.get('populated')=='0'
 
     def writable(self, args, *, lifecycle=True, publication_lock=True, synchronization=True):
-        if lifecycle: self.store.admit(*self.identity(args))
-        if (self.folder/(self.key(args)+'.local-import.json')).exists():
-            self.local_imports().project_writable(args)
-        sync=self.folder/(self.key(args)+'.sync.json')
-        if synchronization and (sync.exists() or sync.is_symlink()):
-            session,canceled=self.synchronization(args)
-            if session.get('state')!='CODE_READY' and canceled is None:
-                raise ValueError('Code synchronization is incomplete; repeat the original sync or cancel its exact UUID before editing, opening a terminal or publishing')
-        pending = self.pending(args)
-        if pending.get('projectIdentityUnconfirmed'):
-            raise ValueError('Project publication identity is unconfirmed; inspect the original receipt before editing or publishing')
-        if pending.get('state') == 'PUBLISHING' and self.active(args):
-            raise ValueError('Project publication is running; wait before editing or uploading')
-        if publication_lock: self.store.fail_if_publishing(*self.identity(args))
+        self.store.admit(*self.identity(args))
 
     def local_imports(self):
         spec=importlib.util.spec_from_file_location('gpuq_project_local_import',self.n.HERE/'project-local-import.py')
@@ -322,9 +312,13 @@ class ProjectOperations:
     def status(self, args):
         result = self.store.status(*self.identity(args))
         result['lifecycle'] = self.lifecycle().view(*self.identity(args))
+        result['data'] = self.local_data.describe(self.n.CONFIG)
         if result.get('environmentMode') == 'oci':
             result['workspace'] = {'protocol': 1, 'persistent': True, 'codeWritable': True,
                                    'homeShared': True, 'outputsShared': True}
+        if result.get('state') == 'AVAILABLE':
+            result['developmentTerminals'] = self.development_terminals(args)
+            return result
         local = None
         pointer=self.folder/(self.key(args)+'.local-import.json')
         if pointer.exists():
@@ -451,14 +445,10 @@ class ProjectOperations:
         identity = self.identity(args)
         if operation == 'projects.status': return self.status(args)
         if operation == 'projects.workspace':
-            with self.guard(args):
-                # Only migration from an unfinished legacy operation waits.
-                # Existing terminals and unrelated files are not a run gate.
-                self.writable(args)
-                paths = self.store.activate_workspace(*identity)
-                if paths['environmentMode'] == 'oci':
-                    self.store._oci(identity[0]).workspace_container(identity[1])
-                return self.status(args)
+            paths = self.store.activate_workspace(*identity)
+            if paths['environmentMode'] == 'oci':
+                self.store._oci(identity[0]).workspace_container(identity[1])
+            return self.status(args)
         if operation == 'projects.verify':
             self.store.admit(*identity)
             if self.store._project(*identity)[1].get('runtime') == 'workspace':

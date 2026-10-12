@@ -17,6 +17,11 @@ async function fixture(t){
     gpuq:{connected:true,health:'ok',observeOnly:false,jobs:[],capabilities:['priority-policy-v1','preempt-idle-only-v1','priority-rank-v1','checkpoint-control-v1','console-placement-v1','console-sharing-v1']}}))}));
   let service,owner,alice;
   const bridge=async(machine,operation,args)=>{
+    if(operation==='projects.workspace'){
+      assert.equal(args.project,'vision');
+      assert.equal(service.store.get(args.userId).enabled,true);
+      return {project:'vision',state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
+    }
     assert.equal(service.store.jobs.find(job=>job.id===args.job.id).dispatchPending,false,'durable attempt marker precedes remote I/O');
     calls.push({machine,operation,args:structuredClone(args)});
     if(service.lostReply)throw Error('reply lost');
@@ -31,7 +36,7 @@ async function fixture(t){
   const machine=MACHINES[0];
   await service.invoke(owner.token,'policy.save',{userId:user.id,total:1,limits:{[machine.id]:1},policyVersion:0});
   await service.invoke(owner.token,'users.role',{userId:user.id,role:'admin'});alice=await service.login('alice',password);
-  const submit=async(more={})=>(await service.invoke(alice.token,'jobs.submit',{machine:machine.id,cards:1,argv:['true'],key:randomUUID(),...more})).result;
+  const submit=async(more={})=>(await service.invoke(alice.token,'jobs.submit',{machine:machine.id,project:'vision',cards:1,argv:['true'],key:randomUUID(),...more})).result;
   const step=async()=>{service.reconciling=false;try{await service.reconcile();}finally{service.reconciling=true;}};
   t.after(async()=>{service.close();await rm(dir,{recursive:true,force:true});});
   return {get service(){return service},get owner(){return owner},user,machine,calls,submit,step,job:id=>service.store.jobs.find(job=>job.id===id),

@@ -794,7 +794,7 @@ class OCITests(unittest.TestCase):
             manager._execute({'project':'vision','id':'test'}, {'environmentMode':'oci'}, True, [], [], registry_env={})
         self.assertEqual(systemctl.call_count, 1)
         self.assertEqual(systemctl.call_args.args[0][:3], ['/usr/bin/systemctl','--user','show'])
-        resources.read_budget.assert_called_once_with({'project':'vision','id':'test'}, group, [], True)
+        resources.read_budget.assert_called_once_with({'project':'vision','id':'test'}, group, [], True, config=manager.config)
 
     def test_named_mounts_use_only_open_descriptor_sources_including_controls(self):
         with tempfile.TemporaryDirectory() as root:

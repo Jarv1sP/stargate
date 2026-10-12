@@ -647,8 +647,8 @@ async function main(){
     }else if(command==='data'&&['import','imports','import-status','import-resume','import-cancel','import-discard'].includes(positionals[1])){
       if(training.length)fail('导入不接受额外命令。');
       result=await runCloudImport({action:positionals[1],positionals,options,machine:defaultMachine(),call});
-    }else if(command==='data'&&['put','files','publish','workspace-status'].includes(positionals[1])){
-      const action=positionals[1],allowed=['machines','datasets','url','session-file','json',...(action==='put'?['overwrite','via']:action==='publish'?['name','key']:[])];
+    }else if(command==='data'&&['put','files','workspace-status'].includes(positionals[1])){
+      const action=positionals[1],allowed=['machines','datasets','url','session-file','json',...(action==='put'?['overwrite','via']:[])];
       if(training.length||options.datasets.length||Object.keys(options).some(k=>!allowed.includes(k)))fail('Personal data commands do not accept project, root or training options');
       const machine=defaultMachine();if(machine==='auto'||!state.machines.some(m=>m.id===machine))fail('Select an authorized server explicitly');
       if(action==='put'){
@@ -657,17 +657,9 @@ async function main(){
       }else if(action==='files'){
         if(positionals.length>3)fail('Usage: data files [RELATIVE_DIRECTORY]');
         result=(await call('datasets.workspace.list',{machine,path:workspaceDataPath(positionals[2]||'.',{directory:true})})).result;
-      }else if(action==='publish'){
-        if(positionals.length!==3||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(options.name||''))fail('Usage: data publish DIRECTORY --name NAME');
-        const path=workspaceDataPath(positionals[2]),key=options.key||randomUUID();
-        if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(key))fail('Use a UUID publication --key');
-        process.stderr.write(`Publication key: ${key}\n`);
-        result={...(await call('datasets.workspace.publish',{machine,path,name:options.name,key})).result,machine};
       }else{
-        if(positionals.length>3)fail('Usage: data workspace-status [OPERATION_ID]');
-        if(positionals[2]&&!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(positionals[2]))fail('Use the complete publication UUID');
-        result={...(await call('datasets.workspace.status',{machine,...(positionals[2]?{operationId:positionals[2]}:{})})).result,machine};
-        if(result.state==='FAILED')process.exitCode=1;else if(result.state==='UNKNOWN')process.exitCode=3;
+        if(positionals.length!==2)fail('Usage: data workspace-status');
+        result={...(await call('datasets.workspace.status',{machine})).result,machine};
       }
     }else if(command==='data'&&positionals[1]==='upload'){
       if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','url','session-file','json','name','via'].includes(k)))fail('Usage: data upload ARCHIVE_OR_DIRECTORY --name NAME [--machine SERVER] [--via auto|direct|relay]');
@@ -778,35 +770,27 @@ async function main(){
       }
       if(!training.length)fail('Put the training command after --');
       const developmentMachine=automatic?selectedMachine():positionals[1],context=projectArgs(developmentMachine);
-      if(automatic&&!context.project)fail('自动选机需要已发布的个人容器项目；先选择开发服务器和项目。旧工作区请手选服务器。');
+      if(automatic&&!context.project)fail('自动选机需要项目工作区。');
       const candidates=options.candidates?.split(',').map(machineName);
       if(candidates&&(!candidates.length||new Set(candidates).size!==candidates.length||candidates.some(id=>!state.machines.some(m=>m.id===id))))fail('--candidates must list unique authorized server IDs separated by commas');
       if(options.release&&!context.project)fail('--release requires a selected project');
       if(options.sync&&!context.project)fail('run --sync requires a selected project; use gpuctl project create/use first');
       const key=options.key||randomUUID();process.stderr.write(`Submission key: ${key}\n`);
       if(options.sync&&!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(key))fail('--key must be a UUID');
-      const datasets=options.datasets.map(value=>{const [dataset,version,...extra]=value.split('@');if(extra.length||!dataset||!/^[a-f0-9]{64}$/.test(version||''))fail('Use --data NAME@FULL_VERSION_HASH');return {dataset,version};});
-      if(options['data-read']==='warehouse'&&(!context.project||!datasets.length))fail('--data-read warehouse requires a personal project and --data NAME@VERSION');
+      if(options.datasets.length||options['data-read']||options.release)fail('训练直接读取 /data 下的本机目录；不再使用 --data、--data-read 或 --release。');
       const indices=options.gpu?.split(',').map(n=>/^\d+$/.test(n)?Number(n):NaN),cards=Number(options.cards||indices?.length||1);
       const elastic=elasticKeys.some(k=>Object.hasOwn(options,k))?elasticAllocation({minCards:Number(options['min-cards']),globalBatch:Number(options['global-batch']),microBatch:Number(options['micro-batch']),autoExpand:options['auto-expand']===true},cards,scheduling).elastic:null;
       const placement=placementKeys.some(k=>Object.hasOwn(options,k))?gpuPlacement({gpuIndices:indices,shared:options.share===true,...(options['vram-mib']?{vramMiB:Number(options['vram-mib'])}:{}),hami:options.hami===true,...(options['sm-percent']?{smPercent:Number(options['sm-percent'])}:{})},cards,elastic,scheduling,options.priority):null;
       if(options.description!==undefined&&state.taskMetadata?.version!==1)fail('当前后台尚未支持任务描述；不会忽略你填写的内容。');
-      if(context.project){
-        if(options.release){
-          const current=(await call('projects.status',{machine:developmentMachine,project:context.project})).result;
-          const release=options.release;
-          if(!release||!/^[a-f0-9]{64}$/.test(release)||!current.releases?.some(r=>r.release===release&&r.state==='READY'))fail('项目还没有指定的 READY 版本。先执行 gpuctl project publish，再用 gpuctl project status 确认；run 不会自动发布。');
-          context.release=release;
-        }else{
-          if(automatic)fail('工作区不自动跨机迁移；请同步到目标服务器后指定该服务器运行。');
-          await call('projects.workspace',{machine:developmentMachine,project:context.project});
-          if(options.sync)await uploadCodeFiles(call,{machine:developmentMachine,context:{project:context.project,area:'code'},local:options['sync-dir']||process.cwd(),remote:'.',verifyTree:true});
-        }
-        process.stderr.write(`Project: ${context.project} · ${context.release?'release: '+context.release:'持久工作区'}\n`);
+      if(!context.project)fail('请先选择项目工作区。');
+      if(options.sync){
+        if(automatic)fail('先 push 到目标机器，再自动选机；run --sync 需要指定机器。');
+        await uploadCodeFiles(call,{machine:developmentMachine,context:{project:context.project,area:'code'},local:options['sync-dir']||process.cwd(),remote:'.',verifyTree:true});
       }
+      process.stderr.write(`Project: ${context.project} · 持久工作区\n`);
       if(options.interactive)context.interactive=true;
       if(memoryLimitGiB!==undefined)context.memoryLimitGiB=memoryLimitGiB;
-      result=(await call('jobs.submit',{machine:positionals[1],...(automatic?{machineSelection:{mode:'auto',...(candidates?{candidates}:{})}}:{}),cards,minVramGiB:Number(options['min-vram']||0),name:options.name||'train',...(options.description!==undefined?{description:taskDescription(options.description)}:{}),argv:training,key,...(options.priority?{priority:options.priority}:{}),...(scheduling?{scheduling}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...context,...(datasets.length?{datasets,prepareData:true}:{}),...(options['data-read']==='warehouse'?{datasetReadMode:'warehouse'}:{})})).result;
+      result=(await call('jobs.submit',{machine:positionals[1],...(automatic?{machineSelection:{mode:'auto',...(candidates?{candidates}:{})}}:{}),cards,minVramGiB:Number(options['min-vram']||0),name:options.name||'train',...(options.description!==undefined?{description:taskDescription(options.description)}:{}),argv:training,key,...(options.priority?{priority:options.priority}:{}),...(scheduling?{scheduling}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...context})).result;
     }else if(command==='jobs'&&positionals.length===1)result=state.jobs;
     else if(command==='priority'&&positionals.length===3){
       if(!['idle','normal','high','P0','P1','P2','P3','P4'].includes(positionals[2]))fail('Queue rank must be P0..P4 (or idle, normal, high); yielding/restart stay unchanged');

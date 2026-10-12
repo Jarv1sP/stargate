@@ -58,18 +58,9 @@ def finish_job_capture(module,root,spec,identifier,exit_code):
     try:module.finish_capture(root,spec,identifier,exit_code)
     except Exception as error:print('GPUQ diagnostic finalization unavailable:',str(error),file=sys.stderr)
 
-def open_dataset_mounts(spec):
-    if not spec.get('datasets'):return []
-    module=importlib.util.spec_from_file_location('gpuq_node_datasets',HERE/'node-executor.py')
-    executor=importlib.util.module_from_spec(module);module.loader.exec_module(executor)
-    return executor.dataset_open_mounts(spec)
-
-def open_data_workspace(spec,jid,terminal):
-    if not spec.get('dataWorkspace'):return None,None
-    if not terminal:raise ValueError('Mutable data workspace is only available to personal terminals')
-    module=importlib.util.spec_from_file_location('gpuq_node_data_workspace',HERE/'node-executor.py')
-    executor=importlib.util.module_from_spec(module);module.loader.exec_module(executor)
-    return executor.data_workspaces().terminal_mount(spec,jid)
+def open_data_workspace(spec,cfg):
+    data=local_module('gpuq_local_personal_data','local-data.py')
+    return data.open_directory(data.personal_directory(cfg,spec['userId'])),None
 
 def project_runtime(spec,root,cfg,jid,terminal):
     """Old jobs never enter this branch or acquire new default spec fields."""
@@ -112,13 +103,6 @@ os.execvpe(sys.argv[2],sys.argv[2:],os.environ)
 '''
     return ['/usr/bin/python3','-c',bootstrap,mode,*command]
 
-def workspace_admission(cfg,root):
-    # Recheck when a queued job actually starts, before untrusted execution.
-    # Host-root terminals do not use this sandbox runner. No periodic policing.
-    if 'workspaceReserveBytes' not in cfg:return
-    module=local_module('gpuq_workspace_storage','project-store.py')
-    module.require_workspace_space(root,module.workspace_start_reserve(cfg))
-
 def main():
     jid=sys.argv[1]
     if not re.fullmatch(r'[a-f0-9-]{36}',jid):raise ValueError('Invalid job ID')
@@ -126,7 +110,6 @@ def main():
     local_module('gpuq_platform_root_guard','platform-root-guard.py').check(root)
     terminal=len(sys.argv)>2 and sys.argv[2]=='terminal'
     spec=json.loads((root/('terminals' if terminal else 'jobs')/f'{jid}.json').read_text())
-    workspace_admission(cfg,root)
     indices=os.environ.get('GPUQ_ASSIGNED_GPU_INDICES','').split(',')
     uuids=os.environ.get('GPUQ_ASSIGNED_GPU_UUIDS','').split(',')
     if terminal:indices=[];uuids=[]
@@ -155,8 +138,8 @@ def main():
     # Mount by open FD to pin the directory and avoid a path replacement race.
     workfd=os.open(workspace,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     project_fds={name:os.open(project[name],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW) for name in ('env','home','output')} if project else {}
-    dataset_fds=[] if terminal else open_dataset_mounts(spec)
-    datafd,datalock=open_data_workspace(spec,jid,terminal)
+    dataset_fds=local_module('gpuq_local_data','local-data.py').open_mounts(cfg)
+    datafd,datalock=open_data_workspace(spec,cfg)
     if project and project['environmentMode']=='oci':
         try:
             code=local_module('gpuq_personal_oci','personal-oci.py').run_project(cfg,spec,project,terminal,uuids,workfd,project_fds,dataset_fds,datafd,runtimefd)
@@ -177,10 +160,11 @@ def main():
            '--ro-bind',str(HERE/'gpuq-network'),'/opt/gpuq/bin/gpuq-network']
     if runtimefd is not None:args+=['--dir','/run/gpuq','--bind-fd',str(runtimefd),'/run/gpuq/runtime']
     if dataset_fds:
-        args+=['--dir','/data2']
+        args+=['--dir','/data']
         for descriptor,target in dataset_fds:args+=['--ro-bind-fd',str(descriptor),target]
     if datafd is not None:
-        args+=['--bind-fd',str(datafd),'/data2','--chdir','/data2','--setenv','GPUQ_DATA_WORKSPACE','/data2']
+        args+=['--bind-fd',str(datafd),'/data/mine','--setenv','GPUQ_DATA_WORKSPACE','/data/mine']
+        if spec.get('dataWorkspace'):args+=['--chdir','/data/mine']
     for source in ([] if terminal else ['/dev/nvidiactl','/dev/nvidia-uvm','/dev/nvidia-uvm-tools']+devices):
         if not Path(source).exists():raise ValueError('Allocated GPU device missing')
         args+=['--dev-bind',source,source]

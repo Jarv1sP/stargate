@@ -68,6 +68,9 @@ if a.enable_host_root:
 node_config={'machine':a.node,'cards':node['cards'],'root':str(root),'gpu':str(binary),'database':cfg['db_path'],'slirp':shutil.which('slirp4netns'),'conda':node['conda'],'hostRoot':host_root}
 node_config.update(trainingControlProtocol=1,controlRoot=cfg.get('control_dir',str(scheduler/'control')),gpuqArchive=cfg.get('archive_path',str(scheduler/'current/gpuq.pyz')))
 node_config={**previous,**node_config}
+for key in ('localDataDirectories','personalDataRoot'):
+    if key not in node:raise SystemExit('Configure '+key+' explicitly before installing the direct-storage runtime')
+    node_config[key]=node[key]
 retention=node.get('diagnosticsRetentionDays',previous.get('diagnosticsRetentionDays',30))
 if type(retention) is not int or not 1<=retention<=365:raise SystemExit('Invalid diagnostics retention days (1..365)')
 node_config['diagnosticsRetentionDays']=retention

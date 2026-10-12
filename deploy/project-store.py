@@ -1078,19 +1078,10 @@ class ProjectStore:
                 'workspace': True}
 
     def runtime_paths(self, spec, jobid, terminal=False):
-        """One execution contract; saved release jobs retain their old paths."""
+        """Development and training use the same persistent project paths."""
         user, slug = spec['userId'], spec['project']
-        live = spec.get('workspace') is True or terminal and self._project(user, slug)[1].get('runtime') == 'workspace'
-        if live:
-            self.admit(user, slug)
-            return self.workspace_paths(user, slug, None if terminal else jobid)
-        if terminal:
-            paths = self.dev_paths(user, slug)
-            return {**paths, 'output': paths['scratch'], 'readonly': False,
-                    'environmentMode': self.environment_mode(user, slug)}
-        release = self.release(user, slug, spec['release'])
-        return {**release, **self.run_paths(user, slug, spec['release'], jobid),
-                'readonly': True, 'environmentMode': release['meta'].get('environmentMode', 'shared')}
+        self.admit(user, slug)
+        return self.workspace_paths(user, slug, None if terminal else jobid)
 
     @project_lifetime
     def run_paths(self, user, slug, version, jobid):

@@ -51,18 +51,13 @@ test('project slug validation is exact and never coerces paths or array values',
   for(const value of ['vision','a','vision-baseline_2','a'.repeat(48)])assert.equal(validProject(value),true);
   for(const value of ['',null,undefined,['vision'],{},'../vision','1vision','Vision',' vision','vision/next','a'.repeat(49)])assert.equal(validProject(value),false);
 });
-test('training pins only a READY immutable release, never latest or the publishing release',()=>{
-  const project={project:'vision',state:'PUBLISHING',latestReadyRelease:release,releases:[{release,state:'READY'},{release:future,state:'PUBLISHING'},{release:'latest',state:'READY'},{release,state:'READY'}]};
-  assert.deepEqual(readyReleases(project),[{release,state:'READY'}]);
-  assert.deepEqual(trainingProject(project,release),{project:'vision',release});
-  for(const version of ['latest',future])assert.throws(()=>trainingProject(project,version),/版本/);
-  for(const version of [undefined,'']){
-    assert.throws(()=>trainingProject(project,version),/版本/);
-    assert.deepEqual(trainingProject({...project,workspace:{protocol:1}},version),{project:'vision'});
-  }
-  assert.deepEqual(trainingProject(null,release),{});
-  assert.deepEqual(readyReleases({releases:{release,state:'READY'}}),[]);
-  assert.deepEqual(readyReleases({releases:[{release:[release],state:'READY'}]}),[]);
+test('training selects the persistent project without any release or dataset gate',()=>{
+  const project={project:'vision',state:'DRAFT',releases:[]};
+  assert.deepEqual(trainingProject(project),{project:'vision'});
+  assert.deepEqual(trainingProject({...project,state:'PUBLISHING'}),{project:'vision'});
+  assert.equal(Object.hasOwn(trainingProject(project),'release'),false);
+  assert.throws(()=>trainingProject(null),/项目/);
+  assert.throws(()=>trainingProject({project:'../other'}),/项目/);
 });
 test('dataset references survive project-mode training and reject incomplete or path-shaped values',()=>{
   assert.deepEqual(datasetReferences('sample@'+release+'\nother@'+future),[{dataset:'sample',version:release},{dataset:'other',version:future}]);

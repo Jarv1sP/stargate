@@ -307,3 +307,15 @@ npm test
 - 日志/状态 UNKNOWN：保留额度，查节点 SSH 和 GPUQ；不要手工清空预留。
 - 证书失败：DNS A/AAAA、80/443、防火墙、Caddy 持久卷；不关 TLS 校验。
 - 开源示例和既有部署路径不同是正常的；以自己的 `inventory.json` 为准，不能照抄他人地址。
+# 直接数据目录配置
+
+新版节点必须同时配置 `localDataDirectories`（共享只读目录映射）与 `personalDataRoot`（个人可写目录的父目录，推荐机械盘）。两者不得互相包含；不能把含平台凭据或私人工作区的整个磁盘配置为共享目录。目录须预先存在，运行器不格式化、迁移或复制数据。
+
+```json
+{
+  "localDataDirectories": {"hdd": "/srv/shared-data", "ssd": "/srv/fast-data"},
+  "personalDataRoot": "/srv/personal-data"
+}
+```
+
+只配置确实需要共享的目录，允许多个名字；不存在的挂载报错，不伪造空目录。更换节点运行器前需确认原数据位置与账号映射，现有训练进程不重启。此配置说明不代表已部署或完成跨机验收。

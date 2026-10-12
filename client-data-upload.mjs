@@ -195,7 +195,7 @@ export async function uploadDatasetSnapshot(call,{machine,name,userId,scan,progr
 
 export function workspaceDataPath(path,{directory=false}={}){
   if(directory&&path==='.')return path;
-  if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))fail('Use a relative path inside your private /data2');
+  if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))fail('Use a relative path inside your private /data/mine');
   return path;
 }
 export async function putWorkspaceData(call,machine,local,path,overwrite,{lstat=fsLstat,open=fsOpen,platform=process.platform,via='auto'}={}){
@@ -221,7 +221,7 @@ export async function putWorkspaceData(call,machine,local,path,overwrite,{lstat=
       if(Date.now()-last>1000||offset===size){last=Date.now();process.stderr.write(`${path} · ${offset} / ${size} bytes\n`);}
     }while(offset<size);
     if(!sameFile(initial,await file.stat({bigint:true}))||!sameFile(before,await lstat(local,{bigint:true})))fail('Local file changed during upload; remote file was not published');
-    return {machine,path:'/data2/'+path,bytes:offset,extracted:false,published:false};
+    return {machine,path:'/data/mine/'+path,bytes:offset,extracted:false,published:false};
   }finally{await file.close();}
 }
 export function createLocalDatasetTools(filesystem={}){return {sameDatasetFile:(a,b,options={})=>sameDatasetFile(a,b,{...options,platform:filesystem.platform||process.platform}),scanLocalDataset:(root,progress)=>scanLocalDataset(root,progress,filesystem),uploadLocalDataset:(call,options)=>uploadLocalDataset(call,{...options,filesystem}),putWorkspaceData:(call,machine,local,path,overwrite)=>putWorkspaceData(call,machine,local,path,overwrite,filesystem)};}

@@ -1046,7 +1046,7 @@ class PersonalOCI:
              'OCI parent resource/cancellation boundary is not verified')
         # Read the kernel limits too; Delegate=yes or systemctl metadata alone
         # cannot establish the CPU, memory and PID budget of this payload.
-        module('job-resources').read_budget(spec, group, uuids, terminal)
+        module('job-resources').read_budget(spec, group, uuids, terminal, config=self.config)
         if project.get('workspace') is True:
             return self.execute_workspace(spec,flags,registry_env)
         if terminal:
@@ -1082,8 +1082,7 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
               (project_fds['output'], '/outputs', False)]
     mounts += [(fd, target, True) for fd, target in dataset_fds]
     if datafd is not None:
-        need(terminal, 'Mutable data workspace is only for development')
-        mounts.append((datafd, '/data2', False))
+        mounts.append((datafd, '/data/mine', False))
     if runtimefd is not None:
         mounts.append((runtimefd, '/run/gpuq/runtime', False))
     if resourcefd is not None:

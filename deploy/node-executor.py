@@ -1042,7 +1042,7 @@ def workspace(user):
     if 'storageQuota' in CONFIG:storage_quota(user,path)
     return path
 
-def file_op(operation,args,root=None):
+def file_op(operation,args,root=None,space_check=workspace_storage_check):
     root=workspace(args['userId']) if root is None else root
     path=args.get('path','.')
     if not isinstance(path,str) or len(path)>1024 or '\0' in path or path.startswith('/') or '\\' in path:raise ValueError('Invalid relative path')
@@ -1054,7 +1054,7 @@ def file_op(operation,args,root=None):
         if operation=='files.put':
             data=base64.b64decode(args.get('data',''),validate=True)
             if len(data)>1024*1024:raise ValueError('Chunk too large')
-            workspace_storage_check(len(data),target_fd=fd)
+            space_check(len(data),target_fd=fd)
         directories=parts if operation=='files.list' else parts[:-1]
         for part in directories:
             if operation=='files.put':
@@ -1076,7 +1076,7 @@ def file_op(operation,args,root=None):
             if not stat.S_ISREG(st.st_mode) or st.st_nlink!=1:raise ValueError('Only unlinked regular files allowed')
             fcntl.flock(f,(fcntl.LOCK_EX if operation=='files.put' else fcntl.LOCK_SH)|fcntl.LOCK_NB)
             if operation=='files.put':
-                workspace_storage_check(len(data),target_fd=fd)
+                space_check(len(data),target_fd=fd)
                 if args.get('truncate') is True:
                     if offset!=0:raise ValueError('Invalid truncate offset')
                     os.ftruncate(f,0);st=os.fstat(f)
@@ -1114,8 +1114,8 @@ def validate_job(job,readonly=False):
     if not re.fullmatch(r'[a-z\u3400-\u9fff][a-z0-9_\u3400-\u9fff-]{1,23}',job['username']):raise ValueError('Invalid username')
     if type(job['cards'])!=int or not 1<=job['cards']<=CONFIG.get('cards',64):raise ValueError('Invalid card count')
     if not isinstance(job['argv'],list) or not 1<=len(job['argv'])<=128 or any(not isinstance(a,str) or '\0' in a for a in job['argv']) or len(json.dumps(job['argv']))>12000:raise ValueError('Invalid argv')
-    dataset_refs(job)
-    dataset_read_mode(job)
+    if not readonly and job.get('workspace') is not True:
+        raise ValueError('New tasks require a persistent project workspace')
     policy=SCHEDULING.normalize_job_policy(job)
     SCHEDULING.elastic_allocation(job)
     SCHEDULING.gpu_placement(job)
@@ -1355,7 +1355,6 @@ def terminal_op(operation,args):
                     store=projects().store
                     paths=store.activate_workspace(args['userId'],args['project'])
                     if paths['environmentMode']=='oci':store._oci(args['userId']).workspace_container(args['project'])
-                if args.get('hostAdmin') is not True:workspace_storage_check(admission=True)
                 oci_properties=terminal_oci_properties(args)
                 unit='amax-term-'+jid
                 spec={'userId':args['userId'],'username':args['username'],'cards':0,'argv':['/bin/bash','--noprofile','--norc','-i'],'hostAdmin':args.get('hostAdmin') is True}
@@ -1416,7 +1415,7 @@ def terminal_op(operation,args):
         if operation=='terminal.close':
             stop_terminal(jid)
             if args.get('project') and not terminal_unit_observation(jid)[2]:raise ValueError('Cannot confirm project terminal termination; retry when node services recover')
-            if args.get('dataWorkspace') and not data_workspaces().unit_stopped('amax-term-'+jid+'.service'):raise ValueError('Cannot confirm data terminal termination; retry when node services recover')
+            if args.get('dataWorkspace') and not terminal_unit_observation(jid)[2]:raise ValueError('Cannot confirm data terminal termination; retry when node services recover')
             (folder/(jid+'.sock')).unlink(missing_ok=True);pointer.unlink(missing_ok=True)
             if legacy.exists() and legacy.read_text()==jid:legacy.unlink()
             receipt.update(leaseExpiresAt=0,state='CLOSED');atomic_json(receipt_path,receipt)
@@ -1911,21 +1910,14 @@ def process(operation,args):
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         return module.listing(sys.modules[__name__] if __name__ in sys.modules else SimpleNamespace(**globals()),args)
     if operation.startswith('datasets.upload.'):return dataset_uploads().process(operation,args)
-    if operation.startswith('datasets.workspace.'):return data_workspaces().process(operation,args)
+    if operation.startswith('datasets.workspace.'):
+        definition=importlib.util.spec_from_file_location('gpuq_local_data',HERE/'local-data.py')
+        data=importlib.util.module_from_spec(definition);definition.loader.exec_module(data)
+        return data.process(CONFIG,operation,args,file_op)
     if operation.startswith('datasets.import.'):return data_imports().process(operation,args)
     if operation.startswith('datasets.cloud.'):return cloud_files().process(operation,args)
     if operation in ('datasets.capacity','datasets.list','datasets.status','datasets.prepare','datasets.register','datasets.unregister'):return dataset_op(operation,args)
     if operation in ('terminal.open','terminal.exchange','terminal.close','terminal.detach','terminal.status'):
-        if args.get('dataWorkspace') is True and operation=='terminal.open':
-            ops=data_workspaces()
-            with ops.guard(args):
-                ops.writable(args)
-                return terminal_op(operation,args)
-        if args.get('project') and operation=='terminal.open':
-            ops=projects()
-            with ops.guard(args):
-                ops.writable(args);ops.store.dev_paths(*ops.identity(args))
-                return terminal_op(operation,args)
         return terminal_op(operation,args)
     if operation in ('files.upload.status','files.upload.list','files.upload.cancel'):
         allowed={'userId','machine','project','area'}|({'path','uploadId','totalSize','sha256'} if operation=='files.upload.status' else {'uploadId'} if operation=='files.upload.cancel' else set())
@@ -1989,7 +1981,6 @@ def process(operation,args):
                 release_datasets(job,never_dispatched=True)
                 return {'state':'CANCELED'}
             if operation=='logs':return job_log_result(job,{'job':{'state':'NOT_SUBMITTED'},'attempts':[]},'任务尚未提交到 GPUQ。')
-            workspace_storage_check(admission=True)
             if policy['kind']!='legacy':priority_capability()
             if policy['preempt_opt_in_only'] and 'preempt-opt-in-only-v1' not in gpu('status').get('daemon',{}).get('capabilities',[]):raise ValueError('Requester opt-in scope capability unavailable')
             if policy['kind']=='explicit' and not SCHEDULING.ready(CONFIG,HERE):raise ValueError('Training control channel is not ready; no submission attempted')

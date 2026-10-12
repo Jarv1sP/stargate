@@ -21,7 +21,7 @@ class TerminalSessions(unittest.TestCase):
         __import__('runpy').run_path(str(Path(__file__).with_name('storage_test_helpers.py')))['isolated_platform_pin'](self)
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name).resolve()
         deploy=Path(__file__).resolve().parents[1]/'deploy'
-        for name in ('platform-root-guard.py','node-executor.py','scheduling-policy.py','project-ops.py','project-store.py','project-lifecycle.py'):
+        for name in ('platform-root-guard.py','node-executor.py','scheduling-policy.py','project-ops.py','project-store.py','project-lifecycle.py','local-data.py'):
             shutil.copy2(deploy/name,self.base/name)
         conda=self.base/'conda'
         for name in ('bin','lib','conda-meta'):(conda/name).mkdir(parents=True)

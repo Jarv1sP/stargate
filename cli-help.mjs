@@ -33,20 +33,16 @@ gpuctl diagnostics JOB --json
 gpuctl files --job JOB_ID
 gpuctl pull --job JOB_ID model.pt ./model.pt
 
-4. 完整数据先入仓库，再准备训练缓存
-gpuctl data upload FILE.tar.gz --name NAME --via direct
-gpuctl data upload-status UPLOAD_ID
-gpuctl data list
-gpuctl data prepare NAME@VERSION
-gpuctl data status OPERATION_ID
-gpuctl data status NAME@VERSION
-gpuctl run -g 1 --data NAME@VERSION -- python train.py --data /data2/NAME --output /outputs
+4. 直接读取本机数据
+gpuctl ssh
+容器内：ls /data
+共享目录 /data/hdd、/data/ssd 只读；/data/mine 是个人可写数据目录。
+gpuctl data put LOCAL_FILE folder/file --via relay
+gpuctl run -g 1 -- python train.py --data /data/hdd/imagenet --output /outputs
 
-代码、个人权重和结果属于项目；数据集只放完整训练/评测样本。
-直传入口须由平台明确提供且实际可达；失败不自动改走 VPS。
-数据集入库和准备须确认对应版本 READY；工作区无需发布，UNKNOWN 不等于已停止。
-能力以当前服务回包为准，不从客户端版本推断已开通。
-gpuctl help admin       管理员操作与兼容记录
+不需要入库、数据发布或缓存准备。跨机传输是独立操作，训练不会自动复制数据。
+UNKNOWN 不等于已停止；原命令结果不明确时先查询，不重复启动。
+gpuctl help admin       管理员操作
 gpuctl help community   帖子、公告与聊天
 完整用户指南：平台地址 /guide
 全局：--url HTTPS_ORIGIN --json --session-file PATH

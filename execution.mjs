@@ -14,11 +14,9 @@ import {elasticCapable,placementCapable} from './dist/gpu-allocation.js';
 import {datasetCatalogCall,datasetListView,createDatasetRemovalGuard,assertDatasetReadAccess} from './dataset-catalog.mjs';
 import {datasetStorageOverviewCall} from './dataset-storage-overview.mjs';
 import {datasetFilesCall} from './dataset-files.mjs';
-import {DATA_PREPARING,advanceDataPreparation,releaseDataPreparation} from './dataset-preparation.mjs';
 import {installDatasetReplication} from './dataset-replication.mjs';
 import {selectMachine} from './machine-selection.mjs';
-import {resolveTrainingDataset,trainingDatasetCapabilities,withTrainingReadRetries} from './training-datasets.mjs';
-import {trainingStoragePlan} from './training-storage.mjs';
+import {trainingDatasetCapabilities} from './training-datasets.mjs';
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 export {datasetReferences} from './job-submission.mjs';
 
@@ -158,16 +156,14 @@ export function installExecution(service,bridge){
   installDatasetReplication(service);
   let cycle=null;
   const kind=job=>job.cancelRequested&&!TERMINAL.has(job.state)?'cancel':job.state==='SUBMITTING'&&job.dispatchPending===true?'first':'observe';
-  const eligible=(job,maintained)=>(!TERMINAL.has(job.state)||job.dataPreparationHold&&job.dataPreparationHold.state!=='RELEASED')&&
+  const eligible=(job,maintained)=>!TERMINAL.has(job.state)&&
     (TERMINAL.has(job.state)||!maintained||job.cancelRequested)&&
-    (job.cancelRequested||!(Date.parse(job.dataPreparation?.nextCheckAt)>Date.now()))&&
     (job.cancelRequested||job.state!=='SUBMITTING'||job.dispatchPending===true||!(Date.parse(job.submissionReconciliation?.nextCheckAt)>Date.now()));
   const step=async job=>{
-    if(TERMINAL.has(job.state)){try{await releaseDataPreparation(service,job);}catch{}return;}
+    if(TERMINAL.has(job.state))return;
     const policyRevision=job.policyRevision||0;
     let dispatched=false;
     try{
-      if(job.state===DATA_PREPARING){await advanceDataPreparation(service,job,usage);return;}
       if(job.state==='SUBMITTING'&&job.dispatchPending!==true&&!job.cancelRequested){
         const identity=JSON.stringify([job.userId,job.machine,job.spec]);
         // watch never submits or releases resources. In particular its legacy
@@ -211,7 +207,6 @@ export function installExecution(service,bridge){
         // LOST/unknown remains nonterminal: retain quota until confirmed.
         persistSchedulerResult(service,current,result);maintainTaskNotes(service);
       });
-      if(TERMINAL.has(job.state))await releaseDataPreparation(service,job);
     }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&!TERMINAL.has(current.state)&&(current.policyRevision||0)===policyRevision){
       const pending=current.state==='SUBMITTING'&&current.dispatchPending!==true&&!current.cancelRequested;
       if(pending){const old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
@@ -244,10 +239,6 @@ export function installExecution(service,bridge){
       // A first attempt already observes the job. Do not immediately sync it
       // again in the background lane, including after a lost first reply.
       current.seen.add(job.id+':observe');
-      // Preserve the separate preparation/promotion and dispatch turns. A
-      // later kick may admit that newly prepared job even while other hosts
-      // are still busy, but completion alone never collapses the two stages.
-      if(job.state===DATA_PREPARING){current.seen.add(job.id+':first');current.preparations.add(job.id);}
       current.active.add(job.id);current.slots.add(slot);
       step(job).catch(error=>{current.error||=error;}).finally(()=>{
         current.active.delete(job.id);current.slots.delete(slot);pump();
@@ -278,7 +269,7 @@ export function installExecution(service,bridge){
   };
   if(bridge){service.executionTimer=setInterval(()=>service.reconcile().catch(()=>{}),15000);service.executionTimer.unref();}
 }
-export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&j.state!==DATA_PREPARING&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
+export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
 export function publicJob(job,users=[]){const {spec,digest,schedulerPolicy,dataPreparationHold,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,trainingAdmissionPending,allowPrepareData,trainingStoragePlan:privateStoragePlan,trainingStorageRequest:privateStorageRequest,trainingPreparations:privatePreparations,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,
   ...(job.state==='SUBMITTING'&&dispatchPending!==true?{submissionState:submissionReconciliation?.state||'CHECKING',
     canRetryDispatch:false,error:submissionError(job)}:{}),
@@ -378,14 +369,14 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation.startsWith('datasets.workspace.')){
     authorizedMachine(args.machine);
     const action=operation.slice('datasets.workspace.'.length);
-    const fields={list:['path'],get:['path','offset'],put:['path','offset','data','truncate'],status:['operationId'],publish:['path','name','key']}[action];
+    const fields={list:['path'],get:['path','offset'],put:['path','offset','data','truncate'],status:[]}[action];
     if(!fields||Object.keys(args).some(k=>!['machine',...fields].includes(k)))fail('个人数据目录参数无效。');
     const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
     if(action!=='status'){
       const path=args.path??(action==='list'?'.':undefined);
       if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||
           (path!=='.'&&path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))||
-          (path==='.'&&['put','get','publish'].includes(action)))fail('请使用个人 /data2 内的相对路径，不要填写宿主机路径。');
+          (path==='.'&&['put','get','publish'].includes(action)))fail('请使用个人 /data/mine 内的相对路径，不要填写宿主机路径。');
     }
     if(args.offset!==undefined&&(!Number.isSafeInteger(args.offset)||args.offset<0||args.offset>100*1024**3))fail('文件偏移量无效。');
     if(action==='put'){
@@ -393,10 +384,7 @@ export async function executionCall(service,principal,operation,args,readContext
       if(typeof args.data!=='string'||args.data.length>1398104||args.data.length%4!==0||/[^A-Za-z0-9+/=]/.test(args.data)||Buffer.from(args.data,'base64').toString('base64')!==args.data||Buffer.from(args.data,'base64').length>1024*1024)fail('上传分块最多 1 MiB，且需使用规范 Base64。');
       if(args.offset+Buffer.from(args.data,'base64').length>100*1024**3)fail('单文件上限 100 GiB；更大文件请联系管理员本地导入。');
     }
-    if(action==='publish'&&(!uuid.test(args.key||'')||typeof args.name!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(args.name)))fail('发布需提供连接键和有效的数据集名称。');
-    if(action==='status'&&args.operationId!==undefined&&!uuid.test(args.operationId))fail('发布操作编号无效。');
     const {machine,...request}=args;
-    if(action==='publish')service.audit(principal.username,operation,machine,args.name);
     return service.bridge(machine,operation,{...request,userId:user.id,hostAdmin:false});
   }
   if(operation.startsWith('datasets.upload.')){
@@ -557,11 +545,11 @@ export async function executionCall(service,principal,operation,args,readContext
     if(operation==='terminal.open')service.audit(principal.username,operation,args.machine,(args.hostAdmin?'host-root':args.dataWorkspace?'private-data':'private')+':'+mode+(args.takeover?':takeover':''));
     return service.bridge(args.machine,operation,{...args,userId:user.id,username:user.username,hostAdmin:args.hostAdmin===true});
   }
-  if(operation==='jobs.submit')return withTrainingReadRetries(async()=>{
+  if(operation==='jobs.submit'){
     // Only explicit admission refusals before persistence prove no submission.
     const rejectSubmission=(message,status)=>fail(message,status,'SUBMISSION_REJECTED');
     const request=normalizeJobSubmission(args,principal);
-    const {datasets,project,explicit,digest,minVramGiB:min}=request;
+    const {project,explicit,digest,minVramGiB:min}=request;
     const previous=service.store.jobs.find(j=>j.userId===user.id&&j.key===request.key);
     if(previous){
       if(previous.digest!==digest)rejectSubmission('同一提交键不能用于不同任务。',409);
@@ -580,17 +568,10 @@ export async function executionCall(service,principal,operation,args,readContext
       catch(error){error.code='SUBMISSION_REJECTED';throw error;}
     }
     authorizedMachine(request.machine);
-    if(project.project&&!request.machineSelection){
-      await service.ociProjectAdmission?.(request.machine,user.id,project.project);
-      let prepared;
-      try{prepared=await service.bridge(request.machine,project.workspace?'projects.workspace':'projects.verify',
-        {project:project.project,...(project.workspace?{}:{release:project.release}),userId:user.id});}
-      catch(error){rejectSubmission(project.workspace?error.message:error?.message?.includes('发布已退役')?'发布已退役，7 天内可用原退役编号 restore。':'所选服务器的项目版本不可用或基础环境已改变；请先完成项目发布。未占用 GPU。',409);}
-      const ready=project.workspace
-        ?prepared?.state==='AVAILABLE'&&prepared.workspace?.protocol===1&&prepared.workspace.persistent===true
-        :prepared?.state==='READY'&&prepared.release===project.release;
-      if(!ready||prepared.project!==project.project)rejectSubmission('项目工作区尚未准备完成，未占用 GPU。',409);
-    }
+    await service.ociProjectAdmission?.(request.machine,user.id,project.project);
+    const prepared=await service.bridge(request.machine,'projects.workspace',{project:project.project,userId:user.id});
+    if(prepared?.project!==project.project||prepared.state!=='AVAILABLE'||prepared.workspace?.persistent!==true)
+      rejectSubmission('项目工作区尚未准备完成，未占用 GPU。',409);
     if(request.cards>user.limits[request.machine])rejectSubmission('任务卡数超出所选机器的用卡额度；不会自动切换服务器。',409);
     await service.refreshGPUQ();
     if(!service.gpuq||service.gpuq.stale)rejectSubmission('机器状态已过期，暂不接受新任务。',503);
@@ -606,81 +587,18 @@ export async function executionCall(service,principal,operation,args,readContext
     if(explicit&&(!prioritySupported||!yieldCapable(host)))rejectSubmission('节点未接通独立让位与 checkpoint 控制通道；未提交任务。',503);
     if(explicit?.mode&&explicit.mode!=='queue'&&!host.gpuq.capabilities.includes('preempt-opt-in-only-v1'))rejectSubmission('节点尚未接通请求模式的主动让位范围限制。',503);
     if(request.priorityProvided&&!prioritySupported)rejectSubmission('所选机器尚未确认安全优先级功能，未提交任务；请刷新或联系管理员升级。',503);
-    let needsPreparation=!!request.machineSelection,resolvedReferences=[],admissionPending=false;
-    if(datasets.length){
-      // Personal training uses the same owner-only Principal as node lease
-      // acquisition. Only the explicitly selected node is queried; management
-      // visibility and another node's READY copy cannot bypass this preflight.
-      let states;
-      try{states=await Promise.all(datasets.map(async ref=>{
-        if(request.datasetReadMode==='warehouse'){
-          const resolved=await resolveTrainingDataset(service,user.id,request.machine,ref,'warehouse');
-          if(resolved.reference)resolvedReferences.push(resolved.reference);
-          return resolved.status;
-        }
-        if(service.resolveDataset){
-          try{
-            const resolved=await service.resolveDataset(user.id,request.machine,ref);
-            if(resolved.reference)resolvedReferences.push(resolved.reference);
-            return resolved.status;
-          }catch(error){if(!request.prepareData||error.status===403||error.message==='dataset owner authorization required')throw error;return {...ref,state:'UNKNOWN'};}
-        }
-        const transfer=service.datasetReplicaState?.(user.id,request.machine,ref);
-        try{const result=await service.bridge(request.machine,'datasets.status',{...ref,userId:user.id,hostAdmin:false});return result.state==='READY'?result:transfer||result;}
-        catch(error){if(!request.prepareData||error?.status===403||error?.message==='dataset owner authorization required')throw error;return {...ref,state:'UNKNOWN'};}
-      }));}
-      catch(error){
-        if(error?.status===403||error?.message==='dataset owner authorization required')rejectSubmission('当前账号没有数据集读取授权；管理员个人训练也必须列入数据集 owners。未占用 GPU。',403);
-        // A temporary data/metadata read is not a rejection once the same
-        // member-bound version grant is known. Accept the original key first;
-        // the preparation lane will repeat only reads before any dispatch.
-        await assertDatasetReadAccess(service,principal,request.machine,datasets);
-        admissionPending=true;needsPreparation=true;
-        states=datasets.map(ref=>({...ref,state:'WAITING'}));
-      }
-      if(!admissionPending&&!states.every(s=>s.state==='READY')){
-        if(request.datasetReadMode==='warehouse'){
-          await assertDatasetReadAccess(service,principal,request.machine,datasets);
-          admissionPending=true;needsPreparation=true;
-        }else{
-        if(!request.prepareData)rejectSubmission('所选机器没有完整的本地数据副本。先用 gpuctl data prepare 数据集@版本 准备数据；此时未占用 GPU，不会自动切换服务器。',409);
-        const catalog=await datasetCatalogCall(service,{...principal,userId:user.id},'datasets.catalog',{machine:request.machine});
-        const catalogVersions=datasets.map(ref=>catalog.datasets?.find(d=>d.dataset===ref.dataset)?.versions?.find(v=>v.version===ref.version));
-        if(catalogVersions.some((value,index)=>states[index].state!=='READY'&&value&&value.canUse!==true))
-          rejectSubmission('当前账号没有数据集读取授权；目录可见不代表可以训练读取。未占用 GPU。',403);
-        if(!datasets.every((ref,index)=>states[index].state==='READY'||catalogVersions[index]?.canUse===true&&(catalogVersions[index].canPrepare===true||catalogVersions[index].state==='PREPARING')))rejectSubmission('部分数据没有可用来源；请先在数据集页面完成导入。未占用 GPU。',409);
-        if(service.store.jobs.filter(j=>j.userId===user.id&&j.state===DATA_PREPARING).length>=10)rejectSubmission('最多保留 10 个数据准备中的训练，请先等待或取消。',429);
-        needsPreparation=true;
-        }
-      }
-    }
-    if(needsPreparation&&service.store.jobs.filter(j=>j.userId===user.id&&j.state===DATA_PREPARING).length>=10)rejectSubmission('最多保留 10 个准备中的训练，请先等待或取消。',429);
-    if(request.machineSelection&&(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine)))rejectSubmission('账号授权或机器维护状态已改变；未提交训练。',409);
-    let storagePlan;
-    if((project.project||datasets.length)&&!admissionPending){
-      try{storagePlan=await trainingStoragePlan(service,user,request.machine,request,{from:request.projectPreparation?.from});}
-      catch(error){
-        if(!datasets.length||error.status===403||error.code==='TRAINING_STORAGE_INSUFFICIENT'){
-          if(error.code!=='TRAINING_ADMISSION_BUSY')error.code='SUBMISSION_REJECTED';throw error;
-        }
-        admissionPending=true;needsPreparation=true;
-      }
-      if(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine))rejectSubmission('容量核对期间账号授权或机器维护状态已改变；未提交训练。',409);
-    }
-    if(!needsPreparation&&!personalCardQuotaExempt(user,request)){
-      if(usage(service.store.jobs,user.id)+request.cards>user.total)rejectSubmission('超出跨机器用卡总额度（排队、运行和待核对任务均计入）。',409);
-      if(usage(service.store.jobs,user.id,request.machine)+request.cards>user.limits[request.machine])rejectSubmission('超出所选机器的用卡额度（排队、运行和待核对任务均计入）；不会自动切换服务器。',409);
+    if(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine))
+      rejectSubmission('账号授权或机器维护状态已改变；未提交训练。',409);
+    if(!personalCardQuotaExempt(user,request)){
+      if(usage(service.store.jobs,user.id)+request.cards>user.total)rejectSubmission('超出跨机器用卡总额度。',409);
+      if(usage(service.store.jobs,user.id,request.machine)+request.cards>user.limits[request.machine])rejectSubmission('超出所选机器的用卡额度。',409);
     }
     const job=createSubmittedJob(request,user,prioritySupported),{id}=job;
-    if(admissionPending){job.trainingAdmissionPending=true;job.allowPrepareData=request.prepareData===true;}
-    if(storagePlan)job.trainingStoragePlan=storagePlan;
-    if(!needsPreparation&&datasets.length&&resolvedReferences.length===datasets.length)job.spec.datasets=datasets.map(ref=>resolvedReferences.find(value=>(value.mountAs||value.dataset)===ref.dataset));
-    if(needsPreparation){job.state=DATA_PREPARING;job.queueReason=admissionPending?'等待数据就绪（自动重查中）':'等待准备项目和本机数据；尚未申请 GPU。';job.dataPreparation={datasets:datasets.map(ref=>({...ref,state:'WAITING'}))};}
     service.db.exec('BEGIN IMMEDIATE');
     try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
     catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==id);throw e;}
     setImmediate(()=>service.reconcile().catch(()=>{}));return jobView(job);
-  });
+  }
   if(operation==='jobs.priority'){
     if(principal.role!=='admin')fail('调整排队优先级仅管理员可用。',403);
     if(Object.keys(args).some(k=>!['jobId','priority','expectedPriority'].includes(k)))fail('优先级参数无效。');
@@ -722,7 +640,7 @@ export async function executionCall(service,principal,operation,args,readContext
     }
     return jobView(job);
   }
-  if(operation==='jobs.logs'){const job=jobById(args.jobId);if(job.state===DATA_PREPARING)return {text:job.queueReason||'正在准备本机数据；尚未申请 GPU。'};return observeJob(job,'logs',{job:job.spec});}
+  if(operation==='jobs.logs'){const job=jobById(args.jobId);return observeJob(job,'logs',{job:job.spec});}
   if(operation==='jobs.reconcile-resources'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('资源对账仅接受任务 ID。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
@@ -759,7 +677,7 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation==='jobs.watch'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('进度查询参数无效。');
     const job=jobById(args.jobId);
-    if(!job.machine||job.state===DATA_PREPARING)return jobView(job);
+    if(!job.machine)return jobView(job);
     if(TERMINAL.has(job.state)){
       authorizedMachine(job.machine);
       const original=jobView(job);

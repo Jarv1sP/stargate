@@ -488,3 +488,8 @@ Portal 只调用现有字面量 `datasets.capacity`，并行、有 5 秒读取�
 读取总预算为 40 秒，单次节点读取最多 27 秒，并在重查和返回前核对授权。
 取消、提交和资源释放不会因此自动重放。网页保留当前账号同一作业最后读到的日志，
 暂时读取失败只更新查询状态，切换账号时清除这些日志。
+# 直接工作区提交契约
+
+`jobs.submit` 必须指定 `project`，不再接受 `release`、`datasets`、`prepareData` 或 `datasetReadMode`。门户直接核对所选项目工作区并提交 GPUQ；不查询缓存、创建数据准备任务或计算复制容量。AUTO 仅考虑已有同名工作区的节点，不复制项目或数据。
+
+`projects.status.data` 返回共享数据的容器路径（只读）与个人数据路径 `/data/mine`（可写），不返回宿主路径。`datasets.workspace.list/get/put/status` 在明确选定的节点访问个人数据目录；不重定向到仓库机器。个人数据发布接口移除；上传完成即可读取。
