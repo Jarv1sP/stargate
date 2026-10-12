@@ -15,12 +15,47 @@ RESOURCE_FILE = '/run/gpuq/resources.json'
 RAY_SPILL_DIR = '/tmp/gpuq-ray-spill'
 
 
-def requested_limits(spec, terminal=False):
+def memory_pool(config):
+    """Deployment-owned shared ancestor, never a path supplied by a job."""
+    pool = (config or {}).get('memoryPool')
+    if pool is None:
+        return None
+    if (not isinstance(pool, dict) or set(pool) != {'cgroup', 'maxBytes'}
+            or not isinstance(pool['cgroup'], str)
+            or not pool['cgroup'].endswith('/gpuq-workloads.slice')
+            or type(pool['maxBytes']) is not int or pool['maxBytes'] <= 0):
+        raise ValueError('Invalid shared memory pool configuration')
+    cgroup_path(pool['cgroup'])
+    return pool
+
+
+def requested_limits(spec, terminal=False, config=None):
     cards = spec.get('cards')
     if not terminal and (type(cards) is not int or not 1 <= cards <= 64):
         raise ValueError('Invalid GPU resource request')
-    return {'cpu': 2 if terminal else cards * 4,
-            'memory': (8 if terminal else cards * 32) * GIB, 'pids': 2048}
+    pool = memory_pool(config)
+    memory = pool['maxBytes'] if pool else (8 if terminal else cards * 32) * GIB
+    if 'memoryLimitGiB' in spec:
+        limit = spec['memoryLimitGiB']
+        if type(limit) is not int or not 1 <= limit <= 1048576:
+            raise ValueError('Invalid memory limit')
+        memory = min(memory, limit * GIB)
+    return {'cpu': 2 if terminal else cards * 4, 'memory': memory, 'pids': 2048}
+
+
+def verify_memory_pool(group, config, root=Path('/sys/fs/cgroup')):
+    pool = memory_pool(config)
+    if pool is None:
+        return
+    parent = cgroup_path(pool['cgroup'], root)
+    job = cgroup_path(group, root)
+    if parent not in job.parents:
+        raise ValueError('Job is outside the shared memory pool')
+    enforced = _limit(parent, 'memory.max', required=True)
+    if enforced is None or enforced > pool['maxBytes']:
+        raise ValueError('Shared memory pool limit is not enforced')
+    if (parent / 'memory.oom.group').read_text().strip() != '0':
+        raise ValueError('Shared memory pool must not OOM-kill all jobs together')
 
 
 def cgroup_path(group, root=Path('/sys/fs/cgroup')):
@@ -61,8 +96,9 @@ def _limit(path, name, required=False):
 
 
 def read_budget(spec, group, uuids, terminal=False, *, root=Path('/sys/fs/cgroup'),
-                affinity_count=None, physical_memory=None):
-    requested = requested_limits(spec, terminal)
+                affinity_count=None, physical_memory=None, config=None):
+    requested = requested_limits(spec, terminal, config)
+    verify_memory_pool(group, config, root)
     if len(uuids) != (0 if terminal else spec['cards']) or len(set(uuids)) != len(uuids):
         raise ValueError('GPU allocation does not match resource request')
     path = cgroup_path(group, root)
@@ -91,6 +127,8 @@ def read_budget(spec, group, uuids, terminal=False, *, root=Path('/sys/fs/cgroup
               'cpuLimit': limits['cpu'], 'memoryLimitBytes': limits['memory'],
               'pidsLimit': limits['pids'], 'gpuCount': len(uuids), 'gpuUuids': list(uuids),
               'requested': requested, 'cgroupPath': '/sys/fs/cgroup'}
+    if memory_pool(config):
+        budget['memoryShared'] = True
     validate_budget(budget)
     return budget
 

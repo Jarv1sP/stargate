@@ -292,6 +292,17 @@ test('run uses live workspace without publishing; exact argv and dataset refs pr
   assert.equal(f.calls.at(-1).args.release,OLDER);
 });
 
+test('optional RAM cap reaches submission; invalid caps never perform API work',async t=>{
+  const f=await fixture(t);await f.save({projectsByMachine:{'gpu-1':'alpha'}});
+  const result=await f.cli(['run','--release',RELEASE,'--memory-limit-gib','60','--','true']);
+  assert.equal(result.code,0,result.stderr);assert.equal(f.calls.at(-1).args.memoryLimitGiB,60);
+  for(const value of ['0','-1','1.5','max']){
+    f.calls.length=0;
+    assert.equal((await f.cli(['run','--memory-limit-gib',value,'--','true'])).code,1);
+    assert.deepEqual(f.calls,[]);
+  }
+});
+
 test('run refuses missing or unready release before jobs.submit and never chooses another machine',async t=>{
   const f=await fixture(t);await f.save({projectsByMachine:{'gpu-1':'alpha'}});
   f.setReleases([{release:RELEASE,state:'PUBLISHING'}],RELEASE);

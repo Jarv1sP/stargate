@@ -110,7 +110,8 @@ class EnvironmentTests(unittest.TestCase):
         self.assertIn("'/opt/gpuq/bin/gpuq-network'",source)
         self.assertIn("project_path(project['environmentMode'],resources=True)",source)
         self.assertNotIn('read_budget(',source)
-        self.assertNotIn('job-resources.py',source)
+        self.assertIn('resources.verify_memory_pool(group,cfg)',source)
+        self.assertNotIn('read_budget',source)
     def bootstrap(self, root, mode, initialize):
         command = runner.project_bootstrap(['/bin/bash','--noprofile','--norc'], mode)
         real_path = Path

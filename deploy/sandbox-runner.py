@@ -184,12 +184,13 @@ def run_job(capture,*,resource_module):
     # Apply limits BEFORE any untrusted code runs, inside the original GPUQ unit.
     capture.phase='RESOURCE_BUDGET'
     resources=local_module('gpuq_job_resources',resource_module)
-    requested=resources.requested_limits(spec if terminal else runtime_spec,terminal)
+    resources.verify_memory_pool(group,cfg)
+    requested=resources.requested_limits(spec if terminal else runtime_spec,terminal,cfg)
     subprocess.run(['/usr/bin/systemctl','--user','set-property','--runtime',unit,f'MemoryMax={requested["memory"]}',f'CPUQuota={requested["cpu"]*100}%','TasksMax=2048'],env=env,check=True)
     if not terminal and 'storageQuota' in cfg:local_module('gpuq_storage_quota','storage-quota.py').ensure_attempt(cfg,spec,os.environ)
     # Legacy terminal specs intentionally have no id; use the trusted filename
     # identity for metadata without mutating their immutable on-disk spec.
-    budget=resources.read_budget({**(spec if terminal else runtime_spec),'id':jid},group,uuids,terminal)
+    budget=resources.read_budget({**(spec if terminal else runtime_spec),'id':jid},group,uuids,terminal,config=cfg)
     cgroupfd=os.open(resources.cgroup_path(group),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     resourcefd=os.memfd_create('gpuq-resources');os.write(resourcefd,json.dumps(budget,sort_keys=True).encode());os.lseek(resourcefd,0,0)
     capture.phase='PROJECT_PREPARATION'

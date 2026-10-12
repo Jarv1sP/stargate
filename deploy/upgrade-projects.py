@@ -54,10 +54,8 @@ def strings(tree):
 
 
 def runner_profile(payload):
-    definitions = require_calls(payload, {'main':0,'project_runtime':5,'start_job_capture':7,'finish_job_capture':5})
-    constants = strings(definitions['main'])
-    if 'job-resources.py' in constants or any(isinstance(node,ast.Attribute) and node.attr == 'read_budget' for node in ast.walk(definitions['main'])): return 'ray-p0'
-    return 'common-p0'
+    require_calls(payload, {'main':0,'project_runtime':5,'start_job_capture':7,'finish_job_capture':5})
+    return node_runtime.detected_profile(payload)
 
 
 def p0_prerequisites(directory):

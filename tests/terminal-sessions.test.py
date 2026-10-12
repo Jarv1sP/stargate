@@ -67,6 +67,18 @@ class TerminalSessions(unittest.TestCase):
         request={**connection,'mode':'reconnect','key':uid(),**fields}
         return request,self.n.process('terminal.open',request)
 
+    def test_shared_memory_routes_only_user_terminals_into_the_workload_pool(self):
+        self.n.CONFIG['memoryPool']={'cgroup':'/user.slice/gpuq-workloads.slice','maxBytes':128*1024**3}
+        with patch.object(self.n,'run',side_effect=self.launch) as launch:
+            self.open({**self.context,'hostAdmin':False})
+            ordinary=launch.call_args.args[0]
+            self.assertIn('--slice=gpuq-workloads.slice',ordinary)
+            self.assertIn('--property=OOMPolicy=kill',ordinary)
+            self.open()
+            root=launch.call_args.args[0]
+            self.assertNotIn('--slice=gpuq-workloads.slice',root)
+            self.assertNotIn('--property=OOMPolicy=kill',root)
+
     def test_two_same_account_clients_get_independent_root_sessions_and_close_is_local(self):
         a,ar=self.open();b,br=self.open();ca,cb=self.connection(a,ar),self.connection(b,br)
         self.assertNotEqual(ar['id'],br['id'])

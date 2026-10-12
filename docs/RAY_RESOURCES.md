@@ -6,7 +6,19 @@
 
 ## 预算发现
 
-普通训练仍使用原命令。每卡默认 4 核 CPU **时间额度**、32 GiB 系统内存；整个任务最多 2048 个 Linux tasks（进程与线程共用额度），不是每个 worker 2048。八卡对应 32 核额度和 256 GiB 系统内存，不是 GPU 显存承诺。CPU quota 不是独占核心或 CPU affinity，`os.cpu_count()`、`/proc/meminfo` 仍可能显示宿主硬件。
+普通训练仍使用原命令。启用共享内存池的节点不按 GPU 张数切分内存：单卡、多卡和开发终端共用节点的工作负载内存池，用多少占多少。`gpuctl run --memory-limit-gib 60 ...` 可主动限制本任务；不填则最高可用到池上限，但不代表预留或当前可用量。池满时仍可能触发 OOM，不能保证所有任务同时用满。
+
+CPU 仍为每卡 4 核**时间额度**，开发终端 2 核；每任务最多 2048 个 Linux tasks。旧节点未配置共享池时保留原 32 GiB/卡、终端 8 GiB 的限制，不能仅靠升级客户端获得共享内存。CPU quota 不是独占核心或 CPU affinity，`os.cpu_count()`、`/proc/meminfo` 仍可能显示宿主硬件。
+
+### 部署共享池
+
+先将 `deploy/gpuq-workloads.slice` 安装到服务用户的 systemd 单元目录，将 `deploy/gpuq-workloads-service.conf` 安装为 `gpuq-.service.d/shared-memory.conf`。将 `deploy/gpuq-control-service.conf` 分别安装为 `gpuq-diag-.service.d/shared-memory.conf`、`gpuq-diagnostics-gc.service.d/shared-memory.conf`、`gpuq-storage-gc.service.d/shared-memory.conf`；核对本机其他同前缀控制服务也留在池外，再执行用户级 daemon-reload。调度器 `gpuq.service` 不匹配该前缀。普通终端由节点显式选择该 slice，宿主 root 终端不加入。池默认上限为物理内存 90%；这是任务池的总限制，不是每个任务各自预留 90%。
+
+节点 `memoryPool` 配置包含实际池 `cgroup` 路径和允许的最高整数 `maxBytes`。启动时核对任务确在池内、池有有限且不高于配置的硬上限；未正确安装时拒绝新任务，不静默取消保护。滚动部署可以暂时收紧池总上限，不把临时值固化成每个新任务的永久限制；后续扩回池容量无需重启这些任务。每任务的有限上限保留给 OCI 与资源发现，上级池限制所有任务合计。Ray 的逻辑预算同样不是预留，多个 Ray 集群应自行设置较小的任务上限。
+
+已有运行任务不能通过修改 Slice 原地迁移。滚动部署必须核对旧任务的有限上限，为池外旧任务扣留相应容量，再启用新节点配置；不要直接给混合版本主机套用 90% 示例。不停止或重启旧任务，不把配置完成冒称旧任务已经迁入；无有限上限的旧任务需要先单独处理。全部旧任务结束后再恢复完整池容量。
+
+回滚时先恢复新任务的运行器/配置入口；已有池内任务仍须保留原 slice 和限制直到结束。不要停止或删除仍有任务的 slice，也不要把池上限调到当前占用以下，否则可能触发 OOM。
 
 任务可读取只读 `/run/gpuq/resources.json`，或以下环境变量：
 

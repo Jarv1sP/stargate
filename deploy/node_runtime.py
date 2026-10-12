@@ -27,8 +27,9 @@ def runtime_plan(profile,source=HERE):
 
 def detected_profile(payload):
     tree=ast.parse(payload)
-    strings={node.value for node in ast.walk(tree) if isinstance(node,ast.Constant) and isinstance(node.value,str)}
-    return 'ray-p0' if 'job-resources.py' in strings or any(isinstance(node,ast.Attribute) and node.attr=='read_budget' for node in ast.walk(tree)) else 'common-p0'
+    # Both runners use the shared memory policy. Only the Ray runner exports
+    # the discovered cgroup budget; importing the policy no longer selects Ray.
+    return 'ray-p0' if any(isinstance(node,ast.Attribute) and node.attr=='read_budget' for node in ast.walk(tree)) else 'common-p0'
 
 
 def preflight(source,profile):

@@ -8,7 +8,7 @@ import {taskDescription,displayName} from './dist/task-metadata.js';
 const FIELDS=new Set([
   'machine','cards','minVramGiB','argv','name','description','key',
   'datasets','project','release','priority','scheduling','elastic','placement',
-  'prepareData','machineSelection','datasetReadMode','interactive',
+  'prepareData','machineSelection','datasetReadMode','interactive','memoryLimitGiB',
 ]);
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 
@@ -31,6 +31,7 @@ export function datasetReferences(value){
 export function normalizeJobSubmission(args,principal){
   if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!FIELDS.has(k)))fail('提交参数无效。');
   if(args.prepareData!==undefined&&typeof args.prepareData!=='boolean')fail('数据准备选项无效。');
+  if(args.memoryLimitGiB!==undefined&&(!Number.isSafeInteger(args.memoryLimitGiB)||args.memoryLimitGiB<1||args.memoryLimitGiB>1048576))fail('内存上限须为正整数 GiB；不填则共享节点内存池。');
   if(args.datasetReadMode!==undefined&&!['cache','warehouse'].includes(args.datasetReadMode))fail('数据读取方式须为 cache 或 warehouse。');
   if(args.scheduling!==undefined&&args.priority!==undefined)fail('自定义调度不能与旧优先级预设混用。');
   let explicit=null;
@@ -88,6 +89,7 @@ export function normalizeJobSubmission(args,principal){
   if(machineSelection)identity.push({machineSelection});
   if(request.datasetReadMode==='warehouse')identity.push({datasetReadMode:'warehouse'});
   if(request.interactive)identity.push({interactive:true});
+  if(args.memoryLimitGiB!==undefined){request.memoryLimitGiB=args.memoryLimitGiB;identity.push({memoryLimitGiB:args.memoryLimitGiB});}
   request.digest=createHash('sha256').update(JSON.stringify(identity)).digest('hex');
   return request;
 }
@@ -96,7 +98,7 @@ export function createSubmittedJob(request,user,prioritySupported,{id=randomUUID
   const {machine,cards,minVramGiB,name,key,digest,project,datasets,priority,explicit}=request;
   const context={...project,...(request.interactive?{interactive:true}:{}),...(datasets.length?{datasets:structuredClone(datasets)}:{}),...(request.datasetReadMode==='warehouse'?{datasetReadMode:'warehouse'}:{}),...(request.elastic?{elastic:structuredClone(request.elastic)}:{}),...(request.placement?{placement:structuredClone(request.placement)}:{})};
   const policy=explicit?{scheduling:structuredClone(explicit)}:prioritySupported?{priority,preemptIdleOnly:true}:{};
-  const spec={id,userId:user.id,username:user.username,cards,argv:[...request.argv],name,minVramGiB,...context,...policy};
+  const spec={id,userId:user.id,username:user.username,cards,argv:[...request.argv],name,minVramGiB,...context,...policy,...(request.memoryLimitGiB!==undefined?{memoryLimitGiB:request.memoryLimitGiB}:{})};
   // Human-facing metadata belongs to the portal record, not the immutable
   // node execution spec: old nodes/receipts continue accepting the same spec.
   return {id,key,digest,spec,userId:user.id,username:user.username,submitterName:displayName(user.name??user.username),machine,cards,name,description:request.description,...context,

@@ -141,7 +141,10 @@ def main():
     unit=group.rsplit('/',1)[-1]
     if not unit.startswith('amax-term-' if terminal else 'gpuq-') or not unit.endswith('.service'):raise ValueError('Not running inside an authorized job unit')
     env={'PATH':'/usr/bin:/bin','HOME':str(Path.home()),'XDG_RUNTIME_DIR':f'/run/user/{os.getuid()}','DBUS_SESSION_BUS_ADDRESS':f'unix:path=/run/user/{os.getuid()}/bus'}
-    subprocess.run(['/usr/bin/systemctl','--user','set-property','--runtime',unit,f'MemoryMax={8 if terminal else runtime_spec["cards"]*32}G',f'CPUQuota={200 if terminal else runtime_spec["cards"]*400}%','TasksMax=2048'],env=env,check=True)
+    resources=local_module('gpuq_job_resources','job-resources.py')
+    resources.verify_memory_pool(group,cfg)
+    requested=resources.requested_limits(spec if terminal else runtime_spec,terminal,cfg)
+    subprocess.run(['/usr/bin/systemctl','--user','set-property','--runtime',unit,f'MemoryMax={requested["memory"]}',f'CPUQuota={requested["cpu"]*100}%','TasksMax=2048'],env=env,check=True)
     if not terminal and 'storageQuota' in cfg:local_module('gpuq_storage_quota','storage-quota.py').ensure_attempt(cfg,spec,os.environ)
     capture_module,capture_id,runtimefd=(None,None,None) if terminal else start_job_capture(root,spec,unit,group,env,indices,uuids)
     workspace=root/'users'/hashlib.sha256(spec['userId'].encode()).hexdigest()[:32]

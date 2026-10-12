@@ -51,7 +51,7 @@ let wantsJSON=args.slice(0,args.includes('--')?args.indexOf('--'):args.length).i
 function fail(message){throw Error(message);}
 const CLI_OPTIONS=new Map([
   ['pin','flag'],...['kind','status','title','body','body-file','announcement-type'].map(key=>[key,'value']),
-  ['via','value'],['data-read','value'],
+  ['via','value'],['data-read','value'],['memory-limit-gib','value'],
   ...['sha256','file-id','password-code','source-url'].map(key=>[key,'value']),
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','ack-unknown','sync','data-workspace'].map(key=>[key,'flag']),
   ['sync-dir','value'],['candidates','value'],['owner-id','value'],['interactive','flag'],
@@ -256,6 +256,8 @@ async function main(){
     if(scheduling.yieldPolicy==='save'&&!scheduling.checkpointable)fail('--yield save requires --checkpointable and an epoch checkpoint adapter');
     if(scheduling.restartPolicy==='on-preempt'&&(scheduling.yieldPolicy!=='save'||!scheduling.checkpointable))fail('Automatic resume requires --yield save --checkpointable');
   }
+  const memoryLimitGiB=options['memory-limit-gib']===undefined?undefined:Number(options['memory-limit-gib']);
+  if(memoryLimitGiB!==undefined&&(positionals[0]!=='run'||!Number.isSafeInteger(memoryLimitGiB)||memoryLimitGiB<1||memoryLimitGiB>1048576))fail('--memory-limit-gib 仅用于 run，须为正整数 GiB');
   const projectSlug=value=>{if(typeof value!=='string'||!/^[a-z][a-z0-9_-]{0,47}$/.test(value))fail('Project must start with a lowercase letter and use 1–48 lowercase letters, digits, _ or -');return value;};
   if(options.project)projectSlug(options.project);
   if(options.project&&options.legacy)fail('--project and --legacy cannot be combined');
@@ -803,6 +805,7 @@ async function main(){
         process.stderr.write(`Project: ${context.project} · ${context.release?'release: '+context.release:'持久工作区'}\n`);
       }
       if(options.interactive)context.interactive=true;
+      if(memoryLimitGiB!==undefined)context.memoryLimitGiB=memoryLimitGiB;
       result=(await call('jobs.submit',{machine:positionals[1],...(automatic?{machineSelection:{mode:'auto',...(candidates?{candidates}:{})}}:{}),cards,minVramGiB:Number(options['min-vram']||0),name:options.name||'train',...(options.description!==undefined?{description:taskDescription(options.description)}:{}),argv:training,key,...(options.priority?{priority:options.priority}:{}),...(scheduling?{scheduling}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...context,...(datasets.length?{datasets,prepareData:true}:{}),...(options['data-read']==='warehouse'?{datasetReadMode:'warehouse'}:{})})).result;
     }else if(command==='jobs'&&positionals.length===1)result=state.jobs;
     else if(command==='priority'&&positionals.length===3){

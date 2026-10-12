@@ -25,6 +25,8 @@ gpuctl run --sync -g 1 -- python train.py  上传后直接运行
 gpuctl run -g 1 --interactive             申请 GPU 交互会话
 gpuctl ssh --job JOB_ID                  RUNNING 后连接或重连
 GPU 会话断开仍占卡，exit 或 cancel 才释放；文件和环境保留。
+gpuctl run -g 1 --memory-limit-gib 60 -- python train.py  可选内存上限
+启用共享内存池的节点默认按需共享，不按 GPU 张数切分；上限不是预留。
 gpuctl jobs / logs JOB / cancel JOB
 gpuctl watch JOB
 gpuctl diagnostics JOB --json

@@ -265,10 +265,11 @@ class Resources(unittest.TestCase):
                 ready = int(command[command.index('--ready-fd') + 1])
                 os.write(ready, b'1')
             return SimpleNamespace(wait=lambda *args, **kwargs: 42, poll=lambda: 42)
-        def read_budget(spec, group, uuids, terminal):
+        def read_budget(spec, group, uuids, terminal, config=None):
             return R.read_budget(spec, group, uuids, terminal, root=self.root,
-                                 affinity_count=128, physical_memory=512 * R.GIB)
+                                 affinity_count=128, physical_memory=512 * R.GIB, config=config)
         resource = SimpleNamespace(requested_limits=R.requested_limits, read_budget=read_budget,
+                                   verify_memory_pool=lambda group, config: R.verify_memory_pool(group, config, self.root),
                                    cgroup_path=lambda group: self.leaf, resource_environment=R.resource_environment,
                                    RESOURCE_FILE=R.RESOURCE_FILE, RAY_SPILL_DIR=R.RAY_SPILL_DIR)
         devices = ['/dev/nvidia' + str(i) for i in [3,2,1,0,7,6,5,4][:allocated_cards]]

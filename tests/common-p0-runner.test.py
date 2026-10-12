@@ -20,6 +20,7 @@ def load(name, filename):
     return module
 S = load('common_p0_runner', 'sandbox-runner-common-p0.py')
 P = load('common_p0_allocation', 'scheduling-policy.py')
+R = load('common_p0_memory', 'job-resources.py')
 D = load('common_p0_diagnostics', 'job-diagnostics.py')
 JID = '11111111-1111-4111-8111-111111111111'
 CAPTURE = 'a' * 32
@@ -86,7 +87,7 @@ class CommonRunner(unittest.TestCase):
                 stopped.append(True)
             return SimpleNamespace(wait=lambda *args, **kwargs: 42, poll=lambda: None if invalid_info else 42,kill=stop)
         try:
-            with patch.object(S, 'HERE', self.root), patch.object(S, 'local_module', side_effect=lambda name, filename: guard if filename=='platform-root-guard.py' else P if filename=='scheduling-policy.py' else mapping if filename=='gpu-devices.py' else diagnostic) as imported, \
+            with patch.object(S, 'HERE', self.root), patch.object(S, 'local_module', side_effect=lambda name, filename: guard if filename=='platform-root-guard.py' else P if filename=='scheduling-policy.py' else R if filename=='job-resources.py' else mapping if filename=='gpu-devices.py' else diagnostic) as imported, \
                     patch.object(S, 'start_job_capture', wraps=S.start_job_capture) as capture, \
                     patch.object(S, 'project_runtime', return_value=None), \
                     patch.object(S.sys, 'argv', ['sandbox-runner.py', JID] + (['terminal'] if terminal else [])), \
@@ -106,9 +107,10 @@ class CommonRunner(unittest.TestCase):
                 guard.check.assert_called_once_with(self.root)
                 if terminal:
                     capture.assert_not_called(); diagnostic.start_capture.assert_not_called()
-                    diagnostic.finish_capture.assert_not_called(); imported.assert_called_once_with('gpuq_platform_root_guard','platform-root-guard.py'); gpu.assert_not_called()
+                    diagnostic.finish_capture.assert_not_called()
+                    self.assertEqual([call.args for call in imported.call_args_list],[('gpuq_platform_root_guard','platform-root-guard.py'),('gpuq_job_resources','job-resources.py')]); gpu.assert_not_called()
                 elif not missing and not broken:
-                    self.assertEqual([call.args for call in imported.call_args_list],[('gpuq_platform_root_guard','platform-root-guard.py'),('gpuq_allocation','scheduling-policy.py'),('gpuq_gpu_devices','gpu-devices.py'),('gpuq_job_diagnostics','job-diagnostics.py')])
+                    self.assertEqual([call.args for call in imported.call_args_list],[('gpuq_platform_root_guard','platform-root-guard.py'),('gpuq_allocation','scheduling-policy.py'),('gpuq_gpu_devices','gpu-devices.py'),('gpuq_job_resources','job-resources.py'),('gpuq_job_diagnostics','job-diagnostics.py')])
                     diagnostic.finish_capture.assert_called_once_with(self.root, job, CAPTURE, 42)
                 else: diagnostic.finish_capture.assert_not_called()
                 if not terminal:
@@ -128,7 +130,7 @@ class CommonRunner(unittest.TestCase):
 
     def test_terminal_is_head_style_without_diagnostic_or_resource_hooks(self):
         args, env, props = self.orchestrate(terminal=True)
-        self.assertIn('MemoryMax=8G', props); self.assertIn('CPUQuota=200%', props)
+        self.assertIn('MemoryMax='+str(8*1024**3), props); self.assertIn('CPUQuota=200%', props)
         self.assertIn('TasksMax=2048', props); self.assertNotIn('--new-session', args)
         self.assertEqual(env['PATH'], '/opt/gpuq/bin:/opt/conda/bin:/usr/bin:/bin')
         self.assertFalse(any(key.startswith(('RAY_', 'GPUQ_CPU', 'GPUQ_MEMORY')) for key in env))
@@ -144,7 +146,7 @@ class CommonRunner(unittest.TestCase):
 
     def test_training_records_exit_and_binds_only_managed_runtime_without_budget_files(self):
         args, env, props = self.orchestrate()
-        self.assertIn('MemoryMax=64G', props); self.assertIn('CPUQuota=800%', props)
+        self.assertIn('MemoryMax='+str(64*1024**3), props); self.assertIn('CPUQuota=800%', props)
         self.assertIn('TasksMax=2048', props); self.assertIn('--new-session', args)
         self.assertEqual(env['PATH'], '/opt/gpuq/bin:/opt/conda/bin:/usr/bin:/bin')
         self.assertEqual(env['RAY_TMPDIR'], '/run/gpuq/runtime')
@@ -179,7 +181,9 @@ class CommonRunner(unittest.TestCase):
 
     def test_ast_has_no_new_cpu_resource_or_wrapper_dependency(self):
         source = (DEPLOY / 'sandbox-runner-common-p0.py').read_text(); ast.parse(source)
-        for forbidden in ('job-resources.py', 'read_budget', 'cpu-delegation', "'gpuq-ray'", 'cgroupfd', 'resourcefd', 'GPUQ_RESOURCE'):
+        self.assertIn('resources.verify_memory_pool(group,cfg)', source)
+        self.assertIn('resources.requested_limits', source)
+        for forbidden in ('read_budget', 'cpu-delegation', "'gpuq-ray'", 'cgroupfd', 'resourcefd', 'GPUQ_RESOURCE'):
             self.assertNotIn(forbidden, source)
         self.assertIn("if terminal else start_job_capture", source)
         self.assertIn("if capture_module is not None:finish_job_capture", source)

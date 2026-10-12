@@ -1105,7 +1105,8 @@ def file_op(operation,args,root=None):
 
 def validate_job(job,readonly=False):
     required={'id','userId','username','cards','argv','name','minVramGiB'}
-    if not isinstance(job,dict) or not required<=set(job) or set(job)-required-{'datasets','datasetReadMode','project','release','workspace','interactive','priority','preemptIdleOnly','scheduling','elastic','placement'}:raise ValueError('Invalid job specification')
+    if not isinstance(job,dict) or not required<=set(job) or set(job)-required-{'datasets','datasetReadMode','project','release','workspace','interactive','priority','preemptIdleOnly','scheduling','elastic','placement','memoryLimitGiB'}:raise ValueError('Invalid job specification')
+    if 'memoryLimitGiB' in job and (type(job['memoryLimitGiB']) is not int or not 1<=job['memoryLimitGiB']<=1048576):raise ValueError('Invalid memory limit')
     if not UUID.fullmatch(job['id']):raise ValueError('Invalid job ID')
     if readonly:
         if not isinstance(job['userId'],str) or not re.fullmatch(r'(builtin-admin|demo-user-[0-9]+)',job['userId']):raise ValueError('Invalid identity')
@@ -1369,6 +1370,7 @@ def terminal_op(operation,args):
                 finally:os.close(directory)
                 command=['/usr/bin/systemd-run','--user','--collect','--unit',unit,'--property=KillMode=control-group','--property=TimeoutStopSec=5']
                 if not spec['hostAdmin']:command+=['--property=MemoryMax=8G','--property=CPUQuota=200%','--property=TasksMax=2048']
+                if not spec['hostAdmin'] and CONFIG.get('memoryPool'):command+=['--slice=gpuq-workloads.slice','--property=OOMPolicy=kill']
                 command+=oci_properties
                 run(command+['/usr/bin/python3',str(HERE/'terminal-helper.py'),jid])
                 for _ in range(30):
