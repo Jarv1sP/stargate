@@ -290,6 +290,24 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation==='datasets.files.list')return datasetFilesCall(service,principal,args);
   if(operation==='datasets.training.capabilities')return trainingDatasetCapabilities(service,principal,args);
   const authorizedMachine=machine=>{if(!MACHINES.some(m=>m.id===machine)||!user.limits[machine])fail('这台机器未授权。',403);};
+  if(operation.startsWith('data.copy.')){
+    const action=operation.slice('data.copy.'.length),fields={start:['from','scope','path','destination'],status:[],resume:[],cancel:[]};
+    if(!Object.hasOwn(fields,action)||Object.keys(args).some(k=>!['machine','key',...fields[action]].includes(k))||!UUID.test(args.key||''))
+      fail('数据复制参数无效。');
+    authorizedMachine(args.machine);
+    if(action==='start'){
+      authorizedMachine(args.from);
+      if(args.from===args.machine)fail('跨机复制需要不同的来源和目标机器。');
+      if(typeof args.scope!=='string'||!/^[a-z][a-z0-9_-]{0,47}$/.test(args.scope))fail('请选择来源数据目录。');
+      for(const path of [args.path,args.destination])if(typeof path!=='string'||!path||path.length>1024||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>!p||p==='.'||p==='..'))fail('请使用数据目录内的相对路径。');
+    }
+    if(action==='resume'){
+      const original=await service.bridge(args.machine,'data.copy.status',{key:args.key,userId:user.id});
+      authorizedMachine(original.from);
+    }
+    const {machine,...request}=args;
+    return service.bridge(machine,operation,{...request,userId:user.id});
+  }
   if(operation.startsWith('datasets.storage.')){
     if(principal.role!=='admin')fail('存储管理仅管理员可用。',403);
     authorizedMachine(args.machine);

@@ -24,6 +24,7 @@ async function fixture(t){
     calls.push({host,operation,args});
     if(operation==='projects.workspace')return {project:args.project,state,workspace:{protocol:1,persistent:true}};
     if(operation==='projects.list')return {projects:[{project:'vision',environmentMode:'oci'}]};
+    if(operation.startsWith('data.copy.'))return {key:args.key,from:MACHINES[1].id,state:'RUNNING'};
     if(operation==='sync')return {state:'RUNNING',nodeJobId:'J0123456789ab'};
     throw Error('Unexpected dependency: '+operation);
   });
@@ -82,4 +83,28 @@ test('automatic placement uses existing local workspaces, never starts a copy',a
   assert.equal(result.machine,machine);
   assert.equal(f.service.store.jobs[0].state,'RUNNING');
   assert.deepEqual(f.calls.map(c=>c.operation),['projects.list','projects.workspace','sync']);
+});
+
+test('directory transfer requires both machine grants and never creates a training job',async t=>{
+  const f=await fixture(t),source=MACHINES[1].id;
+  const args={machine,from:source,scope:'hdd',path:'imagenet',destination:'imagenet',key:randomUUID()};
+  await assert.rejects(f.service.invoke(f.user.token,'data.copy.start',args),e=>e.status===403);
+  assert.deepEqual(f.calls,[]);
+  await f.service.invoke(f.admin.token,'policy.save',{userId:f.member.id,policyVersion:1,total:4,limits:{[machine]:2,[source]:2}});
+  const result=(await f.service.invoke(f.user.token,'data.copy.start',args)).result;
+  assert.equal(result.key,args.key);
+  assert.equal(f.calls.length,1);
+  assert.equal(f.calls[0].operation,'data.copy.start');
+  assert.equal(f.calls[0].args.userId,f.member.id);
+  assert.equal(f.service.store.jobs.length,0);
+  await assert.rejects(f.service.invoke(f.user.token,'data.copy.start',{...args,identityFile:'/private/key'}));
+  await assert.rejects(f.service.invoke(f.user.token,'data.copy.start',{...args,path:'../other'}));
+  assert.equal(f.calls.length,1);
+});
+
+test('resuming a copy rechecks source access before restarting its original worker',async t=>{
+  const f=await fixture(t),key=randomUUID();
+  await assert.rejects(f.service.invoke(f.user.token,'data.copy.resume',{machine,key}),e=>e.status===403);
+  assert.deepEqual(f.calls.map(c=>c.operation),['data.copy.status']);
+  assert.equal(f.service.store.jobs.length,0);
 });

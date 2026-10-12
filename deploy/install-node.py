@@ -71,6 +71,7 @@ node_config={**previous,**node_config}
 for key in ('localDataDirectories','personalDataRoot'):
     if key not in node:raise SystemExit('Configure '+key+' explicitly before installing the direct-storage runtime')
     node_config[key]=node[key]
+node_config['dataTransferPeers']=node.get('dataTransferPeers',{})
 retention=node.get('diagnosticsRetentionDays',previous.get('diagnosticsRetentionDays',30))
 if type(retention) is not int or not 1<=retention<=365:raise SystemExit('Invalid diagnostics retention days (1..365)')
 node_config['diagnosticsRetentionDays']=retention

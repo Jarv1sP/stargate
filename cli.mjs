@@ -54,7 +54,7 @@ const CLI_OPTIONS=new Map([
   ['via','value'],['data-read','value'],['memory-limit-gib','value'],
   ...['sha256','file-id','password-code','source-url'].map(key=>[key,'value']),
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','ack-unknown','sync','data-workspace'].map(key=>[key,'flag']),
-  ['sync-dir','value'],['candidates','value'],['owner-id','value'],['interactive','flag'],
+  ['source-root','value'],['sync-dir','value'],['candidates','value'],['owner-id','value'],['interactive','flag'],
   ...['url','session-file','total','cards','as','role','name','description','display-name','min-vram','key','project','release','job','priority','cwd','timeout','reconnect','env-mode','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','ref','target-project','gpu','vram-mib','sm-percent','reason','script-file','revision','preview-token','parent','cursor','limit','members','primary','manifest-sha256'].map(key=>[key,'value']),
   ['machine','machines'],['data','datasets'],
 ]);
@@ -226,7 +226,7 @@ async function main(){
   const transferCopy=positionals[0]==='transfer'&&positionals[1]==='copy',projectCopy=positionals[0]==='project'&&positionals[1]==='copy',transferWatch=positionals[0]==='transfer'&&positionals[1]==='watch',transferList=positionals[0]==='transfer'&&positionals[1]==='list';
   const datasetLabel=positionals[0]==='data'&&positionals[1]==='label';
   const projectLifecycle=positionals[0]==='project'&&['label','group','archive','unarchive','retire'].includes(positionals[1]);
-  if(['ref','target-project','dry-run'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'||['from','to'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'&&!transferCopy&&!projectCopy)fail('--from/--to are for sync, project copy or transfer copy; ref/target-project/dry-run are only for sync');
+  if(['ref','target-project','dry-run'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'||['from','to'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'&&!transferCopy&&!projectCopy&&!(positionals[0]==='data'&&positionals[1]==='copy'))fail('--from/--to are for sync, project copy or transfer copy; ref/target-project/dry-run are only for sync');
   if(options.candidates!==undefined&&positionals[0]!=='run')fail('--candidates is only for run --machine auto');
   if(options.general&&positionals[0]!=='note')fail('--general is only valid for note');
   if(options.interval!==undefined&&positionals[0]!=='watch'&&!transferWatch)fail('--interval is only valid for watch');
@@ -647,6 +647,18 @@ async function main(){
     }else if(command==='data'&&['import','imports','import-status','import-resume','import-cancel','import-discard'].includes(positionals[1])){
       if(training.length)fail('导入不接受额外命令。');
       result=await runCloudImport({action:positionals[1],positionals,options,machine:defaultMachine(),call});
+    }else if(command==='data'&&['copy','copy-status','copy-resume','copy-cancel'].includes(positionals[1])){
+      const action=positionals[1],allowed=['machines','datasets','url','session-file','json',...(action==='copy'?['from','to','source-root','key']:[])];
+      if(training.length||options.datasets.length||Object.keys(options).some(k=>!allowed.includes(k)))fail('Invalid data copy options');
+      if(action==='copy'){
+        if(positionals.length!==4||!options.from||!options.to)fail('Usage: data copy SOURCE_DIR DEST_DIR --from SERVER --to SERVER [--source-root hdd|mine] [--key UUID]');
+        const key=options.key||randomUUID();
+        process.stderr.write(`Copy key: ${key}\n`);
+        result=(await call('data.copy.start',{machine:machineName(options.to),from:machineName(options.from),scope:options['source-root']||'mine',path:positionals[2],destination:positionals[3],key})).result;
+      }else{
+        if(positionals.length!==3)fail('Usage: data copy-status|copy-resume|copy-cancel KEY --machine TARGET');
+        result=(await call('data.copy.'+action.slice(5),{machine:defaultMachine(),key:positionals[2]})).result;
+      }
     }else if(command==='data'&&['put','files','workspace-status'].includes(positionals[1])){
       const action=positionals[1],allowed=['machines','datasets','url','session-file','json',...(action==='put'?['overwrite','via']:[])];
       if(training.length||options.datasets.length||Object.keys(options).some(k=>!allowed.includes(k)))fail('Personal data commands do not accept project, root or training options');

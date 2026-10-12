@@ -319,3 +319,30 @@ npm test
 ```
 
 只配置确实需要共享的目录，允许多个名字；不存在的挂载报错，不伪造空目录。更换节点运行器前需确认原数据位置与账号映射，现有训练进程不重启。此配置说明不代表已部署或完成跨机验收。
+
+### 独立目录传输
+
+节点安装系统 `rsync`、`rrsync`，目标节点配置 `dataTransferPeers`。SSH 使用专用只读密钥和已核实的 known_hosts；不能填管理用的无限制 SSH 密钥。来源节点的对应 authorized_keys 使用 `restrict,command="/usr/bin/rrsync -ro /明确的来源根"`，禁止 shell、端口/agent 转发。配置由管理员安装，不向普通用户索要 SSH 凭据。
+
+```json
+{
+  "dataTransferPeers": {
+    "gpu-1": {
+      "hdd": {
+        "host": "source.internal", "port": 22, "user": "transfer",
+        "identityFile": "/srv/platform-keys/source-hdd",
+        "knownHostsFile": "/srv/platform-keys/known_hosts"
+      },
+      "mine": {
+        "demo-user-1": {
+          "host": "source.internal", "port": 22, "user": "transfer",
+          "identityFile": "/srv/platform-keys/source-user-1",
+          "knownHostsFile": "/srv/platform-keys/known_hosts"
+        }
+      }
+    }
+  }
+}
+```
+
+`mine` 必须每账号使用限制到该账号数据目录的独立密钥，不能给一个密钥开放所有人的父目录。共享目录使用限制到该共享根的密钥。目标始终是请求者自己的 `/data/mine`。同一目标账号的复制串行，后台 systemd 单元负责持续运行；取消不删除断点。默认保留目标多余文件，rsync 校验内容后复用完整文件并恢复片段，不使用 `--delete` 或 `--inplace`。

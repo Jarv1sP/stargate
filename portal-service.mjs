@@ -411,7 +411,7 @@ export class PortalService extends DemoService{
     if(typeof operation==='string'&&operation.startsWith('community.'))return {result:communityCall(this,principal,operation,args),principal:{username:principal.username,role:principal.role,userId:principal.userId}};
     // Execution writes its durable reservation before external side effects. Never
     // restore an older snapshot after a dispatch timeout (that would lose quota).
-    if(typeof operation==='string'&&(operation.startsWith('jobs.')||operation.startsWith('host.')||operation.startsWith('files.')||operation.startsWith('terminal.')||operation.startsWith('datasets.')||operation.startsWith('projects.'))){
+    if(typeof operation==='string'&&(operation.startsWith('data.copy.')||operation.startsWith('jobs.')||operation.startsWith('host.')||operation.startsWith('files.')||operation.startsWith('terminal.')||operation.startsWith('datasets.')||operation.startsWith('projects.'))){
       const result=await executionCall(this,principal,operation,args);
       // A data chunk does not change the dashboard; avoid rebuilding and sending
       // its full GPU/account snapshot for every 1 MiB read.

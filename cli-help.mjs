@@ -38,6 +38,8 @@ gpuctl ssh
 容器内：ls /data
 共享目录 /data/hdd、/data/ssd 只读；/data/mine 是个人可写数据目录。
 gpuctl data put LOCAL_FILE folder/file --via relay
+gpuctl data copy SOURCE_DIR DEST_DIR --from gpu-1 --to gpu-2 --source-root hdd
+gpuctl data copy-status|copy-resume|copy-cancel COPY_KEY --machine gpu-2
 gpuctl run -g 1 -- python train.py --data /data/hdd/imagenet --output /outputs
 
 不需要入库、数据发布或缓存准备。跨机传输是独立操作，训练不会自动复制数据。

@@ -342,6 +342,15 @@ gpuctl run -g 1 -- python train.py --data /data/hdd/imagenet --output /outputs/r
 
 跨机复制与训练分开：先完成目标机的数据传输，再在目标机运行。不会因为开始训练而自动搬运数据，也不会把另一台机器的目录远程挂进来。
 
+```sh local
+gpuctl data copy imagenet datasets/imagenet --from gpu-1 --to gpu-2 --source-root hdd
+gpuctl data copy-status COPY_KEY --machine gpu-2
+# 中断后沿原编号续传；不换编号、不重新上传
+gpuctl data copy-resume COPY_KEY --machine gpu-2
+```
+
+来源是源机的 `/data/hdd/imagenet`，目标是目标机的 `/data/mine/datasets/imagenet`；`--source-root mine` 表示本人的数据目录。任务在服务器后台运行，关闭客户端不停止复制。`copy-cancel` 停止原传输并保留断点，之后仍可 `copy-resume`。只有 `SUCCEEDED` 才表示复制完成；不删除源文件或目标额外文件。节点间通道由管理员配置，不需要你提供 SSH 密钥。
+
 ## 日志与结果 {#results}
 
 ### 1 确认完成并下载结果

@@ -1838,6 +1838,10 @@ def dataset_cache_action_operation(operation,args):
 
 def process(operation,args):
     platform_root_check()
+    if operation.startswith('data.copy.'):
+        definition=importlib.util.spec_from_file_location('gpuq_data_copy',HERE/'data-copy.py')
+        data=importlib.util.module_from_spec(definition);definition.loader.exec_module(data)
+        return data.dispatch(CONFIG,operation,args)
     if operation=='storage.training.prepare':
         spec=importlib.util.spec_from_file_location('gpuq_training_preparation',HERE/'training-preparation.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
