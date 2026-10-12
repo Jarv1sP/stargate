@@ -9,7 +9,7 @@ mkdir -p "$log_dir"
 
 python_tests() {
   local file result=0
-  for file in local-data data-uploads data-copy live-workspace workspace-rootfs workspace-shell personal-oci terminal-sessions; do
+  for file in local-data data-uploads data-copy project-copy live-workspace workspace-rootfs workspace-shell personal-oci terminal-sessions; do
     "$python_bin" "tests/$file.test.py" || result=1
   done
   return "$result"
@@ -17,7 +17,9 @@ python_tests() {
 node_tests() {
   "$node_bin" --test tests/personal-upload-client.test.js \
     tests/data-workspace-client.test.js tests/data-copy-cli.test.js \
-    tests/direct-storage-flow.test.js tests/admin-quota-dispatch.test.js
+    tests/direct-storage-flow.test.js tests/admin-quota-dispatch.test.js \
+    tests/client-file-download.test.js tests/client-directory-download.test.js \
+    tests/project-replication.test.js
 }
 browser_tests() {
   local file result=0
