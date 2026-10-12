@@ -26,6 +26,7 @@ try{
   const bridge=async(node,operation,args)=>{
     calls.push({node,operation,args:structuredClone(args)});
     if(operation==='projects.list')return {projects:[project]};
+    if(operation==='data.roots')return {directories:[{path:'/data/hdd',readOnly:true}],personal:{path:'/data/mine',readOnly:false}};
     if(['projects.status','projects.workspace'].includes(operation))return project;
     if(operation==='storage.training.plan'){
       assert.equal(args.workspace,true);assert.equal(args.projectFootprint,null);

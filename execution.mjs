@@ -290,6 +290,24 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation==='datasets.files.list')return datasetFilesCall(service,principal,args);
   if(operation==='datasets.training.capabilities')return trainingDatasetCapabilities(service,principal,args);
   const authorizedMachine=machine=>{if(!MACHINES.some(m=>m.id===machine)||!user.limits[machine])fail('这台机器未授权。',403);};
+  if(operation==='data.roots'){
+    if(Object.keys(args).join(',')!=='machine')fail('目录查询只接受目标服务器。');
+    authorizedMachine(args.machine);
+    return service.bridge(args.machine,operation,{userId:user.id});
+  }
+  if(operation.startsWith('data.upload.')){
+    const action=operation.slice('data.upload.'.length),fields={status:['path'],begin:['path','key','totalSize','sha256','overwrite'],chunk:['key','offset','data'],finish:['key']};
+    if(action==='status'&&Object.hasOwn(args,'key'))fields.status=['key'];
+    if(Object.hasOwn(args,'project')){
+      projectReference(args,{optional:false});
+      if(Object.hasOwn(fields,action))fields[action].push('project');
+    }
+    if(!Object.hasOwn(fields,action)||Object.keys(args).sort().join(',')!==['machine',...fields[action]].sort().join(','))fail('数据上传参数无效。');
+    authorizedMachine(args.machine);
+    if(action!=='status'&&!UUID.test(args.key||''))fail('上传必须使用原 UUID。');
+    const {machine,...request}=args;
+    return service.bridge(machine,operation,{...request,userId:user.id});
+  }
   if(operation.startsWith('data.copy.')){
     const action=operation.slice('data.copy.'.length),fields={start:['from','scope','path','destination'],status:[],resume:[],cancel:[]};
     if(!Object.hasOwn(fields,action)||Object.keys(args).some(k=>!['machine','key',...fields[action]].includes(k))||!UUID.test(args.key||''))
@@ -396,11 +414,11 @@ export async function executionCall(service,principal,operation,args,readContext
           (path!=='.'&&path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))||
           (path==='.'&&['put','get','publish'].includes(action)))fail('请使用个人 /data/mine 内的相对路径，不要填写宿主机路径。');
     }
-    if(args.offset!==undefined&&(!Number.isSafeInteger(args.offset)||args.offset<0||args.offset>100*1024**3))fail('文件偏移量无效。');
+    if(args.offset!==undefined&&(!Number.isSafeInteger(args.offset)||args.offset<0||args.offset>Number.MAX_SAFE_INTEGER))fail('文件偏移量无效。');
     if(action==='put'){
       if(!Number.isSafeInteger(args.offset)||args.truncate!==undefined&&typeof args.truncate!=='boolean'||args.truncate&&args.offset!==0)fail('上传偏移或覆盖参数无效。');
       if(typeof args.data!=='string'||args.data.length>1398104||args.data.length%4!==0||/[^A-Za-z0-9+/=]/.test(args.data)||Buffer.from(args.data,'base64').toString('base64')!==args.data||Buffer.from(args.data,'base64').length>1024*1024)fail('上传分块最多 1 MiB，且需使用规范 Base64。');
-      if(args.offset+Buffer.from(args.data,'base64').length>100*1024**3)fail('单文件上限 100 GiB；更大文件请联系管理员本地导入。');
+      if(!Number.isSafeInteger(args.offset+Buffer.from(args.data,'base64').length))fail('文件字节数超出精确整数范围。');
     }
     const {machine,...request}=args;
     return service.bridge(machine,operation,{...request,userId:user.id,hostAdmin:false});

@@ -78,8 +78,6 @@ def status(row):
 
 def peer(config, source, scope, user):
     value = config['dataTransferPeers'][source][scope]
-    if scope == 'mine':
-        value = value[user]  # Each key is restricted to this account's root.
     if set(value) != {'host', 'user', 'port', 'identityFile', 'knownHostsFile'}:
         raise ValueError('Configure a restricted read-only rsync peer')
     if (not re.fullmatch(r'[A-Za-z0-9._-]+', value['host'])
@@ -92,7 +90,7 @@ def peer(config, source, scope, user):
     return value
 
 
-def dispatch(config, operation, args):
+def dispatch(config, operation, args, *, config_path=None):
     action = operation.removeprefix('data.copy.')
     fields = {'start': {'from', 'scope', 'path', 'destination'}, 'status': set(), 'resume': set(), 'cancel': set()}
     if action not in fields or set(args) != {'userId', 'key'} | fields[action]:
@@ -142,7 +140,8 @@ def dispatch(config, operation, args):
         row.pop('exitCode', None)
         save(path, row)
         subprocess.run(['/usr/bin/systemd-run', '--user', '--collect', '--unit='+unit(user, key),
-            '--property=KillMode=control-group', sys.executable, str(Path(__file__).resolve()), user, key],
+            '--property=KillMode=control-group', sys.executable, str(Path(__file__).resolve()),
+            str(config_path or Path(__file__).with_name('node-config.json')), user, key],
             check=True, timeout=15, capture_output=True)
         return public(row)
 
@@ -153,6 +152,8 @@ def copy_command(row, target_fd, partial):
         '-oStrictHostKeyChecking=yes', '-oForwardAgent=no', '-oClearAllForwardings=yes',
         '-oUserKnownHostsFile='+value['knownHostsFile'], '-i', value['identityFile'], '-p', str(value['port'])])
     source = row['path']
+    if row['scope'] == 'mine':
+        source = hashlib.sha256(row['userId'].encode()).hexdigest()+'/'+source
     # rrsync must see the path arguments; secluded/protect-args is rejected by
     # its forced-command validator. rsync's normal shell escaping is retained.
     return ['/usr/bin/rsync', '-rlt', '--checksum', '--partial',
@@ -192,5 +193,5 @@ def worker(config, user, key):
 
 
 if __name__ == '__main__':
-    config = json.loads(Path(__file__).with_name('node-config.json').read_text())
-    raise SystemExit(0 if worker(config, *sys.argv[1:]) else 1)
+    config = json.loads(Path(sys.argv[1]).read_text())
+    raise SystemExit(0 if worker(config, *sys.argv[2:]) else 1)

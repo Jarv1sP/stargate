@@ -50,6 +50,15 @@ class LifecycleTests(unittest.TestCase):
         self.life.archive({**self.args,'revision':0},True)
         self.assertEqual(self.store.release(self.user,self.slug,published['release'])['meta']['release'],published['release'])
 
+    def test_persistent_workspace_retirement_does_not_require_publication_metadata(self):
+        personal=self.root.parent/'personal-data';personal.mkdir()
+        self.store.config['personalDataRoot']=str(personal)
+        self.store.activate_workspace(self.user,self.slug)
+        value=self.plan()
+        self.assertEqual(value['state'],'ELIGIBLE')
+        self.assertEqual(value['releases'],[])
+        self.assertEqual(len(value['manifestSha256']),64)
+
     def test_archive_cas_blocks_new_writes_not_history_and_can_unarchive(self):
         version=self.publish()['release'];key=str(uuid.uuid4())
         paths=self.store.run_paths(self.user,self.slug,version,key);(paths['output']/'done').write_text('saved')

@@ -29,7 +29,7 @@ class DataCopyTests(unittest.TestCase):
         self.peer = {'host': 'source.invalid', 'port': 22, 'user': 'transfer',
                      'identityFile': '/private/key', 'knownHostsFile': '/private/known-hosts'}
         self.config = {'root': str(self.root/'state'),
-                       'dataTransferPeers': {'source': {'hdd': self.peer, 'mine': {'demo-user-1': self.peer}}}}
+                       'dataTransferPeers': {'source': {'hdd': self.peer, 'mine': self.peer}}}
         self.args = {'userId': 'demo-user-1', 'key': str(uuid.uuid4()),
                      'from': 'source', 'scope': 'hdd', 'path': 'imagenet', 'destination': 'datasets/imagenet'}
 
@@ -51,8 +51,8 @@ class DataCopyTests(unittest.TestCase):
         self.assertEqual(copy.dispatch(self.config, 'data.copy.status',
             {'userId': 'demo-user-2', 'key': self.args['key']}), {'key': self.args['key'], 'state': 'ABSENT'})
         self.assertFalse(copy.record_path(self.config, 'demo-user-2', self.args['key']).parent.exists())
-        with self.assertRaises(KeyError):
-            copy.peer(self.config, 'source', 'mine', 'demo-user-2')
+        command=copy.copy_command({**self.args,'scope':'mine','peer':self.peer},9,self.root/'partial')
+        self.assertIn(hashlib.sha256(b'demo-user-1').hexdigest()+'/',command[-2])
 
     def test_active_worker_cannot_resume_and_stopped_unknown_keeps_original_key(self):
         with patch.object(copy.subprocess, 'run', return_value=SimpleNamespace(returncode=0)):
@@ -84,6 +84,33 @@ class DataCopyTests(unittest.TestCase):
                 copy.dispatch(self.config, 'data.copy.start', {**self.args, 'path': path})
         with self.assertRaises(ValueError):
             copy.dispatch(self.config, 'data.copy.start', {**self.args, 'identityFile': '/key'})
+
+    @unittest.skipUnless(shutil.which('rsync') and shutil.which('rrsync'), 'rsync/rrsync required')
+    def test_real_personal_sender_is_scoped_to_owner_and_handles_spaces(self):
+        owner=hashlib.sha256(self.args['userId'].encode()).hexdigest()
+        source=self.root/'personal'
+        data=source/owner/'data'/'my images'
+        data.mkdir(parents=True)
+        (data/'image 1.bin').write_bytes(b'personal source bytes')
+        target=self.root/'target';target.mkdir()
+        partial=self.root/'partial';partial.mkdir()
+        wrapper=Path(__file__).parents[1]/'deploy/data-rsync-source.py'
+        transport=self.root/'transport.py'
+        transport.write_text('import os,sys\n'
+            'os.environ["SSH_ORIGINAL_COMMAND"]=" ".join(sys.argv[sys.argv.index("rsync"):])\n'
+            'os.execv(sys.executable,[sys.executable,sys.argv[1],"--root",sys.argv[2],"--personal"])\n')
+        fd=os.open(target,os.O_RDONLY|os.O_DIRECTORY);self.addCleanup(os.close,fd)
+        command=copy.copy_command({**self.args,'scope':'mine','path':'my images','peer':self.peer},fd,partial)
+        command[command.index('-e')+1]=shlex.join([sys.executable,str(transport),str(wrapper),str(source)])
+        result=subprocess.run(command,pass_fds=(fd,),capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((target/'image 1.bin').read_bytes(),b'personal source bytes')
+        # Ordinary shell access and source escape must be rejected by the
+        # same forced command, not by a simulated client-only check.
+        for request in ('cat /etc/passwd','rsync --server --sender -r . '+owner+'/../../outside/'):
+            rejected=subprocess.run([sys.executable,str(wrapper),'--root',str(source),'--personal'],
+                env={**os.environ,'SSH_ORIGINAL_COMMAND':request},capture_output=True,timeout=10)
+            self.assertNotEqual(rejected.returncode,0)
 
     @unittest.skipUnless(shutil.which('rsync') and shutil.which('rrsync'), 'rsync/rrsync required')
     def test_real_rsync_restricted_sender_resumes_partial_and_preserves_extra_files(self):

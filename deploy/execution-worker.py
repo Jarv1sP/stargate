@@ -336,6 +336,7 @@ INTERNAL_STORAGE+=('storage.upload.locate','storage.upload.admit')
 INTERNAL_STORAGE+=('datasets.files.list',)
 INTERNAL_STORAGE+=('datasets.training.status','storage.training.plan')
 INTERNAL_STORAGE+=('projects.workspace',)
+INTERNAL_STORAGE+=('data.roots','data.upload.status','data.upload.begin','data.upload.chunk','data.upload.finish')
 INTERNAL_STORAGE+=tuple('storage.cache-action.'+action for action in ('capabilities','prepare','release','status','cancel'))
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):

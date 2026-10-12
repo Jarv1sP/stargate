@@ -26,7 +26,8 @@ class TerminalSessions(unittest.TestCase):
         conda=self.base/'conda'
         for name in ('bin','lib','conda-meta'):(conda/name).mkdir(parents=True)
         (conda/'bin/python').write_text('fixture only')
-        (self.base/'node-config.json').write_text(json.dumps({'root':str(self.base/'state'),'hostRoot':True,'conda':str(conda)}))
+        (self.base/'personal-data').mkdir()
+        (self.base/'node-config.json').write_text(json.dumps({'root':str(self.base/'state'),'personalDataRoot':str(self.base/'personal-data'),'hostRoot':True,'conda':str(conda)}))
         spec=importlib.util.spec_from_file_location('terminal_fixture',self.base/'node-executor.py')
         self.n=importlib.util.module_from_spec(spec);sys.modules[spec.name]=self.n;spec.loader.exec_module(self.n)
         self.context={'userId':'demo-user-1','username':'alice','hostAdmin':True}

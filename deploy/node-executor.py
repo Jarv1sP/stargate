@@ -1113,9 +1113,7 @@ def validate_job(job,readonly=False):
     else:workspace(job['userId'])
     if not re.fullmatch(r'[a-z\u3400-\u9fff][a-z0-9_\u3400-\u9fff-]{1,23}',job['username']):raise ValueError('Invalid username')
     if type(job['cards'])!=int or not 1<=job['cards']<=CONFIG.get('cards',64):raise ValueError('Invalid card count')
-    if not isinstance(job['argv'],list) or not 1<=len(job['argv'])<=128 or any(not isinstance(a,str) or '\0' in a for a in job['argv']) or len(json.dumps(job['argv']))>12000:raise ValueError('Invalid argv')
-    if not readonly and job.get('workspace') is not True:
-        raise ValueError('New tasks require a persistent project workspace')
+    if not isinstance(job['argv'],list) or not job['argv'] or any(not isinstance(a,str) or '\0' in a for a in job['argv']):raise ValueError('Invalid argv')
     policy=SCHEDULING.normalize_job_policy(job)
     SCHEDULING.elastic_allocation(job)
     SCHEDULING.gpu_placement(job)
@@ -1838,10 +1836,25 @@ def dataset_cache_action_operation(operation,args):
 
 def process(operation,args):
     platform_root_check()
+    if operation=='data.roots':
+        if set(args)!={'userId'}:raise ValueError('Invalid data roots request')
+        workspace(args['userId'])
+        definition=importlib.util.spec_from_file_location('gpuq_local_data',HERE/'local-data.py')
+        data=importlib.util.module_from_spec(definition);definition.loader.exec_module(data)
+        return data.describe(CONFIG)
+    if operation.startswith('data.upload.'):
+        args=dict(args);project=args.pop('project',None);target=None
+        if project is not None:
+            store=projects().store
+            store.admit(args['userId'],project)
+            target=store.dev_paths(args['userId'],project)['code']
+        definition=importlib.util.spec_from_file_location('gpuq_data_uploads',HERE/'data-uploads.py')
+        data=importlib.util.module_from_spec(definition);definition.loader.exec_module(data)
+        return data.dispatch(CONFIG,operation,args,root=target,config_path=HERE/'node-config.json')
     if operation.startswith('data.copy.'):
         definition=importlib.util.spec_from_file_location('gpuq_data_copy',HERE/'data-copy.py')
         data=importlib.util.module_from_spec(definition);definition.loader.exec_module(data)
-        return data.dispatch(CONFIG,operation,args)
+        return data.dispatch(CONFIG,operation,args,config_path=HERE/'node-config.json')
     if operation=='storage.training.prepare':
         spec=importlib.util.spec_from_file_location('gpuq_training_preparation',HERE/'training-preparation.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -1972,6 +1985,8 @@ def process(operation,args):
         attempted=ROOT/'jobs'/f'{jid}.dataset-dispatch-attempted'
         rejected=ROOT/'jobs'/f'{jid}.dataset-not-submitted.json'
         if not row:
+            if operation=='sync' and job.get('workspace') is not True:
+                raise ValueError('New tasks require a persistent project workspace')
             if operation=='priority':raise ValueError('Job is not yet registered with the scheduler; no priority was changed')
             if dataset_refs(job) and os.path.lexists(attempted):
                 if operation=='cancel':canceled.touch(mode=0o600,exist_ok=True)

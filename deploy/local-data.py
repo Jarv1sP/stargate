@@ -59,7 +59,7 @@ def describe(config):
             'personal': {'path': '/data/mine', 'readOnly': False}}
 
 
-def personal_directory(config, user):
+def personal_directory(config, user, *, create=True):
     """Private writable files on the explicitly configured data disk."""
     if not isinstance(user, str) or not re.fullmatch(r'(builtin-admin|demo-user-[0-9]+)', user):
         raise ValueError('Invalid personal data owner')
@@ -69,14 +69,32 @@ def personal_directory(config, user):
     fd = open_directory(root)
     try:
         for name in (owner, 'data'):
-            try:
-                os.mkdir(name, 0o700, dir_fd=fd)
-            except FileExistsError:
-                pass
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = child
         return Path(root)/owner/'data'
+    finally:
+        os.close(fd)
+
+
+def project_output(config, user, project, *, create=True):
+    if not isinstance(project, str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,47}', project):
+        raise ValueError('Invalid project output directory')
+    root = personal_directory(config, user, create=create)
+    fd = open_directory(root)
+    try:
+        for name in ('outputs', project):
+            if create:
+                try: os.mkdir(name, 0o700, dir_fd=fd)
+                except FileExistsError: pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = child
+        return root/'outputs'/project
     finally:
         os.close(fd)
 
@@ -90,7 +108,7 @@ def require_write_space(needed, *, target_fd):
 
 def process(config, operation, args, file_op):
     action = operation.removeprefix('datasets.workspace.')
-    fields = {'list': {'path'}, 'get': {'path', 'offset'},
+    fields = {'list': {'path'}, 'get': {'path', 'offset', 'fingerprint'},
               'put': {'path', 'offset', 'data', 'truncate'}, 'status': set()}
     if (action not in fields or set(args) - fields[action] - {'userId', 'hostAdmin'}
             or args.get('hostAdmin') is not False):

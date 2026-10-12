@@ -12,6 +12,8 @@ class LiveWorkspace(unittest.TestCase):
     def setUp(self):
         self.f=fixture.ProjectStoreTests();self.f.setUp();self.addCleanup(self.f.cleanup)
         self.store=self.f.store;self.user=self.f.user;self.project=self.f.slug
+        data=self.f.root.parent/'personal-data';data.mkdir()
+        self.store.config['personalDataRoot']=str(data)
 
     def test_terminal_and_multiple_jobs_share_code_home_environment_and_outputs_without_release(self):
         with patch.object(self.store,'release',side_effect=AssertionError('must not require a release')), \

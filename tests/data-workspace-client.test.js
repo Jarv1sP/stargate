@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {uploadWorkspaceFiles,downloadWorkspaceFile,WORKSPACE_DOWNLOAD_MEMORY_BYTES,workspaceRegistrationsHTML,workspacePath,workspaceEntriesHTML,dataWorkspaceHTML,publicationText} from '../dist/data-workspace.js';
+import {uploadWorkspaceFiles,downloadWorkspaceFile,WORKSPACE_DOWNLOAD_MEMORY_BYTES,workspacePath,workspaceEntriesHTML,dataWorkspaceHTML} from '../dist/data-workspace.js';
 import {terminalContext,terminalLaunchContext} from '../dist/terminal-ui.js';
 const file=(name,size)=>{const blob=new Blob([new Uint8Array(size)]);Object.defineProperty(blob,'name',{value:name});return blob;};
 
@@ -18,34 +18,53 @@ test('workspace paths reject traversal and only allow root for explicit browse/u
   assert.throws(()=>workspacePath(['a'.repeat(255),'b'.repeat(255),'c'.repeat(255),'d'.repeat(255),'x'].join('/')));
 });
 
-test('raw uploads are bounded, ordered, acknowledge exact offsets and never unpack/publish',async()=>{
-  const calls=[],progress=[];
-  const result=await uploadWorkspaceFiles({machine:'node-a',files:[file('dataset.zip',2*1024**2+7),file('empty',0)],directory:'incoming',call:async(operation,args)=>{calls.push({operation,args});return {path:args.path,size:args.offset+Buffer.from(args.data,'base64').length};},onProgress:value=>progress.push(value)});
-  assert.deepEqual(result,{files:2,bytes:2*1024**2+7});assert.equal(calls.length,4);
-  assert.ok(calls.every(call=>call.operation==='datasets.workspace.put'&&Buffer.from(call.args.data,'base64').length<=1024**2));
-  assert.deepEqual(calls.map(call=>call.args.offset),[0,1024**2,2*1024**2,0]);assert.ok(calls.every(call=>call.args.truncate===false));
-  assert.equal(calls[0].args.path,'incoming/dataset.zip');assert.equal(progress.at(-1).bytes,result.bytes);
+function uploader(hook=()=>{}){
+  const rows=new Map(),calls=[];
+  const call=async(operation,args)=>{
+    calls.push({operation,args});let row=rows.get(args.key);
+    if(operation==='data.upload.status')return [...rows.values()].find(r=>r.path===args.path)||{state:'ABSENT',path:args.path,receivedBytes:0};
+    if(operation==='data.upload.begin'){row={...args,state:'UPLOADING',receivedBytes:0};rows.set(args.key,row);}
+    if(operation==='data.upload.chunk'){
+      assert.equal(args.offset,row.receivedBytes);
+      row.receivedBytes+=Buffer.from(args.data,'base64').length;
+    }
+    if(operation==='data.upload.finish'){assert.equal(row.receivedBytes,row.totalSize);row.state='COMPLETE';}
+    await hook(operation,args,row);return {...row};
+  };
+  return {call,calls,rows};
+}
+test('raw uploads use the resumable protocol, exact offsets and checksums, never publication',async()=>{
+  const f=uploader(),progress=[];
+  const result=await uploadWorkspaceFiles({machine:'node-a',files:[file('dataset.zip',2*1024**2+7),file('empty',0)],call:f.call,onProgress:v=>progress.push(v)});
+  assert.deepEqual(result,{files:2,bytes:2*1024**2+7});
+  const chunks=f.calls.filter(c=>c.operation==='data.upload.chunk');
+  assert.deepEqual(chunks.map(c=>c.args.offset),[0,1024**2,2*1024**2]);
+  assert.ok(chunks.every(c=>Buffer.from(c.args.data,'base64').length<=1024**2));
+  assert.ok([...f.rows.values()].every(r=>r.state==='COMPLETE'&&/^[a-f0-9]{64}$/.test(r.sha256)));
+  assert.equal(f.calls.some(c=>c.operation.startsWith('datasets.')),false);
+  assert.equal(progress.at(-1).bytes,result.bytes);
 });
-
-test('explicit overwrite truncates only the first chunk; ambiguous error is not retried',async()=>{
-  const calls=[];await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('a.zip',2*1024**2+1)],overwrite:true,call:async(operation,args)=>{calls.push(args);if(args.offset)throw Error('response lost');return {path:args.path,size:1024**2};}}),/response lost/);
-  assert.equal(calls.length,2);assert.deepEqual(calls.map(call=>call.truncate),[true,false]);
+test('explicit overwrite is bound at begin; a lost chunk reply never restarts or truncates',async()=>{
+  const f=uploader((operation,args)=>{if(operation==='data.upload.chunk'&&args.offset)throw Error('response lost');});
+  await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('a.zip',2*1024**2+1)],overwrite:true,call:f.call}),/response lost/);
+  assert.equal(f.calls.filter(c=>c.operation==='data.upload.begin').length,1);
+  assert.equal(f.calls.find(c=>c.operation==='data.upload.begin').args.overwrite,true);
+  assert.equal(f.calls.some(c=>c.operation==='data.upload.finish'||'truncate' in c.args),false);
 });
-
-test('abort after durable put stops further chunks and suppresses success callbacks',async()=>{
-  const controller=new AbortController();let calls=0,reports=0;
-  await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('a.zip',2*1024**2)],signal:controller.signal,call:async(operation,args)=>{calls++;controller.abort();return {path:args.path,size:1024**2};},onProgress:()=>reports++}),/停止/);
-  assert.equal(calls,1);assert.equal(reports,0);
+test('abort after durable write stops further chunks and success progress',async()=>{
+  const controller=new AbortController();let afterAbort=0;
+  const f=uploader(operation=>{if(operation==='data.upload.chunk')controller.abort();});
+  await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('a.zip',2*1024**2)],signal:controller.signal,call:f.call,onProgress:()=>{if(controller.signal.aborted)afterAbort++;}}),/停止/);
+  assert.equal(f.calls.filter(c=>c.operation==='data.upload.chunk').length,1);assert.equal(afterAbort,0);
 });
-
 test('inexact receipts, duplicate filenames and invalid names fail closed',async()=>{
-  for(const receipt of [{path:'incoming/a',size:2},{path:'different',size:1},{}])await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('a',1)],call:async()=>receipt}),/确认/);
+  for(const receipt of [{path:'incoming/a',size:2},{path:'different',size:1},{}])await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('a',1)],call:async()=>receipt}),/确认|身份/);
   for(const names of [['a','a'],['../a'],['sub/a']])await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:names.map(name=>file(name,1)),call:async()=>assert.fail('invalid input reached network')}));
 });
 
 test('all file sizes and fully joined paths are validated before the first upload',async()=>{
   let calls=0;const call=async()=>{calls++;assert.fail('invalid batch reached network');};
-  await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('first',1),{name:'too-big.tar',size:100*1024**3+1}],call}),/100 GiB/);
+  await assert.rejects(uploadWorkspaceFiles({machine:'node-a',files:[file('first',1),{name:'too-big.tar',size:Number.MAX_SAFE_INTEGER+1}],call}),/大小/);
   const directory=['a'.repeat(255),'b'.repeat(255),'c'.repeat(255),'d'.repeat(200)].join('/');
   await assert.rejects(uploadWorkspaceFiles({machine:'node-a',directory,files:[file('first',1),file('z'.repeat(255),1)],call}),/1024/);
   assert.equal(calls,0);
@@ -53,17 +72,12 @@ test('all file sizes and fully joined paths are validated before the first uploa
 
 test('workspace list escapes server filenames, paths and sizes',()=>{
   const html=workspaceEntriesHTML({path:'.',entries:[{type:'directory',name:'" onclick="<bad>'},{type:'file',name:'<script>',size:10}]});
-  assert.doesNotMatch(html,/<bad>|<script>|data-workspace-path=""/);assert.match(html,/&lt;script&gt;/);assert.match(dataWorkspaceHTML(),/不会自动解压/);assert.match(dataWorkspaceHTML(),/结束此机器上的所有数据终端/);
+  assert.doesNotMatch(html,/<bad>|<script>|data-workspace-path=""/);assert.match(html,/&lt;script&gt;/);assert.match(dataWorkspaceHTML(),/不会自动解压/);assert.match(dataWorkspaceHTML(),/无需发布/);
 });
 
-test('publication receipts report current readiness and require admin inspection for unknown outcomes',()=>{
-  for(const state of ['NOT_READY','UNREGISTERED','UNAVAILABLE']){
-    const text=publicationText({state,publicationState:'READY'});assert.doesNotMatch(text,/服务器正在|已发布：|可在下方选择/);
-  }
-  assert.match(publicationText({state:'NOT_READY'}),/服务器缓存.*不再就绪/);
-  assert.match(publicationText({state:'UNREGISTERED'}),/登记已删除/);
-  assert.match(publicationText({state:'UNAVAILABLE'}),/无权.*管理员/);
-  assert.match(publicationText({state:'UNKNOWN'}),/暂不可编辑.*管理员.*不要重复发布/);
+test('personal storage no longer offers publication, registration or cache preparation',()=>{
+  assert.doesNotMatch(dataWorkspaceHTML(),/data-workspace-publish|data-workspace-registrations/);
+  assert.match(dataWorkspaceHTML(),/\/data\/mine/);
 });
 test('raw browser files require explicit relay consent above the shared 256 MiB boundary',async()=>{
   const selected=size=>({name:'data.zip',size,slice(){throw Error('read-started');}}),call=async()=>assert.fail('No network expected in size-only fixture');
@@ -106,8 +120,6 @@ test('abort after a read or a saved chunk suppresses further chunks and success 
     assert.equal(reads,1);assert.equal(writes,point==='read'?0:1);assert.equal(progress,0);
   }
 });
-test('empty registrations need a confirmed list, render no version operations, and escape labels',()=>{
-  const html=workspaceRegistrationsHTML({datasets:[{dataset:'empty-id',name:'<unsafe>',versions:[]},{dataset:'ready-id',versions:[{version:'a'.repeat(64)}]},{dataset:'unknown-id'}]});
-  assert.match(html,/&lt;unsafe&gt;.*没有登记版本/);assert.doesNotMatch(html,/ready-id|unknown-id|<unsafe>|button/);assert.equal(workspaceRegistrationsHTML({datasets:[]} ),'<li>没有空登记。</li>');assert.throws(()=>workspaceRegistrationsHTML({}),/暂未确认/);
+test('non-regular entries never offer downloads',()=>{
   assert.doesNotMatch(workspaceEntriesHTML({entries:[{name:'socket',type:'unsupported',size:0}]}),/data-workspace-download/);
 });

@@ -156,7 +156,7 @@ class ProjectLifecycle:
         manifest = self.manifest(path)
         return {'protocol': PROTOCOL, 'project': args['project'], 'state': 'BLOCKED' if blockers else 'ELIGIBLE',
                 'lifecycle': self.view(args['userId'], args['project']), 'blockers': blockers[:100], 'blockerCount': len(blockers),
-                'releases': [r['release'] for r in status['releases']], 'environmentMode': meta.get('environmentMode', 'shared'),
+                'releases': [r['release'] for r in status.get('releases', [])], 'environmentMode': meta.get('environmentMode', 'shared'),
                 'preservesBytes': True, 'ociStorageRetained': meta.get('environmentMode') == 'oci', **manifest}
 
     def plan(self, args):

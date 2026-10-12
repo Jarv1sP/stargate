@@ -1,3 +1,5 @@
+import {uploadPersonalFile} from './personal-upload.js';
+import {hashBlob} from './dataset-upload.js';
 import {createJobDiagnostics} from './job-diagnostics-ui.js';
 import {formatTimestamp} from './time-format.js';
 import {createJobResultAccess,resultFilesHTML,resultPullCommand} from './job-results-ui.js';
@@ -132,58 +134,16 @@ export function projectDiskQuotaHTML(value,owner){
   });
   return '<ul class="disk-quota-volumes">'+rows.join('')+'</ul>';
 }
-export async function uploadProjectFile(file,context,send,progress=()=>{},{inspect,signal,current=()=>true,onRecoverySupport=()=>{}}={}){
+export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,current=()=>true,onRecoverySupport=()=>{}}={}){
   const check=()=>{signal?.throwIfAborted();if(!current())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');};
   check();
-  if(!validProject(context.project)||context.area!=='code')throw Error('项目只能上传到开发草稿。');
-  if(!Number.isSafeInteger(file.size)||file.size<0||file.size>100*1024*1024)throw Error('网页单文件上限 100 MiB；大文件请用 CLI。');
-  const contents=await file.arrayBuffer();check();if(contents.byteLength!==file.size)throw Error('文件读取长度不一致，请重新选择。');
-  const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',contents))].map(value=>value.toString(16).padStart(2,'0')).join('');
-  check();
-  const unsupported=error=>![401,403].includes(error?.status)&&(error?.status===404||['UNSUPPORTED','UNKNOWN_OPERATION'].includes(error?.code)||/unknown operation|unsupported operation|未知操作/i.test(error?.message||''));
-  const noRecovery='这台服务器暂不支持续传，请重新上传';
-  const identity={...context,totalSize:file.size,sha256};let uploadId,offset=0,recoveries=0,resumed=false,recoverySupported=false;
-  const unconfirmed=()=>Error('上传结果未确认'+(uploadId?' · '+uploadId:'')+'；重新选择同一文件后点上传，将核对原进度。');
-  async function observe(){
-    check();const result=await inspect({...identity,...(uploadId?{uploadId}:{})});check();
-    if(result?.protocol!==2||!['ABSENT','UPLOADING','COMPLETE','CONFLICT'].includes(result.state)||result.path!==context.path)throw unconfirmed();
-    if(['UPLOADING','COMPLETE'].includes(result.state)){
-      if(typeof result.uploadId!=='string'||!uuidPattern.test(result.uploadId)||uploadId&&result.uploadId!==uploadId||result.sha256!==sha256||result.totalSize!==file.size||!Number.isSafeInteger(result.receivedBytes)||result.receivedBytes<0||result.receivedBytes>file.size||result.project!==undefined&&result.project!==context.project||result.machine!==undefined&&result.machine!==context.machine)throw unconfirmed();
-      if(result.state==='COMPLETE'&&(result.complete!==true||result.size!==file.size||result.receivedBytes!==file.size)||result.completionPending!==undefined&&typeof result.completionPending!=='boolean')throw unconfirmed();
-    }
-    if(result.state==='CONFLICT')throw Error('上传目标已变化，保留原上传；请核对后再继续。');
-    if(result.state==='UPLOADING'&&result.resumable!==true)throw Error('这份旧上传不能安全续传，已保留；请管理员核对。');
-    return result;
-  }
-  function advance(result){
-    uploadId=result.uploadId;offset=result.state==='COMPLETE'?file.size:result.receivedBytes;resumed=true;
-    if(result.state==='COMPLETE'&&result.completionPending!==true){progress(offset,file.size,{resumed,uploadId});return true;}
-    if(offset)progress(offset,file.size,{resumed,uploadId});return false;
-  }
-  let initial;
-  if(typeof inspect==='function'){
-    try{initial=await observe();recoverySupported=true;}
-    catch(error){check();if(!unsupported(error))throw error;}
-  }
-  onRecoverySupport(recoverySupported);check();
-  if(!recoverySupported||initial.state==='ABSENT')uploadId=crypto.randomUUID();else if(advance(initial))return {uploadId,complete:true};
-  do{const bytes=new Uint8Array(contents,offset,Math.min(1048576,file.size-offset)),final=offset+bytes.length===file.size;
-    check();let receipt;
-    try{receipt=await send({...identity,uploadId,offset,data:base64(bytes),final});check();}
-    catch(error){
-      check();if(!recoverySupported)throw Error(error.message+'；'+noRecovery+'。');
-      const ambiguous=error.code!=='MAINTENANCE_ACTIVE'&&(error.code==='REQUEST_TIMEOUT'||error instanceof TypeError||[502,503,504].includes(error.status)||/reply lost|connection reset|请求超时/i.test(error.message));
-      if(!ambiguous||recoveries++>=3)throw error;
-      let observed;
-      try{observed=await observe();}catch(error){if(unsupported(error)){onRecoverySupport(false);throw Error(noRecovery+'。原上传结果未确认 · '+uploadId);}throw error;}
-      if(observed.state==='ABSENT'||observed.state==='UPLOADING'&&(observed.receivedBytes<offset||observed.receivedBytes>offset+bytes.length))throw unconfirmed();
-      if(advance(observed))return {uploadId,complete:true};continue;
-    }
-    if(final&&(receipt?.complete!==true||receipt.completionPending===true||receipt.size!==file.size||receipt.sha256!==sha256))throw Error('服务器尚未确认完整文件及校验和 · '+uploadId+'；'+(recoverySupported?'重新选择同一文件后继续核对。':noRecovery+'。'));
-    if(!final&&(receipt?.complete!==false||receipt.size!==offset+bytes.length)||receipt?.path!==undefined&&receipt.path!==context.path||receipt?.uploadId!==undefined&&receipt.uploadId!==uploadId)throw recoverySupported?unconfirmed():Error('上传结果未确认 · '+uploadId+'；'+noRecovery+'。');
-    offset+=bytes.length;progress(offset,file.size,{resumed,uploadId});
-  }while(offset<file.size);
-  return {uploadId,complete:true};
+  if(!validProject(context.project)||context.area!=='code')throw Error('请选择项目代码目录。');
+  if(!Number.isSafeInteger(file.size)||file.size<0)throw Error('文件大小无效。');
+  const sha256=await hashBlob(file,{signal});check();onRecoverySupport(true);
+  return uploadPersonalFile({machine:context.machine,project:context.project,path:context.path,size:file.size,sha256,
+    overwrite:true,signal,call:async(operation,args)=>{check();const result=await call(operation,args);check();return result;},
+    read:async(offset,length)=>{check();return new Uint8Array(await file.slice(offset,offset+length).arrayBuffer());},
+    onProgress:row=>{check();progress(row.receivedBytes,file.size);}});
 }
 
 export function executionUI(store,refresh,toast){
@@ -699,7 +659,7 @@ export function executionUI(store,refresh,toast){
       query('#workspace-result').textContent='正在核对上传…';
       for(const file of files){const path=dir==='.'?file.name:dir+'/'+file.name,progress=(offset,total,info)=>{if(token===currentToken())query('#workspace-result').textContent=`${info?.resumed?'接着上传':'正在上传'} ${file.name}：${offset} / ${total??file.size} B`;};
         if(target.project){
-          try{await projectActivity.run(signal=>uploadProjectFile(file,{...target,path},args=>store.call('files.put',args,{signal}),progress,{inspect:args=>store.call('files.upload.status',args,{signal}),signal,current:()=>token===currentToken(),onRecoverySupport:supported=>{if(token===currentToken()){uploadRecovery={scope:uploadScope(),supported};updateControls();}}}));}
+          try{await projectActivity.run(signal=>uploadProjectFile(file,{...target,path},(operation,args)=>store.call(operation,args,{signal}),progress,{signal,current:()=>token===currentToken(),onRecoverySupport:supported=>{if(token===currentToken()){uploadRecovery={scope:uploadScope(),supported};updateControls();}}}));}
           catch(error){if(token===currentToken())query('#workspace-result').textContent=error.message;throw error;}
         }
         else{let offset=0;do{const bytes=new Uint8Array(await file.slice(offset,offset+1048576).arrayBuffer());if(token!==currentToken())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');await call('files.put',{...target,path,offset,truncate:offset===0,data:base64(bytes)});offset+=bytes.length;progress(offset);}while(offset<file.size);}}

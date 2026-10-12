@@ -624,6 +624,8 @@ class PersonalOCI:
             need(len(rows)==1 and rows[0].get('Config',{}).get('Labels',{}).get('io.gpuq.owner')==self.owner
                  and rows[0].get('Config',{}).get('Labels',{}).get('io.gpuq.project')==slug,
                  'Workspace container ownership is unconfirmed')
+            need(rows[0].get('State',{}).get('Running') is not True,
+                 'Exit this project\'s existing development terminal once before switching to the persistent workspace')
             return head
 
     def execute_workspace(self, spec, flags, registry_env):

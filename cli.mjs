@@ -76,94 +76,38 @@ export function parseCLIOptions(argv){
   }
   return {options,positionals,training:[]};
 }
-export async function uploadCodeFiles(call,{machine,context,local,remote,verifyTree=false,inspectOnly=false,progress=message=>process.stderr.write(message),recoverySleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
-  let count=0,skipped=0;const observed=[],files=[],statuses=[];
-  if(inspectOnly&&!context.project)fail('push-status requires a selected personal project');
+export async function uploadCodeFiles(call,{machine,context,local,remote,verifyTree=false,inspectOnly=false,progress=message=>process.stderr.write(message)}){
+  if(!context.project)fail('请选择项目工作区。');
   const excluded=name=>['.git','.ssh','.aws','.azure','.venv','venv','node_modules','__pycache__','id_rsa','id_ed25519','.env'].includes(name)||(name.startsWith('.env.')&&name!=='.env.example');
+  let count=0,skipped=0;const files=[],statuses=[],observed=[];
   const stable=(a,b)=>a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.ctimeMs===b.ctimeMs;
   if(verifyTree&&!(await lstat(local)).isDirectory())fail('--sync-dir must be an ordinary local directory');
-  async function upload(local,path){
-    if(context.project&&excluded(basename(local))){skipped++;progress(`跳过项目上传：${local}\n`);return;}
-    const st=await lstat(local);if(st.isSymbolicLink())fail('Symlink upload is not supported');
-    if(st.isDirectory()){
-      const names=(await readdir(local)).sort();if(verifyTree)observed.push({local,st,names});
-      for(const name of names)await upload(join(local,name),path==='.'?name:`${path}/${name}`);return;
+  async function send(source,path){
+    if(excluded(basename(source))){skipped++;return;}
+    const before=await lstat(source);
+    if(before.isSymbolicLink())fail('Symlink upload is not supported');
+    if(before.isDirectory()){
+      const names=(await readdir(source)).sort();observed.push({source,before,names});
+      for(const name of names)await send(join(source,name),path==='.'?name:path+'/'+name);
+      return;
     }
-    if(!st.isFile())fail('Only regular files/directories can be uploaded');
-    if(!Number.isSafeInteger(st.size)||st.size<0)fail('File byte count cannot be represented exactly');
-    if(context.project&&st.size>4*1024**3)console.error('项目文件超过 4 GiB，仍允许上传；请确认磁盘空间，并等待完整校验。');
-    const file=await open(local,'r');let offset=0;
-    try{
-      const initial=await file.stat();if(!initial.isFile()||!stable(st,initial))fail('Local file changed before upload');
-      let identity={},confirmed=false,recoveries=0;
-      const inspectUpload=async()=>{
-        const value=(await call('files.upload.status',{machine,path,...context,...identity})).result;
-        if(value?.protocol!==2||!['ABSENT','UPLOADING','COMPLETE','CONFLICT'].includes(value.state)||value.path!==path)fail('Server did not confirm the project upload recovery protocol; no file was resent');
-        if(['UPLOADING','COMPLETE'].includes(value.state)){
-          if(value.sha256!==identity.sha256||value.totalSize!==identity.totalSize||!Number.isSafeInteger(value.receivedBytes)||value.receivedBytes<0||value.receivedBytes>identity.totalSize||!(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/).test(value.uploadId)||identity.uploadId&&value.uploadId!==identity.uploadId)fail('Project upload status identity differs; no file was resent');
-          if(value.state==='COMPLETE'&&(value.complete!==true||value.size!==identity.totalSize))fail('Server did not confirm the complete verified upload');
-          if(value.completionPending!==undefined&&typeof value.completionPending!=='boolean')fail('Server did not confirm the upload completion fence');
-        }
-        return value;
-      };
-      if(context.project){
-        const hash=createHash('sha256'),buffer=Buffer.alloc(1024*1024);let at=0;
-        while(at<initial.size){const {bytesRead}=await file.read(buffer,0,Math.min(buffer.length,initial.size-at),at);if(!bytesRead)fail('Local file changed during hashing');hash.update(buffer.subarray(0,bytesRead));at+=bytesRead;}
-        if(!stable(initial,await file.stat()))fail('Local file changed during hashing');
-        identity={totalSize:initial.size,sha256:hash.digest('hex')};
-        const current=await inspectUpload();
-        if(inspectOnly){statuses.push(current);return;}
-        if(current.state==='CONFLICT')fail('Project upload target changed or another content upload is active; inspect the original target before replacing it');
-        if(current.state==='UPLOADING'&&current.resumable!==true)fail('Existing upload has no safe recovery fence; its original ID and partial bytes were preserved. Ask an administrator to inspect it before restarting');
-        if(current.state==='COMPLETE'){identity.uploadId=current.uploadId;offset=initial.size;confirmed=current.completionPending!==true;}
-        else if(current.state==='UPLOADING'&&current.resumable===true){identity.uploadId=current.uploadId;offset=current.receivedBytes;}
-        else identity.uploadId=randomUUID();
-        if(offset)progress(`项目文件 ${maintenanceVisible(path)}：已确认 ${offset}/${initial.size} 字节${confirmed?'（完整校验）':'，续传原上传'}\n`);
-      }
-      if(!confirmed)do{
-        const buffer=Buffer.alloc(1024*1024);const {bytesRead}=await file.read(buffer,0,Math.min(buffer.length,Math.max(0,initial.size-offset)),offset);
-        if(!bytesRead&&offset<initial.size)fail('Local file changed during upload');
-        const final=offset+bytesRead===initial.size;
-        if(context.project&&final&&!stable(initial,await file.stat()))fail('Local file changed during upload; no final publish was sent');
-        let response;
-        try{response=(await call('files.put',{machine,path,offset,...context,...(context.project?{...identity,final}:{truncate:offset===0}),data:buffer.subarray(0,bytesRead).toString('base64')})).result;}
-        catch(error){
-          // Only this fixed, checksum-bound project protocol can recover an
-          // uncertain write. Legacy uploads and other mutations never replay.
-          if(!context.project||error.status!==undefined&&![502,503,504].includes(error.status)||recoveries>=3)throw error;
-          await recoverySleep(1000*2**recoveries++);
-          if(!stable(initial,await file.stat()))fail('Local file changed after an interrupted upload; no retry was sent');
-          const current=await inspectUpload();
-          if(current.state==='COMPLETE'){
-            offset=initial.size;
-            if(current.completionPending!==true){confirmed=true;break;}
-            // The bytes were verified, but the completion journal still
-            // blocks publication. Send only the same-ID zero-byte final.
-            continue;
-          }
-          if(current.state==='CONFLICT'||current.state==='ABSENT'&&offset!==0||current.state==='UPLOADING'&&(current.resumable!==true||current.receivedBytes<offset||current.receivedBytes>offset+bytesRead))throw Error('Upload outcome is not safely resumable; keep the same source and target and inspect upload status');
-          offset=current.state==='UPLOADING'?current.receivedBytes:0;
-          progress(`项目文件 ${maintenanceVisible(path)}：连接恢复，服务器确认 ${offset}/${initial.size} 字节；保持原上传身份\n`);
-          continue;
-        }
-        if(context.project&&final&&(response?.complete!==true||response.completionPending===true||response.sha256!==identity.sha256||response.size!==identity.totalSize))fail('Server did not confirm the complete verified upload; check and retry this file before publishing');
-        offset+=bytesRead;
-        confirmed=final;
-      }while(!confirmed);
-      if(context.project&&!stable(initial,await file.stat()))fail('Local file changed during upload; verify and upload again before project publish');
-      if(verifyTree){observed.push({local,st:initial});files.push({path,size:identity.totalSize,sha256:identity.sha256});}
-    }finally{await file.close();}count++;
+    if(!before.isFile())fail('Only regular files/directories can be uploaded');
+    if(inspectOnly){
+      statuses.push((await call('data.upload.status',{machine,project:context.project,path})).result);return;
+    }
+    const result=await putWorkspaceData(call,machine,source,path,true,{project:context.project,via:'relay'});
+    if(!stable(before,await lstat(source)))fail('Local file changed during upload');
+    observed.push({source,before});files.push({path,size:result.totalSize,sha256:result.sha256});count++;
   }
-  await upload(local,remote);
-  if(inspectOnly)return {machine,project:context.project,readOnly:true,files:statuses,skipped};
+  await send(local,remote);
   if(verifyTree){
-    if(!count)fail('No code files were uploaded; refusing to publish or submit an old draft');
     for(const item of observed){
-      const current=await lstat(item.local);
-      if(current.isSymbolicLink()||!stable(item.st,current)||item.names&&JSON.stringify((await readdir(item.local)).sort())!==JSON.stringify(item.names))fail('Local code tree changed during sync; no publication or job was submitted');
+      if(!stable(item.before,await lstat(item.source))||item.names&&JSON.stringify((await readdir(item.source)).sort())!==JSON.stringify(item.names))
+        fail('Source tree changed during upload; training was not submitted');
     }
+    if(!files.length)fail('No project files selected; training was not submitted');
   }
-  return {uploaded:count,machine,...(context.project?{project:context.project,skipped}:{}),...(verifyTree?{files}:{})};
+  return inspectOnly?{machine,project:context.project,uploads:statuses}:{uploaded:count,skipped,files};
 }
 
 export async function synchronizeProjectRun(call,{machine,project,directory=process.cwd(),key=randomUUID(),timeoutMs=7200000,pollMs=1000,progress=message=>process.stderr.write(message)}){
@@ -674,17 +618,27 @@ async function main(){
         result={...(await call('datasets.workspace.status',{machine})).result,machine};
       }
     }else if(command==='data'&&positionals[1]==='upload'){
-      if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','url','session-file','json','name','via'].includes(k)))fail('Usage: data upload ARCHIVE_OR_DIRECTORY --name NAME [--machine SERVER] [--via auto|direct|relay]');
-      if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(options.name||''))fail('Dataset name must be 1–40 ASCII letters, digits, _ or -, beginning with a letter or digit');
+      if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','url','session-file','json','name','via'].includes(k)))fail('Usage: data upload FILE_OR_DIRECTORY [--name REMOTE_DIRECTORY] [--via relay]');
+      if(options.via==='direct')fail('电脑上传走 HTTPS；服务器之间请用 data copy。');
+      const machine=defaultMachine(),source=positionals[2],destination=workspaceDataPath(options.name||basename(source));
+      if(!state.machines.some(m=>m.id===machine))fail('Select an authorized server');
+      let files=0,bytes=0;
+      const send=async(local,remote)=>{
+        const entry=await lstat(local);
+        if(entry.isSymbolicLink())fail('Upload source must not be a symlink: '+local);
+        if(entry.isDirectory()){
+          for(const name of (await readdir(local)).sort())await send(join(local,name),remote+'/'+name);
+        }else if(entry.isFile()){
+          const uploaded=await putWorkspaceData(call,machine,local,remote,false,{via:options.via||'auto'});
+          files++;bytes+=uploaded.bytes;
+        }else fail('Unsupported source file: '+local);
+      };
+      await send(source,destination);
+      result={state:'COMPLETE',machine,path:'/data/mine/'+destination,files,bytes};
+    }else if(command==='data'&&positionals[1]==='upload-status'){
+      if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','url','session-file','json'].includes(k)))fail('Usage: data upload-status UPLOAD_ID [--machine SERVER]');
       const machine=defaultMachine();if(machine==='auto'||!state.machines.some(m=>m.id===machine))fail('Select an authorized server explicitly');
-      let last=0,phase='';const progress=(next,value)=>{if(next==='HANDLE'){process.stderr.write(`Upload: ${value.uploadId} · ${value.machine}\n`);return;}if(next==='ROUTE'){process.stderr.write(value.kind==='campus-direct'?'传输路径：直连上传节点（文件不经平台中转）\n':value.kind==='tail-upload'?'传输路径：Tail 备用上传（不改变默认路由；中继可能影响速度）\n':`传输路径：VPS 中转${value.explicit?'（已明确选择）':'（小文件通道）'}\n`);return;}const now=Date.now();if(next!==phase||now-last>1000){phase=next;last=now;process.stderr.write(`${next}${value.bytes!==undefined?' · '+value.bytes+(value.totalBytes!==undefined?' / '+value.totalBytes:'')+' bytes':''}${value.path?' · '+value.path:''}\n`);}};
-      const saveUploadValue=async(field,key,value)=>{const next={...session,[field]:{...session[field],[key]:value}};await saveDatasetUploadSession(sessionFile,next);session=next;};
-      const keyStore={get:key=>session.datasetUploadKeys?.[key],set:(key,value)=>saveUploadValue('datasetUploadKeys',key,value),getIntent:key=>session.datasetUploadIntents?.[key],setIntent:(key,value)=>saveUploadValue('datasetUploadIntents',key,value),getHandle:key=>session.datasetUploadHandles?.[key],setHandle:(key,value)=>saveUploadValue('datasetUploadHandles',key,value)};
-      result=await uploadLocalDataset(call,{machine,name:options.name,userId:session.principal.userId,directory:positionals[2],progress,keyStore,admission:state.datasetUploadAdmission,via:options.via||'auto'});
-    }else if(command==='data'&&['upload-status','upload-discard'].includes(positionals[1])){
-      if(positionals.length!==3||training.length||options.datasets.length||Object.keys(options).some(k=>!['machines','datasets','url','session-file','json'].includes(k)))fail('Usage: data upload-status|upload-discard UPLOAD_ID [--machine SERVER]');
-      const machine=defaultMachine();if(machine==='auto'||!state.machines.some(m=>m.id===machine))fail('Select an authorized server explicitly');
-      result={...(await call('datasets.upload.'+(positionals[1]==='upload-status'?'status':'discard'),{machine,uploadId:positionals[2]})).result,machine};if(result.state==='FAILED')process.exitCode=1;
+      result={...(await call('data.upload.status',{machine,key:positionals[2]})).result,machine};if(result.state==='FAILED')process.exitCode=1;
     }else if(command==='data'&&['delete','delete-status','retire-status','retire-restore','retire-continue','retire-cancel','retire-discard-registration'].includes(positionals[1])){
       const action=positionals[1],restore=action==='retire-restore',discard=action==='retire-discard-registration';
       const allowed=['machines','datasets','url','session-file','json',...(action==='delete'?['key']:discard?['key','name']:[])];

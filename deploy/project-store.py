@@ -1073,9 +1073,14 @@ class ProjectStore:
                                     'jobId': jobid, 'workspace': True}):
                 pass
         return {'code': paths['code'], 'env': paths['env'], 'home': paths['home'],
-                'output': paths['scratch'], 'readonly': False,
+                'output': self.workspace_output(user, slug), 'readonly': False,
                 'environmentMode': project.get('environmentMode', 'shared'),
                 'workspace': True}
+
+    def workspace_output(self, user, slug, *, create=True):
+        definition=importlib.util.spec_from_file_location('gpuq_local_output',Path(__file__).with_name('local-data.py'))
+        data=importlib.util.module_from_spec(definition);definition.loader.exec_module(data)
+        return data.project_output(self.config,user,slug,create=create)
 
     def runtime_paths(self, spec, jobid, terminal=False):
         """Development and training use the same persistent project paths."""
@@ -1115,7 +1120,7 @@ class ProjectStore:
             if read_json(claims / (jobid + '.json')) != expected:
                 fail('job_conflict', 'Job ID belongs to another user, project, or release')
             if version is None:
-                return {'home': private_dir(path/'dev'/'home'), 'output': private_dir(path/'dev'/'scratch')}
+                return {'home': private_dir(path/'dev'/'home'), 'output': self.workspace_output(user,slug,create=False)}
             runs = private_dir(path / 'runs')
             run = private_dir(runs / jobid)
             return {name: private_dir(run / name) for name in ('home', 'output')}

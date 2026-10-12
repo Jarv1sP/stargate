@@ -1,3 +1,4 @@
+import {uploadPersonalFile} from './dist/personal-upload.js';
 import {lstat as fsLstat,open as fsOpen,readdir as fsReaddir} from 'node:fs/promises';
 import {constants as fsConstants} from 'node:fs';
 import {basename,join,resolve} from 'node:path';
@@ -198,30 +199,36 @@ export function workspaceDataPath(path,{directory=false}={}){
   if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))fail('Use a relative path inside your private /data/mine');
   return path;
 }
-export async function putWorkspaceData(call,machine,local,path,overwrite,{lstat=fsLstat,open=fsOpen,platform=process.platform,via='auto'}={}){
+export async function putWorkspaceData(call,machine,local,path,overwrite,{lstat=fsLstat,open=fsOpen,platform=process.platform,via='auto',project}={}){
   if(!['auto','relay'].includes(via))fail('data put currently uses VPS relay; use data upload for direct directory uploads');
   const sameFile=(a,b,options={})=>sameDatasetFile(a,b,{...options,platform});
   workspaceDataPath(path);
   const before=await lstat(local,{bigint:true});
-  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1n||before.size>100n*1024n**3n)fail('data put requires one regular unlinked file, at most 100 GiB');
+  if(!before.isFile()||before.isSymbolicLink()||before.size>BigInt(Number.MAX_SAFE_INTEGER))fail('data put requires one regular file with an exact byte count');
   if(before.size>BigInt(RELAY_LIMIT_BYTES)&&via!=='relay')fail('This file exceeds 256 MiB and data put uses VPS relay. Prefer cloud import, or explicitly repeat with --via relay');
-  process.stderr.write('传输路径：VPS 中转（个人数据空间单文件上传）\n');
-  const file=await open(local,fsConstants.O_RDONLY|(fsConstants.O_NOFOLLOW||0));let offset=0,last=0;
+  process.stderr.write('传输路径：HTTPS 门户 → 目标服务器\n');
+  const file=await open(local,fsConstants.O_RDONLY|(fsConstants.O_NOFOLLOW||0));
   try{
-    const initial=await file.stat({bigint:true});
+    const initial=await file.stat({bigint:true}),size=Number(initial.size);
     if(!sameFile(before,initial,{pathToHandle:true}))fail('Local file changed before upload');
-    const size=Number(initial.size),buffer=Buffer.alloc(DATA_CHUNK);
-    do{
-      const {bytesRead}=await file.read(buffer,0,Math.min(DATA_CHUNK,size-offset),offset);
-      if(!bytesRead&&offset<size)fail('Local file changed during upload');
-      if(!sameFile(initial,await file.stat({bigint:true}))||!sameFile(before,await lstat(local,{bigint:true})))fail('Local file changed during upload; partial remote file remains, not published');
-      const result=(await call('datasets.workspace.put',{machine,path,offset,data:buffer.subarray(0,bytesRead).toString('base64'),...(offset===0?{truncate:overwrite===true}:{})})).result;
-      if(result?.size!==offset+bytesRead)fail('Upload result is unconfirmed; inspect the remote file before using --overwrite to restart');
-      offset+=bytesRead;
-      if(Date.now()-last>1000||offset===size){last=Date.now();process.stderr.write(`${path} · ${offset} / ${size} bytes\n`);}
-    }while(offset<size);
-    if(!sameFile(initial,await file.stat({bigint:true}))||!sameFile(before,await lstat(local,{bigint:true})))fail('Local file changed during upload; remote file was not published');
-    return {machine,path:'/data/mine/'+path,bytes:offset,extracted:false,published:false};
+    const hash=createHash('sha256'),buffer=Buffer.alloc(DATA_CHUNK);
+    for(let at=0;at<size;){
+      const {bytesRead}=await file.read(buffer,0,Math.min(buffer.length,size-at),at);
+      if(!bytesRead)fail('Local file changed while hashing');
+      hash.update(buffer.subarray(0,bytesRead));at+=bytesRead;
+    }
+    const unchanged=async()=>{
+      if(!sameFile(initial,await file.stat({bigint:true}))||!sameFile(before,await lstat(local,{bigint:true})))
+        fail('Local file changed during upload; original upload retained');
+    };
+    await unchanged();
+    const result=await uploadPersonalFile({machine,project,path,size,sha256:hash.digest('hex'),overwrite:overwrite===true,
+      call:async(operation,args)=>(await call(operation,args)).result,
+      read:async(offset,length)=>{await unchanged();const data=Buffer.alloc(length);const {bytesRead}=await file.read(data,0,length,offset);return data.subarray(0,bytesRead);},
+      onProgress:row=>process.stderr.write(`${path} · ${row.receivedBytes} / ${size} · ${row.state} · ${row.key}\n`)});
+    await unchanged();
+    return {...result,machine,path:(project?'/workspace/':'/data/mine/')+path,bytes:size};
   }finally{await file.close();}
+
 }
 export function createLocalDatasetTools(filesystem={}){return {sameDatasetFile:(a,b,options={})=>sameDatasetFile(a,b,{...options,platform:filesystem.platform||process.platform}),scanLocalDataset:(root,progress)=>scanLocalDataset(root,progress,filesystem),uploadLocalDataset:(call,options)=>uploadLocalDataset(call,{...options,filesystem}),putWorkspaceData:(call,machine,local,path,overwrite)=>putWorkspaceData(call,machine,local,path,overwrite,filesystem)};}
