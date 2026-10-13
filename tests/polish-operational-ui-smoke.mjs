@@ -338,6 +338,7 @@ try{
         if(url.pathname==='/api/call'){
           const {operation,args}=route.request().postDataJSON();let result;
           if(operation==='state'){if(logged&&scene.state==='loading')await new Promise(resolve=>gates.push(resolve));await reply(route,{state});return;}
+          if(operation==='workshop.mine'){assert.equal(logged,true);assert.deepEqual(args,{});await reply(route,{result:{installed:[]}});return;}
           if(operation==='projects.list')result={environmentModes:['shared','isolated','oci'],projects:scene.state==='empty'?[]:[{project,state:'READY',environmentMode:'oci',latestReadyRelease:release,releases:[{release,state:'READY'}]}]};
           else if(operation==='projects.status')result={project,state:'READY',environmentMode:'oci',latestReadyRelease:release,releases:[{release,state:'READY'}]};
           else if(operation==='projects.quota')result={usedBytes:0,quotaBytes:1024**3};

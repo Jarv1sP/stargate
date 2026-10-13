@@ -1,0 +1,123 @@
+// UI lifecycle races against the real disposable Portal/SQLite fixture.
+// The delayed mine reply is an actual earlier server snapshot, not fake data.
+import assert from 'node:assert/strict';
+import {chromium} from 'playwright';
+import {workshopTestServer} from './workshop-test-server.mjs';
+
+const fixture=await workshopTestServer();
+const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
+const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
+page.on('pageerror',error=>errors.push(error.message));
+let releaseMine;
+try{
+  await page.goto(fixture.origin+'/#workshop');
+  await page.locator('#login-form [name=username]').fill('alice');
+  await page.locator('#login-form [name=password]').fill(fixture.password);
+  await page.locator('#login-form [type=submit]').click();
+  await page.locator('#login-dialog').waitFor({state:'hidden'});
+  await page.waitForFunction(()=>!document.querySelector('[data-workshop=create]').disabled);
+  await page.locator('#workshop-status').filter({hasText:'已安装 0 项'}).waitFor();
+  assert.equal(await page.locator('#workshop-recovery').isVisible(),true,'workshop itself always offers recovery');
+  await page.locator('#room-nav [data-nav=work]').click();
+  assert.equal(await page.locator('#workshop-recovery').isVisible(),false,'without extensions recovery takes no extra space on existing pages');
+  await page.locator('#room-nav [data-nav=workshop]').click();
+  await page.locator('[data-workshop=create]').click();
+  await page.locator('#workshop-example').selectOption('light');
+  await page.locator('#workshop-publish').click();
+  await page.locator('#workshop-editor').waitFor({state:'hidden'});
+  await page.waitForFunction(()=>document.querySelector('#workshop-detail [data-workshop=install]')?.disabled===false);
+  await page.locator('#workshop-detail [data-workshop=install]').click();
+  await page.locator('#workshop-confirm-accept').click();
+  await page.waitForFunction(()=>document.querySelector('#workshop-detail [data-workshop=install]')?.textContent==='已安装此版本');
+  assert.equal(await page.evaluate(()=>getComputedStyle(document.body).getPropertyValue('--bg').trim()),'#f3f3f0','publication finishing enables direct installation without another fetch or navigation');
+  const item=fixture.service.db.prepare('SELECT id FROM workshop_items LIMIT 1').get();
+  await page.locator('[data-workshop=close-detail]').click();
+  await page.locator('#room-nav [data-nav=work]').click();
+  assert.equal(await page.locator('#workshop-recovery').isVisible(),true,'installed extensions keep their recovery entry on every page');
+  await page.locator('#room-nav [data-nav=workshop]').click();
+  await page.locator(`[data-workshop=detail][data-id="${item.id}"]`).click();
+  await page.locator('#workshop-detail [data-workshop=uninstall]').click();
+  await page.waitForFunction(()=>document.querySelector('#workshop-detail [data-workshop=install]')?.disabled===false);
+  await page.locator('[data-workshop=close-detail]').click();
+  let mineHeld;
+  const held=new Promise(resolve=>mineHeld=resolve);
+  let mineDone;
+  const delivered=new Promise(resolve=>mineDone=resolve);
+  const received=new Promise(resolve=>page.on('requestfinished',request=>{if(request.url()===fixture.origin+'/api/call'&&request.postDataJSON().operation==='workshop.mine')resolve();}));
+  let holdNextMine=true;
+  await page.route(fixture.origin+'/api/call',async route=>{
+    if(route.request().postDataJSON().operation!=='workshop.mine'||!holdNextMine){await route.continue();return;}
+    holdNextMine=false;
+    const response=await route.fetch(),body=await response.json();
+    assert.deepEqual(body.result.installed,[],'held query was made before the next installation');
+    await new Promise(resolve=>{releaseMine=resolve;mineHeld();});
+    await route.fulfill({response});mineDone();
+  });
+  await page.locator('[data-workshop=refresh]').click();await held;
+  await page.locator(`[data-workshop=detail][data-id="${item.id}"]`).click();
+  await page.locator('#workshop-detail [data-workshop=install]').click();
+  await page.locator('#workshop-confirm-accept').click();
+  await page.waitForFunction(()=>document.querySelector('#workshop-detail [data-workshop=install]')?.textContent==='已安装此版本');
+  releaseMine();releaseMine=null;await delivered;await received;
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  await page.waitForFunction(()=>!document.querySelector('[data-workshop=refresh]').disabled);
+  assert.equal(await page.evaluate(()=>getComputedStyle(document.body).getPropertyValue('--bg').trim()),'#f3f3f0','late pre-install mine reply cannot erase a confirmed installation');
+  assert.match(await page.locator('#workshop-status').textContent(),/已安装 1 项/);
+  assert.equal((await fixture.call(fixture.alice.token,'workshop.mine')).body.result.installed.length,1);
+
+  await page.locator('[data-workshop=edit]').click();
+  await page.locator('#workshop-source').fill(await page.locator('#workshop-source').inputValue());
+  const removed=await fixture.call(fixture.alice.token,'workshop.remove',{id:item.id});
+  assert.equal(removed.response.status,200);
+  await page.locator('#workshop-publish').click();
+  await page.waitForFunction(()=>document.querySelector('#workshop-publish-error').textContent.length>0);
+  assert.equal(await page.locator('#workshop-source').isDisabled(),false,'410 removed-work response unlocks the editor');
+  assert.equal(await page.locator('#workshop-publish').textContent(),'发布');
+  assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).some(key=>key.startsWith('stargate.workshop.publish:'))),false,'definitely rejected publication does not leave an unresolvable pending key');
+  await page.locator('#workshop-publish-target').selectOption('');
+  await page.locator('#workshop-publish').click();
+  await page.locator('#workshop-editor').waitFor({state:'hidden'});
+  assert.equal(fixture.service.db.prepare('SELECT count(*) AS total FROM workshop_items').get().total,2,'after a definite rejection the user can explicitly publish a new work');
+
+  const legacy=await browser.newPage(),legacyCalls=[];let exposeWorkshop=false;
+  legacy.on('pageerror',error=>errors.push(error.message));
+  legacy.on('request',request=>{if(request.url()===fixture.origin+'/api/call'){const operation=request.postDataJSON().operation;if(operation.startsWith('workshop.'))legacyCalls.push(operation);}});
+  await legacy.route(fixture.origin+'/api/*',async route=>{
+    const response=await route.fetch(),body=await response.json();
+    if(body.state&&!exposeWorkshop)delete body.state.frontendWorkshop;
+    await route.fulfill({response,json:body});
+  });
+  await legacy.goto(fixture.origin+'/#workshop');
+  await legacy.locator('#login-form [name=username]').fill('alice');
+  await legacy.locator('#login-form [name=password]').fill(fixture.password);
+  await legacy.locator('#login-form [type=submit]').click();
+  await legacy.locator('#login-dialog').waitFor({state:'hidden'});
+  await legacy.locator('#workshop-status').filter({hasText:'当前门户未开放创意工坊'}).waitFor();
+  await legacy.locator('#room-nav [data-nav=work]').click();
+  await legacy.locator('#room-nav [data-nav=workshop]').click();
+  await legacy.locator('#refresh-state').click();
+  await legacy.waitForFunction(()=>document.querySelector('#sync-label').textContent.startsWith('已同步'));
+  assert.deepEqual(legacyCalls,[],'production alone does not grant workshop capability or probe old backend operations');
+  assert.equal(await legacy.locator('[data-workshop=create]').isDisabled(),true);
+  assert.equal(await legacy.locator('#workshop-recovery button').isDisabled(),true);
+  assert.equal(await legacy.locator('#workshop-recovery').isVisible(),false,'unsupported portals do not show an unusable recovery bar');
+  assert.equal(await legacy.locator('style[data-workshop-theme]').count(),0,'no plugin runtime is mounted on unsupported portals');
+  await legacy.setViewportSize({width:320,height:900});
+  assert.equal(await legacy.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'six navigation entries do not overflow at 320 px');
+  const mobileNavigation=await legacy.locator('#room-nav .nav-item').evaluateAll(nodes=>nodes.map(node=>({width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height,fontSize:parseFloat(getComputedStyle(node).fontSize)})));
+  assert.equal(mobileNavigation.length,6);
+  assert.ok(mobileNavigation.every(node=>node.width>=48&&node.height>=48&&node.fontSize>=12),'mobile navigation retains 48 px controls and 12 px Chinese text');
+  exposeWorkshop=true;
+  await legacy.locator('#refresh-state').click();
+  await legacy.locator('#workshop-status').filter({hasText:'已安装 0 项'}).waitFor();
+  assert.equal(await legacy.locator('style[data-workshop-theme]').count(),1,'confirmed capability activates the runtime');
+  exposeWorkshop=false;
+  await legacy.locator('#refresh-state').click();
+  await legacy.locator('#workshop-status').filter({hasText:'当前门户未开放创意工坊'}).waitFor();
+  assert.equal(await legacy.locator('style[data-workshop-theme]').count(),0,'withdrawn capability destroys the runtime even within the same account');
+  await legacy.close();
+  assert.deepEqual(errors,[]);
+  console.log('workshop UI races: publish/direct install, delayed mine, definite 410 recovery, missing/withdrawn capability zero-RPC passed');
+}finally{
+  releaseMine?.();await browser.close();await fixture.close();
+}

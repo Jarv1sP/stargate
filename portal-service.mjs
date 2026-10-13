@@ -7,6 +7,7 @@ import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
 import {installExecution,executionCall,displayReadService,publicJob,usage,priorityCapable,priorityRankCapable} from './execution.mjs';
 import {authorizationPolicy,MACHINES,validUsername} from './dist/model.js';
 import {installCommunity,communityCall,maintainTaskNotes} from './community.mjs';
+import {installWorkshop,workshopCall} from './workshop.mjs';
 import {installMaintenanceState,installMaintenance,maintenanceCall} from './maintenance.mjs';
 import {installJobNotifications} from './job-notifications.mjs';
 import {installTransfers,transferCall} from './transfers.mjs';
@@ -36,7 +37,7 @@ export class PortalService extends DemoService{
     service.db=new DatabaseSync(path);await chmod(path,0o600);
     service.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS portal_state (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, time TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL, subject TEXT, outcome TEXT NOT NULL);');
     service.db.exec("CREATE TABLE IF NOT EXISTS invites (role TEXT PRIMARY KEY CHECK(role IN ('admin','member')), digest TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, max_uses INTEGER, created_at TEXT NOT NULL);");
-    installMaintenanceState(service);installCommunity(service);installDatasetLabels(service);installProjectCatalog(service);installTaskDisplay(service);
+    installMaintenanceState(service);installCommunity(service);installWorkshop(service);installDatasetLabels(service);installProjectCatalog(service);installTaskDisplay(service);
     if(!service.db.prepare('PRAGMA table_info(invites)').all().some(c=>c.name==='code_cipher'))service.db.exec('ALTER TABLE invites ADD COLUMN code_cipher TEXT');
     const keyPath=path+'.invite-key';
     try{service.inviteKey=await readFile(keyPath);}catch(e){
@@ -409,6 +410,7 @@ export class PortalService extends DemoService{
     if(typeof operation==='string'&&operation.startsWith('maintenance.'))return {result:await maintenanceCall(this,principal,operation,args),...(operation==='maintenance.set'?{state:this.state(principal)}:{}),principal:{username:principal.username,role:principal.role,userId:principal.userId}};
     if(operation==='notifications.job')return {result:this.configureJobNotification(principal,args),state:this.state(principal)};
     if(typeof operation==='string'&&operation.startsWith('community.'))return {result:communityCall(this,principal,operation,args),principal:{username:principal.username,role:principal.role,userId:principal.userId}};
+    if(typeof operation==='string'&&operation.startsWith('workshop.'))return {result:workshopCall(this,principal,operation,args),principal:{username:principal.username,role:principal.role,userId:principal.userId}};
     // Execution writes its durable reservation before external side effects. Never
     // restore an older snapshot after a dispatch timeout (that would lose quota).
     if(typeof operation==='string'&&(operation.startsWith('jobs.')||operation.startsWith('host.')||operation.startsWith('files.')||operation.startsWith('terminal.')||operation.startsWith('datasets.')||operation.startsWith('projects.'))){
@@ -463,7 +465,7 @@ export class PortalService extends DemoService{
     const capabilities=Object.fromEntries(gpuq.hosts.map(h=>[h.id,!gpuq.stale&&priorityCapable(h)===true]));
     return {...state,taskMetadata:{version:1},maintenance:{version:1,retired:true,readOnly:true},operationalMaintenance:this.operationalMaintenance?.(principal),jobs:state.jobs.map(j=>({...publicJob(j,this.store.users),notifications:this.jobNotificationState(j,principal.userId),canSetPriority:principal.role==='admin'&&!gpuq.stale&&priorityRankCapable(gpuq.hosts.find(h=>h.id===j.machine))===true&&j.state==='PENDING'&&!j.cancelRequested&&j.priorityMutable===true&&(j.spec?.preemptIdleOnly===true||!!j.spec?.scheduling)})),
       demo:false,mode:'persistent',gpuqConnected:gpuq.hosts.some(h=>h.gpuq.connected),jobsSimulated:false,executionEnabled:this.executionEnabled===true,
-      execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},
+      execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},frontendWorkshop:{version:1},
       // Protocol availability is a Portal policy fact, not a node/mount or
       // free-space admission proof. The private HDD RPC still verifies those.
       datasetUploadAdmission:datasetUploadAdmissionView(this.datasetIngressPolicy,this.datasetArchiveCapability),

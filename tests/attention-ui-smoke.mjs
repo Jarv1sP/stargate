@@ -184,7 +184,7 @@ try{
   await close(uncertain);await uncertain.reload();await uncertain.locator('#login-dialog').waitFor({state:'hidden'});await uncertain.locator('#transfer-list [data-transfer-id]').first().waitFor();await count(uncertain,3);await open(uncertain);await geometry(uncertain);
   assert.equal(await uncertain.locator('[data-control-ack]').count(),0);
   await writeFile(join(shots,'attention-unconfirmed-data-checks.json'),JSON.stringify({status:'passed',states:['UNKNOWN','PARTIAL','UNCONFIRMED'],remainingAfterAcknowledgeAndDetailsAndReload:3,readMarkers:1,onlyFailedAcknowledged:true},null,2));
-  const readOperations=['state','projects.list','transfers.list','datasets.list','datasets.catalog','datasets.overview','datasets.capacity','datasets.upload.routes','transfers.capabilities','community.info','community.posts.list','community.chat.list','jobs.logs','jobs.diagnostics','jobs.watch','logout'];
+  const readOperations=['state','workshop.mine','projects.list','transfers.list','datasets.list','datasets.catalog','datasets.overview','datasets.capacity','datasets.upload.routes','transfers.capabilities','community.info','community.posts.list','community.chat.list','jobs.logs','jobs.diagnostics','jobs.watch','logout'];
   const unexpectedOperations=[...new Set(requests.filter(operation=>!readOperations.includes(operation)))];
   assert.deepEqual(unexpectedOperations,[],'acknowledgment and history navigation never write server state');
   assert.deepEqual(service.store.jobs,unchangedJobs);assert.deepEqual(errors,[]);assert.deepEqual(outside,[]);
