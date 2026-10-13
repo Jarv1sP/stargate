@@ -490,3 +490,5 @@ Portal 只调用现有字面量 `datasets.capacity`，并行、有 5 秒读取�
 `state.announcements={version:1,pending:[{id,revision}]}` 仅返回当前接收者未确认的弹窗公告（最多 10 个）。`community.announcements.ack {id,revision}` 写入账号级回执并返回 `{announcements}`，相同版本可重试，过期版本返回 409。确认后后续公告进入 pending；更新内容或其他帖子字段产生新 revision，重新提示。删除公告一并删除回执。
 
 受众过滤在列表分页前执行，覆盖详情、回复读取和回复修改；管理员可管理全部公告，但 pending 仍按真实受众过滤。非管理员不返回其他接收者名单。旧数据库增量添加 audience_json、popup 和独立回执表，不转换历史公告为弹窗。
+
+回退边界：前端可独立回退；存在定向公告后，后端必须保留受众过滤，不能直接换回不识别 audience_json 的旧后端，否则旧列表会把定向公告当普通公告公开。
