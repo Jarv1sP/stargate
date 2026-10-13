@@ -199,24 +199,23 @@ try{
     }
     if(index===2)await capture(guide,'guide-training-desktop.png');
     if(index===3){
-      const direct=guide.locator('.guide-explanation').filter({hasText:'网页选择目录后'});
-      await direct.locator('summary').click();
-      assert.match(await direct.innerText(),/路线显示实际仓库的直传入口，路径中没有门户中转/);
-      assert.match(await direct.innerText(),/实际入库位置与训练目标可以不同/);
-      assert.match(await direct.innerText(),/如果只提供中转或无法确认路线，先停止/);
-      assert.match(await direct.innerText(),/--via direct/);
-      const workspace=guide.locator('.guide-explanation').filter({hasText:'已有文件或外接硬盘中的大数据'});
-      await workspace.locator('summary').click();
-      assert.match(await workspace.innerText(),/联系管理员从原位置核对、整理并入仓库/);
-      assert.match(await workspace.innerText(),/不要把训练缓存当作长期数据仓库/);
-      assert.match(await workspace.innerText(),/压缩包不会自动解压/);
+      const directories=guide.locator('.guide-explanation').filter({hasText:'容器启动后直接看到本机目录'});
+      await directories.locator('summary').click();
+      assert.equal(await directories.locator('li').count(),5);
+      assert.match(await directories.innerText(),/同一份共享数据可被多个任务同时读取，不产生任务副本/);
+      for(const path of ['/data/hdd','/data/ssd','/data/mine','/workspace','/outputs'])
+        assert.ok((await directories.innerText()).includes(path),path);
+      const transfer=guide.locator('.guide-explanation').filter({hasText:'来源是源机的'});
+      await transfer.locator('summary').click();
+      assert.match(await transfer.innerText(),/关闭客户端不停止复制/);
+      assert.match(await transfer.innerText(),/只有 SUCCEEDED 才表示复制完成/);
+      assert.match(await transfer.innerText(),/copy-cancel 停止原传输并保留断点/);
       const dataText=await guide.locator('.guide-prose').textContent();
-      assert.doesNotMatch(dataText,/机械|固态|原件|\b(?:SSD|HDD)\b/);
-      assert.match(dataText,/gpuctl data upload \.\/my-data --name my-data --via direct/);
-      assert.match(dataText,/gpuctl transfer upload \.\/my-data --name my-data --via direct/);
-      assert.doesNotMatch(dataText,/云盘|云端副本|分享链接|链接导入|gpuctl data (?:cloud|import|put)|--via relay/);
-      await direct.locator('summary').click();
-      await workspace.locator('summary').click();
+      assert.match(dataText,/gpuctl data put \.\/labels.json labels.json --via relay/);
+      assert.match(dataText,/gpuctl data copy imagenet datasets\/imagenet --from SOURCE --to TARGET --source-root hdd/);
+      assert.doesNotMatch(dataText,/云盘|云端副本|分享链接|链接导入|gpuctl data (?:cloud|import|prepare)|--data-read/);
+      await directories.locator('summary').click();
+      await transfer.locator('summary').click();
     }
     // Follow the actual next/previous links, not just their href values.
     if(index<chapters.length-1){

@@ -46,6 +46,13 @@ export class DemoService{
     const subject=()=>{if(principal.role==='admin')return args.userId;if(args.userId&&args.userId!==principal.userId){const e=Error('不能操作其他用户。');e.status=403;throw e;}return principal.userId;};
     switch(operation){
       case 'state':break;
+      case 'data.roots':{
+        if(Object.keys(args).join(',')!=='machine')throw Error('目录查询只接受目标服务器。');
+        const user=this.store.get(principal.userId);
+        if(!user.enabled||!user.limits[args.machine])throw Object.assign(Error('这台机器未授权。'),{status:403});
+        // Demo-only paths: no host directory is read and no node is contacted.
+        result={directories:[],personal:{path:'/data/mine',readOnly:false}};break;
+      }
       case 'logout':this.revokeSession(token);return {result:{loggedOut:true}};
       case 'users.create':{admin();validatePassword(args.password);const role=args.role||'member';if(!['admin','member'].includes(role))throw Error('角色无效。');const username=String(args.username??'').trim();if(username==='admin')throw Error('这个用户名已存在，请换一个。');const record=await credential(args.password,this.production?600000:210000);const user=this.store.create(args.name??username,username);this.credentials.set(user.username,record);result=this.store.setRole(user.id,role);break;}
       case 'profile.update':{if(Object.keys(args).some(k=>k!=='name'))throw Error('个人姓名参数无效，不能修改其他账号或权限。');const user=this.store.get(principal.userId);if(!user.enabled)throw Error('账号已暂停。');result=this.store.setName(user.id,args.name);break;}

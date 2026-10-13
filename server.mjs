@@ -8,6 +8,7 @@ const routes={'/':'index.html','/index.html':'index.html','/styles.css':'styles.
 routes['/dataset-upload.js']='dataset-upload.js';
 routes['/project-management-ui.js']='project-management-ui.js';
 routes['/data-workspace.js']='data-workspace.js';
+routes['/personal-upload.js']='personal-upload.js';
 routes['/cloud-files-ui.js']='cloud-files-ui.js';
 routes['/transfers-ui.js']='transfers-ui.js';routes['/transfer-upload.js']='transfer-upload.js';
 routes['/data-route.js']='data-route.js';

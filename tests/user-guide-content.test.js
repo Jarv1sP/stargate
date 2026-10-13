@@ -19,46 +19,28 @@ test('user guide source contains no captured command diagnostics', () => {
   assert.doesNotMatch(guide, /^(?:git:\s+(?:warning|error):|fatal:|npm (?:WARN|ERR!)\b|Traceback \(most recent call last\):)/m);
 });
 
-test('guide explains authorization labels and keeps personal model inputs separate from datasets',()=>{
-  assert.match(guide,/共享授权用户/);assert.match(guide,/不把授权用户当成创建者/);
-  assert.match(guide,/各机授权不同/);assert.match(guide,/旧节点未完整提供归属/);
+test('guide keeps personal model inputs and training outputs in persistent project paths',()=>{
   assert.match(guide,/个人预训练权重、tokenizer 和模型配置.*`\/workspace\/weights`/);
-  assert.match(guide,/`\/workspace\/models`/);assert.match(guide,/`\/workspace\/tokenizers`/);
-  assert.match(guide,/训练直接读取/);assert.match(guide,/数据集只登记训练、验证、测试样本/);
-  assert.match(guide,/不登记为数据集/);assert.match(guide,/不要覆盖输入权重/);
-  assert.match(guide,/不用每次从电脑重新上传/);assert.match(guide,/服务器内部复制快照/);
+  for(const path of ['/workspace/models','/workspace/tokenizers','/outputs'])assert.ok(guide.includes('`'+path+'`'));
+  assert.match(guide,/训练直接读取，不用每次从电脑重新上传或在服务器内部复制快照/);
   assert.match(guide,/新 checkpoint 可写共享的 `\/outputs` 或自选项目子目录/);
+  assert.match(guide,/不要覆盖输入权重/);
+  assert.match(guide,/是否按实验分目录由自己决定/);
 });
 
-test('data organization guidance favors reusable collections without changing immutable identity', () => {
-  const section = guide.split('### 数据整理约定\n')[1]?.split('\n### ')[0]?.split('网页只有一个')[0];
-  assert.ok(section, 'The data chapter contains a concise organization section');
-  assert.equal((section.match(/^- /gm) || []).length, 3);
-  assert.match(section, /完整、可复用的集合/);
-  assert.match(section, /同一集合更新时保留名称，用新的内容版本区分/);
-  assert.match(section, /在该集合的整理工作区修改，再发布同一逻辑数据集的新固定版本/);
-  assert.match(section, /已经 `READY` 的固定版本不可原地修改/);
-  assert.match(section, /旧版本及其跨机副本保持原身份/);
-  assert.match(section, /平台固定技术 UUID／内部 hash/);
-  assert.match(section, /不能通过物理重命名内部目录或 hash 来整理名称/);
-  assert.match(section, /显示名称应说明内容和用途/);
-  assert.match(section, /不要只用纯数字、随机字符/);
-  assert.match(section, /不要故意登记没有独立复用用途的零散临时小数据集/);
-  assert.match(section, /包括临时实验或 smoke 数据/);
-  assert.match(section, /协助操作的 AI 也须遵守上述项目复用、命名和版本约定/);
-  assert.match(section, /主体或分片尽量合并，训练程序按需选取子集/);
-  assert.match(section, /预训练权重、tokenizer 和模型配置放个人项目/);
-  for (const path of ['weights/', 'models/', 'tokenizers/', '/outputs']) assert.ok(section.includes('`' + path + '`'));
-  assert.match(section, /不登记为数据集/);
-  assert.match(section, /`u-…`、`w-…` 是用于隔离归属的内部 ID/);
-  assert.match(section, /内部 ID 和完整 64 位版本保持不变/);
-  assert.match(section, /只改自己的显示名/);
-  assert.match(guide, /不改真实 ID、版本、文件或其他共享用户的名字/);
-  assert.match(guide, /gpuctl data label DATASET_ID --display-name/);
-  assert.match(guide, /训练的 `--data` 仍使用原 `DATASET_ID@VERSION`/);
+test('data guidance separates shared read-only sources from personal writable files',()=>{
+  const data=guide.split('## 数据集 {#data}\n')[1]?.split('\n## ')[0];
+  assert.ok(data);
+  assert.match(data,/`\/data\/hdd`：本机共享机械盘数据，只读/);
+  assert.match(data,/`\/data\/ssd`：本机共享 SSD 数据，只读（配置了才有）/);
+  assert.match(data,/`\/data\/mine`：本人的可写数据目录，跨任务保留/);
+  assert.match(data,/同一份共享数据可被多个任务同时读取，不产生任务副本/);
+  assert.match(data,/python preprocess.py --input \/data\/hdd\/imagenet --output \/data\/mine\/processed/);
+  assert.match(data,/多个任务共用；自行分子目录避免覆盖/);
+  assert.doesNotMatch(data,/--data-read|data prepare|--data [^\n]*@/);
 });
 
-test('dataset reference repeats organization rules and preserves existing name and permission contracts', () => {
+test('historical dataset reference preserves registered-version name and permission contracts', () => {
   const section = datasetManual.split('## 数据整理约定\n')[1]?.split('\n## ')[0];
   assert.ok(section, 'The dataset reference contains the same organization rules');
   assert.equal((section.match(/^- /gm) || []).length, 3);
@@ -138,58 +120,35 @@ test('terminal instructions correctly separate new sessions, detach and explicit
   assert.match(guide, /不能直接填入 VS Code Remote-SSH/);
 });
 
-test('ordinary-user datasets document campus direct upload without relay recommendations', () => {
-  assert.match(guide, /普通成员可以上传个人数据/);
-  for (const command of ['gpuctl data upload ./my-data --name my-data --via direct', 'gpuctl data upload-status UPLOAD_ID', 'gpuctl data upload-discard UPLOAD_ID', 'gpuctl data prepare DATASET_ID@VERSION', 'gpuctl data status DATASET_ID@VERSION']) {
-    assert.ok(guide.includes(command), `Missing data command: ${command}`);
-  }
-  assert.match(guide, /先连接能访问上传节点的校园网络/);
-  assert.match(guide, /`--via direct` 只允许直传/);
-  assert.match(guide, /不经过 VPS 文件中转/);
-  assert.match(guide, /客户端会显示实际传输路径/);
-  assert.match(guide, /确认路线显示实际仓库的直传入口，路径中没有门户中转/);
-  assert.match(guide, /实际入库位置与训练目标可以不同/);
-  assert.match(guide, /如果只提供中转或无法确认路线，先停止/);
-  assert.match(guide, /仓库入口不可达或空间不足时上传会停止，不会改存训练缓存/);
-  assert.match(guide, /保持同一目录、原机器选择和名称，重复原命令可续传/);
-  assert.match(guide, /直传断开不会偷偷改走中转/);
-  assert.match(guide, /数百 GB／TB 本机数据使用校内直传，或联系管理员协助外接硬盘导入/);
-  assert.match(guide, /500,000/);
-  assert.match(guide, /64 MiB/);
-  assert.match(guide, /不必重复准备/);
-  assert.match(guide, /不要把数据集直传当作所有文件操作的传输路线/);
-  assert.doesNotMatch(guide, /--via relay|gpuctl data put\b/);
+test('personal file upload explicitly uses relay without changing direct transfer choices',()=>{
+  assert.match(guide,/上传单文件到个人数据目录（明确使用 HTTPS 门户中转）/);
+  assert.match(guide,/gpuctl data put \.\/labels.json labels.json --via relay/);
+  assert.match(guide,/上传与训练独立/);
+  assert.match(guide,/显式选择校园直连的上传或下载只走已确认的入口/);
+  assert.match(guide,/不自动改用中转、不换新编号/);
+  assert.match(guide,/`data put --via relay` 和项目 `push\/pull` 是另外的 HTTPS 门户中转操作/);
+  assert.doesNotMatch(guide,/上传完成仍须准备到本次训练机器|训练缓存也须准备到/);
 });
 
-test('public guide excludes cloud and link-import workflows until they are ready for members', () => {
-  assert.doesNotMatch(guide, /云盘|云端副本|阿里云|CD2|分享链接|下载链接|链接导入|HTTPS.*直链/);
-  assert.doesNotMatch(guide, /gpuctl data (?:cloud|imports?)(?:\s|-|$)/m);
-  assert.match(guide, /已有文件或外接硬盘中的大数据，联系管理员从原位置核对、整理并入仓库/);
-  assert.match(guide, /不必先拉回自己的电脑/);
-  assert.match(guide, /不会自动解压/);
-  assert.match(guide, /不要把训练缓存当作长期数据仓库/);
-  assert.doesNotMatch(guide, /gpuctl data (?:shell|publish|workspace-status)\b/);
+test('public guide documents processing local files without requiring cloud publication',()=>{
+  assert.doesNotMatch(guide,/云盘|云端副本|阿里云|CD2|分享链接|下载链接|链接导入|HTTPS.*直链/);
+  assert.doesNotMatch(guide,/gpuctl data (?:cloud|imports?)(?:\s|-|$)/m);
+  assert.match(guide,/在容器内查看、处理数据或下载新数据/);
+  assert.match(guide,/mkdir -p \/data\/mine\/processed/);
+  assert.match(guide,/不选数据集版本，不先复制到 SSD，也不等待缓存服务/);
+  assert.doesNotMatch(guide,/gpuctl data (?:shell|publish|workspace-status)\b/);
 });
 
-test('unified dataset guide distinguishes catalog, capacity and preparation from training readiness', () => {
-  assert.match(guide, /网页只有一个“数据集”入口/);
-  assert.match(guide, /仓库列表按数据集显示，服务器栏筛选训练缓存位置/);
-  assert.match(guide, /「所属」显示授权记录对应的用户名，省略重复前缀/);
-  assert.match(guide, /完整 `--data ID@版本`/);
-  assert.match(guide, /`\/data2\/ID` 只读路径读取/);
-  assert.match(guide, /上传统一进入仓库，不需要选择存储盘/);
-  assert.match(guide, /相同数据集 ID 和完整版本才合并显示/);
-  assert.match(guide, /仓库保存完整数据，服务器训练缓存保存本次训练需要的本地副本/);
-  assert.match(guide, /不能相加当作个人额度/);
-  assert.match(guide, /不能据此猜仓库的大小/);
-  assert.match(guide, /缺少容量或查询失败应显示未确认/);
-  assert.match(guide, /`PREPARING_DATA` 表示正在准备所选机器的训练缓存，暂不占 GPU 额度/);
-  assert.match(guide, /全部就绪后重新核验项目、授权和额度，才进入显卡队列/);
-  assert.match(guide, /没有可用来源或权限不足时拒绝提交，不会偷偷换机器/);
-  assert.match(guide, /管理员启用节点间私网传输后/);
-  assert.match(guide, /其他已授权机器上的固定 READY 版本/);
-  assert.match(guide, /仅看到其他机器有数据，不保证通道已启用或当前能复制/);
-  assert.match(guide, /失败时先在数据集页或 `data prepare` 明确重试/);
+test('data movement is explicit and only confirmed completed copies are ready to use',()=>{
+  assert.match(guide,/跨机复制与训练分开：先完成目标机的数据传输，再在目标机运行/);
+  assert.match(guide,/不会因为开始训练而自动搬运数据/);
+  assert.match(guide,/不会把另一台机器的目录远程挂进来/);
+  assert.match(guide,/gpuctl data copy imagenet datasets\/imagenet --from SOURCE --to TARGET --source-root hdd/);
+  assert.match(guide,/来源是源机的 `\/data\/hdd\/imagenet`，目标是目标机的 `\/data\/mine\/datasets\/imagenet`/);
+  assert.match(guide,/只有 `SUCCEEDED` 才表示复制完成/);
+  assert.match(guide,/不删除源文件或目标额外文件/);
+  assert.match(guide,/节点间通道由管理员配置，不需要你提供 SSH 密钥/);
+  assert.doesNotMatch(guide,/全部就绪后重新核验项目、授权和额度，才进入显卡队列/);
 });
 
 test('collaboration uses posts and chat while root requests stay retired', () => {
@@ -218,7 +177,7 @@ test('new projects use OCI without a mode choice and distinguish container from 
   assert.match(guide,/显示“未启用”或查询失败不代表零用量或无限容量/);
 });
 
-test('personal container guidance separates creation, no-GPU development, ending and a pinned training version',()=>{
+test('personal container guidance separates no-GPU development and scheduled persistent training',()=>{
   assert.match(guide,/给项目／容器起能说明研究内容和用途的名字/);
   assert.match(guide,/同一个逻辑项目复用一个工作区，不为每次实验新建容器/);
   assert.match(guide,/实验目录、配置、代码版本和输出路径由你组织/);
@@ -247,35 +206,19 @@ test('guide explains quotas, interruption and failure evidence without promising
   assert.match(guide, /`latestAttempt.startedAt` \/ `latestAttempt.finishedAt`（Unix 秒）/);
   assert.match(guide, /`workerStartedAt` \/ `workerFinishedAt` 使用 ISO 日期时间/);
   assert.match(guide, /缺值表示未确认，不猜成退出码 0 或时间 0/);
-  assert.match(guide, /不会自动备份/);
+  assert.match(guide, /不会因显示提醒自动备份或清理结果/);
   assert.match(guide, /不要粘贴密码、令牌、私钥/);
 });
 
-test('single warehouse intake separates complete warehouse data from prepared training cache',()=>{
-  assert.match(guide,/已有文件或外接硬盘中的大数据，联系管理员从原位置核对、整理并入仓库/);
-  assert.match(guide,/先确认内容、解压大小和剩余空间，再登记完整数据集/);
-  assert.match(guide,/不会自动解压/);
-  assert.match(guide,/不要把训练缓存当作长期数据仓库/);
-  assert.match(guide,/仓库所在机器默认也须完成准备，不能把仓库数据可用当作训练缓存已就绪/);
-  assert.match(guide,/仅当所选服务器已确认支持、固定版本在它自己的仓库为 `READY`/);
-  assert.match(guide,/--data-read warehouse/);
-  assert.match(guide,/仓库离线、未确认或权限不足会拒绝，不改走其他服务器、不自动生成缓存/);
-  assert.match(guide,/调试可以在现有项目的 `debug-data\/` 放少量人工样本/);
-  assert.match(guide,/不要为一次调试新建容器或登记小数据集/);
-  assert.match(guide,/具体存储介质由平台按节点实际能力管理/);
-  assert.match(guide,/日常只需使用个人工作区和完整数据仓库/);
-  assert.match(guide,/三个板块分别是个人项目／容器.*集中数据仓库.*算力排队/);
-  assert.match(guide,/不需要自己选择磁盘或宿主目录/);
-  assert.doesNotMatch(guide,/机械|固态|原件|\b(?:SSD|HDD)\b/,'the member guide uses warehouse/cache terms, not storage media or original-copy jargon');
-  assert.match(guide,/### 仓库与训练缓存/);
-  assert.match(guide,/存入仓库与准备缓存是两步，不能互相替代/);
-  assert.match(guide,/所选机器是后续的训练目标，不是仓库位置/);
-  assert.match(guide,/仓库数据与恢复凭证均核实、没有活动读取或未知保护时才允许按容量水位回收/);
-  assert.match(guide,/回收不删除仓库数据、项目代码、权重或训练结果/);
-  assert.match(guide,/仓库只保存一份完整数据，不是独立备份/);
-  assert.match(guide,/仓库数据、正在训练或有固定保留的数据也不能用这个入口/);
-  assert.match(guide,/上传完成仍须准备到本次训练机器/);
-  assert.doesNotMatch(guide,/gpuctl data (?:shell|publish|workspace-status)\b|gpuctl transfer copy\b|gpuctl sync data\b/);
+test('local reads are independent of cache and free-space admission',()=>{
+  assert.match(guide,/数据已在本机就直接读；跨机传输单独操作/);
+  assert.match(guide,/读取共享数据不做剩余空间检查；写入只取决于实际目标盘/);
+  assert.match(guide,/SSD 空间不足不会因为读 HDD 而触发复制或缓存准入/);
+  assert.match(guide,/完全耗尽的工作盘仍可能无法写日志或创建必要的运行文件/);
+  assert.match(guide,/每个名字都是本机挂载，不跨网络读取其他机器的目录/);
+  assert.match(guide,/以下操作仅针对历史登记的固定数据版本/);
+  assert.match(guide,/也不是新训练的前置步骤/);
+  assert.doesNotMatch(guide,/仓库所在机器默认也须完成准备|上传完成仍须准备到本次训练机器/);
 });
 
 test('troubleshooting separates confirmed misunderstandings from unavailable features', () => {
@@ -288,9 +231,10 @@ test('troubleshooting separates confirmed misunderstandings from unavailable fea
   assert.match(section, /不等于训练程序已经运行并失败/);
   assert.match(section, /保留原任务编号和 `Submission key`，不要另建一份训练/);
   assert.match(section, /节点配置的安全预留；这不是个人容量额度用完/);
-  assert.match(section, /上传 `READY` 不等于可以立即训练/);
-  assert.match(section, /数据已完整存入仓库；所选机器的本地训练缓存也须准备到 `READY`/);
-  assert.match(section, /两者都不等于独立备份/);
+  assert.match(section, /上传完成不等于训练完成/);
+  assert.match(section, /先确认目标机器的实际路径和文件完整/);
+  assert.match(section, /本机已有数据不需要准备缓存/);
+  assert.match(section, /上传和跨机复制都不是独立备份/);
   assert.match(section, /已经永久取消的归档要由管理员核查/);
   assert.match(section, /要另开独立会话，选「新建终端」或运行 `gpuctl ssh`/);
   assert.match(section, /同项目可同时打开多个终端/);

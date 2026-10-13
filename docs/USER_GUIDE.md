@@ -6,7 +6,7 @@
 
 数据已在本机就直接读；跨机传输单独操作。网页与 CLI 共用账号、项目和任务。
 
-指南描述操作方法，不是功能开通清单。只有当前门户与节点确认支持的入口才可使用；能力未确认时不改走旧工作区、其他存储盘或中转路线。
+指南描述操作方法，不是功能开通清单，不能仅凭客户端已更新或源码已合并判断可用。只有当前门户与节点确认支持的入口才可使用；能力未确认时不改走旧工作区、其他存储盘或中转路线。
 
 ## 首次使用 {#start}
 
@@ -45,8 +45,8 @@ gpuctl use MACHINE_ID
 
 ### 3 跑完一次训练
 
-1. [项目开发](/guide/development)：创建或选用项目，push 代码，进入终端安装依赖，再用 `exit` 结束。
-2. [数据集](/guide/data)：查看现有数据，或校内直传；保存返回的数据集 ID 和完整版本，准备训练缓存。
+1. [项目开发](/guide/development)：创建或选用项目，push 代码，进入终端安装依赖。
+2. [数据集](/guide/data)：直接读取本机 `/data/hdd`、`/data/ssd`；新数据放 `/data/mine`，跨机传输单独操作。
 3. [提交训练](/guide/training)：直接 `run`，或申请 GPU 交互终端后连续运行多个命令。
 4. [日志与结果](/guide/results)：logs、watch；确认完成后 files、pull。需要中止时单独 cancel。
 
@@ -57,8 +57,8 @@ gpuctl use MACHINE_ID
 
 - 我的工作台：选机器、创建项目、开发终端和运行训练。
 - 算力总览：逐卡占用和采集时间；未知或过期不代表空闲。
-- 数据集：上传到集中仓库、查看版本、准备训练缓存。
-- 传输任务（管理员启用后）：固定数据集复制、核对进度、终止和恢复。
+- 数据集：查看本机共享目录和个人数据目录，上传自己的数据。
+- 传输任务：独立复制数据，查看进度、停止或按原编号续传；不随训练自动触发。
 - 协作区：公告、交流和任务留言。
 
 ### 姓名与描述（需任务信息新版）
@@ -90,7 +90,7 @@ gpuctl push .
 gpuctl ssh
 ```
 
-### 2 安装依赖并结束终端
+### 2 安装依赖
 
 进入项目终端后执行：
 
@@ -205,7 +205,7 @@ gpuctl jobs
 只在已有同名工作区的候选服务器中选卡，不复制工作区或数据。请先确认这些机器上的代码和输入一致；需要固定数据位置时直接指定服务器。
 
 ```sh local
-gpuctl run auto --candidates gpu-1,gpu-2 --project vision -g 1 -- python train.py
+gpuctl run auto --candidates MACHINE_A,MACHINE_B --project vision -g 1 -- python train.py
 ```
 
 ### 同步本地代码后运行
@@ -309,13 +309,11 @@ gpuctl cancel JOB_ID
 
 容器启动后直接看到本机目录，不选数据集版本，不先复制到 SSD，也不等待缓存服务。
 
-| 容器路径 | 用法 |
-| --- | --- |
-| `/data/hdd` | 本机共享机械盘数据，只读 |
-| `/data/ssd` | 本机共享 SSD 数据，只读（配置了才有） |
-| `/data/mine` | 本人的可写数据目录，跨任务保留 |
-| `/workspace` | 项目代码及自行组织的工作文件，跨任务保留 |
-| `/outputs` | 项目持久输出目录，多个任务共用；自行分子目录避免覆盖 |
+- `/data/hdd`：本机共享机械盘数据，只读。
+- `/data/ssd`：本机共享 SSD 数据，只读（配置了才有）。
+- `/data/mine`：本人的可写数据目录，跨任务保留。
+- `/workspace`：项目代码及自行组织的工作文件，跨任务保留。
+- `/outputs`：项目持久输出目录，多个任务共用；自行分子目录避免覆盖。
 
 实际共享目录名以项目显示为准；每个名字都是本机挂载，不跨网络读取其他机器的目录。同一份共享数据可被多个任务同时读取，不产生任务副本。
 
@@ -325,7 +323,7 @@ gpuctl ssh
 
 在容器内查看、处理数据或下载新数据：
 
-```sh container
+```sh project
 ls /data
 mkdir -p /data/mine/processed
 python preprocess.py --input /data/hdd/imagenet --output /data/mine/processed
@@ -335,6 +333,11 @@ python preprocess.py --input /data/hdd/imagenet --output /data/mine/processed
 
 ```sh local
 gpuctl data put ./labels.json labels.json --via relay
+```
+
+上传与训练独立。文件准备好后，把实际路径交给训练程序：
+
+```sh local
 gpuctl run -g 1 -- python train.py --data /data/hdd/imagenet --output /outputs/run-01
 ```
 
@@ -343,10 +346,10 @@ gpuctl run -g 1 -- python train.py --data /data/hdd/imagenet --output /outputs/r
 跨机复制与训练分开：先完成目标机的数据传输，再在目标机运行。不会因为开始训练而自动搬运数据，也不会把另一台机器的目录远程挂进来。
 
 ```sh local
-gpuctl data copy imagenet datasets/imagenet --from gpu-1 --to gpu-2 --source-root hdd
-gpuctl data copy-status COPY_KEY --machine gpu-2
+gpuctl data copy imagenet datasets/imagenet --from SOURCE --to TARGET --source-root hdd
+gpuctl data copy-status COPY_KEY --machine TARGET
 # 中断后沿原编号续传；不换编号、不重新上传
-gpuctl data copy-resume COPY_KEY --machine gpu-2
+gpuctl data copy-resume COPY_KEY --machine TARGET
 ```
 
 来源是源机的 `/data/hdd/imagenet`，目标是目标机的 `/data/mine/datasets/imagenet`；`--source-root mine` 表示本人的数据目录。任务在服务器后台运行，关闭客户端不停止复制。`copy-cancel` 停止原传输并保留断点，之后仍可 `copy-resume`。只有 `SUCCEEDED` 才表示复制完成；不删除源文件或目标额外文件。节点间通道由管理员配置，不需要你提供 SSH 密钥。
@@ -484,7 +487,7 @@ gpuctl run --rank P2 --mode preempt2 -g 1 -- python urgent.py
 
 管理员可访问全部机器；共享和独占任务均免个人累计用卡额度，无需执行 `grant --full`，也不受升为管理员前保存的个人额度限制。单个任务仍不能超过所选机器的物理卡数，不豁免实际显存、节点授权和调度约束。资源不足时正常排队，不会因为管理员身份抢停其他训练；已有显式让位模式仍按其独立规则执行。手选、自动选机、准备完成和首次派发采用同一额度规则；每人最多 10 个准备中任务、全平台 5000 条任务历史的保护仍然有效。
 
-准备项目或数据时尚不占 GPU 额度；准备完成和首次派发前会重新检查当前角色与授权。降为普通成员后，新提交及尚未派发的任务重新受个人额度约束；不会仅因降级停止已经派发或运行中的训练，结果未知的任务也不会假装释放。成员原有额度保留，不会被管理员的全部机器视图覆盖。
+历史任务若仍处于项目或数据准备阶段，尚不占 GPU 额度；新任务不经过该准备流程。首次派发前会重新检查当前角色与授权。降为普通成员后，新提交及尚未派发的任务重新受个人额度约束；不会仅因降级停止已经派发或运行中的训练，结果未知的任务也不会假装释放。成员原有额度保留，不会被管理员的全部机器视图覆盖。
 
 协作区只有“帖子”和“聊天”两个入口；桌面并排显示，手机用标签切换。帖子用于公告和问题反馈，聊天用于即时交流；留言不会自动改变配额、队列或取消任务。反馈问题注明机器、任务 ID、时间和复现步骤，不要粘贴密码、令牌、私钥或私密训练数据。
 
@@ -494,7 +497,7 @@ gpuctl run --rank P2 --mode preempt2 -g 1 -- python urgent.py
 
 提示「节点未确认个人数据工作区的校园上传协议」「节点未确认原下载的固定校园来源」或 `Invalid campus file capability scope` 时，客户端已停止。请管理员配对节点版本，保留原编号、文件与断点；换客户端、换名称或重投不能补齐节点能力。
 
-文件字节只走已确认的校园直连入口。先恢复校园网络，保留原 UUID、机器、名称和本机目录，再执行原上传或下载命令；不改用中转、不换新编号。
+显式选择校园直连的上传或下载只走已确认的入口。先恢复校园网络，保留原 UUID、机器、名称和本机目录，再执行原命令；不自动改用中转、不换新编号。`data put --via relay` 和项目 `push/pull` 是另外的 HTTPS 门户中转操作。
 
 `HASHING` 是本机散列，尚未开始传输；`WAITING_CLIENT` 在等电脑，`UNKNOWN` 是结果未确认。查询原编号，不能当成失败、成功或已停止。目录或文件已变时停止，先处理身份冲突。
 
@@ -514,11 +517,11 @@ gpuctl run --rank P2 --mode preempt2 -g 1 -- python urgent.py
 
 ### 提交超时、任务 UNKNOWN 或无法取消
 
-先查 `jobs/watch`、日志和诊断。`UNKNOWN` 不表示已结束，额度仍保留；不要重复建任务或删目录。提交重试用原输出的 `Submission key`，加原 `--key UUID` 和原参数；只有原提交显式指定了 `--release` 时才保留同一个完整版本，不能换策略重试。仍无法确认就把任务 ID 交给管理员。
+先查 `jobs/watch`、日志和诊断。`UNKNOWN` 不表示已结束，额度仍保留；不要重复建任务或删目录。新工作区任务重试用原输出的 `Submission key`，加原 `--key UUID` 和原参数，不能换策略。历史发布任务只查原编号，不用新的 `run --release` 重投。仍无法确认就把任务 ID 交给管理员。
 
 ### 这些状态不能互相代替
 
-- **上传 `READY` 不等于可以立即训练**：它表示数据已完整存入仓库；所选机器的本地训练缓存也须准备到 `READY`。两者都不等于独立备份，未确认仓库数据与恢复证明时不要清掉旧源。
+- **上传完成不等于训练完成**：先确认目标机器的实际路径和文件完整，再把路径交给训练程序。本机已有数据不需要准备缓存；上传和跨机复制都不是独立备份，不要因此删除唯一来源。
 - **取消不等于稍后自动恢复**：训练不会自动保存 checkpoint 或重跑；传输保留已写出的内容，但不自动继续。后台归档不是普通传输，已经永久取消的归档要由管理员核查，不能用普通 `transfer resume` 绕过。
 - **终端断开不等于 `STOPPED`**：在原服务器和项目用 `gpuctl ssh --reconnect SESSION_ID` 接回；要另开独立会话，选「新建终端」或运行 `gpuctl ssh`，不是接管别人正在用的会话。同项目可同时打开多个终端，共用文件和环境，新工作区不要求先结束终端再运行；用 `gpuctl terminal status SESSION_ID` 查询，`UNKNOWN` 不能当成已结束。个人容器内 root 只管理自己的容器，管理员 ROOT 运维是另一个入口。
 - **HAMi 显存限制不等于 SM 限额**：显存和计算份额是两项能力。`--hami` 可用不代表 `--sm-percent 50` 已开通；未确认支持时会拒绝，也不保证“半张卡”的性能。
@@ -549,7 +552,7 @@ gpuctl sync code --from SOURCE --to TARGET --project my-project --release FULL_H
 
 将 `SOURCE/TARGET` 换成获授权机器 ID，去掉 `--dry-run` 才传输。Git 仓库须干净并支持 `check-attr --source`，只导出固定提交；已有节点代码只复制固定 release。目标须是新项目，重复同一命令可续传，不覆盖旧项目、不删除目标其他内容。
 
-代码显示 `CODE_READY` 后，在目标 `use`、`project use`、`ssh` 准备依赖，然后直接 `run`，不用发布。代码同步不迁移 Conda/venv 或结果；历史固定版本仍可用 `project copy`。数据集在目标机器用 `data prepare` 显式准备，不通过代码同步搬运。
+代码显示 `CODE_READY` 后，在目标 `use`、`project use`、`ssh` 准备依赖，然后直接 `run`，不用发布。代码同步不迁移 Conda/venv 或结果；历史固定版本仍可用 `project copy`。数据需要搬到目标机时单独使用 `data copy`，不通过代码同步搬运。
 
 ### 缺少系统依赖
 
@@ -566,7 +569,9 @@ gpuctl sync code --from SOURCE --to TARGET --project my-project --release FULL_H
 确实过期时用 `gpuctl login USERNAME`，主动退出用 `gpuctl logout`；换账号后重新选服务器和项目。登录失效不会停止已经提交的训练。
 
 
-### 删除数据版本
+### 删除历史登记的数据版本
+
+以下操作仅针对历史登记的固定数据版本，不用于删除 `/data/hdd`、`/data/ssd` 的共享目录或本人任意文件，也不是新训练的前置步骤。
 
 你只能删除有个人来源证明的本人上传、工作区发布或副本；旧数据、共享数据和管理员登记请联系管理员。新节点尚未开通删除能力时，彻底删除暂不可用。
 
