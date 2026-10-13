@@ -2,7 +2,7 @@ import {archiveUploadSpecification} from './dist/dataset-upload.js';
 import {setTimeout as readDelay} from 'node:timers/promises';
 import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {taskIdentity,nativeTaskDisplay} from './dist/task-metadata.js';
-import {nativeJobRequest} from './native-task-metadata.mjs';
+import {nativeJobRequest,nativeJobSpec} from './native-task-metadata.mjs';
 import {applyJobFeedback,jobTiming} from './dist/job-progress.js';
 import {maintainTaskNotes} from './community.mjs';
 import {projectCall,projectReference,validateProjectFile,UUID} from './projects.mjs';
@@ -14,6 +14,7 @@ import {datasetStorageOverviewCall} from './dataset-storage-overview.mjs';
 import {datasetFilesCall} from './dataset-files.mjs';
 import {installDatasetReplication} from './dataset-replication.mjs';
 import {trainingDatasetCapabilities} from './training-datasets.mjs';
+import {releaseDataPreparation} from './dataset-preparation.mjs';
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 export {datasetReferences} from './job-submission.mjs';
 export {bridgeClient} from './execution-bridge.mjs';
@@ -110,23 +111,27 @@ export function installExecution(service,bridge){
   installDatasetReplication(service);
   let cycle=null;
   const kind=job=>job.cancelRequested&&!TERMINAL.has(job.state)?'cancel':job.state==='SUBMITTING'&&job.dispatchPending===true?'first':'observe';
-  const eligible=(job,maintained)=>!TERMINAL.has(job.state)&&
-    (TERMINAL.has(job.state)||!maintained||job.cancelRequested)&&
+  // Retired preparation holds still need node-confirmed cleanup. Reuse the
+  // observation lane; never restore preparation/promotion for new submissions.
+  const eligible=(job,maintained)=>TERMINAL.has(job.state)?
+    (job.dataPreparationHold&&job.dataPreparationHold.state!=='RELEASED'||job.trainingPreparations?.length&&job.trainingPreparationsReleased!==true):
+    (job.state!=='PREPARING_DATA'||job.cancelRequested)&&
+    (!maintained||job.cancelRequested)&&
     (job.cancelRequested||job.state!=='SUBMITTING'||job.dispatchPending===true||!(Date.parse(job.submissionReconciliation?.nextCheckAt)>Date.now()));
+  const binding=job=>JSON.stringify([job.userId,job.machine,job.spec,nativeJobSpec(job)]);
   const step=async job=>{
-    if(TERMINAL.has(job.state))return;
-    const policyRevision=job.policyRevision||0;
+    const policyRevision=job.policyRevision||0,identity=binding(job);
     let dispatched=false;
     try{
+      if(TERMINAL.has(job.state)){await releaseDataPreparation(service,job);return;}
       if(job.state==='SUBMITTING'&&job.dispatchPending!==true&&!job.cancelRequested){
-        const identity=JSON.stringify([job.userId,job.machine,job.spec]);
         // watch never submits or releases resources. In particular its legacy
         // PENDING/NOT_SUBMITTED placeholder is not a scheduler admission.
-        const result=await service.bridge(job.machine,'watch',{job:job.spec},{rpcTimeoutMs:27000});
+        const result=await service.bridge(job.machine,'watch',{job:nativeJobSpec(job)},{rpcTimeoutMs:27000});
         await service.enqueue(()=>{
           const current=service.store.jobs.find(j=>j.id===job.id);
           if(!current||service.closing||current.state!=='SUBMITTING'||current.cancelRequested||
-            (current.policyRevision||0)!==policyRevision||JSON.stringify([current.userId,current.machine,current.spec])!==identity)return;
+            (current.policyRevision||0)!==policyRevision||binding(current)!==identity)return;
           if(result?.state==='FAILED'&&result.notSubmitted===true&&result.failureCode==='DATASET_NOT_READY'||
             typeof result?.nodeJobId==='string'&&/^J[a-f0-9]{12}$/.test(result.nodeJobId)&&
             ['PENDING','STARTING','RUNNING','PREEMPTING','LOST','UNKNOWN',...TERMINAL].includes(result.state)){
@@ -152,16 +157,19 @@ export function installExecution(service,bridge){
         return;
       }
       const action=job.cancelRequested?'cancel':'sync';
-      const attempt=action==='sync'&&job.state==='SUBMITTING'&&job.dispatchPending===true?await firstDispatch(service,job):{response:service.bridge(job.machine,action,nativeJobRequest(service,job))};
+      const preparationCancel=action==='cancel'&&job.state==='PREPARING_DATA';
+      const attempt=preparationCancel?{response:service.bridge(job.machine,'storage.lease.cancel',{job:nativeJobSpec(job)})}:
+        action==='sync'&&job.state==='SUBMITTING'&&job.dispatchPending===true?await firstDispatch(service,job):{response:service.bridge(job.machine,action,nativeJobRequest(service,job))};
       if(!attempt)return;
       dispatched=attempt.dispatched===true;
       const result=await attempt.response;
+      if(preparationCancel&&(result?.state!=='CANCELED'||result.jobId!==job.id||result.released!==true))throw Error('旧准备任务的取消尚未确认；请查询原任务。');
       await service.enqueue(()=>{
-        const current=service.store.jobs.find(j=>j.id===job.id);if(!current||service.closing||TERMINAL.has(current.state)||(current.policyRevision||0)!==policyRevision)return;
+        const current=service.store.jobs.find(j=>j.id===job.id);if(!current||service.closing||TERMINAL.has(current.state)||(current.policyRevision||0)!==policyRevision||binding(current)!==identity)return;
         // LOST/unknown remains nonterminal: retain quota until confirmed.
         persistSchedulerResult(service,current,result);maintainTaskNotes(service);
       });
-    }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&!TERMINAL.has(current.state)&&(current.policyRevision||0)===policyRevision){
+    }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&!TERMINAL.has(current.state)&&(current.policyRevision||0)===policyRevision&&binding(current)===identity){
       const pending=current.state==='SUBMITTING'&&current.dispatchPending!==true&&!current.cancelRequested;
       if(pending){const old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
         current.submissionReconciliation={...old,state:'CHECKING',attempts,lastReason:e.code||'UNCONFIRMED',nextCheckAt:new Date(Date.now()+submissionDelay(attempts-1)).toISOString()};}
@@ -207,24 +215,19 @@ export function installExecution(service,bridge){
     if(!bridge||service.closing)return Promise.resolve();
     if(cycle){
       const promise=cycle.promise;
-      for(const id of cycle.preparations){
-        const job=service.store.jobs.find(job=>job.id===id);
-        if(job?.state==='SUBMITTING'&&job.dispatchPending===true&&!cycle.active.has(id)){
-          cycle.seen.delete(id+':first');cycle.preparations.delete(id);
-        }
-      }
       pump();return promise;
     }
     // Preserve the explicit pause used by callers while no pass is active.
     if(service.reconciling)return Promise.resolve();
-    const current={active:new Set(),slots:new Set(),seen:new Set(),preparations:new Set(),error:null};
+    const current={active:new Set(),slots:new Set(),seen:new Set(),error:null};
     current.promise=new Promise((resolve,reject)=>{current.resolve=resolve;current.reject=reject;});
     cycle=current;service.reconciling=true;pump();return current.promise;
   };
   if(bridge){service.executionTimer=setInterval(()=>service.reconcile().catch(()=>{}),15000);service.executionTimer.unref();}
 }
-export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
-export function publicJob(job,users=[]){const {spec,digest,schedulerPolicy,dataPreparationHold,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,trainingAdmissionPending,allowPrepareData,trainingStoragePlan:privateStoragePlan,trainingStorageRequest:privateStorageRequest,trainingPreparations:privatePreparations,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,
+export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&j.state!=='PREPARING_DATA'&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
+export function publicJob(job,users=[]){const {spec,digest,schedulerPolicy,dataPreparationHold,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,trainingAdmissionPending,allowPrepareData,trainingStoragePlan:privateStoragePlan,trainingStorageRequest:privateStorageRequest,trainingPreparations:privatePreparations,trainingPreparationsReleased:privatePreparationCleanup,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,
+  ...(job.state==='PREPARING_DATA'?{queueReason:'旧准备流程已停用；请取消后从当前工作区重新提交。'}:{}),
   ...(job.state==='SUBMITTING'&&dispatchPending!==true?{submissionState:submissionReconciliation?.state||'CHECKING',
     canRetryDispatch:false,error:submissionError(job)}:{}),
   ...jobTiming(job),...taskIdentity(job,users),command:spec.argv,
@@ -301,11 +304,11 @@ export async function executionCall(service,principal,operation,args,readContext
   // input and resource reconciliation keep their original one-shot dispatch.
   const jobReadPolicy=authorizationPolicy(user);
   const observeJob=async(job,kind,request)=>{
-    const identity=JSON.stringify([job.id,job.userId,job.machine,job.spec]);
+    const identity=JSON.stringify([job.id,job.userId,job.machine,job.spec,nativeJobSpec(job)]);
     const check=()=>{
       readContext?.check?.();
       if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==jobReadPolicy||
-        JSON.stringify([job.id,job.userId,job.machine,job.spec])!==identity)
+        JSON.stringify([job.id,job.userId,job.machine,job.spec,nativeJobSpec(job)])!==identity)
         fail('账号或任务授权已改变，请重新查询。',403);
       authorizedMachine(job.machine);readContext?.signal?.throwIfAborted();
     };
@@ -586,35 +589,39 @@ export async function executionCall(service,principal,operation,args,readContext
     }
     return jobView(job);
   }
-  if(operation==='jobs.logs'){const job=jobById(args.jobId);return observeJob(job,'logs',{job:job.spec});}
+  if(operation==='jobs.logs'){
+    const job=jobById(args.jobId);authorizedMachine(job.machine);
+    if(job.state==='PREPARING_DATA')return {text:'平台仍记录为旧准备阶段；请先查看状态，或取消后从当前工作区重新提交。'};
+    return observeJob(job,'logs',{job:nativeJobSpec(job)});
+  }
   if(operation==='jobs.reconcile-resources'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('资源对账仅接受任务 ID。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
     if(!TERMINAL.has(job.state)||!job.nodeJobId)fail('仅能对账已有原生任务的历史终态；不会取消或重跑任务。',409);
     const snapshot=JSON.stringify(job),actorSnapshot=authorizationPolicy(service.store.get(principal.userId));
     const check=()=>{if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==actorSnapshot||JSON.stringify(job)!==snapshot)fail('授权或任务状态已改变，请重新查询后对账。',409);};
-    const before=await service.bridge(job.machine,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});check();
+    const before=await service.bridge(job.machine,'watch',{job:nativeJobSpec(job),expectedNodeJobId:job.nodeJobId});check();
     const observation=terminalNativeObservation(job,before?.nativeObservation),attempt=observation.latestAttempt;
     if(observation.status!=='CONFIRMED'||!TERMINAL.has(observation.state)||!attempt||
        !/^A[a-f0-9]{32}$/.test(attempt.id)||!['EXITED_SUCCESS','EXITED_FAILURE','CANCELED','PREEMPTED'].includes(attempt.state))
       fail('最新原生尝试尚未确认终止；未释放任何资源。',409);
     const expectedNative={nodeJobId:job.nodeJobId,attemptId:attempt.id,attemptOrdinal:attempt.ordinal,nativeVersion:observation.nativeVersion};
     service.audit(principal.username,operation,job.id,JSON.stringify(expectedNative));check();
-    const released=await service.bridge(job.machine,'storage.lease.cancel',{job:job.spec,expectedNative});check();
+    const released=await service.bridge(job.machine,'storage.lease.cancel',{job:nativeJobSpec(job),expectedNative});check();
     if(released?.released!==true||released.jobId!==job.id||released.state!=='CANCELED'||
        !released.reconciledNative||Object.keys(released.reconciledNative).length!==4||
        Object.entries(expectedNative).some(([key,value])=>released.reconciledNative[key]!==value))
       fail('资源收尾尚未确认；请查询原任务，不要重新提交。',409);
-    const after=await service.bridge(job.machine,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});check();
+    const after=await service.bridge(job.machine,'watch',{job:nativeJobSpec(job),expectedNodeJobId:job.nodeJobId});check();
     return {protocol:'job-resource-reconciliation-v1',jobId:job.id,reconciledNative:expectedNative,resourcesReleased:true,
       portalHistory:portalTerminalSnapshot(job),completion:jobCompletion(job,after)};
   }
   if(operation==='jobs.completion'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('完成核验仅接受任务 ID。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
-    const taskIdentity=()=>JSON.stringify([job.id,job.userId,job.machine,job.nodeJobId,job.spec,job.latestAttempt?.id,job.latestAttempt?.ordinal]),snapshot=taskIdentity(),actorSnapshot=authorizationPolicy(service.store.get(principal.userId));
+    const taskIdentity=()=>JSON.stringify([job.id,job.userId,job.machine,job.nodeJobId,job.spec,nativeJobSpec(job),job.latestAttempt?.id,job.latestAttempt?.ordinal]),snapshot=taskIdentity(),actorSnapshot=authorizationPolicy(service.store.get(principal.userId));
     let result;
-    if(job.nodeJobId)try{result=await observeJob(job,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});}catch{}
+    if(job.nodeJobId)try{result=await observeJob(job,'watch',{job:nativeJobSpec(job),expectedNodeJobId:job.nodeJobId});}catch{}
     if(service.closing||authorizationPolicy(service.store.get(principal.userId))!==actorSnapshot||taskIdentity()!==snapshot)
       fail('授权或任务状态已改变，请重新查询完成状态。',409);
     if(jobCompletion(job,result).completed&&!TERMINAL.has(job.state))persistSchedulerResult(service,job,result);
@@ -629,13 +636,13 @@ export async function executionCall(service,principal,operation,args,readContext
       const original=jobView(job);
       if(!job.nodeJobId)return {...original,nativeObservation:unavailableObservation('NATIVE_ID_UNAVAILABLE')};
       try{
-        const result=await observeJob(job,'watch',{job:job.spec,expectedNodeJobId:job.nodeJobId});
+        const result=await observeJob(job,'watch',{job:nativeJobSpec(job),expectedNodeJobId:job.nodeJobId});
         return {...original,nativeObservation:terminalNativeObservation(job,result?.nativeObservation)};
       }catch{return {...original,nativeObservation:unavailableObservation()};}
     }
     authorizedMachine(job.machine);
     let result;
-    try{result=await observeJob(job,'watch',{job:job.spec});}
+    try{result=await observeJob(job,'watch',{job:nativeJobSpec(job)});}
     catch{return {...jobView(job),state:'UNKNOWN',error:'节点进度查询失败，任务状态待核对。',checkedAt:new Date().toISOString()};}
     if(!result?.nodeJobId)return jobView(job);
     try{persistSchedulerResult(service,job,result);return jobView(job);}
@@ -649,9 +656,9 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation==='jobs.diagnostics'){
     if(Object.keys(args).some(k=>k!=='jobId'))fail('诊断参数无效。');
     const job=jobById(args.jobId);authorizedMachine(job.machine);
-    if(!TERMINAL.has(job.state))return observeJob(job,'diagnostics',{job:job.spec});
+    if(!TERMINAL.has(job.state))return observeJob(job,'diagnostics',{job:nativeJobSpec(job)});
     try{
-      const result=await observeJob(job,'diagnostics',{job:job.spec,...(job.nodeJobId?{expectedNodeJobId:job.nodeJobId}:{})});
+      const result=await observeJob(job,'diagnostics',{job:nativeJobSpec(job),...(job.nodeJobId?{expectedNodeJobId:job.nodeJobId}:{})});
       return {...result,portalTerminal:portalTerminalSnapshot(job),nativeObservation:terminalNativeObservation(job,result?.nativeObservation)};
     }catch{return {jobId:job.id,state:'UNAVAILABLE',portalTerminal:portalTerminalSnapshot(job),nativeObservation:unavailableObservation()};}
   }

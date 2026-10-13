@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {nativeJobRequest,nativeTaskPresentation} from '../native-task-metadata.mjs';
+import {nativeJobRequest,nativeJobSpec,nativeTaskPresentation} from '../native-task-metadata.mjs';
 import {schedulerResult} from '../execution.mjs';
 const job={id:'UUID',machine:'gpu-1',userId:'demo-user-8',username:'刘鹏亮',submitterName:'刘鹏亮',
   name:'fashion-hm-teachers0-20261003',description:'任务说明',spec:{id:'UUID',userId:'demo-user-8',username:'刘鹏亮',name:'fashion-hm-teachers0-20261003'}};
@@ -23,6 +23,14 @@ test('new node envelope carries real names beside, NEVER inside, old immutable e
   assert.deepEqual(request.metadata,{name:job.name,description:'任务说明',submitter:{name:'刘鹏亮',username:'刘鹏亮'}});
   assert.equal(request.job.submitterName,undefined);assert.equal(request.job.description,undefined);
   assert.deepEqual(nativeJobRequest(service(),{...job,submitterName:undefined}).metadata.submitter,{name:'后改姓名',username:'刘鹏亮'});
+});
+test('historical holds supply the original native spec without changing user intent or presentation',()=>{
+  const task=structuredClone(job),logical={dataset:'images',version:'a'.repeat(64)},physical={...logical,dataset:'images-replica'};
+  task.spec.datasets=[logical];task.dataPreparationHold={state:'RELEASED',spec:{...structuredClone(task.spec),datasets:[physical]}};
+  const before=structuredClone(task),request=nativeJobRequest(service(),task);
+  assert.equal(nativeJobSpec(task),task.dataPreparationHold.spec);assert.equal(request.job,task.dataPreparationHold.spec);
+  assert.equal(request.metadata.name,task.name);assert.deepEqual(task,before);
+  assert.equal(nativeJobSpec(job),job.spec);assert.equal(nativeJobRequest(service(),job).job,job.spec);
 });
 test('old, native-only, unreachable and stale nodes receive their EXACT legacy request',()=>{
   for(const caps of [[],['job-display-v1']])assert.deepEqual(nativeJobRequest(service(caps),job),{job:job.spec});

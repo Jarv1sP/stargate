@@ -48,7 +48,8 @@ test('CLI short card option never rewrites training argv after --',async()=>{
   await new Promise(r=>server.listen(0,'127.0.0.1',r));const url=`http://127.0.0.1:${server.address().port}`,dir=await mkdtemp(join(tmpdir(),'gpuq-argv-')),cache=join(dir,'session.json');
   try{
     await writeFile(cache,JSON.stringify({url,token:'test-only',principal:{userId:'demo-user-1',role:'member'},machine:'gpu-4'}));
-    const result=await new Promise((resolve,reject)=>{const p=spawn(process.execPath,[new URL('../cli.mjs',import.meta.url).pathname,'--url',url,'--session-file',cache,'--json','run','-g','2','--','python','train.py','-g','custom','--json']);let out='',err='';p.stdout.on('data',d=>out+=d);p.stderr.on('data',d=>err+=d);p.on('error',reject);p.on('close',code=>resolve({code,out,err}));});
+    const result=await new Promise((resolve,reject)=>{const p=spawn(process.execPath,[new URL('../cli.mjs',import.meta.url).pathname,'--url',url,'--session-file',cache,'--json','run','--project','training','-g','2','--','python','train.py','-g','custom','--json']);let out='',err='';p.stdout.on('data',d=>out+=d);p.stderr.on('data',d=>err+=d);p.on('error',reject);p.on('close',code=>resolve({code,out,err}));});
     assert.equal(result.code,0,result.err);assert.equal(received.cards,2);assert.deepEqual(received.argv,['python','train.py','-g','custom','--json']);
+    assert.equal(received.project,'training');assert.equal(Object.hasOwn(received,'release'),false);
   }finally{await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});}
 });

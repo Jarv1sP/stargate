@@ -7,10 +7,9 @@ import {randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
 import {usage,publicJob,SUBMISSION_SAFE_WINDOW_MS} from '../execution.mjs';
-import {advanceDataPreparation} from '../dataset-preparation.mjs';
-import {trainingPlan,trainingSource,projectFootprint} from './training-storage-fixture.mjs';
 
-const machine=MACHINES[0].id,nodeId='J0123456789ab',ref={dataset:'sample',version:'a'.repeat(64)};
+const machine=MACHINES[0].id,nodeId='J0123456789ab';
+const workspace=project=>({project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}});
 const password='Submission-Recovery-Fixture-Only-2026!';
 async function fixture(t){
   const dir=await mkdtemp(join(tmpdir(),'submission-recovery-')),bootstrap=join(dir,'bootstrap'),status=join(dir,'status');
@@ -19,13 +18,15 @@ async function fixture(t){
     gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:32768})),gpuq:{connected:true,observeOnly:false,jobs:[]}}))}));
   let handler;const calls=[],service=await PortalService.open(join(dir,'db'),bootstrap,status,async(target,op,args)=>{
     calls.push({machine:target,op,args:structuredClone(args)});
-    return handler?handler(target,op,args):{state:'PENDING',nodeJobId:nodeId};
+    if(handler)return handler(target,op,args);
+    if(op==='projects.workspace')return workspace(args.project);
+    throw Error('Unexpected RPC '+op);
   });
   for(const name of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[name]);
   service.reconciling=true;
   const user=service.store.users[0];Object.assign(user,{role:'member',limits:{[machine]:1},total:1});
   const token=service.issueSession({userId:user.id,username:user.username,role:user.role});
-  const request={machine,cards:1,argv:['true'],key:randomUUID()};
+  const request={machine,project:'paper',cards:1,argv:['true'],key:randomUUID()};
   const submit=extra=>service.invoke(token,'jobs.submit',{...request,...extra});
   const start=()=>{service.reconciling=false;return service.reconcile();};
   const original=async()=>{const {result}=await submit();const job=service.store.jobs.find(j=>j.id===result.id);
@@ -88,76 +89,69 @@ test('revocation prevents an otherwise confirmed same-key recovery from dispatch
   assert.equal((await f.submit()).result.state,'FAILED');assert.ok(f.calls.every(c=>c.op==='watch'));
 });
 
-function dataHandler(f,{busy=false,forbidden=false,availableBytes=2**40}={}){
-  return (target,op,args)=>{
-    if(op==='projects.verify')return {...args,state:'READY'};
-    if(op==='projects.copy.probe')return {...args,...projectFootprint,protocol:'portable-project-v1',enabled:true,
-      environmentMode:'oci',releaseReady:true,image:'sha256:'+'b'.repeat(64),architecture:'amd64',sources:[]};
-    if(op==='datasets.training.status'){
-      if(forbidden)throw Object.assign(Error('dataset owner authorization required'),{status:403});
-      if(busy)throw Object.assign(Error('metadata unconfirmed'),{code:'NOT_READY',status:503});
-      return trainingSource(target,args);
-    }
-    if(op==='datasets.list')return {datasets:[{dataset:ref.dataset,ownerIds:[forbidden?'other':f.user.id],versions:[{version:ref.version,state:'REGISTERED'}]}]};
-    if(op==='storage.training.plan')return trainingPlan(target,args,{availableBytes});
-    if(op==='storage.lease.prepare')return {jobId:args.job.id,state:'HELD'};
-    if(op==='sync')return {state:'PENDING',nodeJobId:nodeId};
-    if(op==='storage.lease.cancel')return {jobId:args.job.id,state:'CANCELED',released:true};
-    throw Error('Unexpected RPC '+op);
-  };
-}
-test('authorized warehouse read failures reserve the key and UUID, then resume when data and capacity are ready',async t=>{
-  const f=await fixture(t);f.setHandler(dataHandler(f,{busy:true}));
-  const options={datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)},first=await f.submit(options),job=f.service.store.jobs[0];
-  assert.equal(first.result.state,'PREPARING_DATA');assert.equal(first.result.id,job.id);assert.equal(usage([job],f.user.id),0);
+// New tasks use the existing workspace. Historical storage-admission code is
+// not reached by jobs.submit; never restore that retired workflow in fixtures.
+for(const extra of [{release:'c'.repeat(64)}, {datasets:[{dataset:'sample',version:'a'.repeat(64)}]},
+  {datasetReadMode:'warehouse'}, {prepareData:true}])test('retired new-submission field is rejected before any RPC: '+Object.keys(extra)[0],async t=>{
+  const f=await fixture(t);
+  await assert.rejects(f.submit(extra),e=>e.status===400&&/提交参数/.test(e.message));
+  assert.equal(f.service.store.jobs.length,0);assert.equal(usage(f.service.store.jobs,f.user.id),0);
+  assert.deepEqual(f.calls,[]);
+});
+test('workspace admission persists the original key and UUID without data preparation or capacity RPCs',async t=>{
+  const f=await fixture(t),first=await f.submit(),job=f.service.store.jobs[0];
+  assert.equal(first.result.state,'SUBMITTING');assert.equal(first.result.id,job.id);assert.equal(usage([job],f.user.id),1);
+  assert.equal(job.spec.workspace,true);assert.equal(Object.hasOwn(job.spec,'release'),false);
+  assert.equal(Object.hasOwn(job.spec,'datasets'),false);assert.equal(Object.hasOwn(job,'dataPreparationHold'),false);
   const durable=JSON.parse(f.service.db.prepare('SELECT data FROM portal_state WHERE id=1').get().data).jobs[0];
-  assert.equal(durable.key,f.request.key);assert.equal(durable.id,job.id);assert.ok(f.calls.every(c=>c.op!=='sync'));
-  const count=f.calls.length;assert.equal((await f.submit(options)).result.id,job.id);assert.equal(f.calls.length,count);
-  await advanceDataPreparation(f.service,job,usage);assert.equal(job.state,'PREPARING_DATA');assert.equal(job.error,null);
-  f.setHandler(dataHandler(f));await advanceDataPreparation(f.service,job,usage);
-  assert.equal(job.state,'SUBMITTING');assert.equal(job.dataPreparationHold.state,'HELD');
+  assert.equal(durable.key,f.request.key);assert.equal(durable.id,job.id);assert.equal(durable.dispatchPending,true);
+  assert.deepEqual(f.calls,[{machine,op:'projects.workspace',args:{project:'paper',userId:f.user.id}}]);
+  const count=f.calls.length;assert.equal((await f.submit()).result.id,job.id);assert.equal(f.calls.length,count);
+  f.setHandler((_target,op)=>{assert.equal(op,'sync');return {state:'PENDING',nodeJobId:nodeId};});
   await f.start();assert.equal(job.state,'PENDING');assert.equal(f.calls.filter(c=>c.op==='sync').length,1);
   assert.equal(f.service.store.jobs.length,1);assert.equal(job.key,f.request.key);
 });
-test('owner denial never reserves a waiting UUID or makes a node write',async t=>{
-  const f=await fixture(t);f.setHandler(dataHandler(f,{forbidden:true}));
-  await assert.rejects(f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)}),e=>e.status===403);
-  assert.equal(f.service.store.jobs.length,0);assert.ok(f.calls.every(c=>!['sync','datasets.prepare','storage.lease.prepare'].includes(c.op)));
+test('workspace owner denial reserves no task and never falls back to a data catalog or scheduler write',async t=>{
+  const f=await fixture(t);
+  f.setHandler((_target,op,args)=>{
+    assert.equal(op,'projects.workspace');assert.deepEqual(args,{project:'paper',userId:f.user.id});
+    throw Object.assign(Error('project owner authorization required'),{status:403});
+  });
+  await assert.rejects(f.submit(),e=>e.status===403);
+  assert.equal(f.service.store.jobs.length,0);assert.equal(usage(f.service.store.jobs,f.user.id),0);
+  assert.deepEqual(f.calls.map(c=>c.op),['projects.workspace']);
 });
-test('an unavailable authorization list is a safe 503 with no waiting job or leaked transport detail',async t=>{
-  const f=await fixture(t),normal=dataHandler(f,{busy:true});
-  f.setHandler((target,op,args)=>{if(op==='datasets.list')throw Error('/private/node?token=secret');return normal(target,op,args);});
-  await assert.rejects(f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)}),
-    error=>error.status===503&&error.message==='数据集读取授权暂未确认。');
-  assert.equal(f.service.store.jobs.length,0);assert.ok(f.calls.every(c=>!['sync','datasets.prepare','storage.lease.prepare'].includes(c.op)));
+test('unconfirmed workspace admission reserves no task and can be retried with the same unused key',async t=>{
+  const f=await fixture(t);
+  f.setHandler(()=>{throw Object.assign(Error('workspace not confirmed'),{status:503,code:'EXECUTOR_UNCONFIRMED'});});
+  await assert.rejects(f.submit(),e=>e.status===503&&e.code==='EXECUTOR_UNCONFIRMED');
+  assert.equal(f.service.store.jobs.length,0);assert.equal(usage(f.service.store.jobs,f.user.id),0);
+  assert.deepEqual(f.calls.map(c=>c.op),['projects.workspace']);
+  f.setHandler(null);const reply=await f.submit();
+  assert.equal(reply.result.state,'SUBMITTING');assert.equal(f.service.store.jobs[0].key,f.request.key);
+  assert.deepEqual(f.calls.map(c=>c.op),['projects.workspace','projects.workspace']);
 });
-test('a deferred admission fails on a real capacity shortage, without scheduler dispatch',async t=>{
-  const f=await fixture(t);f.setHandler(dataHandler(f,{busy:true}));await f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)});
-  const job=f.service.store.jobs[0];f.setHandler(dataHandler(f,{availableBytes:0}));await advanceDataPreparation(f.service,job,usage);
-  assert.equal(job.state,'FAILED');assert.match(job.error,/容量不足/);assert.equal(usage([job],f.user.id),0);
-  assert.ok(f.calls.every(c=>c.op!=='sync'));
+test('unavailable, mismatched or nonpersistent workspace does not authorize a new task',async t=>{
+  const f=await fixture(t);
+  for(const reply of [{...workspace('paper'),state:'UNKNOWN'},workspace('other-project'),
+    {...workspace('paper'),workspace:{protocol:1,persistent:false}}]){
+    f.setHandler(()=>reply);
+    await assert.rejects(f.submit(),e=>e.status===409&&e.code==='SUBMISSION_REJECTED');
+    assert.equal(f.service.store.jobs.length,0);assert.equal(usage(f.service.store.jobs,f.user.id),0);
+  }
+  assert.deepEqual(f.calls.map(c=>c.op),Array(3).fill('projects.workspace'));
 });
-
-test('known data authorization with unknown capacity is accepted and waits without a GPU or data write',async t=>{
-  const f=await fixture(t),normal=dataHandler(f);
-  f.setHandler((target,op,args)=>{if(op==='storage.training.plan')throw Object.assign(Error('capacity read pending'),{status:503});return normal(target,op,args);});
-  const reply=await f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)});
-  assert.equal(reply.result.state,'PREPARING_DATA');assert.equal(usage(f.service.store.jobs,f.user.id),0);
-  assert.ok(f.calls.every(c=>!['sync','datasets.prepare','storage.lease.prepare'].includes(c.op)));
-  f.setHandler(normal);await advanceDataPreparation(f.service,f.service.store.jobs[0],usage);
-  assert.equal(f.service.store.jobs[0].state,'SUBMITTING');assert.equal(f.service.store.jobs[0].id,reply.result.id);
+test('client cannot select another workspace owner or grant itself administrative data access',async t=>{
+  const f=await fixture(t);
+  for(const extra of [{userId:'other'},{owner:'other'},{hostAdmin:true}])
+    await assert.rejects(f.submit(extra),e=>e.status===400);
+  assert.equal(f.service.store.jobs.length,0);assert.deepEqual(f.calls,[]);
 });
-test('a visible version owned by someone else cannot authorize waiting admission after a failed read',async t=>{
-  const f=await fixture(t),normal=dataHandler(f,{busy:true});
-  f.setHandler((target,op,args)=>op==='datasets.list'?{datasets:[{dataset:ref.dataset,ownerIds:['other'],versions:[{version:ref.version}]}]}:normal(target,op,args));
-  await assert.rejects(f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)}),e=>e.status===403);
-  assert.equal(f.service.store.jobs.length,0);assert.ok(f.calls.every(c=>c.args.hostAdmin!==true));
-});
-test('revoked waiting admission fails before reading or dispatching',async t=>{
-  const f=await fixture(t);f.setHandler(dataHandler(f,{busy:true}));
-  await f.submit({datasets:[ref],datasetReadMode:'warehouse',project:'paper',release:'c'.repeat(64)});
+test('revocation after workspace admission prevents first dispatch without acquiring any resource',async t=>{
+  const f=await fixture(t);await f.submit();
   const job=f.service.store.jobs[0],count=f.calls.length;f.user.limits={};
-  await advanceDataPreparation(f.service,job,usage);assert.equal(job.state,'FAILED');assert.match(job.error,/授权/);
+  await f.start();assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);
+  assert.equal(job.failureCode,'SUBMISSION_AUTH_REVOKED');assert.match(job.error,/授权/);
   assert.equal(f.calls.length,count);assert.equal(usage([job],f.user.id),0);
 });
 test('a lost recovery reply cannot replay without a fresh authoritative absence',async t=>{
@@ -174,7 +168,7 @@ test('first dispatch uses completed admission without repeating lock-sensitive c
   job.trainingStoragePlan={fits:true,checkedAt:new Date(0).toISOString()};
   f.setHandler((_target,op)=>{assert.equal(op,'sync');return {state:'PENDING',nodeJobId:nodeId};});
   await f.start();assert.equal(job.state,'PENDING');assert.equal(job.id,first.result.id);
-  assert.deepEqual(f.calls.map(c=>c.op),['sync']);
+  assert.deepEqual(f.calls.map(c=>c.op),['projects.workspace','sync']);
 });
 test('temporary non-dispatch keeps waiting and resumes the same UUID after more than three retries',async t=>{
   const f=await fixture(t),job=await f.original(),spec=structuredClone(job.spec);

@@ -12,21 +12,30 @@ async function fixture(){
   const dir=await mkdtemp(join(tmpdir(),'gpuq-execution-')),database=join(dir,'db'),bootstrap=join(dir,'bootstrap'),status=join(dir,'status');
   await writeFile(bootstrap,JSON.stringify({username:'admin',password}));
   await writeFile(status,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:m.id==='gpu-1'?32607:24576})),gpuq:{connected:true,observeOnly:false,schedulableIndices:[0,1],jobs:[]}}))}));
-  let remoteState='RUNNING',calls=[],offline=false;
-  const bridge=async(machine,operation,args)=>{calls.push({machine,operation,args});if(offline)throw Error('timeout');if(operation==='logs')return {text:'private-log'};return {state:remoteState,nodeJobId:'J'+args.job.id.replaceAll('-','').slice(0,12),assignedIndices:[0]};};
+  let remoteState='RUNNING',calls=[],workspaceCalls=[],offline=false;
+  const bridge=async(machine,operation,args)=>{
+    if(operation==='projects.workspace'){
+      assert.deepEqual(Object.keys(args).sort(),['project','userId']);assert.equal(args.project,'training');
+      workspaceCalls.push({machine,operation,args:structuredClone(args)});
+      return {project:args.project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
+    }
+    assert.ok(['sync','watch','cancel','logs'].includes(operation),'new workspace submissions do not prepare data or publish releases');
+    calls.push({machine,operation,args});if(offline)throw Error('timeout');if(operation==='logs')return {text:'private-log'};return {state:remoteState,nodeJobId:'J'+args.job.id.replaceAll('-','').slice(0,12),assignedIndices:[0]};
+  };
   let s=await PortalService.open(database,bootstrap,status,bridge);clearInterval(s.executionTimer);
   const admin=await s.login('admin',password);
   const member=(await s.invoke(admin.token,'users.create',{username:'alice',password})).result;
   const other=(await s.invoke(admin.token,'users.create',{username:'bob',password})).result;
   const a=await s.login('alice',password),b=await s.login('bob',password);
   const grant=(total=2,limits={'gpu-1':2,'gpu-2':2})=>s.invoke(admin.token,'policy.save',{userId:member.id,policyVersion:s.store.get(member.id).policyVersion,total,limits});
-  const submit=(more={})=>s.invoke(a.token,'jobs.submit',{machine:'gpu-1',cards:1,argv:['python','train.py'],key:randomUUID(),...more});
+  const submit=(more={})=>s.invoke(a.token,'jobs.submit',{machine:'gpu-1',project:'training',cards:1,argv:['python','train.py'],key:randomUUID(),...more});
   const settle=async()=>{await new Promise(resolve=>setImmediate(resolve));while(s.reconciling)await new Promise(resolve=>setTimeout(resolve,5));};
-  return {get s(){return s},status,admin,a,b,member,other,grant,submit,calls,setState:value=>remoteState=value,offline:value=>offline=value,settle,reopen:async()=>{await settle();s.close();s=await PortalService.open(database,undefined,status,bridge);clearInterval(s.executionTimer);},close:async()=>{await settle();s.close();await rm(dir,{recursive:true,force:true});}};
+  return {get s(){return s},status,admin,a,b,member,other,grant,submit,calls,workspaceCalls,setState:value=>remoteState=value,offline:value=>offline=value,settle,reopen:async()=>{await settle();s.close();s=await PortalService.open(database,undefined,status,bridge);clearInterval(s.executionTimer);},close:async()=>{await settle();s.close();await rm(dir,{recursive:true,force:true});}};
 }
 test('approval required, optimistic grant writes, maximum GPU access is not administrator',async()=>{
  const f=await fixture();try{
    await assert.rejects(f.submit(),/总额度/);
+   assert.equal(f.workspaceCalls.length,0);assert.equal(f.calls.length,0);
    await assert.rejects(f.s.invoke(f.a.token,'policy.full',{userId:f.member.id,policyVersion:0}),e=>e.status===403);
    await f.grant();await assert.rejects(f.s.invoke(f.admin.token,'policy.save',{userId:f.member.id,policyVersion:0,total:1,limits:{'gpu-1':1}}),e=>e.status===409);
    const r=await f.s.invoke(f.admin.token,'policy.full',{userId:f.member.id,policyVersion:1});assert.equal(r.result.total,30);assert.equal(r.result.role,'member');assert.equal(Object.keys(r.result.limits).length,4);
@@ -36,6 +45,8 @@ test('atomic concurrent reservations and idempotency do not exceed global or per
  const f=await fixture();try{
    await f.grant(2,{'gpu-1':1,'gpu-2':2});
    const key=randomUUID();const both=await Promise.all([f.submit({key}),f.submit({key})]);assert.equal(both[0].result.id,both[1].result.id);assert.equal(f.s.store.jobs.length,1);
+   assert.equal(f.workspaceCalls.length,1,'same-key retry does not repeat workspace admission');
+   assert.equal(f.s.store.jobs[0].spec.workspace,true);assert.equal(Object.hasOwn(f.s.store.jobs[0].spec,'release'),false);
    await assert.rejects(f.submit({key,argv:['python','different.py']}),e=>e.status===409);
    await assert.rejects(f.submit(),/所选机器的用卡额度/);
    const requests=await Promise.allSettled([f.submit({machine:'gpu-2'}),f.submit({machine:'gpu-2'})]);assert.equal(requests.filter(r=>r.status==='fulfilled').length,1);assert.equal(usage(f.s.store.jobs,f.member.id),2);
@@ -64,9 +75,9 @@ test('timeouts and LOST retain reservations, restart persists keys, disabled acc
    f.setState('SUCCEEDED');await f.s.reconcile();assert.equal(usage(f.s.store.jobs,f.member.id),0);
  }finally{await f.close();}
 });
-test('manual placement honors physical VRAM and rejects auto and stale/offline state',async()=>{
+test('manual placement honors physical VRAM and rejects contradictory auto and stale/offline state',async()=>{
  const f=await fixture();try{
-   await f.grant();await assert.rejects(f.submit({machine:'auto',minVramGiB:32}),e=>e.status===400);
+   await f.grant();await assert.rejects(f.submit({machineSelection:{mode:'auto'},minVramGiB:32}),e=>e.status===400);
    const j=(await f.submit({machine:'gpu-1',minVramGiB:32})).result;assert.equal(j.machine,'gpu-1');await f.settle();
    await assert.rejects(f.submit({machine:'gpu-2',minVramGiB:32}),/所选机器.*显存/);
    await writeFile(f.status,'{}');await assert.rejects(f.submit(),e=>e.status===503);
@@ -84,6 +95,7 @@ test('failed reservation persistence never dispatches; malformed UUID is rejecte
    const save=f.s.save;f.s.save=()=>{throw Error('disk-full-test');};
    await assert.rejects(f.submit(),/disk-full-test/);f.s.save=save;
    await f.settle();assert.equal(f.s.store.jobs.length,0);assert.equal(f.calls.length,0);
+   assert.equal(f.workspaceCalls.length,1,'workspace metadata read is not a native dispatch');
    await f.reopen();assert.equal(f.s.store.jobs.length,0);
  }finally{await f.close();}
 });
@@ -110,9 +122,16 @@ test('terminal identity is server-owned and root requires administrator, not ful
 
 test('terminal preparation holds including old HANDED_OFF retry cleanup across reconcile passes',async()=>{
  const f=await fixture();try{
-   await f.grant();await f.submit();await f.settle();
-   const job=f.s.store.jobs[0];job.state='FAILED';
-   job.dataPreparationHold={state:'HANDED_OFF',spec:structuredClone(job.spec)};f.s.save();
+   await f.grant();
+   // Persist a historical release job directly: the current submission API
+   // intentionally cannot create data-preparation holds or published runs.
+   const id=randomUUID(),project={project:'training',release:'a'.repeat(64)},argv=['python','train.py'];
+   const spec={id,userId:f.member.id,username:'alice',cards:1,argv,name:'train',minVramGiB:0,...project};
+   const job={id,key:randomUUID(),digest:createHash('sha256').update(JSON.stringify(['gpu-1',1,0,argv,'train',project])).digest('hex'),
+     spec,userId:f.member.id,username:'alice',machine:'gpu-1',cards:1,name:'train',...project,
+     state:'FAILED',createdAt:new Date().toISOString(),cancelRequested:false,
+     dataPreparationHold:{state:'HANDED_OFF',spec:structuredClone(spec)}};
+   f.s.store.jobs.push(job);f.s.save();
    let attempts=0;
    f.s.bridge=async(_machine,operation,args)=>{
      assert.equal(operation,'storage.lease.cancel');assert.deepEqual(args,{job:job.dataPreparationHold.spec});

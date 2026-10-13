@@ -430,11 +430,11 @@ export function executionUI(store,refresh,toast){
     // ROOT controls belong to the independently mounted maintenance section.
     for(const id of ['terminal-open','terminal-reconnect'])query('#'+id).disabled=!available||locked||publishing;
     const release=query('[name=release]');release.disabled=!project||locked||!readyReleases(info).length;
-    const target=query('[name=training-target]');if(liveWorkspace(info))target.value='current';
+    const target=query('[name=training-target]');
     const automatic=automaticTraining();target.disabled=!available||locked;
-    target.querySelector('[value=auto]').disabled=liveWorkspace(info)||info?.environmentMode!=='oci';
+    target.querySelector('[value=auto]').disabled=info?.environmentMode!=='oci';
     query('[name=training-candidates]').disabled=!automatic||locked;query('#training-candidates-field').hidden=!automatic;
-    query('#training-target-note').textContent=automatic?'从授权兼容服务器中优先选空闲卡；先准备固定项目版本和数据，再排队。开发终端不搬迁，任务选定后不自动改派。':'在当前服务器自动分配显卡；不搬运项目或切换服务器。';
+    query('#training-target-note').textContent=automatic?'只从已有该项目工作区的授权服务器中选择；不会自动复制代码、环境或数据。开发终端不搬迁，任务选定后不自动改派。':'在当前服务器自动分配显卡；不搬运项目或切换服务器。';
     const capacity=automatic?Math.max(1,...(store.data?.machines||[]).filter(m=>trainingHosts().some(h=>h.id===m.id)).map(m=>m.cards||1)):(store.data?.machines||[]).find(m=>m.id===machine)?.cards||1;
     query('[name=cards]').max=String(capacity);
     const custom=query('[name=custom-policy]'),customOn=custom.checked;
@@ -531,7 +531,7 @@ export function executionUI(store,refresh,toast){
     if(entry?.machine===machine&&entry?.info.project===project){activateProjectActivity();if(project)await explicitProjectRead(loadProjectStatus);return;}
     cancelProjectActivity();activateProjectActivity();machine=entry?.machine||focusMachine;project=entry?.info.project||'';catalog=directory.get(machine)?.projects||[];
     if(entry&&entry.info.environmentMode!=='oci')focusMachine=machine;
-    epoch++;projectBusy=false;catalogError='';restorePublication();query('[name=release]').value='';query('[name=training-target]').value=entry?.info.environmentMode==='oci'?'auto':'current';syncMachineFields();clearFileContext();renderProject();notifyContext();submitKey=crypto.randomUUID();if(project)await explicitProjectRead(loadProjectStatus);
+    epoch++;projectBusy=false;catalogError='';restorePublication();query('[name=release]').value='';query('[name=training-target]').value='current';syncMachineFields();clearFileContext();renderProject();notifyContext();submitKey=crypto.randomUUID();if(project)await explicitProjectRead(loadProjectStatus);
   }
   function ensureDirectory(){
     const owner=JSON.stringify([receiptActor(),projectMachines().map(item=>item.id)]);
@@ -690,7 +690,7 @@ export function executionUI(store,refresh,toast){
       const environmentMode='oci';
       query('#project-create-error').hidden=true;
       let result;try{result=await projectCall('projects.create',{machine:selected,project:slug,environmentMode});if(token!==currentToken())return;confirmProjectCreation(result,{project:slug,environmentMode});}catch(error){if(token===currentToken()){query('#project-create-error').hidden=false;query('#project-create-error').textContent=error.message;}throw error;}
-      machine=selected;catalog=[...(directory.get(selected)?.projects||[]).filter(item=>item.project!==slug),result];rememberCatalog(selected);project=slug;epoch++;restorePublication();query('[name=release]').value='';query('[name=training-target]').value=environmentMode==='oci'?'auto':'current';syncMachineFields();clearFileContext();catalogError='';renderProject();notifyContext();query('[name=new-project]').value='';query('#project-create').open=false;submitKey=crypto.randomUUID();toast('项目已创建。');
+      machine=selected;catalog=[...(directory.get(selected)?.projects||[]).filter(item=>item.project!==slug),result];rememberCatalog(selected);project=slug;epoch++;restorePublication();query('[name=release]').value='';query('[name=training-target]').value='current';syncMachineFields();clearFileContext();catalogError='';renderProject();notifyContext();query('[name=new-project]').value='';query('#project-create').open=false;submitKey=crypto.randomUUID();toast('项目已创建。');
     },true);return;}
     if(event.target.id!=='train-form')return;event.preventDefault();const form=new FormData(event.target);
     guarded(event.target.querySelector('[type=submit]'),async()=>{if(acceptedDraft)throw Error('此配置已提交，请先选择再次使用配置。');if(trainingUnavailable(store.data?.gpuq,trainingHosts()))throw Error('训练暂未开放');const target=assertContext();if(parsedTarget&&(target.machine!==parsedTarget.machine||project!==parsedTarget.project))throw Error('配置目标已改变，请先确认当前目标。');if(form.get('machine')!==machine)throw Error('服务器选择已改变，请核对工作台顶部后再提交。');

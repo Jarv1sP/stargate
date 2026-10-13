@@ -45,6 +45,23 @@ test('normal member get/set preserve immutable job and share one queue/job proje
   assert.equal(state.gpuq.hosts[0].tasks[0].name,result.name);assert.equal(state.gpuq.hosts[0].tasks[0].description,result.description);
   for(const hidden of ['binding','submitKey','immutable raw label'])assert.ok(!JSON.stringify(result).includes(hidden));
 });
+test('historical display changes use the physical native binding while original user intent stays unchanged',async t=>{
+  const f=await fixture(t),logical={dataset:'images',version:'a'.repeat(64)},physical={...logical,dataset:'images-replica'};
+  f.job.spec.datasets=[logical];f.job.dataPreparationHold={state:'HELD',spec:{...structuredClone(f.job.spec),datasets:[physical]}};
+  const original=structuredClone(f.job),before=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
+  await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'旧训练新显示',description:'仅修改显示',revision:before.revision});
+  assert.equal(f.calls.length,2);assert.ok(f.calls.every(call=>JSON.stringify(call.args.job)===JSON.stringify(original.dataPreparationHold.spec)));
+  assert.deepEqual(f.job,original);assert.equal(f.service.state(f.member.principal).jobs[0].name,'旧训练新显示');
+});
+test('historical native binding changes during a display read reject its late result',async t=>{
+  const f=await fixture(t),entered=deferred(),release=deferred();
+  f.job.dataPreparationHold={state:'HELD',spec:structuredClone(f.job.spec)};
+  f.hook=async()=>{entered.resolve();await release.promise;};
+  const reading=f.service.invoke(f.member.token,'tasks.display.get',f.context);await entered.promise;
+  const rejected=assert.rejects(reading,e=>e.status===409);
+  f.job.dataPreparationHold.spec={...f.job.dataPreparationHold.spec,datasets:[{dataset:'changed',version:'a'.repeat(64)}]};
+  release.resolve();await rejected;assert.equal(f.calls.length,1);assert.equal(f.service.taskDisplayViews.size,0);
+});
 test('cross-account, zero authorization, forged fields and ambiguous identities never dispatch',async t=>{
   const f=await fixture(t);f.job.userId='demo-user-999';f.job.spec.userId='demo-user-999';
   await assert.rejects(f.service.invoke(f.member.token,'tasks.display.get',f.context),e=>e.status===403);assert.equal(f.calls.length,0);

@@ -22,6 +22,7 @@ S = load('common_p0_runner', 'sandbox-runner-common-p0.py')
 P = load('common_p0_allocation', 'scheduling-policy.py')
 R = load('common_p0_memory', 'job-resources.py')
 D = load('common_p0_diagnostics', 'job-diagnostics.py')
+L = load('common_p0_local_data', 'local-data.py')
 JID = '11111111-1111-4111-8111-111111111111'
 CAPTURE = 'a' * 32
 
@@ -38,6 +39,11 @@ class CommonRunner(unittest.TestCase):
         spec_dir = self.root / ('terminals' if terminal else 'jobs'); spec_dir.mkdir()
         spec_file = spec_dir / (JID + '.json'); spec_file.write_text(json.dumps(job))
         config={'root':str(self.root),'conda':'/opt/conda'}
+        data_paths={name:self.root/name for name in ('hdd','ssd')}
+        for path in data_paths.values():
+            path.mkdir();(path/'original.txt').write_text('existing data, do not copy')
+        config['localDataDirectories']={name:str(path) for name,path in data_paths.items()}
+        personal=self.root/'personal';personal.mkdir();config['personalDataRoot']=str(personal)
         if terminal:config.update(controlRoot=str(self.root/'not-for-terminals'),gpuqArchive=str(self.root/'must-not-mount-sdk.pyz'),trainingControlProtocol=1)
         (self.root / 'node-config.json').write_text(json.dumps(config))
         runtime = self.root / 'diagnostics' / JID / CAPTURE / 'runtime'
@@ -48,6 +54,8 @@ class CommonRunner(unittest.TestCase):
         diagnostic = SimpleNamespace(start_capture=Mock(side_effect=start), finish_capture=Mock())
         guard = SimpleNamespace(check=Mock())
         mapping = SimpleNamespace(device_paths=Mock(return_value=devices or ['/dev/nvidia3', '/dev/nvidia2']))
+        local_data = SimpleNamespace(open_mounts=Mock(wraps=L.open_mounts),
+                                     open_directory=L.open_directory,personal_directory=L.personal_directory)
         if broken: diagnostic.start_capture.side_effect = RuntimeError('observer unavailable')
         captured, properties, kept, memfds, writers, stopped = [], [], [], [], [], []
         path_exists, path_read = Path.exists, Path.read_text
@@ -65,6 +73,19 @@ class CommonRunner(unittest.TestCase):
         def spawn(command, **kwargs):
             captured.append((command, kwargs))
             if command[0] == '/usr/bin/bwrap':
+                mounted={command[i+2]:int(command[i+1]) for i,flag in enumerate(command)
+                         if flag=='--ro-bind-fd' and command[i+2].startswith('/data/')}
+                self.assertEqual(set(mounted), {'/data/hdd','/data/ssd'})
+                for name,path in data_paths.items():
+                    descriptor=mounted['/data/'+name]
+                    self.assertEqual(os.fstat(descriptor).st_ino,path.stat().st_ino)
+                    self.assertIn(descriptor,kwargs['pass_fds'])
+                self.assertFalse(any(command[i+2] in mounted for i,flag in enumerate(command) if flag=='--bind-fd'))
+                private_index=command.index('/data/mine')
+                self.assertEqual(command[private_index-2],'--bind-fd')
+                private_fd=int(command[private_index-1])
+                self.assertIn(private_fd,kwargs['pass_fds'])
+                self.assertEqual(os.fstat(private_fd).st_ino,L.personal_directory(config,job['userId'],create=False).stat().st_ino)
                 info = int(command[command.index('--info-fd') + 1])
                 block = int(command[command.index('--block-fd') + 1]); kept.append(os.dup(block))
                 if fragmented_info:
@@ -87,7 +108,7 @@ class CommonRunner(unittest.TestCase):
                 stopped.append(True)
             return SimpleNamespace(wait=lambda *args, **kwargs: 42, poll=lambda: None if invalid_info else 42,kill=stop)
         try:
-            with patch.object(S, 'HERE', self.root), patch.object(S, 'local_module', side_effect=lambda name, filename: guard if filename=='platform-root-guard.py' else P if filename=='scheduling-policy.py' else R if filename=='job-resources.py' else mapping if filename=='gpu-devices.py' else diagnostic) as imported, \
+            with patch.object(S, 'HERE', self.root), patch.object(S, 'local_module', side_effect=lambda name, filename: guard if filename=='platform-root-guard.py' else P if filename=='scheduling-policy.py' else R if filename=='job-resources.py' else mapping if filename=='gpu-devices.py' else local_data if filename=='local-data.py' else diagnostic) as imported, \
                     patch.object(S, 'start_job_capture', wraps=S.start_job_capture) as capture, \
                     patch.object(S, 'project_runtime', return_value=None), \
                     patch.object(S.sys, 'argv', ['sandbox-runner.py', JID] + (['terminal'] if terminal else [])), \
@@ -99,18 +120,20 @@ class CommonRunner(unittest.TestCase):
                     patch.object(S.subprocess, 'Popen', side_effect=spawn), contextlib.redirect_stderr(io.StringIO()):
                 if invalid_info:
                     with self.assertRaisesRegex(ValueError,'child PID'):S.main()
+                    local_data.open_mounts.assert_called_once_with(config)
                     self.assertEqual(stopped,[True]);self.assertEqual(len(captured),1,'invalid info never starts networking')
                     self.assertFalse(list(self.root.glob('.gate-*')))
                     diagnostic.finish_capture.assert_not_called()
                     return
                 self.assertEqual(S.main(), 42)
+                local_data.open_mounts.assert_called_once_with(config)
                 guard.check.assert_called_once_with(self.root)
                 if terminal:
                     capture.assert_not_called(); diagnostic.start_capture.assert_not_called()
                     diagnostic.finish_capture.assert_not_called()
-                    self.assertEqual([call.args for call in imported.call_args_list],[('gpuq_platform_root_guard','platform-root-guard.py'),('gpuq_job_resources','job-resources.py')]); gpu.assert_not_called()
+                    self.assertEqual([call.args for call in imported.call_args_list],[('gpuq_platform_root_guard','platform-root-guard.py'),('gpuq_job_resources','job-resources.py'),('gpuq_local_data','local-data.py'),('gpuq_local_personal_data','local-data.py')]); gpu.assert_not_called()
                 elif not missing and not broken:
-                    self.assertEqual([call.args for call in imported.call_args_list],[('gpuq_platform_root_guard','platform-root-guard.py'),('gpuq_allocation','scheduling-policy.py'),('gpuq_gpu_devices','gpu-devices.py'),('gpuq_job_resources','job-resources.py'),('gpuq_job_diagnostics','job-diagnostics.py')])
+                    self.assertEqual([call.args for call in imported.call_args_list],[('gpuq_platform_root_guard','platform-root-guard.py'),('gpuq_allocation','scheduling-policy.py'),('gpuq_gpu_devices','gpu-devices.py'),('gpuq_job_resources','job-resources.py'),('gpuq_job_diagnostics','job-diagnostics.py'),('gpuq_local_data','local-data.py'),('gpuq_local_personal_data','local-data.py')])
                     diagnostic.finish_capture.assert_called_once_with(self.root, job, CAPTURE, 42)
                 else: diagnostic.finish_capture.assert_not_called()
                 if not terminal:

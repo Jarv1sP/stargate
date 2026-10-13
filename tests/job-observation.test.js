@@ -16,7 +16,7 @@ const fixture=()=>{
   const job={id:ID,userId:owner.id,machine:'gpu-1',nodeJobId:NODE,state:'CANCELED',cancelRequested:true,cards:1,
     checkedAt:'2026-01-01T00:00:00Z',finishedAt:'2026-01-01T00:00:00Z',spec:{id:ID,userId:owner.id,argv:['train']},
     latestAttempt:{id:'Aold',ordinal:1,state:'CANCELED',startedAt:50,finishedAt:100},
-    dataPreparationHold:{state:'RELEASED',spec:{id:ID}},assignedIndices:[],actualCards:0};
+    dataPreparationHold:{state:'RELEASED',spec:{id:ID,userId:owner.id,argv:['train']}},assignedIndices:[],actualCards:0};
   const raw={protocol:'native-observation-v1',status:'CONFIRMED',jobId:ID,userId:owner.id,nodeJobId:NODE,submitKey:ID,specVerified:true,
     state:'PENDING',nativeVersion:7,observedAt:300,latestRetry:{eventId:9,createdAt:200},
     latestAttempt:{id:'Aold',ordinal:1,state:'CANCELED',started_at:50,finished_at:100},progress:null};
@@ -116,7 +116,7 @@ test('real HTTP and downloaded CLI return observation while SQLite history remai
   clearInterval(service.executionTimer);await new Promise(resolve=>server.listen(port,'127.0.0.1',resolve));
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});});
   const login=await service.login('admin','Observation-Fixture-2026!');
-  f.job.userId=login.principal.userId;f.job.spec.userId=login.principal.userId;f.raw.userId=login.principal.userId;
+  f.job.userId=login.principal.userId;f.job.spec.userId=login.principal.userId;f.job.dataPreparationHold.spec.userId=login.principal.userId;f.raw.userId=login.principal.userId;
   service.store.jobs.push(f.job);service.save();const before=service.db.prepare('SELECT data FROM portal_state').get().data;
   const api=async operation=>{
     const r=await fetch(origin+'/api/call',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+login.token},body:JSON.stringify({operation,args:{jobId:ID}})});

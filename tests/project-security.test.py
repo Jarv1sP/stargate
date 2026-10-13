@@ -25,7 +25,7 @@ class ProjectSecurity(unittest.TestCase):
         __import__('runpy').run_path(str(Path(__file__).with_name('storage_test_helpers.py')))['isolated_platform_pin'](self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
-        for name in ('platform-root-guard.py','node-executor.py', 'scheduling-policy.py', 'project-ops.py', 'project-store.py', 'project-lifecycle.py'):
+        for name in ('platform-root-guard.py','node-executor.py', 'scheduling-policy.py', 'project-ops.py', 'project-store.py', 'project-lifecycle.py', 'local-data.py'):
             shutil.copy2(DEPLOY / name, self.root / name)
         conda = self.root / 'base'
         for name in ('bin', 'conda-meta', 'lib'):

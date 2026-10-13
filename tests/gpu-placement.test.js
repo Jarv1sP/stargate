@@ -23,7 +23,7 @@ test('shared task row retains placement, rank, progress and private notification
 });
 
 test('shared explicit rank remains queue-only while fixed placement accepts scoped request modes',()=>{
-  const base={machine:MACHINES[0].id,cards:1,argv:['python','train.py'],key:randomUUID()},scheduling={rank:'P1',yieldPolicy:'never',restartPolicy:'never',checkpointable:false};
+  const base={machine:MACHINES[0].id,project:'training',cards:1,argv:['python','train.py'],key:randomUUID()},scheduling={rank:'P1',yieldPolicy:'never',restartPolicy:'never',checkpointable:false};
   const shared={gpuIndices:[3],shared:true,vramMiB:4096};
   assert.equal(normalizeJobSubmission({...base,scheduling,placement:shared},{role:'member'}).explicit.rank,'P1');
   for(const mode of ['preempt-save','preempt-now']){
@@ -51,7 +51,7 @@ test('fixed selection is canonical; shared consent and hardware caps are explici
 });
 
 test('pinned target and sharing budget change immutable submit identity',()=>{
-  const base={machine:MACHINES[0].id,cards:2,argv:['python','train.py'],key:randomUUID()},principal={role:'member'};
+  const base={machine:MACHINES[0].id,project:'training',cards:2,argv:['python','train.py'],key:randomUUID()},principal={role:'member'};
   const a=normalizeJobSubmission({...base,placement:{gpuIndices:[2,0]}},principal),b=normalizeJobSubmission({...base,placement:{gpuIndices:[0,2]}},principal);
   assert.equal(a.digest,b.digest);assert.notEqual(a.digest,normalizeJobSubmission({...base,placement:{gpuIndices:[0,1]}},principal).digest);
   base.cards=1;const shared={gpuIndices:[3],shared:true,vramMiB:4096};
@@ -62,14 +62,16 @@ test('portal accepts explicit one-sided sharing and rejects unavailable fixed ca
   const dir=await mkdtemp(join(tmpdir(),'gpuq-placement-test-')),bootstrap=join(dir,'bootstrap'),status=join(dir,'status'),password=randomUUID()+randomUUID();
   await writeFile(bootstrap,JSON.stringify({username:'admin',password}));
   await writeFile(status,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:32768,memoryUsedMiB:8192,processes:[{pid:123,memoryUsedMiB:8192}]})),gpuq:{connected:true,observeOnly:false,capabilities:['priority-policy-v1','preempt-idle-only-v1','console-placement-v1','console-sharing-v1'],jobs:[]}}))}));
-  const calls=[],s=await PortalService.open(join(dir,'db'),bootstrap,status,async(machine,operation,args)=>{calls.push({machine,operation,args});return {state:'PENDING',assignedIndices:[]};});clearInterval(s.executionTimer);
+  const calls=[],s=await PortalService.open(join(dir,'db'),bootstrap,status,async(machine,operation,args)=>{calls.push({machine,operation,args});
+    if(operation==='projects.workspace')return {project:args.project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
+    return {state:'PENDING',assignedIndices:[]};});clearInterval(s.executionTimer);
   const settle=async()=>{await new Promise(r=>setImmediate(r));while(s.reconciling)await new Promise(r=>setTimeout(r,2));};
   t.after(async()=>{await settle();s.close();await rm(dir,{recursive:true,force:true});});
   const admin=await s.login('admin',password),member=(await s.invoke(admin.token,'users.create',{username:'alice',password})).result,user=await s.login('alice',password);
   await s.invoke(admin.token,'policy.save',{userId:member.id,policyVersion:0,total:2,limits:{[MACHINES[0].id]:2}});
-  const key=randomUUID(),input={machine:MACHINES[0].id,cards:1,argv:['python','small.py'],key,placement:{gpuIndices:[3],shared:true,vramMiB:4096}},submit=more=>s.invoke(user.token,'jobs.submit',{...input,...more});
-  const [a,b]=await Promise.all([submit({}),submit({})]);assert.equal(a.result.id,b.result.id);await settle();assert.equal(calls.length,1);
-  assert.deepEqual(calls[0].args.job.placement,{gpuIndices:[3],shared:true,vramMiB:4096,hami:false});
+  const key=randomUUID(),input={machine:MACHINES[0].id,project:'training',cards:1,argv:['python','small.py'],key,placement:{gpuIndices:[3],shared:true,vramMiB:4096}},submit=more=>s.invoke(user.token,'jobs.submit',{...input,...more});
+  const [a,b]=await Promise.all([submit({}),submit({})]);assert.equal(a.result.id,b.result.id);await settle();assert.deepEqual(calls.map(c=>c.operation),['projects.workspace','sync']);
+  assert.deepEqual(calls[1].args.job.placement,{gpuIndices:[3],shared:true,vramMiB:4096,hami:false});
   for(const placement of [{gpuIndices:[100],shared:false},{gpuIndices:[3],shared:true,vramMiB:50000},{gpuIndices:[3],shared:true,vramMiB:4096,hami:true}])await assert.rejects(submit({key:randomUUID(),placement}),e=>[409,503].includes(e.status));
   assert.equal(s.store.jobs.length,1);
 });
@@ -81,7 +83,9 @@ test('current enabled admin shared and exclusive submissions bypass personal cou
     gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:32768,memoryUsedMiB:8192})),
     gpuq:{connected:true,observeOnly:false,schedulableIndices:[],capabilities:['priority-policy-v1','preempt-idle-only-v1','console-placement-v1','console-sharing-v1'],jobs:[]}}))}));
   const calls=[],s=await PortalService.open(join(dir,'db'),bootstrap,status,async(machine,operation,args)=>{
-    calls.push({machine,operation,args});return {state:'PENDING',assignedIndices:[],queueReason:'waiting for shared VRAM budget'};
+    calls.push({machine,operation,args});
+    if(operation==='projects.workspace')return {project:args.project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
+    return {state:'PENDING',assignedIndices:[],queueReason:'waiting for shared VRAM budget'};
   });clearInterval(s.executionTimer);
   const settle=async()=>{await new Promise(r=>setImmediate(r));while(s.reconciling)await new Promise(r=>setTimeout(r,2));};
   t.after(async()=>{await settle();s.close();await rm(dir,{recursive:true,force:true});});
@@ -89,7 +93,7 @@ test('current enabled admin shared and exclusive submissions bypass personal cou
   const machine=MACHINES.find(m=>m.id==='amax-5090')||MACHINES[0];
   await s.invoke(admin.token,'policy.save',{userId:member.id,policyVersion:0,total:1,limits:{[machine.id]:1}});
   const memberSession=await s.login('alice',password),adminUser=s.store.get(s.principal(admin.token).userId);
-  const input={machine:machine.id,cards:1,argv:['python','small.py'],placement:{gpuIndices:[2],shared:true,vramMiB:4096}};
+  const input={machine:machine.id,project:'training',cards:1,argv:['python','small.py'],placement:{gpuIndices:[2],shared:true,vramMiB:4096}};
   const submit=(token,more={})=>s.invoke(token,'jobs.submit',{...input,key:randomUUID(),...more});
   const reserve=(user,target,count)=>{
     for(let index=0;index<count;index++){
@@ -101,7 +105,7 @@ test('current enabled admin shared and exclusive submissions bypass personal cou
   reserve(adminUser,machine.id,machine.cards);
   const accepted=(await submit(admin.token)).result;await settle();
   assert.equal(s.store.jobs.find(job=>job.id===accepted.id).state,'PENDING');
-  const dispatch=calls.find(call=>call.args.job.id===accepted.id);
+  const dispatch=calls.find(call=>call.operation==='sync'&&call.args.job.id===accepted.id);
   assert.equal(dispatch.operation,'sync');assert.deepEqual(dispatch.args.job.placement,{...input.placement,hami:false});
   assert.equal(dispatch.args.job.userId,adminUser.id);assert.equal(dispatch.args.job.cards,1);
   for(const target of MACHINES.filter(m=>m.id!==machine.id))reserve(adminUser,target.id,target.cards);
@@ -115,10 +119,10 @@ test('current enabled admin shared and exclusive submissions bypass personal cou
   for(const more of [{placement:{gpuIndices:[2]}},{placement:undefined,cards:machine.cards}]){
     const exclusive=(await submit(admin.token,more)).result;await settle();
     assert.equal(s.store.jobs.find(job=>job.id===exclusive.id).state,'PENDING');
-    const call=calls.find(call=>call.args.job.id===exclusive.id);assert.equal(call.operation,'sync');
+    const call=calls.find(call=>call.operation==='sync'&&call.args.job.id===exclusive.id);assert.equal(call.operation,'sync');
     assert.equal(call.args.job.cards,more.cards||1);assert.equal(call.args.job.placement?.shared||false,false);
   }
-  assert.equal(s.store.jobs.length,count+2);assert.ok(calls.every(call=>call.operation==='sync'));
+  assert.equal(s.store.jobs.length,count+2);assert.ok(calls.every(call=>['projects.workspace','sync'].includes(call.operation)));
   const smallest=MACHINES.reduce((a,b)=>a.cards<b.cards?a:b);
   await assert.rejects(submit(admin.token,{machine:smallest.id,placement:undefined,cards:smallest.cards+1}),error=>[400,409].includes(error.status)&&/卡数/.test(error.message));
   const baseline=structuredClone(s.store.users.find(user=>user.id===adminUser.id));

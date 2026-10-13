@@ -14,7 +14,7 @@ import {usage} from '../execution.mjs';
 
 const elastic={minCards:1,globalBatch:256,microBatch:8,autoExpand:true};
 const scheduling={rank:'P1',yieldPolicy:'save',restartPolicy:'on-preempt',checkpointable:true};
-const base=()=>({machine:MACHINES[0].id,cards:8,argv:['python','train.py'],key:randomUUID()});
+const base=()=>({machine:MACHINES[0].id,project:'training',cards:8,argv:['python','train.py'],key:randomUUID()});
 
 test('elastic task rows retain rank-only controls and advisory training progress together',()=>{
   const job={id:randomUUID(),name:'elastic-training',username:'alice',machine:MACHINES[0].id,state:'PENDING',
@@ -38,9 +38,9 @@ test('elastic world sizes keep an exact global batch including unsafe product ed
   assert.throws(()=>elasticAllocation({...elastic,minCards:8},8,scheduling),/至少两种/);
 });
 
-test('canonical allocation participates in identity without changing historical retries',()=>{
+test('canonical allocation participates in workspace identity without changing omitted-allocation retries',()=>{
   const input=base(),old=normalizeJobSubmission(input,{role:'member'});
-  assert.equal(old.digest,createHash('sha256').update(JSON.stringify([input.machine,8,0,input.argv,'train'])).digest('hex'));
+  assert.equal(old.digest,createHash('sha256').update(JSON.stringify([input.machine,8,0,input.argv,'train',{project:'training',workspace:true}])).digest('hex'));
   const a=normalizeJobSubmission({...input,elastic,scheduling},{role:'member'});
   assert.deepEqual(a.allowedGpuCounts,[1,2,4,8]);assert.notEqual(a.digest,old.digest);
   assert.notEqual(normalizeJobSubmission({...input,elastic:{...elastic,minCards:2},scheduling},{role:'member'}).digest,a.digest);
@@ -57,14 +57,17 @@ test('portal reserves maximum cards while reconciling reduced runs, retries and 
   const snapshot=async capabilities=>writeFile(status,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:32768})),gpuq:{connected:true,observeOnly:false,capabilities,jobs:[]}}))}));
   await snapshot(['priority-policy-v1','preempt-idle-only-v1','console-yield-v1','console-elastic-v1']);
   let state='RUNNING';const calls=[];
-  const s=await PortalService.open(join(dir,'db'),bootstrap,status,async(machine,operation,args)=>{calls.push({machine,operation,args:structuredClone(args)});return {state,nodeJobId:'Jtest',assignedIndices:state==='RUNNING'?[0,1]:[]};});clearInterval(s.executionTimer);
+  const s=await PortalService.open(join(dir,'db'),bootstrap,status,async(machine,operation,args)=>{calls.push({machine,operation,args:structuredClone(args)});
+    if(operation==='projects.workspace')return {project:args.project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
+    return {state,nodeJobId:'Jtest',assignedIndices:state==='RUNNING'?[0,1]:[]};});clearInterval(s.executionTimer);
   const settle=async()=>{await new Promise(r=>setImmediate(r));while(s.reconciling)await new Promise(r=>setTimeout(r,2));};
   t.after(async()=>{await settle();s.close();await rm(dir,{recursive:true,force:true});});
   const admin=await s.login('admin',password),member=(await s.invoke(admin.token,'users.create',{username:'alice',password})).result,user=await s.login('alice',password);
   await s.invoke(admin.token,'policy.save',{userId:member.id,policyVersion:0,total:8,limits:{[MACHINES[0].id]:8}});
   const input={...base(),elastic,scheduling},submit=more=>s.invoke(user.token,'jobs.submit',{...input,...more});
   const [a,b]=await Promise.all([submit({}),submit({})]);assert.equal(a.result.id,b.result.id);await settle();
-  assert.equal(s.store.jobs[0].actualCards,2);assert.equal(usage(s.store.jobs,member.id),8);assert.equal(calls[0].args.job.cards,8);
+  assert.equal(s.store.jobs[0].actualCards,2);assert.equal(usage(s.store.jobs,member.id),8);
+  const dispatched=calls.filter(c=>c.operation==='sync');assert.equal(dispatched.length,1);assert.equal(dispatched[0].args.job.cards,8);
   await assert.rejects(submit({key:randomUUID()}),/总额度/);await assert.rejects(submit({elastic:{...elastic,minCards:2}}),e=>e.status===409);
   state='LOST';await s.reconcile();assert.equal(usage(s.store.jobs,member.id),8);
   state='SUCCEEDED';await s.reconcile();assert.equal(usage(s.store.jobs,member.id),0);

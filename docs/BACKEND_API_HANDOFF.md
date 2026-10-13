@@ -6,6 +6,10 @@
 
 `jobs.submit.interactive:true` 申请同样的 GPU 租约，argv 必须为 `['/bin/bash','--noprofile','--norc','-i']`。运行后，原任务 ID 也是终端 ID，沿用 `terminal.open` 的 reconnect、账号范围及单写连接协议。排队不开放 PTY，不分配额外显卡；断开不停止进程，结束会话通过原任务取消路径释放 GPU。`files.get/list area:output,runId` 对新任务读取当前项目共享输出，不表示输出快照。
 
+工作区 AUTO 的 `selectionSummary.reason` 为 `local-workspace-and-resource-rank`，含固定 `selectedMachine`、观察时的 `gpuPoolAvailable` 与 `queuedJobs`。不提供旧存储准入证明，目标选择不等于 GPU 已分配。历史 `storage-fit-and-resource-rank` 只解释当时已确认的选择，不用于新任务准备。
+
+历史 `PREPARING_DATA` 不再自动准备或派发，只保留原任务的查询／取消；该阶段尚未申请 GPU，不计用卡额度。取消及终态数据收尾沿用原准备绑定的规格，确认节点释放后才清除保护记录，不重新发布或改写用户任务意图。已有运行任务的同步、取消及输出路径不变。
+
 ## 显卡故障与部分采集
 
 `gpuq.health:"degraded"` 可附固定诊断 `healthIssue:{kind:"managed-gpu-missing",indices:[1]}` 或 `{kind:"scheduler-degraded"}`。只有明确的调度器受管 GPU 缺失错误映射为前者；卡号有界且去重，不转发原始错误、UUID、路径或命令。已授权成员与管理员均可看到固定诊断，未授权、过期和失联状态不沿用旧故障结论。配套节点 `deploy/node-probe.py` 位于采集 SSH 强制命令，不属于数据存储 helper 更新；未部署时仅显示通用调度异常。

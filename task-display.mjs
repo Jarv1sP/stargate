@@ -2,7 +2,7 @@
 import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {createHash} from 'node:crypto';
 import {nativeTaskDisplay,taskDescription} from './dist/task-metadata.js';
-import {nativeTaskPresentation} from './native-task-metadata.mjs';
+import {nativeJobSpec,nativeTaskPresentation} from './native-task-metadata.mjs';
 const NODE=/^J[a-f0-9]{12}$/,REVISION=/^[a-f0-9]{64}$/;
 const displayRevision=value=>createHash('sha256').update(JSON.stringify({description:value.description,name:value.name,submitter:{name:value.submitter.name,username:value.submitter.username}})).digest('hex');
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
@@ -39,13 +39,13 @@ export async function taskDisplayCall(service,token,operation,args){
   const principal=service.principal(token),actor=service.store.get(principal.userId),policy=authorizationPolicy(actor);
   const matches=service.store.jobs.filter(j=>j.machine===args.machine&&j.nodeJobId===args.nodeJobId);
   if(matches.length>1)fail('任务关联不明确，不能编辑。',409);
-  const job=matches[0],original=job?JSON.stringify({id:job.id,machine:job.machine,nodeJobId:job.nodeJobId,userId:job.userId,spec:job.spec}):null;
+  const job=matches[0],original=job?JSON.stringify({id:job.id,machine:job.machine,nodeJobId:job.nodeJobId,userId:job.userId,spec:job.spec,nativeSpec:nativeJobSpec(job)}):null;
   const check=()=>{
     const current=service.principal(token),user=service.store.get(current.userId);
     if(service.closing||current.userId!==principal.userId||current.username!==principal.username||current.role!==principal.role||authorizationPolicy(user)!==policy)fail('账号授权已改变，请重新读取任务。',403);
     if(!user.enabled||!MACHINES.some(m=>m.id===args.machine)||!user.limits[args.machine])fail('这台机器未授权。',403);
     const now=service.store.jobs.filter(j=>j.machine===args.machine&&j.nodeJobId===args.nodeJobId);
-    if(now.length!==matches.length||job&&(now[0]!==job||JSON.stringify({id:job.id,machine:job.machine,nodeJobId:job.nodeJobId,userId:job.userId,spec:job.spec})!==original))fail('原任务关联已改变，请重新读取。',409);
+    if(now.length!==matches.length||job&&(now[0]!==job||JSON.stringify({id:job.id,machine:job.machine,nodeJobId:job.nodeJobId,userId:job.userId,spec:job.spec,nativeSpec:nativeJobSpec(job)})!==original))fail('原任务关联已改变，请重新读取。',409);
     if(job?job.userId!==user.id&&user.role!=='admin':user.role!=='admin')fail('只能查看和编辑本人任务；未关联任务仅管理员可用。',403);
     if(setting)service.assertMaintenanceAllowed?.(operation,args,current);
   };
@@ -63,7 +63,7 @@ export async function taskDisplayCall(service,token,operation,args){
     check();
     if(setting)await service.enqueue(()=>{check();service.audit(principal.username,operation,args.machine,args.nodeJobId);});
     check();
-    const request={userId:actor.id,hostAdmin:actor.role==='admin',nodeJobId:args.nodeJobId,...(job?{job:job.spec}:{}),
+    const request={userId:actor.id,hostAdmin:actor.role==='admin',nodeJobId:args.nodeJobId,...(job?{job:nativeJobSpec(job)}:{}),
       ...(setting?{name:args.name,description:args.description,revision:args.revision}:{})};
     let result;try{result=await service.bridge(args.machine,operation,request);}finally{check();}
     if(!result||result.protocol!=='task-display-edit-v1'||result.nodeJobId!==args.nodeJobId||typeof result.available!=='boolean'

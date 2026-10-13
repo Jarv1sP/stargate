@@ -8,6 +8,7 @@ import {join} from 'node:path';
 import {createServer} from 'node:http';
 import {createPortalServer} from '../portal-server.mjs';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 
 const ID='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',NODE='J0123456789ab';
 const fixture=()=>{
@@ -33,6 +34,15 @@ test('explicit completion verifies same immutable job later success without chan
   assert.equal(value.project,'research');assert.equal(value.release,'a'.repeat(64));assert.match(value.specSha256,/^[a-f0-9]{64}$/);
   assert.deepEqual(f.job,before);assert.equal(usage(f.service.store.jobs,f.owner.id),0);
   assert.deepEqual(f.calls,[['gpu-1','watch',{job:f.job.spec,expectedNodeJobId:NODE}]]);
+});
+
+test('historical physical native binding leaves the public completion digest tied to original user intent',async()=>{
+  const f=fixture(),logical={dataset:'images',version:'b'.repeat(64)},physical={...logical,dataset:'images-replica'};
+  f.job.spec.datasets=[logical];f.job.dataPreparationHold.spec={...structuredClone(f.job.spec),datasets:[physical]};
+  const before=structuredClone(f.job),value=await executionCall(f.service,f.principal,'jobs.completion',{jobId:ID});
+  assert.equal(value.completed,true);assert.equal(value.specSha256,createHash('sha256').update(JSON.stringify(f.job.spec)).digest('hex'));
+  assert.deepEqual(f.calls,[['gpu-1','watch',{job:f.job.dataPreparationHold.spec,expectedNodeJobId:NODE}]]);
+  assert.deepEqual(f.job,before);
 });
 
 test('native success alone never overrides cleanup, leases, contradictory attempt or cancellation',()=>{

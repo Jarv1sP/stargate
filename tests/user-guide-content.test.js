@@ -256,3 +256,12 @@ test('project manual agrees with the guide on verified upload resumption', () =>
   assert.match(projects, /不自动替换未完成上传/);
   assert.doesNotMatch(projects, /失败重跑 `push` 会重新传该文件|同路径重传替换未完成上传/);
 });
+
+test('retired preparation records are read/cancel only without changing running jobs',()=>{
+  assert.match(guide,/旧版“数据准备中”的任务只保留查看和取消，不再自动发布、复制或提交训练/);
+  assert.match(guide,/不占用 GPU 额度/);
+  assert.match(guide,/`gpuctl cancel JOB_ID` 取消原任务/);
+  assert.match(guide,/不复用旧提交键/);
+  assert.match(guide,/未确认释放的数据保护记录仍保留，已运行的训练不受影响/);
+  assert.doesNotMatch(guide,/未取消的准备\/等待任务可继续/);
+});

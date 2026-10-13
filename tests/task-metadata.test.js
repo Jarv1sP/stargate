@@ -7,7 +7,7 @@ import {visibleGPUQStatus} from '../gpuq-status.mjs';
 import {resourceCards} from '../dist/resources-ui.js';
 import {taskCatalog} from '../task-catalog.mjs';
 
-const args={key:randomUUID(),machine:'gpu-1',cards:2,name:'多卡 baseline',argv:['python','train.py','--secret','DO-NOT-SHARE']};
+const args={key:randomUUID(),machine:'gpu-1',project:'training',cards:2,name:'多卡 baseline',argv:['python','train.py','--secret','DO-NOT-SHARE']};
 const owner={id:'owner-a',username:'alice',name:'张三'},other={id:'owner-b',username:'bob',name:'李四'};
 function job(extra={}){return {...createSubmittedJob(normalizeJobSubmission({...args,description:'验证新数据集\n预计两小时'},{role:'member'}),owner,false),nodeJobId:'Jsame',state:'RUNNING',...extra};}
 const native=(id='Jsame')=>({id,name:'portal-wrapper',owner:'internal-user',state:'RUNNING',priority:2,gpu_count:2,assigned_gpu_indices:[0,1]});

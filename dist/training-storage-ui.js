@@ -19,7 +19,8 @@ export function trainingStorageMessage(error){
 export function trainingSelectionHTML(job){
   const summary=job?.selectionSummary;
   if(summary?.protocol!==1||!job.machine||summary.selectedMachine!==job.machine)return '';
-  const reason=summary.reason==='storage-fit-and-resource-rank'&&summary.storageVerified===true?'按存储容量、显卡和排队情况选择。':'';
+  const reason=summary.reason==='local-workspace-and-resource-rank'?'按已有工作区、显卡和排队情况选择。':
+    summary.reason==='storage-fit-and-resource-rank'&&summary.storageVerified===true?'按存储容量、显卡和排队情况选择。':'';
   const excluded=Array.isArray(summary.storageExcluded)?summary.storageExcluded.flatMap(item=>{
     const reason={'storage-insufficient':'空间不足','storage-unverified':'空间未核实'}[item?.reason];
     return typeof item?.machine==='string'&&reason?[`${item.machine} ${reason}`]:[];

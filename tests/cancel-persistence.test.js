@@ -13,9 +13,16 @@ async function fixture(t,pending=false){
   const dir=await mkdtemp(join(tmpdir(),'gpuq-main-cancel-')),database=join(dir,'db'),bootstrap=join(dir,'bootstrap'),status=join(dir,'status'),calls=[];await writeFile(bootstrap,JSON.stringify({username:'admin',password}));
   await writeFile(status,JSON.stringify({version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map(m=>({id:m.id,reachable:true,gpus:Array.from({length:m.cards},(_,index)=>({index,memoryTotalMiB:32768})),gpuq:{connected:true,observeOnly:false,jobs:[]}}))}));
   let drain=false,s,admin;
-  const bridge=async(machine,operation,args)=>{calls.push({machine,operation,args:structuredClone(args)});return {nodeJobId:'Jmain',state:operation==='cancel'?(drain?'CANCELED':'UNKNOWN'):'PENDING',assignedIndices:[]};};
+  const bridge=async(machine,operation,args)=>{
+    if(operation==='projects.workspace'){
+      assert.deepEqual(args,{project:'training',userId:'builtin-admin'});
+      return {project:args.project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
+    }
+    assert.ok(['sync','cancel'].includes(operation),'workspace tasks do not prepare data or publish releases');
+    calls.push({machine,operation,args:structuredClone(args)});return {nodeJobId:'Jmain',state:operation==='cancel'?(drain?'CANCELED':'UNKNOWN'):'PENDING',assignedIndices:[]};
+  };
   const open=async bootstrapPath=>{s=await PortalService.open(database,bootstrapPath,status,bridge);clearInterval(s.executionTimer);s.reconciling=true;admin=await s.login('admin',password);};await open(bootstrap);
-  const id=(await s.invoke(admin.token,'jobs.submit',{machine:'gpu-1',cards:1,argv:['true'],key:randomUUID()})).result.id;
+  const id=(await s.invoke(admin.token,'jobs.submit',{machine:'gpu-1',project:'training',cards:1,argv:['true'],key:randomUUID()})).result.id;
   const step=async()=>{s.reconciling=false;try{await s.reconcile();}finally{s.reconciling=true;}};if(pending)await step();
   t.after(async()=>{s.close();await rm(dir,{recursive:true,force:true});});return {get s(){return s},get admin(){return admin},id,calls,job:()=>s.store.jobs.find(j=>j.id===id),cancel:()=>s.invoke(admin.token,'jobs.cancel',{jobId:id}),step,reopen:async()=>{s.close();await open();},drained:()=>{drain=true;}};
 }

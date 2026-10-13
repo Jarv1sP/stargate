@@ -21,6 +21,7 @@ async function fixture(t){
   const result=(id,priority='normal',extra={})=>({nodeJobId:'node-'+id,state:'PENDING',assignedIndices:[],priority,schedulerPriority:policy(priority).priority,schedulerPolicy:policy(priority),priorityMutable:true,schedulerState:'QUEUED',queueReason:'waiting-for-free-gpus',...extra});
   const bridge=async(machine,operation,args)=>{
     calls.push({machine,operation,args:structuredClone(args)});
+    if(operation==='projects.workspace')return {project:args.project,state:'AVAILABLE',workspace:{protocol:1,persistent:true}};
     if(handlers.has(operation))return handlers.get(operation)(machine,args);
     const id=args.job.id;
     if(!remote.has(id))remote.set(id,result(id,args.job.priority||'normal'));
@@ -38,7 +39,7 @@ async function fixture(t){
   await s.invoke(admin.token,'policy.save',{userId:member.id,policyVersion:0,total:4,limits:{'gpu-1':4}});
   const settle=async()=>{await new Promise(resolve=>setImmediate(resolve));while(s.reconciling)await new Promise(resolve=>setTimeout(resolve,5));};
   t.after(async()=>{await settle();s.close();await rm(dir,{recursive:true,force:true});});
-  const submit=(more={},token=user.token)=>s.invoke(token,'jobs.submit',{machine:'gpu-1',cards:1,argv:['python','train.py'],key:randomUUID(),...more});
+  const submit=(more={},token=user.token)=>s.invoke(token,'jobs.submit',{machine:'gpu-1',project:'training',cards:1,argv:['python','train.py'],key:randomUUID(),...more});
   return {get s(){return s},get admin(){return admin},get user(){return user},member,calls,remote,handlers,result,settle,submit,
     snapshot:async(options={})=>{if(Object.hasOwn(options,'capabilities'))capabilities=options.capabilities;if(Object.hasOwn(options,'stale'))stale=options.stale;await snapshot();await s.refreshGPUQ();},
     reopen:async()=>{await settle();s.close();s=await PortalService.open(database,undefined,status,bridge);clearInterval(s.executionTimer);admin=await s.login('admin',password);user=await s.login(member.username,password);}
@@ -89,14 +90,14 @@ test('members can submit idle/normal but cannot submit high or alter anyone’s 
   assert.equal((await f.submit({priority:'high'},f.admin.token)).result.priority,'high');
 });
 
-test('explicit priority is part of the submission digest; old omitted-priority keys remain unchanged after restart',async t=>{
+test('explicit priority is part of the workspace digest; omitted-priority keys remain unchanged after restart',async t=>{
   const f=await fixture(t),key=randomUUID();
   const both=await Promise.all([f.submit({priority:'idle',key}),f.submit({priority:'idle',key})]);
   assert.equal(both[0].result.id,both[1].result.id);assert.equal(f.s.store.jobs.length,1);
   await assert.rejects(f.submit({priority:'normal',key}),error=>error.status===409);
   const legacyKey=randomUUID(),old=(await f.submit({key:legacyKey})).result;
   const stored=f.s.store.jobs.find(j=>j.id===old.id);
-  assert.equal(stored.digest,createHash('sha256').update(JSON.stringify(['gpu-1',1,0,['python','train.py'],'train'])).digest('hex'));
+  assert.equal(stored.digest,createHash('sha256').update(JSON.stringify(['gpu-1',1,0,['python','train.py'],'train',{project:'training',workspace:true}])).digest('hex'));
   await f.reopen();assert.equal((await f.submit({key:legacyKey})).result.id,old.id);
   await assert.rejects(f.submit({key:legacyKey,priority:'normal'}),error=>error.status===409);
   assert.equal(f.s.store.jobs.length,2);
@@ -112,7 +113,7 @@ test('malformed priority, stale snapshots and missing/malformed capabilities rej
   }
   await f.snapshot({capabilities:CAPABILITIES,stale:true});
   await assert.rejects(f.submit({priority:'idle'}),error=>error.status===503);
-  await f.settle();assert.equal(f.s.store.jobs.length,0);assert.equal(f.calls.length,0);assert.equal(usage(f.s.store.jobs,f.member.id),0);
+  await f.settle();assert.equal(f.s.store.jobs.length,0);assert.ok(f.calls.every(c=>c.operation==='projects.workspace'));assert.equal(usage(f.s.store.jobs,f.member.id),0);
 });
 
 test('legacy capability absence preserves old submission wire spec without inventing safe priority policy',async t=>{

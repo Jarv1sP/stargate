@@ -5,8 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {MACHINES} from '../dist/model.js';
 import {installTransfers} from '../transfers.mjs';
 import {bindTrainingPreparation,prepareTrainingDataset,cancelTrainingPreparations,trainingPreparationCall} from '../training-preparation.mjs';
-import {publicJob,usage} from '../execution.mjs';
-import {advanceDataPreparation} from '../dataset-preparation.mjs';
+import {publicJob,usage,installExecution} from '../execution.mjs';
 import {trainingPlan,trainingSource} from './training-storage-fixture.mjs';
 
 const from=MACHINES[0].id,machine=MACHINES[1].id,ref={dataset:'sample',version:'a'.repeat(64)};
@@ -83,31 +82,27 @@ test('legacy transfer cannot be upgraded and a caller cannot inject a public tra
     .run(id,f.user.id,f.copy.key,hash,'UNKNOWN',now,now,JSON.stringify({...payload,owner:{id:f.user.id},sourceRelease:{protocol:1,state:'UNCONFIRMED'}}));
   await assert.rejects(f.service.trainingTransferCall(f.principal,f.copy,{jobId:f.job.id,logicalReference:ref}));assert.equal(f.calls.length,0);
 });
-test('capacity changes stop preparation before writes and cancellation requires actual stop confirmation',async t=>{
-  const f=fixture(t);f.service.full=true;
-  await assert.rejects(advanceDataPreparation(f.service,f.job,usage),error=>error.code==='TRAINING_STORAGE_INSUFFICIENT');
-  assert.equal(f.calls.filter(c=>c.operation==='storage.training.prepare').length,0);
-  f.service.full=false;await prepareTrainingDataset(f.service,f.job.id,ref,ref);
+test('historical worker cancellation requires actual stop confirmation and cannot restart preparation',async t=>{
+  const f=fixture(t);
+  f.job.trainingPreparations=[{job:structuredClone(f.job.spec),planRequest:structuredClone(f.request),preparation:{
+    protocol:1,id:randomUUID(),kind:'dataset',sourceMachine:machine,targetMachine:machine,logicalReference:ref,reference:ref,
+  }}];
   f.job.state='CANCELED';f.job.cancelRequested=true;f.service.cancelUnknown=true;
   await assert.rejects(cancelTrainingPreparations(f.service,f.job),/停止尚未确认/);
+  const calls=f.calls.length;
   await assert.rejects(trainingPreparationCall(f.service,f.job.trainingPreparations[0],'datasets.prepare',{userId:f.user.id,hostAdmin:false,...ref}));
+  assert.equal(f.calls.length,calls,'a canceled historical task cannot start another preparation');
   f.service.cancelUnknown=false;await cancelTrainingPreparations(f.service,f.job);
+  assert.deepEqual(f.calls.map(c=>c.args.operation),['datasets.cancel','datasets.cancel']);
+  assert.deepEqual(f.calls[0].args,f.calls[1].args);
 });
-test('marked local preparation is wired through observation and cannot promote PREPARING or failed bytes',async t=>{
+test('historical preparation never resumes or promotes even when data and storage become READY',async t=>{
   const f=fixture(t);
-  await advanceDataPreparation(f.service,f.job,usage);
-  assert.equal(f.job.state,'PREPARING_DATA');assert.equal(usage([f.job],f.user.id),0);
-  assert.equal(f.job.trainingPreparations.length,1);
-  assert.deepEqual(f.calls.filter(c=>c.operation==='storage.training.prepare').map(c=>c.args.operation),['datasets.prepare']);
-  f.service.bridge=async(host,operation,args)=>{
-    f.calls.push({host,operation,args});
-    if(operation==='datasets.training.status')return trainingSource(host,args,{bytes:30,files:2});
-    if(operation==='storage.training.plan')return trainingPlan(host,args);
-    if(operation==='datasets.status')return {...ref,state:'READY'};
-    throw Error('unexpected write after READY');
-  };
-  await advanceDataPreparation(f.service,f.job,usage);
-  assert.equal(f.job.state,'SUBMITTING');assert.equal(f.calls.filter(c=>c.operation==='storage.training.prepare').length,1);
+  f.service.ready=true;const before=structuredClone(f.job);
+  installExecution(f.service,f.service.bridge);clearInterval(f.service.executionTimer);
+  for(let n=0;n<3;n++)await f.service.reconcile();
+  assert.deepEqual(f.job,before);assert.deepEqual(f.calls,[]);assert.equal(usage([f.job],f.user.id),0);
+  assert.match(publicJob(f.job).queueReason,/取消.*重新提交/);
 });
 test('lost or null transfer context cannot downgrade a durable marked intent to legacy',async t=>{
   for(const marker of ['missing','null']){
