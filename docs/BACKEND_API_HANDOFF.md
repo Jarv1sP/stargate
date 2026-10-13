@@ -482,3 +482,11 @@ Portal 只调用现有字面量 `datasets.capacity`，并行、有 5 秒读取�
 读取总预算为 40 秒，单次节点读取最多 27 秒，并在重查和返回前核对授权。
 取消、提交和资源释放不会因此自动重放。网页保留当前账号同一作业最后读到的日志，
 暂时读取失败只更新查询状态，切换账号时清除这些日志。
+
+# 定向公告
+
+`community.posts.create/update` 的公告可带 `popup:boolean`、`audience:{type:"all"}`、`audience:{type:"users",userIds:[...]}` 或 `audience:{type:"role",role:"member"|"admin"}`。只允许管理员设置；默认全部可见、不开弹窗。指定账号须存在，最多 200 人。沿用原 UUID 去重和 revision 更新条件。普通帖子不接受公告字段。
+
+`state.announcements={version:1,pending:[{id,revision}]}` 仅返回当前接收者未确认的弹窗公告（最多 10 个）。`community.announcements.ack {id,revision}` 写入账号级回执并返回 `{announcements}`，相同版本可重试，过期版本返回 409。确认后后续公告进入 pending；更新内容或其他帖子字段产生新 revision，重新提示。删除公告一并删除回执。
+
+受众过滤在列表分页前执行，覆盖详情、回复读取和回复修改；管理员可管理全部公告，但 pending 仍按真实受众过滤。非管理员不返回其他接收者名单。旧数据库增量添加 audience_json、popup 和独立回执表，不转换历史公告为弹窗。
