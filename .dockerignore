@@ -1,6 +1,7 @@
 **
 !dist/**
 !*.mjs
+!tasks/**
 !proto/clouddrive-pilot.proto
 !package.json
 !package-lock.json

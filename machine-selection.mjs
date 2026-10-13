@@ -4,16 +4,16 @@ import {yieldCapable} from './dist/scheduling-policy.js';
 import {personalCardQuotaExempt} from './job-submission.mjs';
 
 const fail=(message,status=409)=>{throw Object.assign(Error(message),{status});};
-// Admission only: every operation here is read-only. A chosen target is stored
-// with the job before project/data workers may start. Queuing never reselects it.
-export async function selectMachine(service,user,request,priorityCapable,usage){
+// Read-only ranking of existing workspaces, never copying or allocating GPUs.
+// The task stores one target before node sync; queuing never reselects it.
+export async function selectMachine({store,refreshGPUQ,bridge,maintenanceFor,isClosing},user,request,priorityCapable,usage){
   const policy=authorizationPolicy(user),check=()=>{
-    if(service.closing||authorizationPolicy(service.store.get(user.id))!==policy)fail('账号授权已改变，请重试；未提交训练。',403);
+    if(isClosing?.()||authorizationPolicy(store.get(user.id))!==policy)fail('账号授权已改变，请重试；未提交训练。',403);
   };
-  await service.refreshGPUQ();check();
-  if(service.gpuq?.stale!==false)fail('机器状态已过期，暂不接受自动选机。',503);
-  const hosts=service.gpuq.hosts;
-  const authorized=MACHINES.filter(m=>user.limits[m.id]>0&&hosts.find(h=>h.id===m.id)?.reachable===true&&!service.maintenanceFor?.(m.id));
+  const gpuq=await refreshGPUQ();check();
+  if(gpuq?.stale!==false)fail('机器状态已过期，暂不接受自动选机。',503);
+  const hosts=gpuq.hosts;
+  const authorized=MACHINES.filter(m=>user.limits[m.id]>0&&hosts.find(h=>h.id===m.id)?.reachable===true&&!maintenanceFor?.(m.id));
   const allowed=request.machineSelection.candidates;
   const eligible=authorized.filter(m=>{
     const h=hosts.find(h=>h.id===m.id),gpus=h.gpus||[],q=h.gpuq;
@@ -29,7 +29,7 @@ export async function selectMachine(service,user,request,priorityCapable,usage){
   });
   if(!eligible.length)fail('没有已授权、健康且满足卡数、显存和调度能力的候选服务器。');
   const choices=(await Promise.all(eligible.map(async m=>{
-    const local=await service.bridge(m.id,'projects.list',{userId:user.id});
+    const local=await bridge(m.id,'projects.list',{userId:user.id});
     check();
     if(!local.projects?.some(p=>p.project===request.project.project&&p.environmentMode==='oci'))return null;
     const host=hosts.find(h=>h.id===m.id),queue=host.gpuq.jobs||[];
@@ -43,11 +43,11 @@ export async function selectMachine(service,user,request,priorityCapable,usage){
     const minimum=request.allowedGpuCounts?.[0]??request.cards;
     // Submissions prepared since this collector snapshot are not free capacity.
     // This is only a conservative ranking hint, never a second GPU allocator.
-    const notObserved=service.store.jobs.filter(j=>j.machine===m.id&&['PREPARING_DATA','SUBMITTING','PENDING','STARTING'].includes(j.state)&&
+    const notObserved=store.jobs.filter(j=>j.machine===m.id&&['PREPARING_DATA','SUBMITTING','PENDING','STARTING'].includes(j.state)&&
       !j.cancelRequested&&!queue.some(native=>native.id===j.nodeJobId));
     const pendingCards=notObserved.reduce((sum,j)=>sum+(j.cards||0),0);
     const quotaReady=personalCardQuotaExempt(user,request)||
-      usage(service.store.jobs,user.id)+request.cards<=user.total&&usage(service.store.jobs,user.id,m.id)+request.cards<=user.limits[m.id];
+      usage(store.jobs,user.id)+request.cards<=user.total&&usage(store.jobs,user.id,m.id)+request.cards<=user.limits[m.id];
     const freeEnough=freeCards-pendingCards>=minimum;
     return {machine:m.id,waiting:waiting+notObserved.length,quotaReady,freeEnough};
   }))).filter(Boolean);check();
@@ -55,7 +55,7 @@ export async function selectMachine(service,user,request,priorityCapable,usage){
   choices.sort((a,b)=>Number(b.quotaReady)-Number(a.quotaReady)||Number(b.freeEnough)-Number(a.freeEnough)||
     a.waiting-b.waiting||a.machine.localeCompare(b.machine));
   const chosen=choices[0];
-  if(service.maintenanceFor?.(chosen.machine))fail('选中的服务器刚进入维护，请重新提交；未启动准备。');
+  if(maintenanceFor?.(chosen.machine))fail('选中的服务器刚进入维护，请重新提交；未启动准备。');
   return {machine:chosen.machine,selectionSummary:{protocol:1,selectedMachine:chosen.machine,
     reason:'local-workspace-and-resource-rank',gpuPoolAvailable:chosen.freeEnough,queuedJobs:chosen.waiting}};
 }

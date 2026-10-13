@@ -1,5 +1,4 @@
 import {archiveUploadSpecification} from './dist/dataset-upload.js';
-import net from 'node:net';
 import {setTimeout as readDelay} from 'node:timers/promises';
 import {authorizationPolicy,MACHINES} from './dist/model.js';
 import {taskIdentity,nativeTaskDisplay} from './dist/task-metadata.js';
@@ -7,23 +6,21 @@ import {nativeJobRequest} from './native-task-metadata.mjs';
 import {applyJobFeedback,jobTiming} from './dist/job-progress.js';
 import {maintainTaskNotes} from './community.mjs';
 import {projectCall,projectReference,validateProjectFile,UUID} from './projects.mjs';
-import {yieldCapable} from './dist/scheduling-policy.js';
-import {normalizeJobSubmission,createSubmittedJob,datasetReferences,personalCardQuotaExempt} from './job-submission.mjs';
+import {datasetReferences,personalCardQuotaExempt} from './job-submission.mjs';
+import {submitTask,SUBMISSION_CHECK_MESSAGE} from './tasks/submit.mjs';
 import {snapshotSyncCall} from './snapshot-sync.mjs';
-import {elasticCapable,placementCapable} from './dist/gpu-allocation.js';
 import {datasetCatalogCall,datasetListView,createDatasetRemovalGuard,assertDatasetReadAccess} from './dataset-catalog.mjs';
 import {datasetStorageOverviewCall} from './dataset-storage-overview.mjs';
 import {datasetFilesCall} from './dataset-files.mjs';
 import {installDatasetReplication} from './dataset-replication.mjs';
-import {selectMachine} from './machine-selection.mjs';
 import {trainingDatasetCapabilities} from './training-datasets.mjs';
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 export {datasetReferences} from './job-submission.mjs';
+export {bridgeClient} from './execution-bridge.mjs';
 
 export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
 export const PRIORITIES=new Set(['idle','normal','high']);
 export const SUBMISSION_SAFE_WINDOW_MS=120000;
-const SUBMISSION_CHECK_MESSAGE='正在确认节点状态（自动重查中）';
 const submissionError=job=>Date.now()-Date.parse(job.dispatchStartedAt||job.createdAt)>=SUBMISSION_SAFE_WINDOW_MS&&job.submissionReconciliation?.lastReason
   ?`节点尚未确认派发（${job.submissionReconciliation.lastReason}），正在自动核对。`:SUBMISSION_CHECK_MESSAGE;
 const submissionDelay=attempt=>Math.min(60000,15000*2**Math.min(attempt,2));
@@ -106,49 +103,6 @@ async function firstDispatch(service,job){
     // before sending: a lost reply or restart cannot reinterpret an attempt as
     // a safely retractable reservation or stop a possibly running experiment.
     return {dispatched:true,response:service.bridge(current.machine,'sync',nativeJobRequest(service,current))};
-  });
-}
-export function bridgeClient(socketPath){
-  return (machine,operation,args,options={})=>new Promise((resolve,reject)=>{
-    const socket=net.createConnection(socketPath);let raw='',settled=false;
-    const boundedRead=['logs','watch','diagnostics'].includes(operation),signal=boundedRead?options.signal:undefined;
-    const timeoutMs=boundedRead&&Number.isInteger(options.rpcTimeoutMs)?Math.max(1,Math.min(32000,options.rpcTimeoutMs)):32000;
-    let timer;
-    const finish=(error,result)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);error?reject(error):resolve(result);};
-    const unavailable=()=>Object.assign(Error('节点执行桥暂时不可用；操作结果未确认，请查询原任务状态。'),{status:503,code:'EXECUTOR_UNAVAILABLE'});
-    const timeout=()=>Object.assign(Error('节点响应超时；操作结果未确认，请查询原任务状态。'),{status:504,code:'EXECUTOR_TIMEOUT'});
-    const abort=()=>socket.destroy(signal.reason||Object.assign(Error('任务查询已取消。'),{status:499}));
-    signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted){abort();return;}
-    // A bridge restart is infrastructure unavailability, not a bad user
-    // request. Never reconnect/replay here: input or a mutation may be sent.
-    // This is an elapsed deadline, not merely an inactivity timeout: partial
-    // bytes cannot keep an abandoned remote query alive indefinitely.
-    timer=setTimeout(()=>socket.destroy(timeout()),timeoutMs);
-    socket.setTimeout(timeoutMs,()=>socket.destroy(timeout()));
-    socket.on('connect',()=>socket.end(JSON.stringify({machine,operation,args})+'\n'));
-    socket.on('data',part=>{raw+=part;if(Buffer.byteLength(raw)>2_000_000)socket.destroy(Object.assign(Error('节点执行桥响应过大；操作结果未确认。'),{status:502}));});
-    socket.on('error',error=>finish(Number.isInteger(error.status)?error:unavailable()));
-    socket.on('end',()=>{
-      if(!raw)return finish(unavailable());
-      let data;
-      try{data=JSON.parse(raw);if(!data||typeof data!=='object'||Array.isArray(data)||typeof data.ok!=='boolean')throw Error();}
-      catch{return finish(Object.assign(Error('节点执行桥响应不完整；操作结果未确认。'),{status:502}));}
-      // Native domain refusals keep their existing semantics, never become a
-      // transient transport error and never trigger an implicit second write.
-      if(!data.ok){
-        if(['storage.training.plan','datasets.training.status'].includes(operation)&&data.code==='TRAINING_ADMISSION_BUSY'&&data.status===503)
-          return finish(Object.assign(Error('数据正在使用，请稍后用原提交键重试；未提交训练。'),{status:503,code:'TRAINING_ADMISSION_BUSY'}));
-        const transports={NODE_TRANSPORT_BUSY:[503,'节点连接查询繁忙；请稍后查询原状态。'],NODE_CONNECT_FAILED:[503,'节点连接暂时失败；操作结果未确认，请查询原状态。'],NODE_RESPONSE_TIMEOUT:[504,'节点处理超时；操作结果未确认，请查询原状态。'],NODE_SSH_AUTH_FAILED:[502,'节点 SSH 身份校验失败，请联系管理员；原操作不会自动重派。'],NODE_SSH_HOSTKEY_FAILED:[502,'节点 SSH 主机密钥校验失败，请联系管理员；原操作不会自动重派。'],NODE_RESPONSE_INVALID:[502,'节点响应协议异常；操作结果未确认，请查询原状态。']};
-        const known=Object.hasOwn(transports,data.code)?transports[data.code]:null;
-        if(known&&data.status===known[0])return finish(Object.assign(Error(known[1]),{status:known[0],code:data.code}));
-        // A fixed training entry can fail before invoking the operation. Its
-        // explicit uncertainty is not proof that a published release is absent.
-        if(data.outcomeUnconfirmed===true)return finish(Object.assign(Error('节点操作结果未确认，请稍后查询原状态；不会自动重试。'),{status:503,code:'EXECUTOR_UNCONFIRMED'}));
-        return finish(Error(data.error||'节点操作失败'));
-      }
-      finish(null,data.result);
-    });
-    socket.on('close',()=>{if(!settled)finish(unavailable());});
   });
 }
 export function installExecution(service,bridge){
@@ -582,58 +536,14 @@ export async function executionCall(service,principal,operation,args,readContext
     return service.bridge(args.machine,operation,{...args,userId:user.id,username:user.username,hostAdmin:args.hostAdmin===true});
   }
   if(operation==='jobs.submit'){
-    // Only explicit admission refusals before persistence prove no submission.
-    const rejectSubmission=(message,status)=>fail(message,status,'SUBMISSION_REJECTED');
-    const request=normalizeJobSubmission(args,principal);
-    const {project,explicit,digest,minVramGiB:min}=request;
-    const previous=service.store.jobs.find(j=>j.userId===user.id&&j.key===request.key);
-    if(previous){
-      if(previous.digest!==digest)rejectSubmission('同一提交键不能用于不同任务。',409);
-      if(previous.state==='FAILED'&&previous.notSubmitted===true&&previous.failureCode==='SUBMISSION_NOT_DISPATCHED'&&!previous.nodeJobId&&!previous.cancelRequested){
-        previous.state='SUBMITTING';previous.dispatchPending=false;previous.error=SUBMISSION_CHECK_MESSAGE;
-        delete previous.notSubmitted;delete previous.failureCode;delete previous.finishedAt;
-        previous.submissionReconciliation={...previous.submissionReconciliation,state:'CHECKING',nextCheckAt:new Date(0).toISOString()};
-        service.audit(principal.username,'jobs.submit',previous.id,'recover-confirmed-non-dispatch');service.save();
-      }
-      return jobView(previous);
-    }
-    if(service.store.jobs.length>=5000)rejectSubmission('任务历史达到归档上限，请联系管理员归档后提交。',503);
-    if(request.cards>user.total)rejectSubmission('任务卡数超出跨机器用卡总额度。',409);
-    if(request.machineSelection){
-      try{Object.assign(request,await selectMachine(service,user,request,priorityCapable,usage));}
-      catch(error){error.code='SUBMISSION_REJECTED';throw error;}
-    }
-    authorizedMachine(request.machine);
-    await service.ociProjectAdmission?.(request.machine,user.id,project.project);
-    const prepared=await service.bridge(request.machine,'projects.workspace',{project:project.project,userId:user.id});
-    if(prepared?.project!==project.project||prepared.state!=='AVAILABLE'||prepared.workspace?.persistent!==true)
-      rejectSubmission('项目工作区尚未准备完成，未占用 GPU。',409);
-    if(request.cards>user.limits[request.machine])rejectSubmission('任务卡数超出所选机器的用卡额度；不会自动切换服务器。',409);
-    await service.refreshGPUQ();
-    if(!service.gpuq||service.gpuq.stale)rejectSubmission('机器状态已过期，暂不接受新任务。',503);
-    const host=service.gpuq.hosts.find(h=>h.id===request.machine);
-    if(request.elastic&&!elasticCapable(host))rejectSubmission('节点未确认弹性分配和训练控制通道，未提交任务。',503);
-    if(request.placement){
-      if(!placementCapable(host,request.placement))rejectSubmission('节点尚未确认指定显卡/共享或 HAMi 能力，未提交任务。',503);
-      const selected=request.placement.gpuIndices.map(index=>host.gpus.find(g=>g.index===index));
-      if(selected.some(g=>!g||g.memoryTotalMiB<min*1024-512)||request.placement.shared&&selected[0].memoryTotalMiB<request.placement.vramMiB)rejectSubmission('指定显卡不存在或不满足显存要求。',409);
-    }
-    if(!host?.reachable||!host.gpuq.connected||host.gpuq.observeOnly||host.gpus.filter(g=>g.memoryTotalMiB>=min*1024-512).length<request.cards)rejectSubmission('所选机器当前无法执行，或不满足卡数/显存条件；不会自动切换服务器。',409);
-    const prioritySupported=priorityCapable(host);
-    if(explicit&&(!prioritySupported||!yieldCapable(host)))rejectSubmission('节点未接通独立让位与 checkpoint 控制通道；未提交任务。',503);
-    if(explicit?.mode&&explicit.mode!=='queue'&&!host.gpuq.capabilities.includes('preempt-opt-in-only-v1'))rejectSubmission('节点尚未接通请求模式的主动让位范围限制。',503);
-    if(request.priorityProvided&&!prioritySupported)rejectSubmission('所选机器尚未确认安全优先级功能，未提交任务；请刷新或联系管理员升级。',503);
-    if(authorizationPolicy(service.store.get(user.id))!==authorizationPolicy(user)||service.maintenanceFor?.(request.machine))
-      rejectSubmission('账号授权或机器维护状态已改变；未提交训练。',409);
-    if(!personalCardQuotaExempt(user,request)){
-      if(usage(service.store.jobs,user.id)+request.cards>user.total)rejectSubmission('超出跨机器用卡总额度。',409);
-      if(usage(service.store.jobs,user.id,request.machine)+request.cards>user.limits[request.machine])rejectSubmission('超出所选机器的用卡额度。',409);
-    }
-    const job=createSubmittedJob(request,user,prioritySupported),{id}=job;
-    service.db.exec('BEGIN IMMEDIATE');
-    try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
-    catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==id);throw e;}
-    setImmediate(()=>service.reconcile().catch(()=>{}));return jobView(job);
+    return jobView(await submitTask(principal,user,args,{
+      store:service.store,db:service.db,save:()=>service.save(),audit:(...entry)=>service.audit(...entry),
+      bridge:(...request)=>service.bridge(...request),
+      refreshGPUQ:async()=>{await service.refreshGPUQ();return service.gpuq;},
+      ociProjectAdmission:service.ociProjectAdmission?.bind(service),
+      maintenanceFor:machine=>service.maintenanceFor?.(machine),isClosing:()=>service.closing,
+      reconcile:()=>service.reconcile(),priorityCapable,usage,
+    }));
   }
   if(operation==='jobs.priority'){
     if(principal.role!=='admin')fail('调整排队优先级仅管理员可用。',403);

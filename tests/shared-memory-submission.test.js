@@ -4,7 +4,7 @@ import {normalizeJobSubmission,createSubmittedJob} from '../job-submission.mjs';
 import {MACHINES} from '../dist/model.js';
 
 const user={id:'demo-user-1',username:'test',role:'member'};
-const args={machine:MACHINES[0].id,cards:1,argv:['true'],key:'11111111-1111-4111-8111-111111111111'};
+const args={machine:MACHINES[0].id,project:'vision',cards:1,argv:['true'],key:'11111111-1111-4111-8111-111111111111'};
 
 test('optional RAM cap persists in the immutable spec and retry identity',()=>{
   const old=normalizeJobSubmission(args,user);

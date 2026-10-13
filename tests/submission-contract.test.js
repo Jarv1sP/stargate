@@ -37,16 +37,18 @@ test('standalone CLI entry point still runs through the installed symlink',async
   assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/GPUQ/);
 });
 
-test('one submission normalizer preserves persisted legacy digest layouts',()=>{
-  const base={machine:MACHINES[0].id,cards:2,argv:['python','train.py'],key:randomUUID()},principal={role:'admin'};
-  const cases=[{}, {priority:'idle'}, {project:'vision',release:'a'.repeat(64)}, {datasets:[{dataset:'coco',version:'b'.repeat(64)}]}, {scheduling:{rank:'P1',yieldPolicy:'save',restartPolicy:'on-preempt',checkpointable:true}}];
+test('one submission normalizer binds the persistent workspace and refuses retired new-submission fields',()=>{
+  const base={machine:MACHINES[0].id,project:'vision',cards:2,argv:['python','train.py'],key:randomUUID()},principal={role:'admin'};
+  const cases=[{}, {priority:'idle'}, {scheduling:{rank:'P1',yieldPolicy:'save',restartPolicy:'on-preempt',checkpointable:true}}];
   for(const extra of cases){
-    const request=normalizeJobSubmission({...base,...extra},principal),identity=[base.machine,2,0,base.argv,'train'];
-    if(extra.datasets)identity.push(extra.datasets);if(extra.project)identity.push({project:extra.project,release:extra.release});
+    const request=normalizeJobSubmission({...base,...extra},principal),identity=[base.machine,2,0,base.argv,'train',{project:'vision',workspace:true}];
     if(extra.priority)identity.push({priority:extra.priority});if(extra.scheduling)identity.push({scheduling:extra.scheduling});
     assert.equal(request.digest,createHash('sha256').update(JSON.stringify(identity)).digest('hex'));
   }
-  const inherited=Object.assign(Object.create({machine:base.machine}),{cards:base.cards,argv:base.argv,key:base.key});
+  for(const extra of [{release:'a'.repeat(64)}, {datasets:[{dataset:'coco',version:'b'.repeat(64)}]}, {datasetReadMode:'warehouse'}, {prepareData:true}])
+    assert.throws(()=>normalizeJobSubmission({...base,...extra},principal),/提交参数/);
+  assert.throws(()=>normalizeJobSubmission({...base,project:undefined},principal),/项目/);
+  const inherited=Object.assign(Object.create({machine:base.machine}),{project:base.project,cards:base.cards,argv:base.argv,key:base.key});
   assert.throws(()=>normalizeJobSubmission(inherited,principal));
 });
 
@@ -56,7 +58,10 @@ test('a project without a release runs its live workspace and never silently mov
   assert.deepEqual(request.project,{project:'vision',workspace:true});
   const job=createSubmittedJob(request,{id:'demo-user-1',username:'alice'},true);
   assert.equal(job.spec.workspace,true);assert.equal(Object.hasOwn(job.spec,'release'),false);
-  assert.throws(()=>normalizeJobSubmission({...args,machine:'auto'},{role:'member'}),/跨机/);
+  const automatic=normalizeJobSubmission({...args,machine:'auto'},{role:'member'});
+  assert.equal(automatic.machine,'auto');assert.deepEqual(automatic.machineSelection,{mode:'auto'});
+  assert.deepEqual(automatic.project,{project:'vision',workspace:true});
+  assert.equal(args.machine,MACHINES[0].id);
   assert.throws(()=>normalizeJobSubmission({...args,workspace:true},{role:'member'}),/提交参数/);
 });
 
@@ -73,14 +78,16 @@ test('GPU shell is a normal scheduled workspace job, not an unscheduled terminal
 });
 
 test('validated request is independent of caller mutations and has one job/spec constructor',()=>{
-  const args={machine:MACHINES[0].id,cards:1,argv:['python','train.py'],key:randomUUID(),scheduling:{rank:'P1'},datasets:[{dataset:'a',version:'a'.repeat(64)}]};
+  const args={machine:MACHINES[0].id,project:'vision',cards:1,argv:['python','train.py'],key:randomUUID(),scheduling:{rank:'P1'},placement:{gpuIndices:[0]}};
   const request=normalizeJobSubmission(args,{role:'member'}),digest=request.digest;
-  args.argv[0]='unvalidated';args.scheduling.rank='P4';args.datasets[0].version='b'.repeat(64);
+  args.argv[0]='unvalidated';args.scheduling.rank='P4';args.placement.gpuIndices[0]=1;args.project='other-project';
   const job=createSubmittedJob(request,{id:'alice',username:'alice'},true,{id:'fixed-id',now:'fixed-time'});
-  assert.deepEqual(job.spec.argv,['python','train.py']);assert.equal(job.spec.scheduling.rank,'P1');assert.equal(job.spec.datasets[0].version,'a'.repeat(64));
+  assert.deepEqual(job.spec.argv,['python','train.py']);assert.equal(job.spec.scheduling.rank,'P1');
+  assert.deepEqual(job.spec.placement.gpuIndices,[0]);assert.equal(job.spec.project,'vision');assert.equal(job.spec.workspace,true);
+  assert.equal(Object.hasOwn(job.spec,'datasets'),false);assert.equal(Object.hasOwn(job.spec,'release'),false);
   assert.equal(job.digest,digest);assert.equal(job.id,'fixed-id');assert.equal(job.spec.id,job.id);assert.equal(job.createdAt,'fixed-time');
   assert.equal(Object.hasOwn(job.spec,'preemptIdleOnly'),false);
-  const legacy=normalizeJobSubmission({...args,scheduling:undefined,datasets:undefined},{role:'member'});
+  const legacy=normalizeJobSubmission({...args,scheduling:undefined},{role:'member'});
   const old=createSubmittedJob(legacy,{id:'alice',username:'alice'},false);
   assert.equal(Object.hasOwn(old.spec,'priority'),false);assert.equal(old.priority,null);
 });

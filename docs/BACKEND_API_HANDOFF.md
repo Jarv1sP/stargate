@@ -2,7 +2,7 @@
 
 ## 持久工作区（需配套节点升级）
 
-`jobs.submit` 带 project、不带 release 时直接运行当前工作区；后端派生 `workspace:true`，客户端不可伪造该内部字段。`projects.workspace {machine,project}` 原地接入已有目录，返回 `state:AVAILABLE, workspace:{protocol:1,persistent:true}`。不复制代码、不提交镜像、不另建任务 HOME/输出；旧任务规格和结果路径不修改。默认运行位置是项目所在节点，不自动迁移可写环境。
+新 `jobs.submit` 必须选择 project，直接运行当前工作区；不接受 release、datasets、datasetReadMode 或 prepareData。后端派生 `workspace:true`，客户端不可伪造该内部字段。`projects.workspace {machine,project}` 原地接入已有目录，返回 `state:AVAILABLE, workspace:{protocol:1,persistent:true}`。不复制代码、不提交镜像、不另建任务 HOME/输出；旧任务规格和结果路径不修改。默认运行位置是项目所在节点；自动选机只选择已有工作区的节点，不自动迁移可写环境或数据。下文涉及固定发布、缓存准备的旧协议仅用于辨认历史记录，不是新训练的前置流程。
 
 `jobs.submit.interactive:true` 申请同样的 GPU 租约，argv 必须为 `['/bin/bash','--noprofile','--norc','-i']`。运行后，原任务 ID 也是终端 ID，沿用 `terminal.open` 的 reconnect、账号范围及单写连接协议。排队不开放 PTY，不分配额外显卡；断开不停止进程，结束会话通过原任务取消路径释放 GPU。`files.get/list area:output,runId` 对新任务读取当前项目共享输出，不表示输出快照。
 

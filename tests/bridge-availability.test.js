@@ -4,7 +4,12 @@ import net from 'node:net';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {bridgeClient} from '../execution.mjs';
+import {bridgeClient} from '../execution-bridge.mjs';
+import {bridgeClient as existingBridgeClient} from '../execution.mjs';
+
+test('existing execution callers share the standalone bridge implementation',()=>{
+ assert.equal(existingBridgeClient,bridgeClient);
+});
 
 test('admission BUSY is typed only for the two read RPCs and never replays a request',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'training-busy-bridge-')),path=join(dir,'bridge.sock');
