@@ -51,6 +51,16 @@ export class SqliteTrainingQueue {
     });
   }
 
+  /** Recover an enqueue acknowledgement, not a new enqueue or current job state. */
+  request(actor, requestId, now) {
+    return readTransaction(this.database, () => {
+      const request = this.requests.getWithinTransaction(actor, requestId, now);
+      if (request === null) return null;
+      const row = this.database.prepare('SELECT sequence,queued_at_ms FROM v2_training_queue WHERE job_id=?').get(request.jobId);
+      return row ? {request, sequence: row.sequence, queuedAtMs: row.queued_at_ms} : null;
+    });
+  }
+
   /** Only before dispatch preparation; later cancellation needs node lifecycle confirmation. */
   cancel(actor, jobId, now) {
     return transaction(this.database, () => {

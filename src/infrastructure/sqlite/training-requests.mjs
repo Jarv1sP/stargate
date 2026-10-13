@@ -60,13 +60,15 @@ export class SqliteTrainingRequests {
   }
 
   get(actor, requestId, now) {
-    return readTransaction(this.database, () => {
-      this.#authorize(actor, now);
-      const row = this.database.prepare('SELECT * FROM v2_training_requests WHERE request_id=?').get(requestId);
-      if (!row) return null;
-      if (row.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
-      return receipt(row);
-    });
+    return readTransaction(this.database, () => this.getWithinTransaction(actor, requestId, now));
+  }
+
+  getWithinTransaction(actor, requestId, now) {
+    this.#authorize(actor, now);
+    const row = this.database.prepare('SELECT * FROM v2_training_requests WHERE request_id=?').get(requestId);
+    if (!row) return null;
+    if (row.account_id !== actor.id) throw new ApplicationError('FORBIDDEN');
+    return receipt(row);
   }
 
   /** Internal dispatcher read. Execution arguments never appear in public receipts. */

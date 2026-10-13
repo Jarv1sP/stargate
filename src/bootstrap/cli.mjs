@@ -13,6 +13,7 @@ import {formatTaskDiagnostics} from '../client/task-diagnostic-format.mjs';
 import {SESSION_POLICY} from '../domain/session-policy.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {once} from 'node:events';
+import {readFile} from 'node:fs/promises';
 
 const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE login --username NAME --password-stdin
@@ -20,6 +21,8 @@ const usage = `V2 isolated client (not the installed gpuctl):
   --url ORIGIN --credentials FILE logout
   --url ORIGIN --credentials FILE accounts [--after ID] [--limit 50]
   --url ORIGIN --credentials FILE task --job UUID
+  --url ORIGIN --credentials FILE task-submit --file REQUEST_JSON
+  --url ORIGIN --credentials FILE task-request --request UUID
   --url ORIGIN --credentials FILE task-diagnostics --job UUID [--json]
   --url ORIGIN --credentials FILE task-logs --job UUID [--attempt ID] [--bytes 65536] [--start] [--follow] [--json]
   --url ORIGIN --credentials FILE register-directory --machine ID --source CONFIGURED_ID
@@ -86,7 +89,7 @@ export async function runCli({argv, stdin, stdout}) {
     after: {type: 'string'}, limit: {type: 'string'},
     resource: {type: 'string'}, plan: {type: 'string'}, request: {type: 'string'},
     'project-id': {type: 'string'}, project: {type: 'string'}, release: {type: 'string'},
-    job: {type: 'string'},
+    job: {type: 'string'}, file: {type: 'string'},
     attempt: {type: 'string'}, bytes: {type: 'string'}, start: {type: 'boolean'}, follow: {type: 'boolean'}, json: {type: 'boolean'},
   }});
   if (values.help) {stdout.write(usage); return;}
@@ -102,6 +105,8 @@ export async function runCli({argv, stdin, stdout}) {
     current: ({identity, expiry}) => ({...identity, ...expiry}),
     accounts: () => new AccountClient({transport}).list({after: values.after ?? null, limit: values.limit === undefined ? 50 : Number(values.limit)}),
     task: () => new TaskClient({transport}).read({jobId: values.job}),
+    'task-submit': async () => new TaskClient({transport}).submit(JSON.parse(await readFile(values.file, 'utf8'))),
+    'task-request': () => new TaskClient({transport}).request({requestId: values.request}),
     'task-diagnostics': async () => {
       const result = await new TaskClient({transport}).diagnostics({jobId: values.job});
       if (values.json) return result;
