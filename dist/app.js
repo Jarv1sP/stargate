@@ -6,6 +6,7 @@ import {terminalUI} from './terminal-ui.js';
 import {resourcesUI,monitorSummary} from './resources-ui.js';
 import {datasetsUI} from './datasets-ui.js';
 import {createCommunityUI} from './community-ui.js';
+import {createWorkshopUI} from './workshop-ui.js';
 import {maintenanceUI,operationalMaintenanceUI} from './maintenance-ui.js';
 import {maintenanceExperienceUI} from './maintenance-experience.js';
 import {maintenanceActive} from './maintenance-state.js';
@@ -45,6 +46,7 @@ const adminConsole=createAdminUI(store,{navigate:choosePage,getPage:()=>page,toa
 const renderExecution=executionUI(store,()=>render(true),toast);
 const renderDatasets=datasetsUI(store,toast);
 const renderCommunity=createCommunityUI(store,toast);
+const workshop=createWorkshopUI(store,{navigate:choosePage,toast});
 const renderMaintenance=maintenanceUI(store,toast);
 const renderOperationalMaintenance=operationalMaintenanceUI(store,toast,()=>render(true));
 const renderMaintenanceExperience=maintenanceExperienceUI(store,toast,{getPage:()=>page,refresh:()=>render(true)});
@@ -78,8 +80,8 @@ function render(preserve=false){
   $('#edit-profile').hidden=!logged||store.production&&store.data?.taskMetadata?.version!==1;
   if(!logged)$('#profile-dialog').close();
   $('#switch-account').textContent=logged?'退出登录':'登录';$('#refresh-state').disabled=!logged;
-  const titles={me:['我的','账号、额度与个人工作区。'],transfers:['存储','后台传输与断点续传；不占用 GPU。'],work:['我的工作台','准备代码与环境，提交训练，跟进每一次实验。'],resources:['算力总览',''],datasets:['存储',''],community:['协作区','查看通知、反馈问题，和大家协调使用安排。'],maintenance:['历史运维记录','维护申请已停用，此处仅保留历史脚本和结果。'],users:['成员与授权','审批新成员，设置服务器权限和用卡额度。'],admin:['管理后台','']};
-  const concisePage=['community','users','maintenance','admin'].includes(page);
+  const titles={me:['我的','账号、额度与个人工作区。'],transfers:['存储','后台传输与断点续传；不占用 GPU。'],work:['我的工作台','准备代码与环境，提交训练，跟进每一次实验。'],resources:['算力总览',''],datasets:['存储',''],community:['协作区','查看通知、反馈问题，和大家协调使用安排。'],workshop:['创意工坊',''],maintenance:['历史运维记录','维护申请已停用，此处仅保留历史脚本和结果。'],users:['成员与授权','审批新成员，设置服务器权限和用卡额度。'],admin:['管理后台','']};
+  const concisePage=['community','workshop','users','maintenance','admin'].includes(page);
   $('#page-title').textContent=titles[page][0];$('#page-description').textContent=concisePage?'':titles[page][1];$('#page-description').hidden=concisePage||!titles[page][1];$('.help-links').hidden=concisePage;$('#breadcrumb').textContent=titles[page][0];
   if(!concisePage&&titles[page][1])discloseInfo($('#page-description'),'页面说明');
   const descriptionInfo=$('#page-description').closest('.ui-info');if(descriptionInfo)descriptionInfo.hidden=concisePage||!titles[page][1];
@@ -95,7 +97,7 @@ function render(preserve=false){
   }else $('#mode-note').textContent=[note,monitorNotice].filter(Boolean).join(' ');
   $('.demo-note').hidden=!note&&!monitorNotice;
   renderOperationalMaintenance();
-  renderTransfers(page==='transfers');renderResources();renderExecution();renderDatasets();renderCommunity(page==='community');renderMaintenance(page==='maintenance');
+  renderTransfers(page==='transfers');renderResources();renderExecution();renderDatasets();renderCommunity(page==='community');workshop.render(page==='workshop');renderMaintenance(page==='maintenance');
   const activeJobs=store.jobs.filter(job=>job.userId===store.principal?.userId&&!['SUCCEEDED','FAILED','CANCELED'].includes(job.state));
   const grouped=new Map();for(const job of activeJobs){const key=job.cancelRequested?'cancel':job.state;grouped.set(key,(grouped.get(key)||0)+1);}
   const stateNames={RUNNING:['st-run','运行'],STARTING:['st-start','启动'],SUBMITTING:['st-start','提交'],PENDING:['st-queue','排队'],QUEUED:['st-queue','排队'],PREPARING_DATA:['st-prep','准备数据'],cancel:['st-cancel','正在取消'],UNKNOWN:['st-unk','待核对'],PREEMPTING:['st-cancel','正在让位'],PREEMPTED:['st-stop','让位结束']};

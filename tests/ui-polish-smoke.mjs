@@ -120,7 +120,7 @@ try{
     if(!baseline){
       assert(layout.document<=width+1,`page overflow at ${width}`);
       const visible=layout.nav.filter(nav=>nav.visible);
-      assert.deepEqual(visible.map(nav=>nav.id),width<760?['work','resources','datasets','community','me']:['work','resources','datasets','community'],`room navigation at ${width}`);
+      assert.deepEqual(visible.map(nav=>nav.id),width<760?['work','resources','datasets','community','workshop','me']:['work','resources','datasets','community','workshop'],`room navigation at ${width}`);
       assert(visible.every(nav=>nav.height>=(width<760?44:36)),`navigation targets too small at ${width}`);
     }
     await textContrast();

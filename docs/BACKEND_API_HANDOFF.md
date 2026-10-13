@@ -1,5 +1,11 @@
 # 后端接口交接
 
+## 前端创意工坊
+
+状态通过 `frontendWorkshop:{version:1}` 宣告能力，缺失时前端不调用工坊接口。通过既有 `/api/call` 使用 `workshop.list/get/mine/publish/install/uninstall/reset/remove`。发布 `{key,id?,package}`，原 key 幂等，版本为服务端递增整数；作者可更新，作者或管理员可下架。安装 `{id,version,permissions}` 须与固定包权限一致，配置按当前账号持久化；主题至多一个，插件可多个，下架保留历史并在配置刷新时停用。零 GPU 额度可用，不向节点派发操作。
+
+`GET /workshop/frame/:id/:version` 只返回当前账号已安装的未下架插件，独立设置 sandbox/CSP，不放宽主站脚本策略。插件不取得登录 token，取消任务经宿主确认后调用原 API。格式及限制见 [前端创意工坊](FRONTEND_WORKSHOP.md)，不表示已部署。
+
 ## 显卡故障与部分采集
 
 `gpuq.health:"degraded"` 可附固定诊断 `healthIssue:{kind:"managed-gpu-missing",indices:[1]}` 或 `{kind:"scheduler-degraded"}`。只有明确的调度器受管 GPU 缺失错误映射为前者；卡号有界且去重，不转发原始错误、UUID、路径或命令。已授权成员与管理员均可看到固定诊断，未授权、过期和失联状态不沿用旧故障结论。配套节点 `deploy/node-probe.py` 位于采集 SSH 强制命令，不属于数据存储 helper 更新；未部署时仅显示通用调度异常。

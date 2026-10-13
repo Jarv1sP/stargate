@@ -73,6 +73,13 @@ export function shellUI(store,{navigate,getPage,toast}){
     if(outgoing&&rect.height&&!phone()&&!reduced()){
       ghost=outgoing.cloneNode(true);ghost.removeAttribute('id');ghost.removeAttribute('data-page');ghost.setAttribute('aria-hidden','true');ghost.inert=true;ghost.classList.add('room-ghost');
       const originals=[outgoing,...outgoing.querySelectorAll('*')];for(const [index,element] of [ghost,...ghost.querySelectorAll('*')].entries()){element.removeAttribute('style');for(const name of originals[index].style)element.style.setProperty(name,originals[index].style.getPropertyValue(name));for(const attr of [...element.attributes])if(['id','name','form'].includes(attr.name)||attr.name.startsWith('data-')||attr.name.startsWith('on'))element.removeAttribute(attr.name);}
+      // Transition ghosts are pictures, not another plugin instance. inert does
+      // not prevent a cloned iframe from loading or executing its own scripts.
+      const originalFrames=outgoing.querySelectorAll('iframe');
+      for(const [index,frame] of [...ghost.querySelectorAll('iframe')].entries()){
+        const size=originalFrames[index].getBoundingClientRect(),placeholder=document.createElement('div');
+        placeholder.className=frame.className;placeholder.style.width=size.width+'px';placeholder.style.height=size.height+'px';frame.replaceWith(placeholder);
+      }
       const clone=ghost,layer=document.createElement('div');layer.className='room-transition-layer';layer.setAttribute('aria-hidden','true');layer.inert=true;
       clone.style.position='absolute';clone.style.left=rect.left+'px';clone.style.top=rect.top+'px';clone.style.width=rect.width+'px';layer.append(clone);document.body.append(layer);ghost=layer;
       const title=captureObject(q('.page-heading'));if(title){const heading=title.element;heading.style.position='absolute';heading.style.left=title.rect.left+'px';heading.style.top=title.rect.top+'px';heading.style.width=title.rect.width+'px';layer.append(heading);heading.animate([{opacity:1,transform:'none'},{opacity:0,transform:`translateX(${-direction*24}px)`}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'});}

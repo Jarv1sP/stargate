@@ -29,6 +29,7 @@ COPY --chown=root:root deploy/install-client.sh deploy/install-client.ps1 ./depl
 COPY --chown=root:root transfers.mjs ./
 COPY --chown=root:root login-sessions.mjs ./
 COPY --chown=root:root native-task-metadata.mjs job-observation.mjs ./
+COPY --chown=root:root workshop.mjs workshop-frame.mjs ./
 USER node
 # Load the final image's module graph as its runtime user. Importing the Portal
 # does not start it, open SQLite or contact the execution bridge.

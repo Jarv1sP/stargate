@@ -208,6 +208,7 @@ try {
             owner: {username: member.username}, state: 'UNKNOWN', reason: '历史维护记录', cwd: '/workspace', timeoutSec: 300,
             scriptSha256: 'a'.repeat(64), script: 'printf "read-only historical output"\n'.repeat(30)};
           else if (operation === 'maintenance.status') result = state.operationalMaintenance;
+          else if (operation === 'workshop.mine') {assert.equal(logged,true);assert.ok(principal);assert.deepEqual(args,{});result={installed:[]};}
           else if (operation === 'projects.list') result = {projects: []};
           else if (operation === 'projects.quota') result = {usedBytes: 0, quotaBytes: 1024 ** 3};
           else if (operation === 'datasets.list') result = {datasets: []};

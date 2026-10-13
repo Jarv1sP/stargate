@@ -46,7 +46,7 @@ try{
   await memberPage.reload();await assertTransfer(memberPage);
   assert.equal(await memberPage.locator('#login-dialog').isVisible(),false,'canonical tab survives a cookie-backed reload');
   assert.equal(await memberPage.locator('#room-nav [data-nav=transfers]').count(),0);
-  assert.deepEqual(await memberPage.locator('#room-nav [data-nav]:visible').evaluateAll(nodes=>nodes.map(node=>node.dataset.nav)),['work','resources','datasets','community']);
+  assert.deepEqual(await memberPage.locator('#room-nav [data-nav]:visible').evaluateAll(nodes=>nodes.map(node=>node.dataset.nav)),['work','resources','datasets','community','workshop']);
   await memberPage.locator('[data-nav=work]').click();await memberPage.keyboard.press('Control+k');
   await memberPage.locator('#control-command').fill('传输');assert.equal(await memberPage.locator('#control-suggestions [data-command-id]').count(),1);
   await memberPage.keyboard.press('Enter');await assertTransfer(memberPage);
@@ -65,7 +65,7 @@ try{
   await memberPage.evaluate(()=>{location.hash='transfers';});await assertTransfer(memberPage);
   const adminPage=await browser.newPage({viewport:{width:1440,height:1000}});adminPage.on('pageerror',error=>errors.push(error.message));
   await login(adminPage,'admin','#datasets/transfers');await assertTransfer(adminPage);
-  assert.deepEqual(await adminPage.locator('#room-nav [data-nav]:visible').evaluateAll(nodes=>nodes.map(node=>node.dataset.nav)),['work','resources','datasets','community']);
+  assert.deepEqual(await adminPage.locator('#room-nav [data-nav]:visible').evaluateAll(nodes=>nodes.map(node=>node.dataset.nav)),['work','resources','datasets','community','workshop']);
   // Direction follows the dataset room, including the legacy transfer route.
   for(const [from,to,expected] of [['resources','transfers','translateX(24px)'],['community','transfers','translateX(-24px)']]){
     const direction=await adminPage.evaluate(({from,to})=>{
@@ -85,7 +85,7 @@ try{
     assert.ok(geometry.scroll<=width+1,`no page overflow at ${role}/${width}: ${JSON.stringify(geometry)}`);
     assert.ok(geometry.topbar.left>=-1&&geometry.topbar.right<=width+1,'topbar fits the viewport');
     assert.ok(geometry.controls.every(rect=>rect.left>=-1&&rect.right<=width+1),'topbar controls are not clipped');
-    if(width<760){assert.deepEqual(geometry.nav.map(item=>item.id),['work','resources','datasets','community','me']);assert.ok(geometry.nav.every(item=>item.height>=44));}
+    if(width<760){assert.deepEqual(geometry.nav.map(item=>item.id),['work','resources','datasets','community','workshop','me']);assert.ok(geometry.nav.every(item=>item.height>=44));}
     if(shots){await page.mouse.move(0,200);await mkdir(shots,{recursive:true});await page.screenshot({path:join(shots,`navigation-${role}-${width}.png`),animations:'disabled'});}
   }
   await memberPage.emulateMedia({reducedMotion:'reduce'});await memberPage.locator('[data-nav=work]').click();
@@ -94,7 +94,7 @@ try{
   await memberPage.evaluate(()=>{location.hash='users';});await memberPage.locator('#admin-denied').waitFor({state:'visible'});
   assert.equal(await memberPage.locator('#page-users').isVisible(),false,'member deep links do not expose the admin room');
   assert.ok(MACHINES.length);assert.deepEqual(errors,[]);
-  console.log('DATASET NAVIGATION PASS: legacy/canonical/auth/reload routes, member/admin counts and order, transfer command, same-room tabs and direction, reduced motion, 1440/390/320 topbar, five mobile tabs, admin guard.');
+  console.log('DATASET NAVIGATION PASS: legacy/canonical/auth/reload routes, member/admin counts and order, transfer command, same-room tabs and direction, reduced motion, 1440/390/320 topbar, six mobile tabs, admin guard.');
 }finally{
   await browser?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}else service?.close();
   await rm(directory,{recursive:true,force:true});

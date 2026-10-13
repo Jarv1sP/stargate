@@ -29,6 +29,7 @@
   <link rel="stylesheet" href="./admin.css" />
   <link rel="stylesheet" href="./dataset-warehouse.css" />
   <link rel="stylesheet" href="./admin-gpu-tasks.css" />
+  <link rel="stylesheet" href="./workshop.css" />
   <link rel="preload" href="./vendor/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin />
 </head>
 <body class="sb root">
@@ -41,6 +42,7 @@
 <a class="nav-item" href="#resources" data-nav="resources"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="7" rx="2"/><path d="M8 6.5h.01M8 17.5h.01M12 6.5h4M12 17.5h4"/></svg>算力总览</a>
 <a class="nav-item" href="#datasets" data-nav="datasets"><svg aria-hidden="true" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/></svg>存储</a>
 <a class="nav-item" href="#community" data-nav="community"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 1-8 8H5l-3 3V11a9 9 0 0 1 18 0Z"/><path d="M7 10h8M7 14h5"/></svg>协作区</a>
+<a class="nav-item" href="#workshop" data-nav="workshop"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7h18v14H3zM2 7l3-4h14l3 4M8 21v-8h8v8"/></svg>工坊</a>
 
         <button type="button" class="nav-item phone-me" data-nav="me" aria-label="我的账号与工作区"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>我的</button>
       </nav>
@@ -58,7 +60,7 @@
 <div class="page-heading"><div><h1 id="page-title">我的工作台</h1><p id="page-description">自己的终端、文件与训练任务。</p></div><div id="work-title-telemetry"><div class="self-summary" id="self-summary"></div></div><div class="heading-actions"><button class="button primary" type="button" id="open-submit" hidden>提交训练</button><button class="button quiet" type="button" data-shell-action="control">总控 <kbd>⌘K</kbd></button></div></div>
 <div class="demo-note glass"><span id="mode-note">正在连接…</span></div>
 <div id="operational-maintenance"></div>
-<section data-page="work" id="page-work"><div id="execution-host"></div></section>
+<section data-page="work" id="page-work"><div id="workshop-widgets" aria-label="我的工坊组件"></div><div id="execution-host"></div></section>
 <section data-page="me" id="page-me" hidden><div id="me-content"></div></section>
 <section data-page="admin" id="page-admin" hidden>
   <div id="admin-denied" class="admin-denied hero-frame"><h2>需要管理员权限</h2><a href="#work" class="button quiet admin-return">返回工作台</a></div>
@@ -70,9 +72,11 @@
 <section data-page="datasets" id="page-datasets" hidden></section>
 <section data-page="transfers" id="page-transfers" hidden></section>
 <section data-page="community" id="page-community" hidden></section>
+<section data-page="workshop" id="page-workshop" hidden></section>
 <section data-page="maintenance" id="page-maintenance" hidden></section>
 <section data-page="resources" id="page-resources" hidden><div class="section-kicker"><span>实验室服务器</span><span id="resource-summary">我的额度：0 张</span></div><p id="monitor-status" class="monitor-status" role="status"></p><div class="resource-grid" id="machine-grid"></div></section>
 <div class="help-links copy-caption" aria-label="使用帮助"><span>首次使用</span><span>从第一次登录，到一次完整训练。</span></div>
+<aside id="workshop-recovery" aria-label="工坊恢复" hidden><span data-workshop-recovery-status></span><button type="button">恢复默认外观与插件</button><a href="?workshop=off#workshop">停用扩展打开</a></aside>
 <footer><span class="wordmark footer-wordmark" role="img" aria-label="STARGATE">STARGATE</span><span>独立开源研究计算工作台</span></footer>
 </main>
   </div>
