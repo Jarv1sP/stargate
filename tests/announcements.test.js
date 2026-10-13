@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
 import {installCommunity,communityCall,announcementState} from '../community.mjs';
+import {showCLIAnnouncements,runCommunityCommand} from '../community-cli.mjs';
 
 function fixture(t){
   const users=['admin','alice','bob'].map(id=>({id,username:id,name:id,role:id==='admin'?'admin':'member',enabled:true}));
@@ -12,6 +13,25 @@ function fixture(t){
   const post=(more={})=>call('admin','posts.create',{key:randomUUID(),kind:'announcement',title:'通知',body:'公告正文',popup:true,...more}).post;
   return {service,users,actor,call,post,pending:name=>announcementState(service,actor(name)).pending};
 }
+test('appearance persists and pending content is recipient-only; invalid CSS is rejected',t=>{
+  const f=fixture(t),appearance={layout:'centered',background:'#112233',text:'#ffffff',accent:'#ff8800'};
+  const post=f.post({appearance,audience:{type:'users',userIds:['alice']}});
+  assert.deepEqual(post.appearance,appearance);
+  assert.deepEqual(f.call('bob','announcements.pending').posts,[]);
+  assert.deepEqual(f.call('alice','announcements.pending').posts[0].appearance,appearance);
+  assert.throws(()=>f.call('admin','posts.update',{id:post.id,revision:1,appearance:{accent:'url(https://invalid)'}}),e=>e.status===400);
+  const edited=f.call('admin','posts.update',{id:post.id,revision:1,appearance:{...appearance,layout:'compact'}}).post;
+  assert.equal(edited.appearance.layout,'compact');assert.equal(edited.revision,2);
+});
+test('CLI shows whole announcement until explicit account-level confirmation',async t=>{
+  const f=fixture(t),post=f.post({body:'正文\n请明确处理'}),seen=[],out=[];
+  const call=async(op,args)=>{seen.push(op);return {result:f.call('alice',op.replace('community.',''),args)};};
+  await showCLIAnnouncements(call,f.pending('alice'),s=>out.push(s));
+  assert.match(out.join(''),/正文\n请明确处理/);assert.match(out.join(''),/community ack \d+ --revision 1/);
+  assert.deepEqual(seen,['community.posts.get']);assert.equal(f.pending('alice').length,1);
+  const pending=await runCommunityCommand({positionals:['community','announcements'],call});assert.equal(pending.posts.length,1);
+  await runCommunityCommand({positionals:['community','ack',post.id],options:{revision:'1'},call});assert.equal(f.pending('alice').length,0);
+});
 test('targeted posts are filtered before pagination, including titles and replies',t=>{
   const f=fixture(t),publicPost=f.post(),privatePost=f.post({title:'PRIVATE TITLE',body:'PRIVATE BODY',audience:{type:'users',userIds:['alice']}});
   assert.deepEqual(f.pending('bob').map(p=>p.id),[publicPost.id]);assert.equal(f.pending('alice').length,2);

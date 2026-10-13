@@ -41,6 +41,11 @@ try{
   await editor.locator('#community-publish-announcement').click();
   await editor.locator('#community-compose-form [name=title]').fill('雷霆大公告：仅 Alice 可见');
   await editor.locator('#community-compose-form [name=body]').fill('这是一份专属公告。\n'+('请阅读公告正文，确认后点击我知道了。\n').repeat(50));
+  await editor.locator('#announcement-appearance-editor summary').click();
+  await editor.locator('[name=layout]').selectOption('centered');
+  await editor.locator('[name=background]').fill('#112233');
+  await editor.locator('[name=accent]').fill('#ff8800');
+  assert.equal(await editor.locator('.announcement-preview').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(17, 34, 51)');
   await editor.locator('#community-compose-form [name=audience]').selectOption('users');
   await editor.locator(`[name=audienceUser][value="${alice.id}"]`).check();
   assert.equal(await editor.locator('#community-compose-form [name=popup]').isChecked(),true);
@@ -53,6 +58,8 @@ try{
   assert.doesNotMatch(await bob.locator('#community-posts').innerText(),/雷霆大公告/);
   const page=await login('alice');
   await page.locator('#announcement-title').filter({hasText:'雷霆大公告'}).waitFor();
+  assert.equal(await page.locator('#announcement-dialog').getAttribute('data-layout'),'centered');
+  assert.equal(await page.locator('#announcement-dialog').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(17, 34, 51)');
   for(const width of [1440,390,320]){
     await page.setViewportSize({width,height:900});
     const geometry=await inspectGeometry(page,{roots:['#announcement-dialog[open]']});

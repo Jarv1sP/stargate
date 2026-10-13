@@ -11,7 +11,7 @@ import {runManualSync,remoteSnapshot} from './client-snapshot-sync.mjs';
 import {uploadTransfer,downloadTransfer,transferText} from './client-transfers.mjs';
 import {runCloudImport} from './client-cloud-import.mjs';
 import {runCloudFiles} from './client-cloud-files.mjs';
-import {runCommunityCommand,formatCommunityResult,communityJSON} from './community-cli.mjs';
+import {runCommunityCommand,formatCommunityResult,communityJSON,showCLIAnnouncements} from './community-cli.mjs';
 import {cliHelp} from './cli-help.mjs';
 import {watchJob} from './job-watch.mjs';
 import {progressText,jobTimingText} from './dist/job-progress.js';
@@ -51,6 +51,7 @@ let wantsJSON=args.slice(0,args.includes('--')?args.indexOf('--'):args.length).i
 function fail(message){throw Error(message);}
 const CLI_OPTIONS=new Map([
   ['pin','flag'],...['kind','status','title','body','body-file','announcement-type'].map(key=>[key,'value']),
+  ...['layout','background','text-color','accent'].map(key=>[key,'value']),
   ['via','value'],['data-read','value'],
   ...['sha256','file-id','password-code','source-url'].map(key=>[key,'value']),
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','ack-unknown','sync','data-workspace'].map(key=>[key,'flag']),
@@ -300,6 +301,7 @@ async function main(){
   }else{
     if(!session)fail('请先登录：gpuctl login');
     const state=(await call('state')).state;
+    if(!(command==='community'&&['announcements','ack'].includes(positionals[1])))await showCLIAnnouncements(call,state.announcements?.pending);
     const machineName=value=>{const exact=state.machines.find(m=>m.id===value);if(exact)return exact.id;const short=state.machines.filter(m=>m.id.endsWith('-'+value));return short.length===1?short[0].id:value;};
     const selectedMachine=()=>session.machine||(state.machines?.length===1?state.machines[0].id:null)||fail('先选择一次服务器：gpuctl use MACHINE_ID');
     const defaultMachine=()=>{if(options.machines.length){if(options.machines.length!==1||options.machines[0].includes('='))fail('Use one --machine SERVER outside grant');return machineName(options.machines[0]);}return selectedMachine();};

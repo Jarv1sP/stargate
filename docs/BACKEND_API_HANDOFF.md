@@ -485,6 +485,8 @@ Portal 只调用现有字面量 `datasets.capacity`，并行、有 5 秒读取�
 
 # 定向公告
 
+公告 create/update 可带 `appearance:{layout:"standard"|"centered"|"compact",background:"#112233",text:"#ffffff",accent:"#ff8800"}`，省略字段取默认值，更新省略整个 appearance 则保留原配置。`community.announcements.pending {}` 返回 `{posts:[...]}`，只含当前账号尚未确认的弹窗公告正文（与 state 待确认队列相同，最多 10 条）。
+
 `community.posts.create/update` 的公告可带 `popup:boolean`、`audience:{type:"all"}`、`audience:{type:"users",userIds:[...]}` 或 `audience:{type:"role",role:"member"|"admin"}`。只允许管理员设置；默认全部可见、不开弹窗。指定账号须存在，最多 200 人。沿用原 UUID 去重和 revision 更新条件。普通帖子不接受公告字段。
 
 `state.announcements={version:1,pending:[{id,revision}]}` 仅返回当前接收者未确认的弹窗公告（最多 10 个）。`community.announcements.ack {id,revision}` 写入账号级回执并返回 `{announcements}`，相同版本可重试，过期版本返回 409。确认后后续公告进入 pending；更新内容或其他帖子字段产生新 revision，重新提示。删除公告一并删除回执。

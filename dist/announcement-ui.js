@@ -1,5 +1,6 @@
 // The server selects recipients. This module only presents and acknowledges
 // that selection; dismissing locally never fabricates a server read receipt.
+import {applyAnnouncementAppearance} from './announcement-appearance.js';
 export function createAnnouncementUI(store,{toast}){
   const dialog=document.createElement('dialog');dialog.id='announcement-dialog';dialog.className='announcement-dialog';
   dialog.setAttribute('aria-labelledby','announcement-title');dialog.setAttribute('aria-describedby','announcement-body');
@@ -20,6 +21,7 @@ export function createAnnouncementUI(store,{toast}){
       const {post}=await store.call('community.posts.get',{id:item.id});
       if(turn!==request||stamp!==actor()||!dialog.open)return;
       if(post.kind!=='announcement')throw Error('公告内容不可用。');
+      applyAnnouncementAppearance(dialog,post.appearance);
       current={id:post.id,revision:post.revision,sourceRevision:item.revision};
       q('#announcement-title').textContent=post.title;q('#announcement-body').textContent=post.body;
       q('#announcement-type').textContent=({notice:'公告',maintenance:'维护安排',outage:'故障通知'})[post.announcementType]||'公告';

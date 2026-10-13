@@ -643,6 +643,10 @@ gpuctl run --rank P2 --mode preempt2 -g 1 -- python urgent.py
 
 弹窗点「我知道了」后，同一账号在其他浏览器也不再弹这一版；公告更新后重新提醒。「稍后再看」只关闭当前页面的提醒，刷新后仍会出现。「全部公告」可重新查看。旧公告不会自动变成弹窗，管理员编辑时可开启。
 
+「布局与颜色」可选标准、居中或紧凑布局，调整背景、文字和强调色，编辑时即时预览。CLI 发布/编辑公告也可用 `--layout centered --background '#112233' --text-color '#ffffff' --accent '#ff8800'`。
+
+新版 CLI 在执行已登录命令前，将未读重要公告完整显示到 stderr，直到明确确认；`--json` 的 stdout 保持原格式，自动化调用请同时读取 stderr。`gpuctl community announcements` 查看待确认公告；阅读后执行 `gpuctl community ack ID --revision N`。确认与网页共用同一账号回执，不会自动确认，也不自动执行公告里的内容。已安装的旧 CLI 需更新才能显示提醒。
+
 ## 常见问题 {#troubleshooting}
 
 ### 校内入口不可达

@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {normalizeAppearance,defaultAppearance} from './dist/announcement-appearance.js';
 
 // This module owns only community_* tables. No message bodies enter portal_state
 // or the audit log. All calls run in PortalService's serialized authenticated queue.
@@ -25,7 +26,7 @@ function view(service,row,actor,type){
   if(!row)return null;
   const common={id:String(row.id),body:row.body,author:author(service,row.author_id),createdAt:nowISO(row.created_at),updatedAt:nowISO(row.updated_at),revision:row.revision,canEdit:editable(row,actor),canDelete:deletable(row,actor)};
   if(type==='post')return {...common,kind:row.kind,title:row.title,announcementType:row.announcement_type,status:row.status,pinned:!!row.pinned,
-    ...(row.kind==='announcement'?{popup:!!row.popup,...(actor.role==='admin'?{audience:audienceOf(row)}:{})}:{}),
+    ...(row.kind==='announcement'?{popup:!!row.popup,appearance:JSON.parse(row.appearance_json),...(actor.role==='admin'?{audience:audienceOf(row)}:{})}:{}),
     commentCount:service.db.prepare('SELECT count(*) AS n FROM community_comments WHERE post_id=?').get(row.id).n,canModerate:actor.role==='admin'};
   return type==='comment'?{...common,postId:String(row.post_id)}:type==='note'?{...common,jobId:row.job_id}:common;
 }
@@ -33,6 +34,7 @@ const tables={post:'community_posts',comment:'community_comments',message:'commu
 function get(service,type,value){return service.db.prepare(`SELECT * FROM ${tables[type]} WHERE id=?`).get(value);}
 function required(service,type,value){const row=get(service,type,id(value));if(!row)fail('内容不存在或已删除。',404);return row;}
 function admin(actor){if(actor.role!=='admin')fail('此操作需要管理员权限。',403);}
+function appearance(value){try{return normalizeAppearance(value);}catch(error){fail(error.message);}}
 function normalizeAudience(service,value={type:'all'}){
   fields(value,value?.type==='users'?['type','userIds']:value?.type==='role'?['type','role']:['type']);
   if(value.type==='all')return {type:'all'};
@@ -134,6 +136,7 @@ export function installCommunity(service){
   const columns=service.db.prepare('PRAGMA table_info(community_posts)').all().map(row=>row.name);
   if(!columns.includes('audience_json'))service.db.exec(`ALTER TABLE community_posts ADD COLUMN audience_json TEXT NOT NULL DEFAULT '{"type":"all"}'`);
   if(!columns.includes('popup'))service.db.exec('ALTER TABLE community_posts ADD COLUMN popup INTEGER NOT NULL DEFAULT 0');
+  if(!columns.includes('appearance_json'))service.db.exec(`ALTER TABLE community_posts ADD COLUMN appearance_json TEXT NOT NULL DEFAULT '${JSON.stringify(defaultAppearance)}'`);
   service.db.exec(`CREATE TABLE IF NOT EXISTS announcement_acknowledgements (
     user_id TEXT NOT NULL,post_id INTEGER NOT NULL,revision INTEGER NOT NULL,acknowledged_at INTEGER NOT NULL,
     PRIMARY KEY(user_id,post_id))`);
@@ -196,7 +199,7 @@ function listChat(service,actor,args,now){
   return {messages:rows.map(r=>view(service,r,actor,'message')),nextCursor:rows.length?String(after!==null?rows.at(-1).id:rows[0].id):null,latestCursor:latest===null?null:String(latest),hasMore:more};
 }
 function change(service,actor,operation,args,type,remove,now){
-  fields(args,remove?['id','revision']:type==='post'?['id','revision','title','body','status','pinned','announcementType','audience','popup']:['id','revision','body']);
+  fields(args,remove?['id','revision']:type==='post'?['id','revision','title','body','status','pinned','announcementType','audience','popup','appearance']:['id','revision','body']);
   const row=required(service,type,args.id);revision(args.revision);
   if(type==='post')readablePost(service,actor,args.id);
   if(type==='comment')readablePost(service,actor,String(row.post_id));
@@ -222,11 +225,12 @@ function change(service,actor,operation,args,type,remove,now){
     if(args.pinned!==undefined&&row.kind!=='announcement')fail('只有公告可置顶。');
     if(args.announcementType!==undefined&&row.kind!=='announcement')fail('只有公告可设置公告类型。');
     const announcementType=args.announcementType===undefined?row.announcement_type:choice(args.announcementType,ANNOUNCEMENTS,'公告类型');
-    if(row.kind!=='announcement'&&(args.audience!==undefined||args.popup!==undefined))fail('只有公告可以指定接收人或打开时弹出。');
+    if(row.kind!=='announcement'&&['audience','popup','appearance'].some(k=>args[k]!==undefined))fail('只有公告可以指定受众、弹窗或外观。');
     if(args.popup!==undefined&&typeof args.popup!=='boolean')fail('弹窗设置无效。');
     const audience=args.audience===undefined?audienceOf(row):normalizeAudience(service,args.audience),popup=args.popup===undefined?row.popup:Number(args.popup);
+    const style=args.appearance===undefined?row.appearance_json:JSON.stringify(appearance(args.appearance));
     if(args.pinned===true&&!row.pinned&&service.db.prepare('SELECT count(*) AS n FROM community_posts WHERE pinned=1').get().n>=20)fail('最多置顶 20 条公告。',409);
-    service.db.prepare('UPDATE community_posts SET title=?,body=?,status=?,pinned=?,announcement_type=?,audience_json=?,popup=?,updated_at=?,revision=revision+1 WHERE id=?').run(title,body,status,args.pinned===undefined?row.pinned:Number(args.pinned),announcementType,JSON.stringify(audience),popup,now,row.id);
+    service.db.prepare('UPDATE community_posts SET title=?,body=?,status=?,pinned=?,announcement_type=?,audience_json=?,popup=?,appearance_json=?,updated_at=?,revision=revision+1 WHERE id=?').run(title,body,status,args.pinned===undefined?row.pinned:Number(args.pinned),announcementType,JSON.stringify(audience),popup,style,now,row.id);
   }else{
     const body=text(args.body,COMMUNITY_LIMITS[type==='comment'?'commentBody':'chatBody'],'正文');
     service.db.prepare(`UPDATE ${tables[type]} SET body=?,updated_at=?,revision=revision+1 WHERE id=?`).run(body,now,row.id);
@@ -235,6 +239,9 @@ function change(service,actor,operation,args,type,remove,now){
 }
 function dispatch(service,actor,operation,args,now){
   const db=service.db;
+  if(operation==='community.announcements.pending'){
+    fields(args,[]);return {posts:announcementState(service,actor).pending.map(p=>view(service,required(service,'post',p.id),actor,'post'))};
+  }
   if(operation==='community.announcements.ack'){
     fields(args,['id','revision']);const row=readablePost(service,actor,args.id);revision(args.revision);
     if(row.kind!=='announcement'||!receives(row,actor))fail('公告不面向当前账号。',404);
@@ -268,17 +275,18 @@ function dispatch(service,actor,operation,args,now){
   if(operation==='community.comments.list')return listComments(service,actor,args);
   if(operation==='community.chat.list')return listChat(service,actor,args,now);
   if(operation==='community.posts.create'){
-    fields(args,['key','kind','title','body','announcementType','pinned','audience','popup']);const kind=choice(args.kind,KINDS,'帖子类型');
-    if(kind==='announcement')admin(actor);else if(['announcementType','pinned','audience','popup'].some(k=>args[k]!==undefined))fail('只有管理员公告可设置公告类型、受众或弹窗。');
+    fields(args,['key','kind','title','body','announcementType','pinned','audience','popup','appearance']);const kind=choice(args.kind,KINDS,'帖子类型');
+    if(kind==='announcement')admin(actor);else if(['announcementType','pinned','audience','popup','appearance'].some(k=>args[k]!==undefined))fail('只有管理员公告可设置公告类型、受众、弹窗或外观。');
     if(args.pinned!==undefined&&typeof args.pinned!=='boolean')fail('pinned 必须为布尔值。');
     if(args.popup!==undefined&&typeof args.popup!=='boolean')fail('弹窗设置无效。');
     const audience=normalizeAudience(service,args.audience),popup=args.popup===true;
+    const style=appearance(args.appearance);
     const title=text(args.title,COMMUNITY_LIMITS.title,'标题'),body=text(args.body,COMMUNITY_LIMITS.postBody,'正文'),announcementType=kind==='announcement'?choice(args.announcementType??'notice',ANNOUNCEMENTS,'公告类型'):null;
     // Omit false from the digest so retries from older clients keep matching.
-    const canonical={kind,title,body,announcementType,...(args.pinned===true?{pinned:true}:{}),...(popup?{popup:true}:{}),...(audience.type!=='all'?{audience}:{})};
+    const canonical={kind,title,body,announcementType,...(args.pinned===true?{pinned:true}:{}),...(popup?{popup:true}:{}),...(audience.type!=='all'?{audience}:{}),...(JSON.stringify(style)!==JSON.stringify(defaultAppearance)?{appearance:style}:{})};
     return create(service,actor,operation,args,'post',canonical,now,()=>{
       if(args.pinned===true&&db.prepare('SELECT count(*) AS n FROM community_posts WHERE pinned=1').get().n>=20)fail('最多置顶 20 条公告。',409);
-      return db.prepare('INSERT INTO community_posts(author_id,kind,title,body,announcement_type,pinned,audience_json,popup,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(actor.userId,kind,title,body,announcementType,Number(args.pinned===true),JSON.stringify(audience),Number(popup),now,now).lastInsertRowid;
+      return db.prepare('INSERT INTO community_posts(author_id,kind,title,body,announcement_type,pinned,audience_json,popup,appearance_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(actor.userId,kind,title,body,announcementType,Number(args.pinned===true),JSON.stringify(audience),Number(popup),JSON.stringify(style),now,now).lastInsertRowid;
     });
   }
   if(operation==='community.comments.create'){

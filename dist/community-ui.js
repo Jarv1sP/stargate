@@ -4,6 +4,7 @@ import {createSubmissionKeys} from './submission-keys.js';
 import {createTaskNotesUI,taskNotesMarkup} from './task-notes-ui.js';
 import {revealSheet,dismissSheet} from './motion-ui.js';
 import {copyHelp} from './copy-help-ui.js';
+import {defaultAppearance,applyAnnouncementAppearance} from './announcement-appearance.js';
 export {createSubmissionKeys} from './submission-keys.js';
 const kinds={announcement:'公告',feedback:'问题反馈',discussion:'讨论'};
 const statuses={open:'待处理',investigating:'处理中',resolved:'已解决',closed:'已关闭'};
@@ -124,17 +125,24 @@ export function createCommunityUI(store,toast){
     const targeting=el('div');targeting.id='community-announcement-target';
     targeting.innerHTML='<label class="field">谁能看到<select name="audience"><option value="all">全部登录成员</option><option value="users">指定成员（可多选）</option><option value="member">普通成员</option><option value="admin">管理员</option></select></label><div id="community-audience-members" role="group" aria-label="公告接收成员" hidden></div><label class="community-pin"><input type="checkbox" name="popup">打开网站时弹出大公告</label>';
     composer.querySelector('[name=body]').closest('label').before(targeting);
+    targeting.insertAdjacentHTML('beforeend','<details id="announcement-appearance-editor"><summary>布局与颜色</summary><label class="field">布局<select name="layout"><option value="standard">标准</option><option value="centered">居中</option><option value="compact">紧凑</option></select></label><div class="announcement-colors"><label>背景<input type="color" name="background"></label><label>文字<input type="color" name="textColor"></label><label>强调色<input type="color" name="accent"></label></div><section class="announcement-preview" aria-label="公告预览"><header><small>公告预览</small><h3></h3></header><p></p></section></details>');
+    composer.querySelector('form').addEventListener('input',previewAppearance);
     targeting.querySelector('[name=audience]').addEventListener('change',composerKind);
     document.body.append(composer);for(const node of composer.querySelectorAll('[data-compose-close]'))node.addEventListener('click',()=>{if(composeBusy)return;if(keys.hasUncertain('post')){toast('发送结果尚未确认，请先重试原内容。');return;}dismissSheet(composer);});composer.addEventListener('cancel',event=>{event.preventDefault();if(!composeBusy&&!keys.hasUncertain('post'))dismissSheet(composer);});composer.querySelector('form').addEventListener('submit',sendComposer);composer.querySelector('[name=kind]').addEventListener('change',composerKind);
   }
   function composerKind(){const form=composer.querySelector('form'),post=editing?.type==='post',announcement=post&&form.elements.kind.value==='announcement';composer.querySelector('#community-kind-field').hidden=!post;composer.querySelector('#community-type-field').hidden=!announcement;composer.querySelector('#community-pin-field').hidden=!announcement||Boolean(editing?.item);composer.querySelector('#community-announcement-target').hidden=!announcement||store.data?.announcements?.version!==1;composer.querySelector('#community-audience-members').hidden=form.elements.audience.value!=='users';}
-  function audienceFields(){const form=composer.querySelector('form'),type=form.elements.audience.value;return {popup:form.elements.popup.checked,audience:type==='all'?{type:'all'}:type==='users'?{type:'users',userIds:[...form.querySelectorAll('[name=audienceUser]:checked')].map(n=>n.value)}:{type:'role',role:type}};}
-  function lockAudience(locked){for(const field of composer.querySelectorAll('[name=audience],[name=audienceUser],[name=popup]'))field.disabled=locked;}
+  function appearanceFields(){const f=composer.querySelector('form').elements;return {layout:f.layout.value,background:f.background.value,text:f.textColor.value,accent:f.accent.value};}
+  function previewAppearance(){const f=composer.querySelector('form').elements,p=composer.querySelector('.announcement-preview');applyAnnouncementAppearance(p,appearanceFields());p.querySelector('h3').textContent=f.title.value||'公告标题';p.querySelector('p').textContent=f.body.value||'这里显示公告正文。';}
+  function audienceFields(){const form=composer.querySelector('form'),type=form.elements.audience.value;return {appearance:appearanceFields(),popup:form.elements.popup.checked,audience:type==='all'?{type:'all'}:type==='users'?{type:'users',userIds:[...form.querySelectorAll('[name=audienceUser]:checked')].map(n=>n.value)}:{type:'role',role:type}};}
+  function lockAudience(locked){for(const field of composer.querySelectorAll('[name=audience],[name=audienceUser],[name=popup],#announcement-appearance-editor input,#announcement-appearance-editor select'))field.disabled=locked;}
   function fillAudience(item,announcement){
     const form=composer.querySelector('form'),audience=item?.audience||{type:'all'},members=composer.querySelector('#community-audience-members');
     form.elements.audience.value=audience.type==='role'?audience.role:audience.type;
     form.elements.popup.checked=item?item.popup===true:announcement;
     form.elements.pinned.checked=item?item.pinned===true:announcement;
+    const style=item?.appearance||defaultAppearance;
+    for(const [name,key] of [['layout','layout'],['background','background'],['textColor','text'],['accent','accent']])form.elements[name].value=style[key];
+    previewAppearance();
     members.replaceChildren();
     for(const user of store.users){
       const label=el('label'),check=el('input');check.type='checkbox';check.name='audienceUser';check.value=user.id;check.checked=audience.userIds?.includes(user.id)||false;
