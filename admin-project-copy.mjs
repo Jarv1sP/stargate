@@ -173,7 +173,10 @@ export async function adminProjectCopyCall(service,principal,operation,args,reva
       try{
         const result=await service.bridge(row.data.machine,'projects.copy.status',{id:row.id,userId:row.data.targetUserId});
         checkReceipt(row,result,true);revalidate();authorized(service,principal.userId);
-        row=save(service,row,{state:result.state==='READY'?'UNKNOWN':result.state,...(result.state==='SUCCEEDED'?{targetRelease:result.targetRelease}:{})});
+        row=save(service,row,{state:result.state==='READY'?'UNKNOWN':result.state,
+          bytes:result.bytes??null,totalBytes:result.totalBytes??null,
+          error:['UNKNOWN','READY'].includes(result.state)?'原节点回执未确认；只查询原编号。':result.state==='FAILED'?'目标复制失败，请核对原操作。':null,
+          ...(result.state==='SUCCEEDED'?{targetRelease:result.targetRelease}:{})});
       }catch{revalidate();authorized(service,principal.userId);row=read(service,row.id);
         if(!terminal.has(row.data.state)&&!row.data.cancelRequested)save(service,row,{state:'UNKNOWN',error:'原节点回执未确认；只查询原编号。'});}
     }

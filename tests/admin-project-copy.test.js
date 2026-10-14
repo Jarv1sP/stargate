@@ -59,7 +59,9 @@ test('admin plan is read-only, pinned; begin separates identities and returns ve
 test('lost target receipt survives restart; original status never dispatches a second worker',async t=>{
   const f=await fixture(t);f.lose();const {request,result}=await f.begin();assert.equal(result.state,'UNKNOWN');
   await f.restart();assert.equal((await f.call('begin',request)).id,result.id);
-  assert.equal((await f.call('status',{id:result.id})).state,'RUNNING');
+  Object.assign(f.states.get(result.id),{bytes:50,totalBytes:110});
+  const recovered=await f.call('status',{id:result.id});
+  assert.equal(recovered.state,'RUNNING');assert.equal(recovered.error,null);assert.equal(recovered.bytes,50);assert.equal(recovered.totalBytes,110);
   await f.service.reconcileAdminProjectCopies();
   assert.equal(f.calls.filter(c=>c.op==='projects.copy.admin-start').length,1);
   await assert.rejects(f.call('begin',{...request,targetProject:'changed'}),e=>e.status===409);
