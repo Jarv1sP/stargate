@@ -52,6 +52,7 @@ function fail(message){throw Error(message);}
 const CLI_OPTIONS=new Map([
   ['pin','flag'],...['kind','status','title','body','body-file','announcement-type'].map(key=>[key,'value']),
   ['via','value'],['data-read','value'],
+  ...['source-user','target-user','plan-hash','authorization'].map(key=>[key,'value']),
   ...['sha256','file-id','password-code','source-url'].map(key=>[key,'value']),
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','root','legacy','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','ack-unknown','sync','data-workspace'].map(key=>[key,'flag']),
   ['sync-dir','value'],['candidates','value'],['owner-id','value'],
@@ -226,7 +227,8 @@ async function main(){
   const transferCopy=positionals[0]==='transfer'&&positionals[1]==='copy',projectCopy=positionals[0]==='project'&&positionals[1]==='copy',transferWatch=positionals[0]==='transfer'&&positionals[1]==='watch',transferList=positionals[0]==='transfer'&&positionals[1]==='list';
   const datasetLabel=positionals[0]==='data'&&positionals[1]==='label';
   const projectLifecycle=positionals[0]==='project'&&['label','group','archive','unarchive','retire'].includes(positionals[1]);
-  if(['ref','target-project','dry-run'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'||['from','to'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'&&!transferCopy&&!projectCopy)fail('--from/--to are for sync, project copy or transfer copy; ref/target-project/dry-run are only for sync');
+  const adminProjectCopy=positionals[0]==='project'&&['admin-copy-plan','admin-copy','admin-copy-status','admin-copy-cancel'].includes(positionals[1]);
+  if(!adminProjectCopy&&(['ref','target-project','dry-run'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'||['from','to'].some(key=>Object.hasOwn(options,key))&&positionals[0]!=='sync'&&!transferCopy&&!projectCopy))fail('--from/--to are for sync, project copy or transfer copy; ref/target-project/dry-run are only for sync');
   if(options.candidates!==undefined&&positionals[0]!=='run')fail('--candidates is only for run --machine auto');
   if(options.general&&positionals[0]!=='note')fail('--general is only valid for note');
   if(options.interval!==undefined&&positionals[0]!=='watch'&&!transferWatch)fail('--interval is only valid for watch');
@@ -477,6 +479,33 @@ async function main(){
           result=(await call('projects.retire',{...ref,key:options.key,revision:numeric(),manifestSha256:options['manifest-sha256']})).result;
         }
       }
+    }else if(command==='project'&&adminProjectCopy){
+      const action=positionals[1],control=['admin-copy-status','admin-copy-cancel'].includes(action);
+      const allowed=['machines','datasets','url','session-file','json',...(!control?['from','to','source-user','target-user','target-project','release']:[]),
+        ...(action==='admin-copy'?['key','plan-hash','authorization']:[])];
+      if(positionals.length!==3||training.length||options.machines.length||options.datasets.length||Object.keys(options).some(k=>!allowed.includes(k)))
+        fail('Use project admin-copy-plan NAME --from SOURCE --to TARGET --source-user ID --target-user ID --target-project NAME --release HASH; admin-copy additionally requires --key UUID --plan-hash HASH --authorization NOTE');
+      const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+      let payload,operation;
+      if(control){
+        if(!uuid.test(positionals[2]))fail('Use the original administrator copy UUID');
+        payload={id:positionals[2]};operation=action==='admin-copy-status'?'status':'cancel';
+      }else{
+        payload={from:machineName(options.from),machine:machineName(options.to),project:projectSlug(positionals[2]),
+          targetProject:projectSlug(options['target-project']),sourceUserId:options['source-user'],targetUserId:options['target-user'],release:options.release};
+        if(payload.from===payload.machine||!/^[a-f0-9]{64}$/.test(payload.release||'')||
+          ![payload.sourceUserId,payload.targetUserId].every(id=>typeof id==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(id))||payload.sourceUserId===payload.targetUserId)
+          fail('Specify different source/target servers and account IDs, and a complete READY release');
+        operation=action==='admin-copy-plan'?'plan':'begin';
+        if(operation==='begin'){
+          if(!uuid.test(options.key||'')||!/^[a-f0-9]{64}$/.test(options['plan-hash']||'')||!options.authorization?.trim())
+            fail('Use an explicit --key UUID, the reviewed --plan-hash, and source owner --authorization');
+          Object.assign(payload,{key:options.key,planHash:options['plan-hash'],authorization:options.authorization});
+          process.stderr.write('管理员复制 key：'+options.key+'；回执不明时保留原 key，只查询原编号。\n');
+        }
+      }
+      result=(await call('projects.admin-copy.'+operation,payload)).result;
+      if(['FAILED','CANCELED'].includes(result.state))process.exitCode=1;else if(result.state==='UNKNOWN')process.exitCode=3;
     }else if(command==='project'&&['copy','copy-status','copy-cancel','copy-retry'].includes(positionals[1])){
       const action=positionals[1],allowed=['machines','datasets','url','session-file','json',...(action==='copy'?['from','to','release','key']:action==='copy-retry'?['key']:[])];
       if(training.length||options.datasets.length||options.machines.length||positionals.length!==3||Object.keys(options).some(k=>!allowed.includes(k)))fail('Usage: project copy NAME --from SOURCE --to TARGET --release HASH | project copy-status|copy-cancel COPY_ID | project copy-retry COPY_ID [--key UUID]');

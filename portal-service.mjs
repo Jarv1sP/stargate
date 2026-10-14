@@ -1,3 +1,4 @@
+import {installAdminProjectCopy,adminProjectCopyCall} from './admin-project-copy.mjs';
 import {DatabaseSync} from 'node:sqlite';
 import {mkdir,readFile,writeFile,chmod} from 'node:fs/promises';
 import {dirname} from 'node:path';
@@ -62,7 +63,7 @@ export class PortalService extends DemoService{
     service.loginSessions=new LoginSessions(service.db,id=>service.store.users.find(user=>user.id===id),{initialPrune:!service.globalMaintenanceActive()});
     service.statusPath=statusPath;await service.refreshGPUQ();installExecution(service,bridge);installMaintenance(service);installJobNotifications(service,notificationConfig);
     installOciCohort(service,ociCohortMachines);
-    installProjectReplication(service);
+    installProjectReplication(service);installAdminProjectCopy(service);
     maintainTaskNotes(service);
     installTransfers(service);
     installStorageArchive(service,storageArchiveConfig);
@@ -358,6 +359,10 @@ export class PortalService extends DemoService{
     if(['host.status','files.upload.status','files.get','files.list',
       'projects.list','projects.quota','projects.status','projects.local-import.status','projects.retire.plan','projects.retire.status'
     ].includes(operation))return this.remoteRead(token,operation,args);
+    if(operation.startsWith('projects.admin-copy.')){
+      const principal=this.principal(token);
+      return adminProjectCopyCall(this,principal,operation,args,()=>this.principal(token)).then(result=>({result,principal:this.principal(token)}));
+    }
     if(operation==='projects.replicate'||operation==='projects.replication.status'||operation==='projects.replication.cancel'||operation==='projects.replication.retry'){
       const principal=this.principal(token);
       return projectReplicationCall(this,principal,operation,args,()=>this.principal(token)).then(result=>{
@@ -469,5 +474,5 @@ export class PortalService extends DemoService{
       datasetUploadAdmission:datasetUploadAdmissionView(this.datasetIngressPolicy,this.datasetArchiveCapability),
       ...(principal.role==='admin'?{invitations:this.invitations()}:{})};
   }
-  close(){this.closing=true;for(const admission of this.loginAdmissions?.values()||[])if(admission.issued)this.revokeSession(admission.issued);this.cloudProvider?.clear();clearInterval(this.executionTimer);clearInterval(this.notificationTimer);clearInterval(this.maintenanceTimer);clearInterval(this.transferTimer);clearInterval(this.storageArchiveTimer);clearInterval(this.projectCopyTimer);this.db.close();}
+  close(){this.closing=true;for(const admission of this.loginAdmissions?.values()||[])if(admission.issued)this.revokeSession(admission.issued);this.cloudProvider?.clear();clearInterval(this.executionTimer);clearInterval(this.notificationTimer);clearInterval(this.maintenanceTimer);clearInterval(this.transferTimer);clearInterval(this.storageArchiveTimer);clearInterval(this.projectCopyTimer);clearInterval(this.adminProjectCopyTimer);this.db.close();}
 }

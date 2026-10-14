@@ -51,6 +51,13 @@ gpuctl help community   帖子、公告与聊天
 
 const admin=`STARGATE / GPUQ — 管理员操作
 
+跨账号固定版本复制（需配套节点）：
+gpuctl project admin-copy-plan SOURCE_PROJECT --from SOURCE --to TARGET --source-user ID --target-user ID --target-project NAME --release HASH
+gpuctl project admin-copy SOURCE_PROJECT [同上参数] --key UUID --plan-hash HASH --authorization "源账号授权记录与范围"
+gpuctl project admin-copy-status COPY_ID
+gpuctl project admin-copy-cancel COPY_ID
+先核对计划、源授权与镜像内凭据；仅复制新目标，未知时查原编号。
+
 管理员日常使用同一个个人项目流程；宿主运维是独立高信任入口。
 以下命令仍须当前角色、机器授权和节点能力，帮助文本不授予权限。
 

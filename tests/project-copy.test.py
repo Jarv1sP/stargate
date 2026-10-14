@@ -61,6 +61,63 @@ class ProjectCopyTests(unittest.TestCase):
         args={**self.control(key),'project':PROJECT,'release':self.release,'sourceMachine':'gpu-1','source':ticket}
         self.dst.start(args);return args
 
+    def admin_args(self):
+        ticket=self.prepare()['source']
+        return {'id':self.key,'userId':'demo-user-24','project':'copied-project',
+                'release':self.release,'sourceMachine':'gpu-1','source':ticket,
+                'hostAdmin':True,'sourceUserId':USER,'sourceProject':PROJECT}
+
+    def target_engine(self):
+        original=self.fixture.target._oci
+        def engine(user):
+            value=original(user)
+            def verify(slug,receipt):
+                self.assertEqual(receipt,{'schema':1,'owner':self.fixture.target._identity(user,slug),
+                    'project':slug,'image':F.IMAGE})
+                return F.IMAGE
+            value.verify_image=verify
+            return value
+        self.fixture.target._oci=engine
+
+    def test_admin_cross_account_immutable_copy_uses_new_owner_release_and_recovers_receipt(self):
+        args=self.admin_args();self.target_engine()
+        self.dst.admin_start(args)
+        self.assertEqual(self.dst.worker(self.key,1),0)
+        result=self.dst.status({'id':self.key,'userId':args['userId']})
+        self.assertEqual(result['state'],'SUCCEEDED')
+        self.assertNotEqual(result['targetRelease'],self.release)
+        target=self.fixture.target.release(args['userId'],args['project'],result['targetRelease'])
+        self.assertEqual((target['code']/'train.py').read_text(),'print("fixture")\n')
+        self.assertEqual(target['meta']['owner'],self.fixture.target._identity(args['userId']))
+        self.assertEqual(os.listdir(self.fixture.target.dev_paths(args['userId'],args['project'])['home']),[])
+        self.fixture.source.release(USER,PROJECT,self.release)
+        self.dst.path(self.key,'.result.json').unlink()
+        recovered=self.dst.status({'id':self.key,'userId':args['userId']})
+        self.assertEqual(recovered['state'],'SUCCEEDED')
+        self.assertEqual(recovered['targetRelease'],result['targetRelease'])
+        with self.assertRaisesRegex(ValueError,'different account'):
+            self.dst.status({'id':self.key,'userId':USER})
+
+    def test_admin_copy_rejects_missing_privilege_and_wrong_source_owner(self):
+        args=self.admin_args();before=len(self.calls)
+        for bad in ({**args,'hostAdmin':False},{**args,'sourceProject':'wrong'}):
+            with self.assertRaises(ValueError):self.dst.admin_start(bad)
+        self.assertEqual(len(self.calls),before)
+        self.dst.admin_start({**args,'sourceUserId':'demo-user-25'})
+        self.assertEqual(self.dst.worker(self.key,1),1)
+        self.assertEqual(self.dst.status({'id':self.key,'userId':args['userId']})['state'],'FAILED')
+        with self.assertRaises(ValueError):self.fixture.target._project(args['userId'],args['project'])
+
+    def test_admin_copy_preserves_existing_target_even_if_empty(self):
+        args=self.admin_args();self.target_engine()
+        self.fixture.target.create(args['userId'],args['project'],environment_mode='oci')
+        before=self.fixture.target.status(args['userId'],args['project'])
+        with self.assertRaisesRegex(ValueError,'new target'):
+            self.dst.admin_probe({'hostAdmin':True,'userId':args['userId'],'project':args['project'],'from':'gpu-1'})
+        self.dst.admin_start(args)
+        self.assertEqual(self.dst.worker(self.key,1),1)
+        self.assertEqual(self.fixture.target.status(args['userId'],args['project']),before)
+
     def test_fixed_ready_probe_includes_real_code_and_image_storage_footprint(self):
         value=self.src.probe({'userId':USER,'project':PROJECT,'release':self.release})
         fixed=self.fixture.source.release(USER,PROJECT,self.release)

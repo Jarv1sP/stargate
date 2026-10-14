@@ -398,3 +398,19 @@ test('invalid slugs, releases and UUIDs fail before any API work',async t=>{
   assert.equal(f.calls.length,0);
   assert.equal((await f.cli(['project','create','bad/name'])).code,1);assert.equal(f.calls.some(c=>c.operation==='projects.create'),false);
 });
+
+test('admin copy CLI uses explicit reviewed plan, identities and original recovery IDs',async t=>{
+  const f=await fixture(t),key=randomUUID(),id=randomUUID();
+  const flags=['--from','gpu-1','--to','gpu-2','--source-user','source-user','--target-user','target-user','--target-project','target-project','--release',RELEASE];
+  f.custom.set('projects.admin-copy.plan',args=>({state:'PLANNED',planHash:OLDER,...args}));
+  f.custom.set('projects.admin-copy.begin',args=>({id,state:'UNKNOWN',key:args.key}));
+  f.custom.set('projects.admin-copy.status',args=>({id:args.id,state:'SUCCEEDED',targetRelease:OLDER}));
+  const plan=await f.cli(['project','admin-copy-plan','source-project',...flags]);assert.equal(plan.code,0);assert.equal(plan.data.planHash,OLDER);
+  const before=f.calls.filter(c=>c.operation==='projects.admin-copy.begin').length;
+  assert.notEqual((await f.cli(['project','admin-copy','source-project',...flags])).code,0);
+  assert.equal(f.calls.filter(c=>c.operation==='projects.admin-copy.begin').length,before);
+  const begin=await f.cli(['project','admin-copy','source-project',...flags,'--key',key,'--plan-hash',OLDER,'--authorization','Owner consent fixture']);
+  assert.equal(begin.code,3);assert.equal(begin.data.id,id);assert.match(begin.stderr,new RegExp(key));
+  assert.deepEqual(f.calls.find(c=>c.operation==='projects.admin-copy.begin').args,{from:'gpu-1',machine:'gpu-2',project:'source-project',targetProject:'target-project',sourceUserId:'source-user',targetUserId:'target-user',release:RELEASE,key,planHash:OLDER,authorization:'Owner consent fixture'});
+  const status=await f.cli(['project','admin-copy-status',id]);assert.equal(status.code,0);assert.equal(status.data.targetRelease,OLDER);
+});

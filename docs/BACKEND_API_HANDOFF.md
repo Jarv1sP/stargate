@@ -482,3 +482,15 @@ Portal 只调用现有字面量 `datasets.capacity`，并行、有 5 秒读取�
 读取总预算为 40 秒，单次节点读取最多 27 秒，并在重查和返回前核对授权。
 取消、提交和资源释放不会因此自动重放。网页保留当前账号同一作业最后读到的日志，
 暂时读取失败只更新查询状态，切换账号时清除这些日志。
+
+## 管理员跨账号项目复制（节点配套，尚需独立部署验收）
+
+`projects.admin-copy.plan` 接受且仅接受 `{from,machine,sourceUserId,targetUserId,project,targetProject,release}`。账号 ID 取实际成员目录、机器取可信清单；两个账号及服务器分别须不同。源、目标账号启用且各自机器额度为正，当前发起者为管理员。完整 READY OCI 发布、相同 CPU 架构、目标不存在及新节点 `adminCopyProtocol:1` 确认后返回 `PLANNED`、`planHash`、固定来源、镜像 digest、代码/镜像容量与目标空间估算。没有导出、目标创建或训练；计划不预留容量，`transportBytes:null` 表示尚未导出。
+
+`projects.admin-copy.begin` 增加 `{key,planHash,authorization}`，key 为完整 UUID；authorization 为管理员核实的源账号具体授权说明，不是用户凭据或客户端权限声明。服务再次执行计划校验，记录当前管理员、完整来源/目标、授权说明和 key；审计与操作登记在同一 SQLite 事务中先于节点派发。相同 key 内容不同返回 409，相同内容只返回原记录。后台逐步重新核对账号与机器授权；旧节点/未确认能力零派发。
+
+`projects.admin-copy.status {id}` 仅当前发起管理员可读；只查询原目标节点 UUID，不推进或重发。`projects.admin-copy.cancel {id}` 同一权限，先 revoke 源 ticket 再确认目标及源清理；维护时保留查询/取消。状态为 `PREPARING/DISPATCHING/RUNNING/UNKNOWN/CANCELING/SUCCEEDED/FAILED/CANCELED`，未知只查原编号。回执移除私有 ticket；成功必须含完整 `targetRelease`。源 `release` 始终为原固定编号，不能拿它代替目标编号。没有自动 retry、改派、目标覆盖或训练启动。
+
+私有 `projects.copy.admin-probe` 和 `projects.copy.admin-start` 只接受门户确认的 `hostAdmin:true`。目标 start 固定源 user/project、目标 user/project、原 release 和 TLS ticket，使用现有单次 worker/取消围栏。目标先按源身份验证原清单、SHA、READY 元数据和 OCI receipt，再保持代码及镜像内容，构造目标身份的 OCI receipt，按原发布摘要算法生成新版本。目标 create 的 `copyOperation` 在现有创建锁内绑定 UUID；任何其他已存在项目拒绝，原同账号复制断言不变。提交前持久保存目标版本映射，丢失末次回执时须同时核对目标项目 UUID 绑定与真实固定发布，才恢复 SUCCEEDED。仅导入固定发布，开发 HOME、latest、草稿和结果不复制。
+
+授权说明不自动清理镜像内秘密：管理员须在源固定发布前核实内容授权、排除范围和凭据。代码树外模型、同机跨账号、开发容器克隆、存储去重与源环境重定位不在本接口范围。

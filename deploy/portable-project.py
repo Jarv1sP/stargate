@@ -222,10 +222,12 @@ class PortableProjects:
             return {'data':base64.b64encode(part).decode(),'offset':offset+len(part),'size':entry['size']}
 
     @project_reader
-    def import_bundle(self, user, project, release, folder, manifest):
+    def import_bundle(self, user, project, release, folder, manifest, *, source_identity=None, target_receipt=None):
         self.store.admit(user,project)
         """Publish only a new immutable release. Existing dev/latest stay intact."""
-        total = self.validate_manifest(manifest, user, project, release)
+        source_user, source_project = source_identity or (user, project)
+        need(source_identity is None or source_user != user, 'Cross-account source must differ')
+        total = self.validate_manifest(manifest, source_user, source_project, release)
         parent = self.folder(user, 'imports')
         folder = self.s.absolute(folder)
         need(folder.parent == parent and self.s.JOB_ID.fullmatch(folder.name), 'Invalid private import staging directory')
@@ -247,7 +249,7 @@ class PortableProjects:
                 need(checksum.hexdigest() == entry['sha256'], 'Portable file checksum differs')
         root = folder/'release'
         meta = self.store._release_meta(root, release)
-        need(meta.get('owner') == self.store._identity(user, project) and meta.get('project') == project
+        need(meta.get('owner') == self.store._identity(source_user, source_project) and meta.get('project') == source_project
              and meta.get('environmentMode') == 'oci', 'Portable project metadata differs')
         # Transport files have safe 0600 defaults. Executability is restored
         # only from metadata authenticated by the exact release digest.
@@ -263,6 +265,25 @@ class PortableProjects:
         need(meta.get('content') == {'code':code} and meta['bytes'] == budget['bytes']
              and meta['entries'] == budget['entries'] and not os.listdir(root/'env'), 'Portable code differs from its published version')
         image = self.s.read_json(folder/'image.json', 65536)
+        if source_identity is not None:
+            # Authenticate the original receipt before constructing a new owner
+            # release. Image bytes/digest and code are unchanged; metadata is not.
+            receipt = meta.get('oci')
+            need(isinstance(receipt, dict) and set(receipt) == {'schema','owner','project','image'}
+                 and receipt['schema'] == 1 and receipt['owner'] == meta['owner']
+                 and receipt['project'] == source_project and receipt['image'] == image.get('image'),
+                 'Source OCI ownership differs')
+            owner = self.store._identity(user, project)
+            meta = {**meta, 'owner':owner, 'project':project,
+                    'oci':{**receipt, 'owner':owner, 'project':project}}
+            release = self.s.digest({k:meta[k] for k in ('schema','base','content','environmentMode','oci')})
+            meta['release'] = release
+            need(callable(target_receipt), 'Cross-account target receipt is required')
+            target_receipt(release)
+            # Never mutate a pre-existing target project, including an empty one.
+            self.store.create(user, project, environment_mode='oci', copy_operation=folder.name)
+            self.s.atomic_json(root/'meta.json', meta)
+            self.s.atomic_json(root/'READY.json', self.store._ready_marker(meta))
         # Creating the target is safe and mode-checked; no existing development
         # state is changed. Import may coexist with an existing active container.
         self.store.create(user, project, environment_mode='oci')

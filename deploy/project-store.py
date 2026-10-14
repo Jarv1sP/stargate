@@ -387,7 +387,9 @@ class ProjectStore:
             pass
 
     @project_lifetime
-    def create(self, user, slug, environment_mode=None):
+    def create(self, user, slug, environment_mode=None, *, copy_operation=None):
+        if copy_operation is not None and not JOB_ID.fullmatch(copy_operation):
+            fail("invalid_input", "Invalid project copy operation")
         self.admit(user, slug)
         if environment_mode is not None and environment_mode not in ('shared', 'isolated', 'oci'):
             fail('invalid_input', 'Environment mode must be shared, isolated or oci')
@@ -401,6 +403,8 @@ class ProjectStore:
             project = parent / slug
             if project.exists() or project.is_symlink():
                 _, existing = self._project(user, slug)
+                if copy_operation is not None and existing.get('copyOperation') != copy_operation:
+                    fail('project_exists', 'Cross-account copy requires a new target project')
                 if environment_mode is not None and existing.get('environmentMode', 'shared') != environment_mode:
                     fail('environment_conflict', 'Existing project environment mode cannot be changed; create a new project')
                 return self.status(user, slug)
@@ -415,7 +419,8 @@ class ProjectStore:
                     private_dir(stage / 'dev' / name, create=True)
                 atomic_json(stage / 'project.json', {'schema': 2, 'owner': owner,
                             'project': slug, 'environmentMode': environment_mode or 'shared',
-                            'createdAt': int(time.time()), 'projectUUID': str(uuid.uuid4())})
+                            'createdAt': int(time.time()), 'projectUUID': str(uuid.uuid4()),
+                            **({'copyOperation': copy_operation} if copy_operation else {})})
                 os.rename(stage, project)
                 with directory(parent) as fd:
                     os.fsync(fd)

@@ -218,6 +218,8 @@ gpuctl run --machine auto -g 2 --min-vram 24 -- python train.py --output /output
 
 复制明确失败或取消后，排查原因，再用 `gpuctl project copy-retry COPY_ID` 显式重试。平台先确认旧 worker 已停止、传输临时文件已清理，才建立同来源、同目标、同版本的新操作；不会自动无限重跑。保留打印的重试键，响应不明时加原 `--key UUID` 重复这条命令；`UNKNOWN` 只能先查状态，不能强行重试。复制恢复就绪后再重新提交失败的训练，旧训练不会自动重启。
 
+管理员跨账号复制需要源账号的具体内容授权、排除凭据后的完整 READY 发布及配套节点。先用 `gpuctl project admin-copy-plan` 核对来源、目标和容量，执行入口见 `gpuctl help admin`；目标须为新项目，成功后使用返回的 `targetRelease`。不复制开发 HOME、结果或活容器，没有源发布或状态未知时不会确认复制完成。
+
 停用账号或收回机器权限后，后台在下一次状态检查中先撤销来源下载凭证，再停止和清理目标复制；这不是零延迟操作。节点离线时会保留待清理状态，不把“尚未确认停止”显示成“已清理”。
 
 ```sh local

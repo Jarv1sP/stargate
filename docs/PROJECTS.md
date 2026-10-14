@@ -257,3 +257,23 @@ gpuctl project copy-retry COPY_ID
 未选项目时，`ssh/push/files/run/pull` 保持原个人工作区。选中项目后临时加 `--legacy` 可继续处理旧代码和任务，不迁移或删除它们。旧上传仍使用原 offset/truncate 协议；项目上传独立使用 uploadId/totalSize/sha256/final。没有 project 字段的旧 job spec 不加字段，避免改变历史幂等摘要。
 
 `--legacy` 不能同时指定项目、版本或项目输出任务 ID。旧任务日志/取消、机器额度、账号缓存、`AMAX_URL`/`AMAX_SESSION_FILE` 兼容不变。管理员 `ssh --root` 是显式宿主机维护入口，不受项目目录约束；不要把它当普通项目开发方式。
+
+## 管理员跨账号固定发布复制（需配套节点）
+
+管理员先核实源账号对具体代码、权重、OCI 镜像和目标账号的授权，并由源账号检查代码和镜像内的凭据。记录授权出处；一般流程承诺不能代替具体内容授权。必须提供完整 READY 发布，不会冻结活容器或自动发布。没有固定版本时先由源账号准备。
+
+```sh
+gpuctl project admin-copy-plan source-project --from gpu-1 --to gpu-2 --source-user SOURCE_ID --target-user TARGET_ID --target-project new-project --release FULL_HASH
+# 核对上述 planHash、容量估算与授权范围后，显式提交：
+gpuctl project admin-copy source-project --from gpu-1 --to gpu-2 --source-user SOURCE_ID --target-user TARGET_ID --target-project new-project --release FULL_HASH --key UUID --plan-hash PLAN_HASH --authorization "源账号授权记录与已核对的范围"
+gpuctl project admin-copy-status COPY_ID
+gpuctl project admin-copy-cancel COPY_ID
+```
+
+仅当前管理员可操作，源账号须拥有来源机器权限，目标账号须拥有目标机器权限；零授权、停用、旧节点、未知能力和非 READY 来源均拒绝。当前版本只支持不同服务器，使用已有 TLS 固定证书直传，不经过用户电脑或门户载荷中转。目标项目须不存在；开始后出现同名项目也不覆盖。代码与已发布 OCI 镜像校验后，重新生成目标账号自己的发布元数据及完整 `targetRelease`；源发布保持原样。`SUCCEEDED` 才确认目标固定版本就绪，后续运行须使用目标编号。
+
+不复制开发 HOME、历史结果或开发草稿，不创建开发容器、不启动训练。代码中的权重随固定代码快照复制；代码树外的模型不自动纳入。镜像内可能含用户自行写入的凭据，平台不会在迁移中删改镜像或承诺自动识别秘密，须在源发布前处理。目标的草稿与 latest 不自动切换，这不是开发容器克隆。
+
+计划报告代码大小、镜像展开大小、目标可用空间和保留空间；传输包大小在导出前未知，估算以两份镜像大小、代码及元数据余量计算，实际导出、接收和加载仍检查磁盘空间及已有配额。估算不是空间预留，也不承诺跨账号存储去重。
+
+原 UUID 与原 key 持久保存。重复提交相同 key 只返回原记录，查询只读原节点状态；丢回执不自动重派，不能套用同账号 `copy-retry`。取消先封住源授权，再确认两端停止与临时载荷清理；已安装的固定版本和源内容保留。授权撤销后后台停止继续派发并尝试取消原操作，节点失联保持待确认。本地测试不代表节点已部署或用户数据已迁移。

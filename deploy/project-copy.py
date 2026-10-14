@@ -100,6 +100,34 @@ class ProjectCopies(t.TransferJobs):
                 result['imageEntries']=None
         return result
 
+    def admin_probe(self,args):
+        p.need(isinstance(args,dict) and args.get('hostAdmin') is True
+               and set(args)<={'hostAdmin','userId','project','release','from'}, 'Administrator copy identity required')
+        value=self.probe({k:v for k,v in args.items() if k!='hostAdmin'})
+        if 'release' not in args:
+            try:self.store._project(args['userId'],args['project'])
+            except Exception as error:
+                if getattr(error,'code',None)!='not_found':raise
+            else:raise ValueError('Cross-account copy requires a new target project')
+        self.store._space()
+        with self.portable.s.directory(self.store.path) as fd:
+            disk=os.fstatvfs(fd)
+        return {**value,'adminCopyProtocol':1,'targetAbsent':'release' not in args,
+                'availableBytes':disk.f_bavail*disk.f_frsize,'reserveBytes':self.store.reserve_bytes}
+
+    def admin_start(self,args):
+        p.need(isinstance(args,dict) and set(args)=={'hostAdmin','sourceUserId','sourceProject',
+               'id','userId','project','release','sourceMachine','source'} and args['hostAdmin'] is True,
+               'Administrator copy identity required')
+        self.identity(args)
+        p.need(args['sourceUserId']!=args['userId'],'Cross-account source must differ')
+        self.store._identity(args['sourceUserId'],args['sourceProject'])
+        # Validate the ordinary fixed ticket against the source tuple, never
+        # against a caller-supplied replacement manifest or target owner hash.
+        self.validate_source({**args,'project':args['sourceProject']})
+        payload={k:args[k] for k in ('userId','project','release','sourceMachine','source','sourceUserId','sourceProject')}
+        return self.start_spec(args,{**payload,'role':'import','adminCopyProtocol':1})
+
     def launch(self,spec):
         self.n.atomic_json(self.path(spec['id']),spec)
         try:
@@ -163,6 +191,10 @@ class ProjectCopies(t.TransferJobs):
     def start(self,args):
         p.need(set(args)=={'id','userId','project','release','sourceMachine','source'},'Invalid project copy fields')
         self.identity(args)
+        self.validate_source(args)
+        return self.start_spec(args,{**{k:args[k] for k in ('userId','project','release','sourceMachine','source')},'role':'import'})
+
+    def validate_source(self,args):
         source=args['source'];machine=args['sourceMachine']
         p.need(isinstance(machine,str) and machine!=self.machine(),'Project source must be a different node')
         p.need(isinstance(source,dict) and set(source)=={'id','token','protocol','state','project','release','manifestBytes','manifestSha256','totalBytes','entries'}
@@ -174,7 +206,6 @@ class ProjectCopies(t.TransferJobs):
              and type(source['totalBytes']) is int and 0<=source['totalBytes']<=self.store.MAX_BYTES
              and type(source['entries']) is int and 0<=source['entries']<=self.store.max_entries+7,'Invalid immutable project source grant')
         ProjectPeer(self.n.CONFIG.get('transferPeers',{}).get(machine),source).close()
-        return self.start_spec(args,{**{k:args[k] for k in ('userId','project','release','sourceMachine','source')},'role':'import'})
 
     def status(self,args):
         p.need(set(args)=={'id','userId'},'Invalid copy status fields')
@@ -188,7 +219,12 @@ class ProjectCopies(t.TransferJobs):
         if active is False and not result and not self.path(spec['id'],'.cancel').exists():
             try:
                 if spec['role']=='import':
-                    self.store.release(spec['userId'],spec['project'],spec['release']);recovered='SUCCEEDED'
+                    target_release=spec['release']
+                    if spec.get('adminCopyProtocol')==1:
+                        target_release=self.load(spec['id'],'.target.json')['targetRelease']
+                        p.need(self.store._project(spec['userId'],spec['project'])[1].get('copyOperation')==spec['id'],
+                               'Target project copy identity differs')
+                    self.store.release(spec['userId'],spec['project'],target_release);recovered='SUCCEEDED'
                 else:
                     self.portable.info(spec['userId'],spec['project'],spec['release']);recovered='READY'
                 result={'state':recovered,'attempt':spec['attempt'],'recoveredFromImmutableRelease':True}
@@ -199,7 +235,11 @@ class ProjectCopies(t.TransferJobs):
         elif self.path(spec['id'],'.cancel').exists() and state not in ('READY','SUCCEEDED'):state='CANCELED'
         try:progress=self.load(spec['id'],'.progress.json')
         except FileNotFoundError:progress={}
-        return {'id':spec['id'],'state':state,'attempt':spec['attempt'],'project':spec['project'],'release':spec['release'],
+        target={}
+        if spec.get('adminCopyProtocol')==1:
+            try:target={'targetRelease':self.load(spec['id'],'.target.json')['targetRelease']}
+            except FileNotFoundError:pass
+        return {**target,'id':spec['id'],'state':state,'attempt':spec['attempt'],'project':spec['project'],'release':spec['release'],
                 'role':spec['role'],'route':'lan','bytes':progress.get('bytes',0),
                 'totalBytes':spec.get('source',{}).get('totalBytes'),
                 'warnings':self.store.size_warnings(spec['source']['totalBytes']) if 'source' in spec else [],
@@ -361,7 +401,9 @@ class ProjectCopies(t.TransferJobs):
         try:
             # A different completed copy may already have installed the same
             # fixed version. It is safe to reuse, never overwrite its dev tree.
-            try:self.store.release(user,project,release)
+            try:
+                if spec.get('adminCopyProtocol')==1:raise self.portable.s.ProjectError('not_found','New account copy')
+                self.store.release(user,project,release)
             except Exception as error:
                 if getattr(error,'code',None)!='not_found':raise
             else:return
@@ -371,7 +413,8 @@ class ProjectCopies(t.TransferJobs):
                 p.need(0<len(part)<=p.CHUNK and len(raw)+len(part)<=spec['source']['manifestBytes'],'Invalid portable manifest chunk')
                 raw.extend(part)
             p.need(hashlib.sha256(raw).hexdigest()==spec['source']['manifestSha256'],'Portable manifest checksum differs')
-            manifest=json.loads(raw);total=self.portable.validate_manifest(manifest,user,project,release)
+            source_identity=(spec['sourceUserId'],spec['sourceProject']) if spec.get('adminCopyProtocol')==1 else None
+            manifest=json.loads(raw);total=self.portable.validate_manifest(manifest,*(source_identity or (user,project)),release)
             p.need(total==spec['source']['totalBytes'] and len(manifest['files'])+len(manifest['directories'])==spec['source']['entries'],'Portable manifest totals differ')
             self.store._space(total)
             parent=self.portable.folder(user,'imports');folder=parent/key
@@ -398,13 +441,16 @@ class ProjectCopies(t.TransferJobs):
                 finally:os.close(fd)
                 p.need(checksum.hexdigest()==entry['sha256'],'Portable received file checksum differs')
             if self.path(key,'.cancel').exists():raise InterruptedError()
-            self.portable.import_bundle(user,project,release,folder,manifest)
+            self.portable.import_bundle(user,project,release,folder,manifest,source_identity=source_identity,
+                target_receipt=lambda value:self.n.atomic_json(self.path(key,'.target.json'),{'targetRelease':value}))
             self.store._remove_stage(folder)  # Only this operation's temporary image/archive.
             self.n.atomic_json(self.path(key,'.progress.json'),{'bytes':total})
         finally:client.close()
 
     def process(self,operation,args):
         action=operation.removeprefix('projects.copy.')
+        if action=='admin-probe':return self.admin_probe(args)
+        if action=='admin-start':return self.admin_start(args)
         if action=='prepare':return self.prepare(args)
         if action=='start':return self.start(args)
         if action=='status':return self.status(args)
