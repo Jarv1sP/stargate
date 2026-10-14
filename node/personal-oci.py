@@ -47,6 +47,7 @@ def cdi_selection(config,uuids):
 
 
 class PersonalOCI:
+    proxy={}
     def __init__(self,config,user):
         self.config,self.user=config,user;self.s=module('project-store');self.d=module('local-data')
         self.root=self.d.root(config,'root');self.owner=self.d.name(user)
@@ -59,6 +60,11 @@ class PersonalOCI:
                   'REGISTRY_AUTH_FILE':str(self.folder/'auth.json'),
                   'CONTAINERS_REGISTRIES_CONF':str(self.folder/'registries.conf'),
                   'CONTAINERS_CONF':str(self.folder/'containers.conf')}
+        # The node's outbound proxy serves image pulls and every container (git, pip, conda).
+        proxy=config.get('proxy')
+        self.proxy={} if not proxy else {name:value for key,value in (('http_proxy',proxy),('https_proxy',proxy),
+            ('no_proxy',config.get('noProxy','localhost,127.0.0.1'))) for name in (key,key.upper())}
+        self.env.update(self.proxy)
         self.s.atomic_json(self.folder/'auth.json',{'auths':{}})
         for name,raw in {'registries.conf':'unqualified-search-registries = []\n',
                          'containers.conf':'[containers]\nenv_host = false\nhttp_proxy = false\nvolumes = []\n[engine]\nremote = false\n'}.items():
@@ -120,7 +126,8 @@ class PersonalOCI:
             flags=['--cgroups=disabled','--pid=private','--ipc=private','--uts=private',
                 '--network=slirp4netns:allow_host_loopback=false','--security-opt=no-new-privileges',
                 '--user=0','--workdir=/workspace','--volume',str(paths['code'])+':/workspace:rw',
-                '--volume',str(paths['home'])+':/home/gpuq:rw','--env=HOME=/home/gpuq','--pull=never']
+                '--volume',str(paths['home'])+':/home/gpuq:rw','--env=HOME=/home/gpuq','--pull=never',
+                *['--env='+k+'='+v for k,v in self.proxy.items()]]
             # Git executes in the same writable project rootfs, never as a host command.
             head=self.workspace_container(project)
             request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
@@ -207,6 +214,7 @@ print(json.dumps(result))
         args = ['--group-add=keep-groups', '--cgroups=split', '--cgroupns=private', '--user=0', '--pid=private', '--ipc=private',
                 '--uts=private', '--hostname=gpuq-job', '--network=slirp4netns:allow_host_loopback=false',
                 '--security-opt=no-new-privileges', '--image-volume=ignore', '--pull=never',
+                *['--env='+k+'='+v for k,v in self.proxy.items()],
                 # The existing parent unit enforces TasksMax=2048 and memory /
                 # CPU limits across Podman + conmon + every payload descendant.
                 # No competing nested pids controller in a populated unit.

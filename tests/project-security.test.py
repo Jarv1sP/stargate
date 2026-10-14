@@ -39,12 +39,14 @@ class ProjectContract(unittest.TestCase):
     def test_oci_arguments_are_private_namespace_only_and_training_dataset_is_readonly(self):
         oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI)
         engine.config={'machine':'test','personalOci':{'cdiSpec':str(self.base/'cdi.json')}};engine.owner='alice'
+        engine.proxy={'https_proxy':'http://proxy.test:3128'}
         engine._mount_sources={3:str(self.base/'work'),4:str(self.base/'dataset'),5:str(self.base/'output')}
         (self.base/'cdi.json').write_text(json.dumps({'kind':'nvidia.com/gpu','devices':[{'name':'GPU-a'}]}))
         spec={'project':'demo','argv':['python','train.py'],'id':self.key()}
         args=engine.arguments(spec,{'environmentMode':'oci','workspace':True},False,['GPU-a'],[(3,'/workspace',False),(4,'/datasets',True),(5,'/outputs',False)])
         self.assertIn('nvidia.com/gpu=GPU-a',args);self.assertIn(str(self.base/'dataset')+':/datasets:ro',args)
         self.assertIn('--pid=private',args);self.assertIn('--network=slirp4netns:allow_host_loopback=false',args)
+        self.assertIn('--env=https_proxy=http://proxy.test:3128',args)
         for forbidden in ('--privileged','--pid=host','--network=host','docker.sock','/data/mine'):
             self.assertFalse(any(forbidden in a for a in args),forbidden)
 

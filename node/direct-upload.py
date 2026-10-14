@@ -31,9 +31,9 @@ class DirectUploads:
         if file.exists():
             row=self.s.read_json(file)
             if action=='get' and (row['root'],row['path'],row['action'])!=(str(root),path,action):raise ValueError('原下载编号已用于不同请求。')
-            if row['expiresAt']<time.time():row.update(ticket=uuid.uuid4().hex,expiresAt=time.time()+600);self.s.atomic_json(file,row)
+            if row['expiresAt']<time.time():row.update(ticket=uuid.uuid4().hex,expiresAt=int(time.time())+300);self.s.atomic_json(file,row)
         else:
-            row={'id':key,'ticket':uuid.uuid4().hex,'root':str(root),'path':path,'action':action,'expiresAt':time.time()+600,'userId':args['userId'],'chunkBytes':args.get('maxChunkBytes',1024**2)}
+            row={'id':key,'ticket':uuid.uuid4().hex,'root':str(root),'path':path,'action':action,'expiresAt':int(time.time())+300,'userId':args['userId'],'chunkBytes':args.get('maxChunkBytes',1024**2)}
             self.s.atomic_json(file,row)
         der=ssl.PEM_cert_to_DER_cert(Path(self.c['certificate']).read_text())
         file_info={'path':row['path'],'size':args.get('totalSize')} if action=='put' else module('dataset-files').process(self.n.CONFIG,'files.stat',{'path':row['path']},root=root)
