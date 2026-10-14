@@ -1,18 +1,18 @@
+import {clientUpgradeMessage} from './client-compatibility.mjs';
+import {validateFileLanEndpoints} from './campus-files.mjs';
 import http from 'node:http';
 import {randomBytes} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import {PortalService} from './portal-service.mjs';
 import {bridgeClient} from './execution.mjs';
-import {standaloneClient} from './client-bundle.mjs';
+import {standaloneClientStream,standaloneClientInfo,standaloneClientRangeStream,clientByteRange,watchClientDownload} from './client-bundle.mjs';
+import {pipeline} from 'node:stream/promises';
 import {loadTelegramNotifications} from './job-notifications.mjs';
 import {guideTarget,guidePage} from './guide.mjs';
 import {LOGIN_POLICY} from './login-sessions.mjs';
-import {loadStorageArchivePolicy} from './storage-archive.mjs';
-import {loadDatasetIngressPolicy} from './dataset-ingress.mjs';
 import {STARBASE_ASSETS} from './frontend-assets.mjs';
 import {directUploadConnectSources} from './direct-upload-policy.mjs';
-import {trainingStorageErrorBody} from './training-storage.mjs';
 
 const files={'/':'index.html','/index.html':'index.html','/styles.css':'styles.css','/workspace.css':'workspace.css','/app.js':'app.js','/model.js':'model.js','/machines.js':'machines.js','/client.js':'client.js','/execution-ui.js':'execution-ui.js','/terminal-ui.js':'terminal-ui.js','/resources-ui.js':'resources-ui.js','/xterm.js':'vendor/xterm.js','/xterm.css':'vendor/xterm.css','/addon-fit.js':'vendor/addon-fit.js'};
 files['/job-progress.js']='job-progress.js';files['/job-progress-ui.js']='job-progress-ui.js';
@@ -27,35 +27,35 @@ Object.assign(files,STARBASE_ASSETS);
 const mime={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8',woff2:'font/woff2',png:'image/png',svg:'image/svg+xml',ico:'image/x-icon'};
 const requestTokens=req=>({
   bearer:/^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization||'')?.[1],
-  fromCookie:/(?:^|;\s*)gpuq_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie||'')?.[1]||/(?:^|;\s*)amax_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie||'')?.[1],
+  fromCookie:/(?:^|;\s*)gpuq_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie||'')?.[1],
 });
 const escapeHTML=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 files['/guide.css']='guide.css';files['/guide.js']='guide.js';
 files['/datasets-ui.js']='datasets-ui.js';
 files['/data-route.js']='data-route.js';
+files['/personal-upload.js']='personal-upload.js';
 files['/datasets.css']='datasets.css';
 files['/dataset-upload.js']='dataset-upload.js';
-files['/data-workspace.js']='data-workspace.js';
-files['/cloud-files-ui.js']='cloud-files-ui.js';
 files['/transfers-ui.js']='transfers-ui.js';files['/transfer-upload.js']='transfer-upload.js';
 files['/cloud-import-ui.js']='cloud-import-ui.js';
 files['/community-ui.js']='community-ui.js';files['/community.css']='community.css';
 files['/maintenance-ui.js']='maintenance-ui.js';files['/maintenance.css']='maintenance.css';
 files['/task-notes-ui.js']='task-notes-ui.js';files['/submission-keys.js']='submission-keys.js';
-export async function createPortalServer({database,bootstrap,origin,secure=true,statusPath,bridgeSocket,displayBridgeSocket,displayBridge,bridge,notificationConfigPath,storageArchiveConfigPath,datasetIngressConfigPath,ociCohortMachines=[],directUploadOrigins=process.env.GPUQ_DIRECT_UPLOAD_ORIGINS||'[]'}){
+export async function createPortalServer({database,bootstrap,origin,secure=true,statusPath,bridgeSocket,fileBridgeSocket,bridge,notificationConfigPath,fileLanEndpoints=process.env.GPUQ_FILE_LAN_ENDPOINTS||'{}',directUploadOrigins=process.env.GPUQ_DIRECT_UPLOAD_ORIGINS||'[]'}){
+  const lanEndpoints=validateFileLanEndpoints(fileLanEndpoints);
   const uploadConnect=directUploadConnectSources(directUploadOrigins);
-  await standaloneClient();
-  const url=new URL(origin);const config=await loadTelegramNotifications(notificationConfigPath);
-  const storage=await loadStorageArchivePolicy(storageArchiveConfigPath);
-  const ingress=await loadDatasetIngressPolicy(datasetIngressConfigPath);
-  const service=await PortalService.open(database,bootstrap,statusPath,bridge||(bridgeSocket?bridgeClient(bridgeSocket):undefined),config,storage,ociCohortMachines,ingress);const rate=new Map();
-  service.displayBridge=displayBridge||(displayBridgeSocket?bridgeClient(displayBridgeSocket):undefined);
+  const url=new URL(origin);const clientInfo=await standaloneClientInfo(url.origin);
+  const config=await loadTelegramNotifications(notificationConfigPath);
+  const executor=bridgeSocket?bridgeClient(bridgeSocket):undefined;
+  const fileExecutor=fileBridgeSocket?bridgeClient(fileBridgeSocket):executor;
+  const routedBridge=bridge||(executor&&((machine,operation,args,context)=>(operation==='files.direct.prepare'?fileExecutor:executor)(machine,operation,args,context)));
+  const service=await PortalService.open(database,bootstrap,statusPath,routedBridge,config);service.fileLanEndpoints=lanEndpoints;const rate=new Map();
   const server=http.createServer(async(req,res)=>{
     const styleNonce=randomBytes(18).toString('base64');
     const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':`default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${styleNonce}'; img-src 'self' data:; connect-src 'self'${uploadConnect?' '+uploadConnect:''}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`};
     const json=(code,data,extra={})=>{res.writeHead(code,{...headers,'Content-Type':'application/json; charset=utf-8',...extra});res.end(JSON.stringify(data));};
     const cookie=(token,name='gpuq_session')=>`${name}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token?LOGIN_POLICY.cookieSeconds:0}${secure?'; Secure':''}`;
-    const expiredCookies=()=>[cookie(''),cookie('','amax_session')];
+    const expiredCookies=()=>[cookie('')];
     let inventoryRequest=false;
     try{
       if(req.headers.host!==url.host)return json(403,{error:'Invalid host'});
@@ -68,14 +68,16 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
         if(!req.headers['content-type']?.startsWith('application/json'))return json(415,{error:'JSON required'});
         // Only our private reverse proxy can reach this server; it overwrites this header.
         const ip=req.headers['x-real-ip']||req.socket.remoteAddress;
-        const kind=path==='/api/register'?'register':path==='/api/login'?'login':'api';
-        const key=`${ip}:${kind}`;const limit=kind==='register'?5:kind==='login'?20:1200;
+        const kind=path==='/api/register'?'register':path==='/api/login'?'login':path==='/api/files/direct-check'?'file-control':'api';
+        const key=`${ip}:${kind}`;const limit=kind==='register'?5:kind==='login'?20:kind==='file-control'?24000:1200;
         if(rate.size>5000)for(const [k,v] of rate)if(v.until<Date.now())rate.delete(k);
         let bucket=rate.get(key);if(!bucket||bucket.until<Date.now()){bucket={count:0,until:Date.now()+60000};rate.set(key,bucket);}
         if(++bucket.count>limit)return json(429,{error:'请求过多，请稍后重试。'},{'Retry-After':'60'});
-        let raw='';for await(const part of req){raw+=part;if(Buffer.byteLength(raw)>1500000)return json(413,{error:'Request too large'});}
+        let raw='';for await(const part of req){raw+=part;if(Buffer.byteLength(raw)>(kind==='file-control'?8192:1500000))return json(413,{error:'Request too large'});}
         let data;try{data=JSON.parse(raw);}catch{return json(400,{error:'Invalid JSON'});}
         if(!data||typeof data!=='object'||Array.isArray(data))return json(400,{error:'Invalid JSON object'});
+        if(path!=='/api/files/direct-check'&&!req.headers.origin&&!(data.client?.name==='gpuctl'&&data.client.protocol===2))return json(426,{error:clientUpgradeMessage(url.origin,data.client?.platform),code:'CLIENT_UPGRADE_REQUIRED'});
+        if(path==='/api/files/direct-check')return json(200,service.checkFileTicket(data));
         if(path==='/api/register'){
           let global=rate.get('register:global');if(!global||global.until<Date.now()){global={count:0,until:Date.now()+60000};rate.set('register:global',global);}
           if(++global.count>30)return json(429,{error:'注册繁忙，请稍后重试。'},{'Retry-After':'60'});
@@ -89,8 +91,21 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
         if(path==='/api/call'){
           const {bearer,fromCookie}=requestTokens(req);
           if(!bearer&&fromCookie&&req.headers.origin!==url.origin)return json(403,{error:'Browser origin required'});
-          const result=await service.invoke(bearer||fromCookie,data.operation,data.args);
-          return json(200,result,data.operation==='logout'?{'Set-Cookie':expiredCookies()}:{});
+          // Abort only pure upload observations. A disconnected write remains
+          // an unconfirmed operation and must never be implicitly replayed.
+          const cancellable=data.operation==='data.upload.status';
+          const controller=cancellable?new AbortController():null;
+          const abort=()=>{if(!res.writableEnded)controller.abort(Object.assign(Error('上传查询连接已关闭。'),{status:499,code:'UPLOAD_READ_CANCELLED'}));};
+          if(controller){req.once('aborted',abort);res.once('close',abort);}
+          try{
+            // CLI submissions consume the durable receipt only. Browser writes
+            // retain their dashboard; this presentation hint grants nothing.
+            const options={...(controller?{signal:controller.signal}:{}),
+              ...(bearer&&!req.headers.origin&&data.operation==='jobs.submit'?{omitResponseState:true}:{})};
+            const result=await service.invoke(bearer||fromCookie,data.operation,data.args,options);
+            if(!res.destroyed)return json(200,result,data.operation==='logout'?{'Set-Cookie':expiredCookies()}:{});
+          }finally{if(controller){req.removeListener('aborted',abort);res.removeListener('close',abort);}}
+          return;
         }
         return json(404,{error:'Not found'});
       }
@@ -106,9 +121,27 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
         res.writeHead(200,{...headers,'Cache-Control':'private, no-store','Content-Type':mime.js});
         return res.end(req.method==='HEAD'?undefined:`globalThis.GPUQ_LOCAL_API=true;globalThis.GPUQ_PRODUCTION=true;globalThis.GPUQ_HAS_SESSION=${authenticated};`);
       }
-      if(path==='/gpuctl.mjs'||path==='/amaxctl.mjs'){const client=await standaloneClient(url.origin);res.writeHead(200,{...headers,'Content-Type':'text/javascript; charset=utf-8','Content-Disposition':'attachment; filename="gpuctl.mjs"'});return res.end(client);}
-      if(path==='/install.sh'){res.writeHead(200,{...headers,'Content-Type':'text/plain; charset=utf-8'});return res.end((await readFile(new URL('./deploy/install-client.sh',import.meta.url),'utf8')).replaceAll('__GPUQ_PUBLIC_ORIGIN__',url.origin));}
-      if(path==='/install.ps1'){res.writeHead(200,{...headers,'Content-Type':'text/plain; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:(await readFile(new URL('./deploy/install-client.ps1',import.meta.url),'utf8')).replaceAll('__GPUQ_PUBLIC_ORIGIN__',url.origin));}
+      if(path==='/gpuctl.mjs'){
+        watchClientDownload(res);
+        const etag='"'+clientInfo.etag+'"';
+        const downloadHeaders={...headers,'Content-Type':'text/javascript; charset=utf-8','Content-Length':clientInfo.bytes,'Content-Disposition':'attachment; filename="gpuctl.mjs"','Accept-Ranges':'bytes','ETag':etag,'X-GPUQ-Client-Bytes':String(clientInfo.bytes)};
+        const rangeRequested=req.headers.range&&(!req.headers['if-range']||req.headers['if-range']===etag);
+        if(rangeRequested){
+          const range=clientByteRange(req.headers.range,clientInfo.bytes);
+          if(!range){res.writeHead(416,{...downloadHeaders,'Content-Length':'0','Content-Range':'bytes */'+clientInfo.bytes});return res.end();}
+          res.writeHead(206,{...downloadHeaders,'Content-Length':range.end-range.start+1,'Content-Range':`bytes ${range.start}-${range.end}/${clientInfo.bytes}`});
+          if(req.method==='HEAD')return res.end();
+          return await pipeline(standaloneClientRangeStream(url.origin,range),res);
+        }
+        res.writeHead(200,downloadHeaders);
+        if(req.method==='HEAD')return res.end();
+        return await pipeline(standaloneClientStream(url.origin),res);
+      }
+      if(path==='/install.sh'||path==='/install.ps1'){
+        const template=path==='/install.sh'?'install-client.sh':'install-client.ps1';
+        const installer=(await readFile(new URL(`./deploy/${template}`,import.meta.url),'utf8')).replaceAll('__GPUQ_PUBLIC_ORIGIN__',url.origin);
+        res.writeHead(200,{...headers,'Content-Type':'text/plain; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:installer);
+      }
       // Only the beginner-facing guide is public. Operations manuals and raw
       // repository documentation are never served, even to logged-in admins.
       const guide=guideTarget(path);
@@ -134,11 +167,12 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       if(file==='index.html')content=content.toString().replace('账号与权限已持久化 · GPUQ 执行尚未接入','账号、终端与 GPUQ 训练已接入');
       res.writeHead(200,{...headers,'Content-Type':mime[file.split('.').pop()]});res.end(req.method==='HEAD'?undefined:content);
     }catch(e){
+      if(res.headersSent||res.destroyed){if(!res.destroyed)res.destroy();return;}
       // An old asset response must never clear a newer login cookie.
       if(inventoryRequest&&(e.status===401||e.status===403)){res.writeHead(401,{...headers,'Content-Length':'0'});return res.end();}
       // Authentication failure may belong to an older request from another
       // tab. Do not expire its shared cookie; only explicit logout clears it.
-      if(e.status===401)return json(401,{error:e.message});json(e.status||400,{error:e.message?.includes('SQLITE')?'保存失败，请联系管理员。':e.message,...(['LAST_COPY_UNPROVEN','DATASET_REMOVAL_PENDING','MAINTENANCE_ACTIVE','SUBMISSION_REJECTED','TRAINING_ADMISSION_BUSY'].includes(e.code)||e.status===404&&e.code==='DATASET_ADMISSION_ABSENT'?{code:e.code}:{}),...trainingStorageErrorBody(e)});
+      if(e.status===401)return json(401,{error:e.message});json(e.status||400,{error:e.message?.includes('SQLITE')?'保存失败，请联系管理员。':e.message,...(['TERMINAL_OPEN_REJECTED','MAINTENANCE_ACTIVE','SUBMISSION_REJECTED','TRAINING_ADMISSION_BUSY','CAMPUS_DATA_PLANE_REQUIRED','CAMPUS_FILE_REQUIRED','UPLOAD_STATUS_BUSY','CLIENT_UPGRADE_REQUIRED'].includes(e.code)?{code:e.code}:{})});
     }
   });
   server.headersTimeout=10000;server.requestTimeout=45000;server.keepAliveTimeout=5000;server.maxConnections=64;
@@ -146,7 +180,7 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   process.umask(0o077);
-  const {server}=await createPortalServer({database:process.env.DATABASE_PATH||'/data/portal.sqlite',bootstrap:process.env.BOOTSTRAP_FILE,origin:process.env.PUBLIC_ORIGIN,statusPath:process.env.GPUQ_STATUS_PATH,bridgeSocket:process.env.EXECUTOR_SOCKET,displayBridgeSocket:process.env.EXECUTOR_DISPLAY_SOCKET,notificationConfigPath:process.env.GPUQ_NOTIFICATIONS_CONFIG,storageArchiveConfigPath:process.env.GPUQ_STORAGE_ARCHIVE_CONFIG,datasetIngressConfigPath:process.env.GPUQ_DATASET_INGRESS_CONFIG,ociCohortMachines:process.env.GPUQ_OCI_AUTO_COHORT_MACHINES?process.env.GPUQ_OCI_AUTO_COHORT_MACHINES.split(','):[],secure:true});
+  const {server}=await createPortalServer({database:process.env.DATABASE_PATH||'/data/portal.sqlite',bootstrap:process.env.BOOTSTRAP_FILE,origin:process.env.PUBLIC_ORIGIN,statusPath:process.env.GPUQ_STATUS_PATH,bridgeSocket:process.env.EXECUTOR_SOCKET,fileBridgeSocket:process.env.GPUQ_FILE_SOCKET,notificationConfigPath:process.env.GPUQ_NOTIFICATIONS_CONFIG,secure:true});
   server.listen(Number(process.env.PORT||8080),process.env.LISTEN_HOST||'0.0.0.0',()=>console.log('GPUQ portal ready.'));
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>server.close(()=>process.exit(0)));
 }

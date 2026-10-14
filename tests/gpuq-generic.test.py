@@ -25,20 +25,22 @@ class FleetPaths(unittest.TestCase):
         return fleet.load_inventory(self.path)
 
     def test_existing_explicit_paths_are_preserved(self):
-        legacy = {'ssh': 'amax@gpu-1', 'binary': '/home/amax/bin/gpu',
+        legacy = {'ssh': 'platform-user@gpu-1', 'binary': '/home/platform-user/bin/gpu',
                   'config': '/data1/gpu-scheduler/config.json'}
         self.assertEqual(self.inventory(legacy), {'hosts': {'gpu-1': legacy}})
         command = fleet.ssh_command(legacy)
-        self.assertEqual(command[-2], 'amax@gpu-1')
-        self.assertEqual(command[-1], '/home/amax/bin/gpu --config /data1/gpu-scheduler/config.json _remote')
+        self.assertEqual(command[-2], 'platform-user@gpu-1')
+        self.assertEqual(command[-1], '/home/platform-user/bin/gpu --config /data1/gpu-scheduler/config.json _remote')
 
-    def test_missing_paths_fail_before_any_connection(self):
+    def test_missing_paths_keep_existing_implicit_defaults(self):
+        defaults = {'binary': '/home/platform-user/bin/gpu', 'config': '/data1/gpu-scheduler/config.json'}
         for key in ('binary', 'config'):
             host = {k: v for k, v in self.host.items() if k != key}
-            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'gpu-1: .*explicit absolute ' + key):
-                self.inventory(host)
-            with self.assertRaisesRegex(ValueError, 'explicit absolute ' + key):
-                fleet.ssh_command(host)
+            with self.subTest(key=key):
+                self.assertEqual(self.inventory(host), {'hosts': {'gpu-1': host}})
+                expected = {**host, key: defaults[key]}
+                self.assertEqual(shlex.split(fleet.ssh_command(host)[-1]),
+                                 [expected['binary'], '--config', expected['config'], '_remote'])
 
     def test_relative_and_control_character_paths_are_rejected(self):
         for key in ('binary', 'config'):
@@ -73,9 +75,16 @@ class FleetPaths(unittest.TestCase):
         self.assertEqual(parsed.config, host['config'])
         self.assertEqual(shlex.split(command[command.index('-e') + 1]), fleet.ssh_command(host)[:-2])
         self.assertEqual(command[-1], host['ssh'] + ':/srv/dataset/')
+        defaults = {'binary': '/home/platform-user/bin/gpu', 'config': '/data1/gpu-scheduler/config.json'}
         for key in ('binary', 'config'):
-            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'explicit absolute ' + key):
-                sync.rsync_command(Path('/srv/project'), '/srv/dataset', {k: v for k, v in host.items() if k != key}, meta)
+            with self.subTest(key=key):
+                missing = {k: v for k, v in host.items() if k != key}
+                command = sync.rsync_command(Path('/srv/project'), '/srv/dataset', missing, meta)
+                remote = next(arg.split('=', 1)[1] for arg in command if arg.startswith('--rsync-path='))
+                expected = {**missing, key: defaults[key]}
+                self.assertEqual(shlex.split(remote)[:4],
+                                 [expected['binary'], '--config', expected['config'], '_sync-rsync'])
+                self.assertEqual(shlex.split(command[command.index('-e') + 1]), fleet.ssh_command(missing)[:-2])
 
 
 class ForcedSyncConfiguration(unittest.TestCase):
@@ -89,7 +98,7 @@ class ForcedSyncConfiguration(unittest.TestCase):
 
     def test_legacy_command_uses_forced_server_config(self):
         with patch.object(sync, 'receiver', return_value=17) as receiver:
-            self.assertEqual(self.call(['/home/amax/bin/gpu', '_sync-rsync', 'header', *self.server_args]), 17)
+            self.assertEqual(self.call(['/home/platform-user/bin/gpu', '_sync-rsync', 'header', *self.server_args]), 17)
         receiver.assert_called_once_with('header', self.server_args, self.config)
 
     def test_explicit_matching_config_uses_server_value(self):
@@ -124,7 +133,7 @@ class SyncBoundaries(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
 
     def test_existing_and_generic_home_roots_are_rejected(self):
-        for value in ('/', '/home', '/home/amax', '/home/gpuq', '/home/alice', '/Users', '/Users/alice',
+        for value in ('/', '/home', '/home/platform-user', '/home/gpuq', '/home/alice', '/Users', '/Users/alice',
                       '/root', '/data1', '/data2', '/tmp', '/var/tmp'):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'broad'):
                 sync.valid_path(value)
@@ -135,7 +144,7 @@ class SyncBoundaries(unittest.TestCase):
     def test_project_subdirectory_is_not_a_whole_home(self):
         # Pure path-policy checks, independent of the test host's /home symlinks.
         with patch.object(Path, 'is_symlink', return_value=False), patch.object(Path, 'exists', return_value=False):
-            for value in ('/home/amax/project', '/home/gpuq/project', '/home/alice/project', '/Users/alice/project'):
+            for value in ('/home/platform-user/project', '/home/gpuq/project', '/home/alice/project', '/Users/alice/project'):
                 with self.subTest(value=value):
                     self.assertEqual(sync.valid_path(value), Path(value))
 

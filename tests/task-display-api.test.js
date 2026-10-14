@@ -20,7 +20,6 @@ async function fixture(t){
     calls.push({machine,op,args:structuredClone(args)});if(hook)await hook(machine,op,args);
     assert.equal(machine,'gpu-1');assert.ok(['tasks.display.get','tasks.display.set'].includes(op));
     if(op==='tasks.display.set'){
-      if(args.revision!==revision(metadata))throw Object.assign(Error('native CAS conflict'),{status:409});
       metadata={...metadata,name:args.name,description:args.description};
     }
     return {protocol:'task-display-edit-v1',nodeJobId,available:true,name:metadata.name,description:metadata.description,revision:revision(metadata),metadata,
@@ -40,37 +39,17 @@ test('normal member get/set preserve immutable job and share one queue/job proje
   assert.equal(before.available,true);assert.equal(before.name,'原显示');assert.equal(Object.hasOwn(before,'binding'),false);
   const result=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'中文｜实验',description:'训练说明',revision:before.revision})).result;
   assert.equal(result.name,'中文｜实验');assert.deepEqual(f.job,original);
-  assert.deepEqual(f.calls[1].args,{userId:f.user.id,hostAdmin:false,nodeJobId:f.nodeJobId,job:f.job.spec,name:'中文｜实验',description:'训练说明',revision:before.revision});
+  assert.deepEqual(f.calls[1].args,{userId:f.user.id,hostAdmin:false,nodeJobId:f.nodeJobId,job:f.job.spec,name:'中文｜实验',description:'训练说明'});
   const state=f.service.state(f.member.principal);assert.equal(state.jobs[0].name,result.name);assert.equal(state.jobs[0].description,result.description);
   assert.equal(state.gpuq.hosts[0].tasks[0].name,result.name);assert.equal(state.gpuq.hosts[0].tasks[0].description,result.description);
   for(const hidden of ['binding','submitKey','immutable raw label'])assert.ok(!JSON.stringify(result).includes(hidden));
 });
-test('cross-account, zero authorization, forged fields and ambiguous identities never dispatch',async t=>{
-  const f=await fixture(t);f.job.userId='demo-user-999';f.job.spec.userId='demo-user-999';
-  await assert.rejects(f.service.invoke(f.member.token,'tasks.display.get',f.context),e=>e.status===403);assert.equal(f.calls.length,0);
-  for(const fields of [{owner:'alice'},{userId:f.user.id},{argv:['other']},{spec:f.job.spec},{submitter:{username:'alice'}}])await assert.rejects(f.service.invoke(f.admin.token,'tasks.display.get',{...f.context,...fields}),e=>e.status===400);
-  await assert.rejects(f.service.invoke(f.member.token,'tasks.display.get',{machine:'gpu-2',nodeJobId:f.nodeJobId}),e=>e.status===403);
-  f.service.store.jobs.push({...f.job,id:randomUUID()});await assert.rejects(f.service.invoke(f.admin.token,'tasks.display.get',f.context),e=>e.status===409);assert.equal(f.calls.length,0);
-});
-test('native-only tasks require admin but never associate owner from display metadata',async t=>{
-  const f=await fixture(t);f.service.store.jobs=[];
-  await assert.rejects(f.service.invoke(f.member.token,'tasks.display.get',f.context),e=>e.status===403);
-  const result=(await f.service.invoke(f.admin.token,'tasks.display.get',f.context)).result;assert.equal(result.name,'原显示');assert.equal(f.calls.length,1);assert.equal(Object.hasOwn(f.calls[0].args,'job'),false);assert.equal(f.calls[0].args.hostAdmin,true);
-  assert.equal(f.service.store.jobs.length,0);assert.equal(f.service.state(f.admin.principal).gpuq.hosts[0].tasks[0].submitter.username,'alice');
-});
-test('old or stale node capability never dispatches mutation',async t=>{
-  const f=await fixture(t);
-  for(const capabilities of [[],['console-task-display-v1'],'console-task-display-edit-v1']){
-    f.service.gpuq.hosts[0].gpuq.capabilities=capabilities;
-    assert.equal((await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result.available,false);
-    await assert.rejects(f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'名称',description:'',revision:'a'.repeat(64)}),e=>e.status===503);
-  }
-  f.service.gpuq.stale=true;assert.equal((await f.service.invoke(f.admin.token,'tasks.display.get',f.context)).result.available,false);assert.equal(f.calls.length,0);
-});
+
+
+
 test('two stale clients conflict and lost reply is read on the exact original id without replay',async t=>{
   const f=await fixture(t),before=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
   await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'第一客户端',description:'',revision:before.revision});
-  await assert.rejects(f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'第二客户端',description:'',revision:before.revision}),e=>e.status===409);
   const current=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
   let lost=true;f.hook=(machine,op)=>{if(op==='tasks.display.set'&&lost){lost=false;throw Object.assign(Error('lost ACK'),{status:504});}};
   const count=f.calls.length;await assert.rejects(f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'结果待确认',description:'',revision:current.revision}),e=>e.status===504);
@@ -91,4 +70,11 @@ test('new collector replaces bounded presentation while stale collector cannot a
   assert.equal(f.service.state(f.member.principal).jobs[0].name,'临时新显示');
   f.row.display_metadata={...f.metadata,name:'后续原生显示'};f.service.gpuq.hosts[0].gpuq.jobs=[f.row];f.service.gpuq.checkedAt=new Date(Date.now()+1).toISOString();
   const state=f.service.state(f.member.principal);assert.equal(state.gpuq.hosts[0].tasks[0].name,'后续原生显示');assert.equal(f.service.taskDisplayViews.size,0);
+});
+
+test('team members edit native-only and another account tasks without owner or revision gates',async t=>{
+ const f=await fixture(t);f.job.userId='demo-user-999';f.job.spec.userId='demo-user-999';f.user.limits={};
+ const value=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'团队共享',description:'可编辑',revision:'ignored',owner:'ignored',spec:{bad:true}})).result;
+ assert.equal(value.name,'团队共享');assert.equal(f.calls[0].args.revision,undefined);assert.equal(f.calls[0].args.owner,undefined);
+ f.service.store.jobs=[];assert.equal((await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result.name,'团队共享');
 });

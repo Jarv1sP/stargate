@@ -1,0 +1,38 @@
+/* ── 05 shell ──────────────────────────────────────────────────────────────────────── */
+/* top bar: wordmark · centred nav · 使用指南 + sync + account. Edges sit on the page grid. */
+.topbar{height:60px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;column-gap:24px;padding:0 var(--edge);background:var(--bg);box-shadow:inset 0 -1px 0 var(--line);position:relative;z-index:3}
+.topbar.full{padding:0 28px}
+/* STARGATE: supplied Archivo Expanded SemiBold outlines with two Λ glyphs.
+   1em = 1000 units; preserve the artwork's 9753 × 711 viewBox. */
+.wordmark{--wm:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9753 711'%3E%3Cpath d='M432 711Q354 711 286.0 701.5Q218 692 167.0 667.5Q116 643 87.5 599.0Q59 555 59 486Q59 484 59.0 481.0Q59 478 60 476H210Q209 480 208.5 485.5Q208 491 208 498Q208 529 235.0 548.5Q262 568 312.0 577.0Q362 586 429 586Q458 586 487.5 583.5Q517 581 544.0 576.0Q571 571 592.5 562.0Q614 553 626.5 539.5Q639 526 639 508Q639 482 615.5 466.5Q592 451 552.0 441.0Q512 431 462.0 424.0Q412 417 358.5 408.5Q305 400 255.0 385.5Q205 371 165.0 348.0Q125 325 101.5 288.5Q78 252 78 199Q78 151 101.0 114.0Q124 77 169.0 51.5Q214 26 279.5 13.0Q345 0 430 0Q516 0 580.0 14.0Q644 28 686.0 54.0Q728 80 748.5 116.5Q769 153 769 198V214H621V201Q621 179 597.0 162.0Q573 145 532.0 135.0Q491 125 439 125Q367 125 322.0 134.0Q277 143 256.0 158.5Q235 174 235 193Q235 216 258.5 230.0Q282 244 322.0 252.5Q362 261 412.0 268.0Q462 275 515.5 284.0Q569 293 619.0 307.0Q669 321 709.0 344.5Q749 368 772.5 403.5Q796 439 796 491Q796 571 750.0 619.5Q704 668 622.0 689.5Q540 711 432 711ZM1561 699V146H1256V12H2018V146H1713V699ZM2448 699L2792 12L2964 12L3308 699L3141 699L2873 150L2604 699ZM3809 699V12H4353Q4426 12 4472.5 41.5Q4519 71 4542.0 119.5Q4565 168 4565 227Q4565 288 4533.5 341.5Q4502 395 4436 425L4582 699H4411L4285 454H3961V699ZM3961 328H4311Q4358 328 4383.5 300.5Q4409 273 4409 230Q4409 201 4398.0 180.5Q4387 160 4365.0 149.5Q4343 139 4311 139H3961ZM5495 711Q5287 711 5183.0 623.0Q5079 535 5079 356Q5079 239 5132.0 159.5Q5185 80 5285.5 40.0Q5386 0 5526 0Q5617 0 5692.0 15.5Q5767 31 5821.5 62.5Q5876 94 5905.5 142.0Q5935 190 5935 255H5787Q5787 219 5766.0 194.0Q5745 169 5709.0 154.5Q5673 140 5627.5 133.5Q5582 127 5532 127Q5468 127 5413.5 139.5Q5359 152 5319.0 178.5Q5279 205 5257.0 246.0Q5235 287 5235 343V367Q5235 445 5269.0 492.5Q5303 540 5365.5 562.0Q5428 584 5513 584Q5607 584 5667.5 567.0Q5728 550 5757.5 518.0Q5787 486 5787 443V435H5509V315H5936V699H5842L5826 609Q5789 645 5737.5 667.5Q5686 690 5624.5 700.5Q5563 711 5495 711ZM6429 699L6773 12L6945 12L7289 699L7122 699L6854 150L6585 699ZM8024 699V146H7719V12H8481V146H8176V699ZM8984 699V12H9679V139H9136V286H9619V413H9136V572H9687V699Z'/%3E%3C/svg%3E");
+  display:inline-block;flex:none;justify-self:start;font-size:calc(10px / .687);width:9.753em;max-width:100%;aspect-ratio:9753/711;height:auto;
+  background-color:currentColor;-webkit-mask:var(--wm) 0 0/100% 100% no-repeat;mask:var(--wm) 0 0/100% 100% no-repeat;
+  overflow:hidden;white-space:nowrap;text-indent:110%;line-height:0;vertical-align:middle}
+.wordmark > *{display:none}
+.m-top .wordmark,.wordmark.sm{font-size:calc(8px / .687)}
+.nav{display:flex;gap:2px;align-items:center;position:relative}
+.nav a{height:36px;padding:0 16px;border-radius:8px;font-size:var(--fs-body);font-weight:500;color:var(--ink-2);display:flex;align-items:center;gap:8px;white-space:nowrap;position:relative;z-index:1;transition:color var(--t-quick) linear,background-color var(--t-quick) linear}
+.nav a.on{color:var(--ink);background:var(--bg-3)}
+.badge{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--ink);color:var(--bg);font-size:var(--fs-micro);font-weight:600;display:inline-grid;place-items:center;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:0}
+/* account trigger (opens .menu.acct) */
+.avatar{width:28px;height:28px;border-radius:50%;background:var(--bg-3);border:1px solid var(--line-2);display:grid;place-items:center;font-size:var(--fs-small);font-weight:600;color:var(--ink);flex:none;line-height:1}
+/* sync status: client-side page refresh (15 s poll). Never green — green means running. */
+.sync{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 10px;border-radius:8px;font-size:var(--fs-small);color:var(--ink-3);white-space:nowrap;transition:background-color var(--t-quick) linear,color var(--t-quick) linear}
+.sync svg{width:14px;height:14px}
+.sync .t{font-family:var(--mono);font-size:var(--fs-micro);color:var(--ink-2);letter-spacing:0}
+.sync .st{gap:0}
+.sync.fail{color:var(--ink-2)}
+.sync[disabled]{opacity:.5}
+/* account menu */
+.menu{position:absolute;z-index:8;width:288px;padding:6px;background:var(--bg-1);border:1px solid var(--line-2);border-radius:12px;box-shadow:var(--shadow-pop);font-size:var(--fs-meta);color:var(--ink);text-align:left}
+.menu.acct{top:56px;right:calc(var(--edge) - 8px)}
+/* global notice strip — one message at a time, directly under the top bar */
+/* context bar — 服务器 / 项目 / 训练版本; sticky; same component on 工作台 and 数据集 */
+.ctxbar{position:sticky;top:0;z-index:3;height:52px;display:flex;align-items:center;gap:12px;padding:0 var(--edge);background:var(--bg);box-shadow:inset 0 -1px 0 var(--line);white-space:nowrap}
+.ctx-sp{flex:1}
+
+/* ── 06 page frame ─────────────────────────────────────────────────────────────────── */
+.head{display:flex;justify-content:space-between;align-items:flex-end;gap:40px;padding:40px 0 32px}
+.row{display:flex;align-items:center}
+.spread{display:flex;justify-content:space-between;align-items:center;gap:16px}
+

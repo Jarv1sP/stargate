@@ -7,7 +7,6 @@ const routes = {
   'cloud-pull': {label:'服务器直下', path:['下载源','目标服务器'], note:'文件由目标服务器直接下载。'},
   'node-lan': {label:'实验室内网', path:['源服务器','目标服务器'], note:'文件在服务器之间传输。'},
 };
-export {LARGE_RELAY_BYTES} from './dataset-upload.js';
 export function routePresentation(route){
   const kind=typeof route==='string'?route:route?.kind;
   return routes[kind]?{kind,...routes[kind],path:[...routes[kind].path]}:{kind:'unknown',label:'通道待确认',path:[],note:'尚未收到传输通道信息。'};
@@ -19,11 +18,4 @@ export function transferBytes(value){
   if(bytes<1024**2)return (bytes/1024).toFixed(1)+' KiB';
   if(bytes<1024**3)return (bytes/1024**2).toFixed(1)+' MiB';
   return (bytes/1024**3).toFixed(2)+' GiB';
-}
-export function uploadPhase(state){
-  if(['HASHING'].includes(state))return 0;
-  if(['RECEIVING_MANIFEST','SEALING','UPLOADING'].includes(state))return 1;
-  if(state==='PUBLISHING')return 2;
-  if(state==='READY')return 3;
-  return -1;
 }

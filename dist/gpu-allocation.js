@@ -4,7 +4,7 @@ import {schedulingPolicy} from './scheduling-policy.js';
 // job-resources.py budget reader both support up to 64 cards per node. Native
 // GPUQ itself limits by configured pool size; this is not a new native cap.
 export function elasticAllocation(value,cards,scheduling){
-  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(k=>!['minCards','globalBatch','microBatch','autoExpand'].includes(k)))throw Error('弹性卡参数无效。');
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('弹性卡参数无效。');
   const {minCards,globalBatch,microBatch,autoExpand=false}=value;
   if(!Number.isInteger(cards)||cards<1||cards>64||!Number.isInteger(minCards)||minCards<1||minCards>cards)throw Error('最低卡数须为 1 到最大卡数之间的整数。');
   if(!Number.isSafeInteger(globalBatch)||globalBatch<1||!Number.isSafeInteger(microBatch)||microBatch<1||typeof autoExpand!=='boolean')throw Error('global batch、每卡 micro batch 须为正整数。');
@@ -25,7 +25,7 @@ export function elasticCapable(host){return host?.reachable===true&&host.gpuq?.c
 export function allocationLabel(job){const p=job.placement;return (job.elastic?`弹性 ${job.elastic.minCards}–${job.cards} 张 · 当前 ${job.actualCards??job.assignedIndices?.length??0} 张 · 合法卡数 ${(job.allowedGpuCounts||[]).join(',')}`:`${job.cards} 张`)+(p?` · ${p.shared?'共享':'固定'} GPU ${p.gpuIndices.join(',')}${p.shared?' · '+p.vramMiB+' MiB':''}${p.hami?' · HAMi SM '+p.smPercent+'%':''}`:'');}
 
 export function gpuPlacement(value,cards,elastic,scheduling,priority){
-  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(k=>!['gpuIndices','shared','vramMiB','hami','smPercent'].includes(k)))throw Error('固定/共享选卡参数无效。');
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('固定/共享选卡参数无效。');
   const {gpuIndices,shared=false,hami=false,smPercent=hami?100:undefined}=value;
   if(elastic)throw Error('固定或共享显卡不能与弹性卡数混用。');
   if(!Number.isInteger(cards)||cards<1||cards>64||!Array.isArray(gpuIndices)||gpuIndices.length!==cards||gpuIndices.some(n=>!Number.isSafeInteger(n)||n<0)||new Set(gpuIndices).size!==cards||typeof shared!=='boolean'||typeof hami!=='boolean')throw Error('显卡编号必须唯一，且数量等于申请卡数。');

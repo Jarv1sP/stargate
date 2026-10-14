@@ -1,4 +1,0 @@
-#!/bin/sh
-# Root-owned entrypoint. Only the authenticated administrator terminal uses this.
-cd /root || exit 1
-exec /bin/bash -li

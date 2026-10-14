@@ -1,0 +1,63 @@
+/* ── 22 motion ─────────────────────────────────────────────────────────────────────
+   Opt-in: add "motion" to the root (class="sb root motion"). Without it every comp is a
+   still of its settled end state. Only real state diffs move; nothing counts up from 0;
+   nothing loops except the in-flight dashed ring, the skeleton breath, live transfer dots
+   and a focused cursor. Unknown, stale and hatch never move (guard below). Replays in DC
+   prototypes: remount the node through <sc-if> so its one-shot animation starts again. */
+@keyframes sb-fade-in{from{opacity:0}}
+@keyframes sb-fade-out{to{opacity:0}}
+@keyframes sb-rise{from{opacity:0;transform:translateY(6px)}}
+@keyframes sb-swap{from{opacity:0;transform:translateY(3px)}}
+@keyframes sb-sheet-in{from{transform:translateX(100%)}}
+@keyframes sb-sheet-out{to{transform:translateX(100%)}}
+@keyframes sb-sheet-under{from{transform:none}}
+@keyframes sb-up-in{from{transform:translateY(100%)}}
+@keyframes sb-up-out{to{transform:translateY(100%)}}
+@keyframes sb-recede{from{transform:none;border-radius:0}}
+@keyframes sb-dialog-in{from{opacity:0;transform:translateY(8px) scale(.985)}}
+@keyframes sb-toast-in{from{opacity:0;transform:translateY(8px)}}
+@keyframes sb-tick-up{from{opacity:.25;transform:translateY(.18em)}}
+@keyframes sb-tick-down{from{opacity:.25;transform:translateY(-.18em)}}
+@keyframes sb-stamp{from{color:var(--ink)}}
+@keyframes sb-ping{from{opacity:.7;transform:scale(1)}to{opacity:0;transform:scale(2.6)}}
+@keyframes sb-spin{to{transform:rotate(360deg)}}
+@keyframes sb-draw-x{from{transform:scaleX(0)}}
+@keyframes sb-draw-y{from{transform:scaleY(0)}}
+@keyframes sb-node-in{from{opacity:0;transform:scale(.3)}}
+@keyframes sb-diamond-in{from{opacity:0;transform:rotate(45deg) scale(.6)}to{opacity:1;transform:rotate(45deg) scale(1)}}
+@keyframes sb-breathe{from{opacity:.45}to{opacity:.85}}
+@keyframes sb-flow{from{background-position-x:4px}to{background-position-x:14px}}
+@keyframes sb-mark{0%{opacity:1;transform:scaleX(0)}18%,55%{opacity:1;transform:scaleX(1)}100%{opacity:0;transform:scaleX(1)}}
+@keyframes sb-rows-in{from{grid-template-rows:0fr;opacity:0}}
+@keyframes sb-reveal-up{from{clip-path:inset(calc(100% - 52px) 0 0 0 round 12px)}to{clip-path:inset(0 0 0 0 round 12px)}}
+@keyframes sb-conceal-down{from{clip-path:inset(0 0 0 0 round 12px)}to{clip-path:inset(calc(100% - 52px) 0 0 0 round 12px)}}
+@keyframes sb-blink{50%{opacity:0}}
+@keyframes sb-show{to{opacity:1}}
+@keyframes sb-push-in{from{transform:translateX(100%)}}
+@keyframes sb-push-under{to{transform:translateX(-30%)}}
+@keyframes sb-rail-in{from{opacity:0;transform:translateX(16px)}}
+/* page / view entrance: route change only (the product's 240ms rise), never on polls */
+/* status: crossfade on a real change; one ring per new sample; dashed rings turn while in flight */
+/* trajectory: the finished connector draws, then the new current node lands */
+/* measured fills: move only from one known sample to the next; first paint never animates */
+/* readouts tick in the direction of the change — position and opacity only, never colour */
+/* drawer, second-level drawer, phone sheet */
+/* dialog and toast */
+/* dock: a new session bar rises in; expanding reveals the terminal upward from the dock */
+/* segmented / tabs / nav indicator: slides when the prototype passes its measured style */
+/* rows: open in place, then a hairline in the row's state colour draws and fades */
+/* in place expand */
+/* busy and loading */
+/* live transfer: dots stream from the fill head to the destination */
+
+/* never moves — unknown, stale, hatch, the queue's dashed wait segment, explanatory diagrams */
+.sb :is(.unk,.stale,.hatch,.st-unk .g,.tl .cur.unk .d,.diagram),.sb .tl .cur.unk::before,.sb .tl .cur.queue::before,
+.sb :is(.unk,.stale,.diagram) *,.sb :is(.unk,.stale) ::before,.sb :is(.unk,.stale) ::after,.sb .unk::before,.sb .unk::after{animation:none!important;transition:none!important}
+/* hidden tab or hidden panel: pause everything */
+.sb [hidden] *,html.page-inactive .sb *,html.page-inactive .sb *::before,html.page-inactive .sb *::after{animation-play-state:paused!important}
+/* reduced motion: every meaning survives without movement */
+@media (prefers-reduced-motion:reduce){
+  .sb,.sb *,.sb *::before,.sb *::after{animation-duration:1ms!important;animation-iteration-count:1!important;transition-duration:1ms!important;scroll-behavior:auto!important}
+  .sb .st .g::after,.sb .xfer-line i::after,.sb .tl .d::after{display:none!important}
+}
+

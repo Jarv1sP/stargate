@@ -3,6 +3,8 @@
 from pathlib import Path
 import zipfile
 root=Path(__file__).resolve().parents[1]
+if not (root/'gpuq').is_dir():
+    raise SystemExit('PENDING: 待 node/gpuq 入库；未生成空归档')
 target=root/'build/gpuq.pyz';target.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(target,'w',compression=zipfile.ZIP_DEFLATED) as archive:
     for path in sorted((root/'gpuq').rglob('*.py')):

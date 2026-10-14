@@ -1,0 +1,112 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {PortalService} from '../portal-service.mjs';
+import {MACHINES} from '../dist/model.js';
+
+const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
+async function fixture(t,{role='admin'}={}){
+ const dir=await mkdtemp(join(tmpdir(),'state-lane-')),bootstrap=join(dir,'bootstrap'),status=join(dir,'status');
+ const password='Isolated-State-Lane-2026!';
+ await writeFile(bootstrap,JSON.stringify({username:'admin',password}),{mode:0o600});
+ const snapshot={version:1,checkedAt:new Date().toISOString(),hosts:MACHINES.map((m,index)=>({id:m.id,reachable:index!==3,collectedAt:index===3?null:new Date().toISOString(),gpus:[],gpuq:{connected:index!==3,jobs:[]}}))};
+ await writeFile(status,JSON.stringify(snapshot));
+ let bridgeCalls=0;
+ const service=await PortalService.open(join(dir,'database'),bootstrap,status,async()=>{bridgeCalls++;throw Error('State must never issue a node RPC');});
+ for(const key of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[key]);
+ const user=service.store.users[0];user.limits=Object.fromEntries(MACHINES.map(m=>[m.id,m.cards]));user.total=100;user.role=role;
+ const {token}=await service.login('admin',password);
+ t.after(async()=>{if(!service.closing)service.close();await rm(dir,{recursive:true,force:true});});
+ return {service,token,user,status,snapshot,bridgeCalls:()=>bridgeCalls};
+}
+test('state returns account/job records with one unavailable node while a mutation is held',async t=>{
+ const f=await fixture(t),held=deferred(),started=deferred();let writes=0;
+ const write=f.service.enqueue(async()=>{writes++;started.resolve();await held.promise;});await started.promise;
+ try{
+  const reply=await Promise.race([f.service.invoke(f.token,'state',{}),new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('state waited behind a node operation')),1000);timer.unref();})]);
+  assert.equal(reply.state.machines.length,MACHINES.length);assert.equal(reply.state.gpuq.hosts.length,MACHINES.length);
+  assert.equal(reply.state.gpuq.hosts[3].collectedAt,null);assert.equal(reply.state.gpuq.hosts[3].reachable,false);
+  assert.ok(reply.state.gpuq.hosts.slice(0,3).every(h=>h.reachable&&h.gpuq.connected));
+  assert.equal(f.service.pending,1);assert.equal(writes,1);assert.equal(f.bridgeCalls(),0);assert.equal(f.bridgeCalls(),0);
+ }finally{held.resolve();await write;}
+});
+for(const change of ['logout','disable','role','closing'])test('state revalidates '+change+' after asynchronous snapshot read',async t=>{
+ const f=await fixture(t,{role:change==='role'?'admin':'member'}),held=deferred(),started=deferred();
+ f.service.refreshGPUQ=async()=>{started.resolve();await held.promise;};
+ const pending=f.service.invoke(f.token,'state',{}),denied=assert.rejects(pending,e=>[401,403,503].includes(e.status));await started.promise;
+ if(change==='logout')f.service.revokeSession(f.token);
+ if(change==='disable')f.user.enabled=false;
+ if(change==='role')f.user.role='member';
+ if(change==='machine')f.user.limits[MACHINES[0].id]=0;
+ if(change==='closing')f.service.close();
+ held.resolve();await denied;assert.equal(f.bridgeCalls(),0);
+});
+test('concurrent state reads share the local snapshot without rejecting a ninth observer',async t=>{
+ const f=await fixture(t),held=deferred();f.service.refreshGPUQ=()=>held.promise;
+ const reads=Array.from({length:16},()=>f.service.invoke(f.token,'state',{}));
+ assert.equal(f.service.pending,0);
+ held.resolve();await Promise.all(reads);assert.equal(f.bridgeCalls(),0);
+});
+test('stalled snapshot read returns stale last-good hosts within two seconds and retains one underlying read',async t=>{
+ const f=await fixture(t),held=deferred();f.service.gpuqReadWork=held.promise;
+ t.mock.timers.enable({apis:['setTimeout']});
+ const queries=Array.from({length:3},()=>f.service.invoke(f.token,'state',{}));
+ t.mock.timers.tick(2001);const replies=await Promise.all(queries);
+ assert.ok(replies.every(r=>r.state.gpuq.stale===true&&r.state.gpuq.hosts.length===MACHINES.length&&Array.isArray(r.state.jobs)));
+ for(const reply of replies){
+  assert.equal(reply.state.gpuq.checkedAt,f.snapshot.checkedAt);
+  assert.ok(reply.state.gpuq.hosts.every(host=>host.samplingStale===true&&host.hostCommand===undefined));
+ }
+ assert.equal(f.service.gpuqReadWork,held.promise);assert.equal(f.bridgeCalls(),0);
+ held.resolve({checkedAt:new Date().toISOString(),stale:false,hosts:[]});await new Promise(setImmediate);
+ assert.equal(f.service.gpuq.stale,true,'late file completion must not publish a fresh snapshot after timeout');
+});
+test('state rejects invalid args and cannot expose an admin snapshot to a member',async t=>{
+ const f=await fixture(t,{role:'member'});f.user.limits={[MACHINES[0].id]:1};
+ for(const args of [null,[],true])await assert.rejects(f.service.invoke(f.token,'state',args),/参数格式错误/);
+ const reply=await f.service.invoke(f.token,'state',{});
+ assert.equal(reply.state.users.length,1);assert.equal(reply.state.machines.length,MACHINES.length);assert.equal(reply.state.gpuq.hosts.length,MACHINES.length);
+ assert.equal(Object.hasOwn(reply.state,'invitations'),false);
+});
+test('account mutation remains serialized and is never replayed by an independent state query',async t=>{
+ const f=await fixture(t),held=deferred(),started=deferred();
+ const first=f.service.enqueue(async()=>{started.resolve();await held.promise;});await started.promise;
+ let saves=0;const save=f.service.save.bind(f.service);f.service.save=()=>{saves++;return save();};
+ const previousName=f.user.name,edit=f.service.invoke(f.token,'profile.update',{name:'Updated Fixture'});
+ try{
+  const state=await f.service.invoke(f.token,'state',{});assert.equal(state.state.users[0].name,previousName);assert.equal(saves,0);
+ }finally{held.resolve();await first;}
+  await edit;assert.equal(saves,1);assert.equal(f.user.name,'Updated Fixture');
+});
+test('summary never reads job/process history or the snapshot filesystem',async t=>{
+ const f=await fixture(t);let refreshes=0;
+ f.service.refreshGPUQ=()=>{refreshes++;throw Error('Summary must not read files');};
+ Object.defineProperty(f.service.store,'jobs',{get(){throw Error('Summary accessed job history');},configurable:true});
+ for(const host of f.service.gpuq.hosts)Object.defineProperty(host,'tasks',{get(){throw Error('Summary accessed process details');}});
+ const start=performance.now(),reply=await f.service.invoke(f.token,'state',{view:'summary'});
+ assert.equal(reply.state.summaryVersion,1);assert.equal(reply.state.machines.length,MACHINES.length);assert.equal(refreshes,0);
+ for(const key of ['jobs','gpuq','transfers','invitations'])assert.equal(Object.hasOwn(reply.state,key),false);
+ assert.ok(Buffer.byteLength(JSON.stringify(reply))<50000);
+ t.diagnostic(JSON.stringify({summaryBytes:Buffer.byteLength(JSON.stringify(reply)),elapsedMs:performance.now()-start}));
+});
+test('summary preserves member policy filtering and admin account policy metadata',async t=>{
+ const f=await fixture(t,{role:'member'});f.user.limits={[MACHINES[0].id]:1};f.user.policyVersion=9;
+ const summary=(await f.service.invoke(f.token,'state',{view:'summary'})).state;
+ const full=(await f.service.invoke(f.token,'state',{})).state;
+ assert.deepEqual(summary.users,full.users);assert.deepEqual(summary.machines,full.machines);
+ assert.equal(summary.users.length,1);assert.equal(summary.users[0].policyVersion,9);
+ assert.deepEqual(summary.operationalMaintenance,full.operationalMaintenance);
+ assert.deepEqual(summary.datasetUploadAdmission,full.datasetUploadAdmission);
+ assert.ok(Array.isArray(full.jobs));assert.ok(full.gpuq);assert.ok(full.transfers);
+});
+test('summary does not mark stale cached node connectivity as current',async t=>{
+ const f=await fixture(t);f.service.gpuq={stale:false,checkedAt:new Date(Date.now()-181000).toISOString(),hosts:[{gpuq:{connected:true}}]};
+ assert.equal((await f.service.invoke(f.token,'state',{view:'summary'})).state.gpuqConnected,false);
+});
+test('summary rejects invalid views and revoked authorization',async t=>{
+ const f=await fixture(t);
+ for(const args of [{view:'everything'}])await assert.rejects(f.service.invoke(f.token,'state',args),e=>e.status===400);
+ f.service.revokeSession(f.token);await assert.rejects(f.service.invoke(f.token,'state',{view:'summary'}),e=>e.status===401);
+});

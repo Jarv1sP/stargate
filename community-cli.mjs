@@ -1,15 +1,32 @@
 import {open} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
+import {normalizeAppearance} from './dist/announcement-appearance.js';
 
-export const communityHelp=`gpuctl community posts [--kind feedback|discussion|announcement]
+export const communityHelp=`gpuctl community announcements
+gpuctl community ack ID --revision N
+gpuctl community posts [--kind feedback|discussion|announcement]
 gpuctl community show ID
 gpuctl community post --title TITLE --body-file FILE [--kind feedback|discussion|announcement] [--pin] [--key UUID]
-gpuctl community edit ID --revision N [--title TITLE] [--body-file FILE]
-gpuctl community pin ID on|off --revision N
+gpuctl community edit ID [--title TITLE] [--body-file FILE] [--status open|investigating|resolved|closed]
+gpuctl community pin ID on|off
 gpuctl community comment ID --body TEXT [--key UUID]
 gpuctl community comments ID
 gpuctl community chat [--body TEXT] [--key UUID]
 Use --json for scripting. Uncertain submission: reuse the same --key and content within 30 days.`;
+const appearanceOptions=['layout','background','text-color','accent'];
+function appearanceArgs(options){const style={};for(const [flag,key] of [['layout','layout'],['background','background'],['text-color','text'],['accent','accent']])if(options[flag]!==undefined)style[key]=options[flag];return Object.keys(style).length?{appearance:normalizeAppearance(style)}:{};}
+export async function showCLIAnnouncements(call,pending,write=message=>process.stderr.write(message)){
+  if(pending===undefined||pending.some(item=>item.body===undefined)){
+    try{pending=(await call('community.announcements.pending',{})).result.posts;}
+    catch(error){write('公告读取未确认：'+visible(error.message)+'\n');return;}
+  }
+  for(const item of pending||[]){
+    try{
+      const post=item;
+      write(`\n========== 未读重要公告 ${visible(post.id)} · 第 ${post.revision} 版 ==========\n${visible(post.title)}\n\n${visible(post.body)}\n\n阅读处理后明确确认：gpuctl community ack ${visible(post.id)} --revision ${post.revision}\n未确认将继续提醒；公告不会被自动执行或标记已读。\n================================================\n`);
+    }catch(error){write('未读公告读取失败，请运行 gpuctl community announcements：'+visible(error.message)+'\n');}
+  }
+}
 const common=['url','session-file','json','machines','datasets'];
 const fail=message=>{throw Error(message);};
 const visible=value=>String(value??'').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,c=>c==='\n'?c:'\\u{'+c.codePointAt(0).toString(16).padStart(4,'0')+'}');
@@ -20,7 +37,7 @@ async function body(options,max){
   if((options.body!==undefined)===(options['body-file']!==undefined))fail('Use exactly one --body TEXT or --body-file FILE.');
   if(options.body!==undefined)return content(options.body,max,'Body');
   const file=await open(options['body-file'],'r');
-  try{const before=await file.stat();if(!before.isFile()||before.size>max*3)fail('Body file must be a regular UTF-8 file within the body size limit.');const buffer=Buffer.alloc(max*3+1),{bytesRead}=await file.read(buffer,0,buffer.length,0);const after=await file.stat();if(bytesRead!==before.size||after.size!==before.size||after.mtimeMs!==before.mtimeMs)fail('Body file changed while reading; retry after saving it.');return content(new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,bytesRead)),max,'Body');}
+  try{const before=await file.stat();if(!before.isFile()||before.size>max*3)fail('Body file must be a regular UTF-8 file within the body size limit.');const buffer=Buffer.alloc(max*3+1),{bytesRead}=await file.read(buffer,0,buffer.length,0);return content(new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,bytesRead)),max,'Body');}
   finally{await file.close();}
 }
 
@@ -30,11 +47,13 @@ export async function runCommunityCommand({positionals,options={},training=[],ca
   if(positionals[0]!=='community'||training.length)fail(communityHelp);
   if(options.machines?.length||options.datasets?.length)fail('Community commands do not take a machine or dataset.');
   const command=positionals[1]||'posts',tail=positionals.slice(2);
-  const spec={posts:{n:0,opts:['kind','status','cursor','limit']},show:{n:1,opts:[]},post:{n:0,opts:['kind','title','body','body-file','pin','key','announcement-type']},edit:{n:1,opts:['revision','title','body','body-file']},pin:{n:2,opts:['revision']},comment:{n:1,opts:['body','body-file','key']},comments:{n:1,opts:['cursor','limit']},chat:{n:0,opts:['body','body-file','key','cursor','limit']}}[command];
-  if(!spec||tail.length!==spec.n||Object.keys(options).some(k=>![...common,...spec.opts].includes(k)))fail(communityHelp);
+  const spec={announcements:{n:0,opts:[]},ack:{n:1,opts:['revision']},posts:{n:0,opts:['kind','status','cursor','limit']},show:{n:1,opts:[]},post:{n:0,opts:['kind','title','body','body-file','pin','key','announcement-type',...appearanceOptions]},edit:{n:1,opts:['title','body','body-file','status',...appearanceOptions]},pin:{n:2,opts:[]},comment:{n:1,opts:['body','body-file','key']},comments:{n:1,opts:['cursor','limit']},chat:{n:0,opts:['body','body-file','key','cursor','limit']}}[command];
+  if(!spec||tail.length!==spec.n||Object.keys(options).some(key=>![...common,...spec.opts].includes(key)))fail(communityHelp);
   const request=async(op,args)=>(await call('community.'+op,args)).result;
   const paging=()=>({...((options.limit!==undefined)?{limit:integer(options.limit,'--limit',command==='posts'?50:100)}:{}),...(options.cursor?{cursor:options.cursor}:{})});
   const postId=()=>{integer(tail[0],'ID');return String(tail[0]);};
+  if(command==='announcements')return request('announcements.pending',{});
+  if(command==='ack')return request('announcements.ack',{id:postId(),revision:integer(options.revision,'--revision')});
   const create=async(op,payload)=>{
     const key=options.key||randomUUID();if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(key))fail('--key must be a UUID.');
     // Print before the network call, so even a lost response leaves a retry key.
@@ -47,14 +66,14 @@ export async function runCommunityCommand({positionals,options={},training=[],ca
     const kind=options.kind||'feedback';if(!['feedback','discussion','announcement'].includes(kind))fail('Use --kind feedback|discussion|announcement.');
     if(kind!=='announcement'&&(options.pin!==undefined||options['announcement-type']!==undefined))fail('--pin and --announcement-type require --kind announcement.');
     const title=content(options.title,120,'Title'),text=await body(options,8000);
-    if(options.pin||options['announcement-type']){const info=await request('info',{});if(!info.capabilities?.includes('announcement-publish-v1'))fail('The server must be upgraded before publishing a pinned announcement.');}
-    return create('posts.create',{kind,title,body:text,...(kind==='announcement'?{announcementType:options['announcement-type']||'notice',...(options.pin?{pinned:true}:{})}:{})});
+    if(kind!=='announcement'&&appearanceOptions.some(k=>options[k]!==undefined))fail('公告布局和颜色只用于 --kind announcement。');
+    return create('posts.create',{kind,title,body:text,...appearanceArgs(options),...(kind==='announcement'?{announcementType:options['announcement-type']||'notice',...(options.pin?{pinned:true}:{})}:{})});
   }
   if(command==='edit'){
-    if(options.title===undefined&&options.body===undefined&&options['body-file']===undefined)fail('Nothing to edit. Use --title or --body-file.');
-    return request('posts.update',{id:postId(),revision:integer(options.revision,'--revision'),...(options.title===undefined?{}:{title:content(options.title,120,'Title')}),...(options.body===undefined&&options['body-file']===undefined?{}:{body:await body(options,8000)})});
+    if(options.status!==undefined&&!['open','investigating','resolved','closed'].includes(options.status))fail('Use --status open|investigating|resolved|closed for feedback posts.');
+    return request('posts.update',{id:postId(),...(options.status===undefined?{}:{status:options.status}),...appearanceArgs(options),...(options.title===undefined?{}:{title:content(options.title,120,'Title')}),...(options.body===undefined&&options['body-file']===undefined?{}:{body:await body(options,8000)})});
   }
-  if(command==='pin'){if(!['on','off'].includes(tail[1]))fail('Use community pin ID on|off --revision N.');return request('posts.update',{id:postId(),revision:integer(options.revision,'--revision'),pinned:tail[1]==='on'});}
+  if(command==='pin'){if(!['on','off'].includes(tail[1]))fail('Use community pin ID on|off.');return request('posts.update',{id:postId(),pinned:tail[1]==='on'});}
   if(command==='comment')return create('comments.create',{postId:postId(),body:await body(options,4000)});
   if(options.body!==undefined||options['body-file']!==undefined){if(options.cursor||options.limit)fail('Chat send cannot be combined with pagination.');return create('chat.send',{body:await body(options,2000)});}
   if(options.key)fail('--key is only used when sending a message.');
@@ -62,7 +81,8 @@ export async function runCommunityCommand({positionals,options={},training=[],ca
 }
 
 export function formatCommunityResult(result){
-  const row=item=>`${item.id} · ${item.kind||'消息'}${item.pinned?' · 置顶':''}${item.revision?' · revision '+item.revision:''}${item.title?' · '+item.title:''}\n${item.body||''}`;
+  if(result.acknowledged)return `公告 ${visible(result.id)} 第 ${result.revision} 版已确认。`;
+  const row=item=>`${item.id} · ${item.kind||'消息'}${item.pinned?' · 置顶':''}${item.kind==='announcement'&&item.revision?' · 第 '+item.revision+' 版':''}${item.title?' · '+item.title:''}\n${item.body||''}`;
   if(result.deleted)return visible(`内容 ${result.id} 已删除或过期；没有重新发布。`);
   const items=result.posts||result.comments||result.messages||[result.post||result.comment||result.message].filter(Boolean);
   return visible((items.length?items.map(row).join('\n\n'):'暂无内容。')+(result.duplicate?'\n已确认此前提交，未重复发布。':'')+(result.nextCursor?'\n下一页：--cursor '+result.nextCursor:'')+(result.submissionKey?'\n提交键：'+result.submissionKey:''));

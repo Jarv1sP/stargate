@@ -6,12 +6,17 @@
     "gpuctl": "./cli.mjs"
   },
   "scripts": {
-    "build:cloud-worker": "node scripts/build-cloud-files-worker.mjs",
+    "build": "npm run build:vendor && npm run build:client",
+    "build:native": "node scripts/build-campus-native.mjs",
+    "build:release": "npm run build:native && npm run build",
+    "build:vendor": "node scripts/build-frontend-vendor.mjs",
     "build:client": "node scripts/build-client.mjs",
-    "pretest": "npm run build:client",
-    "test": "node --test tests/*.test.js",
-    "start": "node server.mjs",
+    "test": "node scripts/test-entry.mjs node",
+    "test:ui": "node scripts/test-entry.mjs ui",
+    "test:all": "node scripts/test-entry.mjs all",
+    "start": "node portal-server.mjs",
     "cli": "node cli.mjs",
+    "precli": "npm run build:client",
     "test:python": "python3 scripts/test-python.py",
     "build:gpuq": "python3 scripts/build-gpuq.py"
   },

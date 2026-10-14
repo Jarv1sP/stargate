@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import fcntl
-import functools
 import itertools
 import json
 import logging
-import math
 import os
 import pwd
 import secrets
@@ -74,9 +72,6 @@ LOGGER = logging.getLogger(__name__)
 _MAX_CONTROL_FILE_BYTES = 64 * 1024
 _MAX_LAUNCH_SPEC_BYTES = 512 * 1024
 _LAUNCH_FILE_NAME = "launch.json"
-_RELEASE_GATE_PATH = Path("/run/gpuq-native-release/gate.json")
-_MAX_RELEASE_GATE_BYTES = 4096
-_READ_ONLY_OPERATIONS = frozenset({"health", "status", "show", "job_watch", "events", "log_path"})
 _ACTIVE_JOB_STATES = {
     JobState.PENDING.value,
     JobState.STARTING.value,
@@ -100,7 +95,6 @@ def _canonical_control_group(group: Any) -> bool:
         and "\x00" not in group
         and all(part not in ("", ".", "..") for part in group[1:].split("/"))
     )
-
 
 def _control_group_owners(statuses: dict[str, Any]) -> dict[str, str]:
     """Index verified unit roots without permitting ambiguous descendants."""
@@ -138,78 +132,6 @@ class StartCapacityBlocked(RuntimeError):
         super().__init__(
             f"reserved GPU became externally busy before launch: {gpu_uuid}"
         )
-
-
-def _read_release_gate(boot_id: str, monotonic: Callable[[], float]) -> dict[str, Any]:
-    """Root-owned, observational release barrier; expiry never opens it.
-
-    No caller-controlled path, environment switch, or database setting can
-    disable this barrier. Missing is the normal (unmanaged) deployment mode.
-    Present but unprovable is always closed, including an expired deadline.
-    """
-    invalid = {"state": "CLOSED", "valid": False, "release_id": None}
-    descriptor = parent_descriptor = None
-    try:
-        parent = _RELEASE_GATE_PATH.parent
-        try:
-            parent_before = parent.lstat()
-        except FileNotFoundError:
-            return {"state": "ABSENT", "valid": True, "release_id": None}
-        if (not stat.S_ISDIR(parent_before.st_mode) or parent_before.st_uid != 0
-                or stat.S_IMODE(parent_before.st_mode) != 0o755):
-            return invalid
-        parent_descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        parent_open = os.fstat(parent_descriptor)
-        if (parent_before.st_dev, parent_before.st_ino) != (parent_open.st_dev, parent_open.st_ino):
-            return invalid
-        try:
-            before = os.stat(_RELEASE_GATE_PATH.name, dir_fd=parent_descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            return {"state": "ABSENT", "valid": True, "release_id": None}
-        descriptor = os.open(_RELEASE_GATE_PATH.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
-                             dir_fd=parent_descriptor)
-        info = os.fstat(descriptor)
-        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
-                or stat.S_IMODE(info.st_mode) != 0o644 or not 0 < info.st_size <= _MAX_RELEASE_GATE_BYTES
-                or identity(before) != identity(info)):
-            return invalid
-        raw = os.read(descriptor, _MAX_RELEASE_GATE_BYTES + 1)
-        after = os.stat(_RELEASE_GATE_PATH.name, dir_fd=parent_descriptor, follow_symlinks=False)
-        parent_after = parent.lstat()
-        if (len(raw) != info.st_size or identity(info) != identity(os.fstat(descriptor))
-                or identity(info) != identity(after)
-                or (parent_open.st_dev, parent_open.st_ino) != (parent_after.st_dev, parent_after.st_ino)
-                or parent_after.st_uid != 0 or stat.S_IMODE(parent_after.st_mode) != 0o755):
-            return invalid
-        value = reject_duplicate_json(raw.decode("utf-8", errors="strict"))
-        if not isinstance(value, dict) or set(value) != {"schema", "state", "releaseId", "bootId", "deadlineMonotonic"}:
-            return invalid
-        deadline = value["deadlineMonotonic"]
-        now = monotonic()
-        if (type(value["schema"]) is not int or value["schema"] != 1 or value["state"] != "CLOSED"
-                or not isinstance(value["releaseId"], str) or str(uuid.UUID(value["releaseId"])) != value["releaseId"]
-                or value["bootId"] != boot_id or isinstance(deadline, bool) or not isinstance(deadline, (int, float))
-                or not math.isfinite(deadline) or not now < deadline <= now + 600):
-            return invalid
-        return {"state": "CLOSED", "valid": True, "release_id": value["releaseId"]}
-    except (OSError, ValueError, UnicodeError, TypeError, KeyError, OverflowError):
-        return invalid
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if parent_descriptor is not None:
-            os.close(parent_descriptor)
-
-
-def _release_mutation(method: Callable[..., Any]) -> Callable[..., Any]:
-    """Recheck at plan/recovery/action entry, not just the outer tick/RPC."""
-    @functools.wraps(method)
-    def guarded(self: "Coordinator", *args: Any, **kwargs: Any) -> Any:
-        with self._lock:
-            self._require_release_open()
-            return method(self, *args, **kwargs)
-    return guarded
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,25 +287,12 @@ class Coordinator:
         # job/attempt/lease state.
         self._progress_errors: dict[str, str] = {}
         self._recovery_scans = 0
-        self._release_gate = _read_release_gate(self.boot_id, self.monotonic)
         persisted_mode = store.get_setting("observe_only", config.observe_only)
         if not isinstance(persisted_mode, bool):
             raise RuntimeError("observe_only database setting must be boolean")
         self._observe_only = persisted_mode
-        if store.get_setting("observe_only", None) is None and self._release_gate["state"] == "ABSENT":
+        if store.get_setting("observe_only", None) is None:
             store.set_setting("observe_only", self._observe_only)
-
-    def _refresh_release_gate(self) -> dict[str, Any]:
-        value = _read_release_gate(self.boot_id, self.monotonic)
-        if value != self._release_gate:
-            self._invalidate_observation_history()
-            self._set_health("recovering")
-        self._release_gate = value
-        return value
-
-    def _require_release_open(self) -> None:
-        if self._refresh_release_gate()["state"] != "ABSENT":
-            raise ApiError("MAINTENANCE", "native release gate is closed; mutations are unavailable")
 
     def _invalidate_observation_history(self) -> None:
         """Break every consecutive-scan proof after an unsafe observation."""
@@ -791,7 +700,6 @@ class Coordinator:
             set(attempt.get("gpu_uuids", ())).intersection(self._quarantines)
         )
 
-    @_release_mutation
     def _recover_cleanup_ready_external_collisions(
         self,
         attempts: Iterable[dict[str, Any]],
@@ -965,7 +873,6 @@ class Coordinator:
         # ProgressSnapshot already enforces a short, printable single line.
         return snapshot.phase
 
-    @_release_mutation
     def _record_progress_snapshot(
         self,
         attempt: dict[str, Any],
@@ -1052,7 +959,6 @@ class Coordinator:
                     created_at=observed_at,
                 )
 
-    @_release_mutation
     def _scan_progress(self, attempts: Iterable[dict[str, Any]]) -> None:
         """Ingest bounded rank-zero snapshots without trusting them as state."""
 
@@ -1134,15 +1040,12 @@ class Coordinator:
     def tick(self) -> None:
         with self._lock:
             try:
-                gate = self._refresh_release_gate()
-                release_closed = gate["state"] != "ABSENT"
                 # Progress remains observable even while GPU discovery makes
                 # the scheduling half of this tick fail closed.
                 attempts = self.store.list_attempts(
                     states=ACTIVE_ATTEMPT_STATES, limit=10_000
                 )
-                if not release_closed:
-                    self._scan_progress(attempts)
+                self._scan_progress(attempts)
                 devices = tuple(self.gpu_provider.snapshot())
                 by_uuid = {device.uuid: device for device in devices}
                 missing = [
@@ -1154,22 +1057,13 @@ class Coordinator:
                     raise NvidiaSmiError(
                         "managed GPU UUIDs are missing: " + ", ".join(missing)
                     )
-                if not release_closed:
-                    self._retire_previous_boot_attempts(attempts)
-                elif any(item.get("boot_id") and item["boot_id"] != self.boot_id for item in attempts):
-                    raise UnitIdentityError("release observation includes a previous-boot attempt")
+                self._retire_previous_boot_attempts(attempts)
                 attempts = self.store.list_attempts(
                     states=ACTIVE_ATTEMPT_STATES, limit=10_000
                 )
                 leases = self.store.list_leases()
                 reservations = self.store.list_scale_up_reservations()
                 statuses, status_problems = self._collect_statuses(attempts)
-                if release_closed:
-                    status_problems.extend(
-                        f"{item['id']}: active unit is not observable"
-                        for item in attempts
-                        if item.get("unit_name") and item["id"] not in statuses
-                    )
                 self._snapshot = devices
                 self._statuses = statuses
                 if status_problems:
@@ -1182,7 +1076,7 @@ class Coordinator:
                 managed, external, collisions = self._classify_processes(
                     devices, statuses, leases, reservations
                 )
-                if collisions and not release_closed:
+                if collisions:
                     recovered = self._recover_cleanup_ready_external_collisions(
                         attempts, statuses, leases, devices, managed, external
                     )
@@ -1202,16 +1096,10 @@ class Coordinator:
                 self._update_quarantines(collisions, devices)
                 self._update_idle_counts(by_uuid, leases)
                 self._recovery_scans += 1
-                if release_closed and not gate["valid"]:
-                    self._set_health("degraded", "native release gate identity or deadline is invalid")
-                    return
                 if self._recovery_scans < 2:
                     self._set_health("recovering")
                     return
                 self._set_health("ok")
-                if release_closed:
-                    return
-                self._require_release_open()
                 self._repair_incomplete_plans()
                 self._reconcile_attempts()
                 self._reconcile_scale_up_plans()
@@ -1226,7 +1114,6 @@ class Coordinator:
                 self._invalidate_observation_history()
                 self._set_health("degraded", f"{type(exc).__name__}: {exc}")
 
-    @_release_mutation
     def _retire_previous_boot_attempts(
         self, attempts: Iterable[dict[str, Any]]
     ) -> None:
@@ -1385,7 +1272,6 @@ class Coordinator:
             "gpu_indices": attempt["gpu_indices"],
         }
 
-    @_release_mutation
     def _create_attempt_paths(self, job_id: str, attempt_id: str) -> tuple[Path, Path]:
         control_path = self.config.control_dir / attempt_id
         log_path = self.config.log_dir / f"{job_id}-{attempt_id}.log"
@@ -1448,7 +1334,6 @@ class Coordinator:
             return None
         return plan
 
-    @_release_mutation
     def _plan_start(
         self,
         job: dict[str, Any],
@@ -1565,7 +1450,6 @@ class Coordinator:
             )
         return attempt
 
-    @_release_mutation
     def _repair_incomplete_plans(self) -> None:
         attempts = self.store.list_attempts(
             states=[AttemptState.PLANNED, AttemptState.STARTING], limit=10_000
@@ -1651,7 +1535,6 @@ class Coordinator:
                     attempt, f"start recovery conflict: {exc}"
                 )
 
-    @_release_mutation
     def _abort_unstarted_attempt(self, attempt: dict[str, Any], reason: str) -> None:
         job = self.store.get_job(attempt["job_id"])
         scale_plan = self.store.get_active_scale_up_plan(job["id"])
@@ -1710,7 +1593,6 @@ class Coordinator:
                 payload={"reason": reason},
             )
 
-    @_release_mutation
     def _cancel_unstarted_attempt(
         self,
         attempt: dict[str, Any],
@@ -1889,7 +1771,6 @@ class Coordinator:
             return False
         return self._scale_target_is_stable(plan, extras_only=True)
 
-    @_release_mutation
     def _withdraw_scale_request(
         self,
         attempt: dict[str, Any],
@@ -1946,7 +1827,6 @@ class Coordinator:
                     },
                 )
 
-    @_release_mutation
     def _begin_scale_withdrawal(
         self,
         attempt: dict[str, Any],
@@ -2010,7 +1890,6 @@ class Coordinator:
             )
         return self.store.get_attempt(current["id"])
 
-    @_release_mutation
     def _fail_scale_plan(
         self,
         plan: dict[str, Any],
@@ -2043,7 +1922,6 @@ class Coordinator:
             )
         return failed
 
-    @_release_mutation
     def _plan_preemption(
         self,
         requester: dict[str, Any],
@@ -2373,7 +2251,6 @@ class Coordinator:
             self._select_free_devices_for_job(requester, self._free_devices())
         )
 
-    @_release_mutation
     def _rollback_undelivered_preemption(
         self,
         attempt: dict[str, Any],
@@ -2435,7 +2312,6 @@ class Coordinator:
                         },
                     )
 
-    @_release_mutation
     def _try_withdraw_save_request(
         self,
         attempt: dict[str, Any],
@@ -2543,7 +2419,6 @@ class Coordinator:
         finally:
             os.close(descriptor)
 
-    @_release_mutation
     def _fail_preemption_requester(self, attempt: dict[str, Any], reason: str) -> None:
         if self._is_scale_request(attempt):
             # Before an ACK, timeout is a withdrawn optimization rather than
@@ -2572,7 +2447,6 @@ class Coordinator:
                 },
             )
 
-    @_release_mutation
     def _repair_preemption_actions(self, attempt: dict[str, Any]) -> None:
         nonce = attempt.get("preempt_nonce")
         requester = attempt.get("preempt_requested_by_job_id")
@@ -2646,7 +2520,6 @@ class Coordinator:
             checkpoint_path = None
         return {**value, "checkpoint_path": checkpoint_path}
 
-    @_release_mutation
     def _record_checkpoint_ack(
         self,
         attempt: dict[str, Any],
@@ -2714,7 +2587,6 @@ class Coordinator:
                 payload=self._scale_plan_event_payload(checkpointed),
             )
 
-    @_release_mutation
     def _reconcile_attempts(self) -> None:
         attempts = self.store.list_attempts(states=ACTIVE_ATTEMPT_STATES, limit=10_000)
         for attempt in attempts:
@@ -2748,8 +2620,6 @@ class Coordinator:
                         attempt, "managed systemd unit disappeared"
                     )
                 continue
-            # An exited main PID does not prove that container descendants
-            # stopped. Keep the original cancel TERM/KILL escalation alive.
             canceled_children = False
             if (
                 status.is_cleanup_ready
@@ -2837,7 +2707,6 @@ class Coordinator:
         self._finalize_draining_attempts()
         self._finalize_terminal_leases()
 
-    @_release_mutation
     def _record_unit_identity(self, attempt: dict[str, Any], status: Any) -> None:
         changes: dict[str, Any] = {}
         if not attempt.get("invocation_id"):
@@ -2921,7 +2790,6 @@ class Coordinator:
             )
         self._complete_scale_up_if_running(attempt)
 
-    @_release_mutation
     def _on_unit_exited(self, attempt: dict[str, Any], status: Any) -> None:
         ack = self._valid_ack(attempt)
         checkpoint_path = (
@@ -2955,7 +2823,6 @@ class Coordinator:
                 available_at=attempt["created_at"],
             )
 
-    @_release_mutation
     def _mark_lost_and_drain(self, attempt: dict[str, Any], reason: str) -> None:
         self.store.update_attempt(
             attempt["id"],
@@ -2964,7 +2831,6 @@ class Coordinator:
             expected_states=list(ACTIVE_ATTEMPT_STATES),
         )
 
-    @_release_mutation
     def _enqueue_term_after_checkpoint(self, attempt: dict[str, Any]) -> None:
         now = self.clock()
         plan = self._scale_plan_for_attempt(attempt)
@@ -2998,7 +2864,6 @@ class Coordinator:
                     expected_version=plan["version"],
                 )
 
-    @_release_mutation
     def _enqueue_kill(self, attempt: dict[str, Any]) -> None:
         now = self.clock()
         with self.store.transaction() as tx:
@@ -3074,7 +2939,6 @@ class Coordinator:
         self._release_counts[attempt["id"]] = count
         return count >= self.config.release_confirmations
 
-    @_release_mutation
     def _finalize_draining_attempts(self) -> None:
         for attempt in self.store.list_attempts(
             states=[AttemptState.DRAINING], limit=10_000
@@ -3083,7 +2947,6 @@ class Coordinator:
                 continue
             self._finalize_attempt(attempt)
 
-    @_release_mutation
     def _finalize_terminal_leases(self) -> None:
         leases = self.store.list_leases()
         for attempt_id in sorted({item["attempt_id"] for item in leases}):
@@ -3093,7 +2956,6 @@ class Coordinator:
             if self._attempt_gpus_released(attempt):
                 self.store.release_leases(attempt_id=attempt_id, reason="terminal attempt GPU release confirmed")
 
-    @_release_mutation
     def _finalize_scale_attempt(
         self,
         attempt: dict[str, Any],
@@ -3238,7 +3100,6 @@ class Coordinator:
         self._release_counts.pop(attempt["id"], None)
         return True
 
-    @_release_mutation
     def _finalize_attempt(self, attempt: dict[str, Any]) -> None:
         job = self.store.get_job(attempt["job_id"])
         nonce = attempt.get("preempt_nonce") or ""
@@ -3457,7 +3318,6 @@ class Coordinator:
                 blocked.add(str(action["id"]))
         return blocked
 
-    @_release_mutation
     def _record_start_capacity_block(
         self,
         action: dict[str, Any],
@@ -3485,7 +3345,6 @@ class Coordinator:
         self._idle_counts[blocked.gpu_uuid] = 0
         self._release_counts[attempt_id] = 0
 
-    @_release_mutation
     def _process_actions(self) -> None:
         actions = self.store.claim_actions(
             self.worker_id,
@@ -3584,7 +3443,6 @@ class Coordinator:
                 )
         return by_uuid
 
-    @_release_mutation
     def _execute_start(self, action: dict[str, Any]) -> dict[str, Any]:
         attempt = self.store.get_attempt(action["attempt_id"])
         job = self.store.get_job(action["job_id"])
@@ -3652,10 +3510,8 @@ class Coordinator:
             if existing_launch is None:
                 if launch_path.exists() or launch_path.is_symlink():
                     raise RuntimeError("launch specification path is unsafe")
-                self._require_release_open()
                 atomic_write_json(launch_path, launch_spec, mode=0o600)
             try:
-                self._require_release_open()
                 status = self.systemd.start(
                     unit_name=payload["unit_name"],
                     description_token=payload["unit_token"],
@@ -3737,7 +3593,6 @@ class Coordinator:
             "main_pid": status.main_pid,
         }
 
-    @_release_mutation
     def _recover_canceled_start(
         self,
         action: dict[str, Any],
@@ -3809,7 +3664,6 @@ class Coordinator:
             "invocation_id": status.invocation_id,
         }
 
-    @_release_mutation
     def _execute_save_request(self, action: dict[str, Any]) -> dict[str, Any]:
         attempt = self.store.get_attempt(action["attempt_id"])
         if attempt["state"] != AttemptState.SAVE_REQUESTED.value or attempt.get(
@@ -3840,11 +3694,9 @@ class Coordinator:
             if existing != action["payload"]:
                 raise RuntimeError("checkpoint request file identity conflict")
         else:
-            self._require_release_open()
             atomic_write_json(request_path, action["payload"], mode=0o600)
         return {"request_path": str(request_path), "nonce": action["payload"]["nonce"]}
 
-    @_release_mutation
     def _execute_signal(self, action: dict[str, Any], *, kill: bool) -> dict[str, Any]:
         attempt = self.store.get_attempt(action["attempt_id"])
         victim_job = self.store.get_job(attempt["job_id"])
@@ -3889,7 +3741,6 @@ class Coordinator:
         # effect.  If the daemon dies after systemd receives the signal but
         # before the outbox completion is recorded, recovery conservatively
         # requeues an on-preempt victim instead of silently losing it.
-        self._require_release_open()
         self.store.append_event(
             "SIGNAL_DELIVERY_INTENT",
             job_id=attempt["job_id"],
@@ -3901,7 +3752,6 @@ class Coordinator:
                 "invocation_id": attempt.get("invocation_id"),
             },
         )
-        self._require_release_open()
         method(
             unit_name=attempt["unit_name"],
             description_token=attempt["unit_token"],
@@ -3941,11 +3791,9 @@ class Coordinator:
             )
         return {"signal": signal_name, "deadline_at": deadline}
 
-    @_release_mutation
     def _execute_cleanup(self, action: dict[str, Any]) -> dict[str, Any]:
         attempt = self.store.get_attempt(action["attempt_id"])
         try:
-            self._require_release_open()
             self.systemd.cleanup(
                 unit_name=attempt["unit_name"],
                 description_token=attempt["unit_token"],
@@ -4102,7 +3950,6 @@ class Coordinator:
         marker = max(float(item) for item in markers if item is not None)
         return self.clock() < marker + self.config.scale_up_cooldown_seconds
 
-    @_release_mutation
     def _plan_scale_up(
         self,
         job: dict[str, Any],
@@ -4169,7 +4016,6 @@ class Coordinator:
             )
         return plan
 
-    @_release_mutation
     def _schedule_scale_ups(self) -> None:
         # Expansion is opportunistic.  Any queued work gets a complete normal
         # scheduling pass before a running job may reserve additional GPUs.
@@ -4213,7 +4059,6 @@ class Coordinator:
             if not free:
                 return
 
-    @_release_mutation
     def _plan_scale_up_restart(
         self,
         job: dict[str, Any],
@@ -4293,7 +4138,6 @@ class Coordinator:
             )
         return attempt
 
-    @_release_mutation
     def _complete_scale_up_if_running(self, attempt: dict[str, Any]) -> None:
         plan = self.store.get_active_scale_up_plan(str(attempt["job_id"]))
         if (
@@ -4326,7 +4170,6 @@ class Coordinator:
                 },
             )
 
-    @_release_mutation
     def _schedule_scale_up_restarts(self) -> None:
         pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
         restart_plans: list[dict[str, Any]] = []
@@ -4387,7 +4230,6 @@ class Coordinator:
             self._plan_scale_up_restart(head, plan)
             pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
 
-    @_release_mutation
     def _reconcile_scale_up_plans(self) -> None:
         for plan in self.store.list_scale_up_plans(
             states=ACTIVE_SCALE_UP_STATES,
@@ -4594,7 +4436,6 @@ class Coordinator:
                 return True
         return False
 
-    @_release_mutation
     def _schedule(self) -> None:
         pending = [
             job
@@ -4719,7 +4560,6 @@ class Coordinator:
 
     # ------------------------------------------------------------------- API
 
-    @_release_mutation
     def _schedule_shared(self) -> None:
         # Explicit sharing can use an occupied card even while ordinary work
         # waits for idle cards. It never initiates preemption.
@@ -4751,8 +4591,6 @@ class Coordinator:
 
     def handle_api(self, operation: str, arguments: dict[str, Any]) -> Any:
         with self._lock:
-            if operation not in _READ_ONLY_OPERATIONS:
-                self._require_release_open()
             if operation in {"sync_begin", "sync_finish"}:
                 from .sync import node_api as sync_node_api
                 return sync_node_api(self, operation, arguments)
@@ -4788,7 +4626,6 @@ class Coordinator:
                 return self._api_set_observe(arguments)
             raise ApiError("NOT_FOUND", f"unknown operation: {operation}")
 
-    @_release_mutation
     def _job_sync_blocked(self, job: dict[str, Any]) -> bool:
         from .sync import job_blocked
         blocked = job_blocked(self.config.root, job)
@@ -4806,7 +4643,6 @@ class Coordinator:
                 return candidate
         raise RuntimeError("could not allocate a unique job id")
 
-    @_release_mutation
     def _api_submit(self, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
             submission = validate_submission(
@@ -4875,31 +4711,21 @@ class Coordinator:
             "requested_gpu_uuids": job["requested_gpu_uuids"],
         }
 
-    @_release_mutation
     def _api_set_job_display(self, arguments: dict[str, Any]) -> dict[str, Any]:
         _require_exact_fields(arguments,
-            allowed={"job_id", "metadata", "expected_submit_key", "expected_owner", "expected_name", "expected_display_revision"},
+            allowed={"job_id", "metadata", "expected_submit_key", "expected_owner", "expected_name"},
             required={"job_id", "metadata", "expected_submit_key", "expected_owner", "expected_name"})
-        if "expected_display_revision" in arguments and (not isinstance(arguments["expected_display_revision"], str)
-                or len(arguments["expected_display_revision"]) != 64
-                or any(c not in "0123456789abcdef" for c in arguments["expected_display_revision"])):
-            raise ApiError("BAD_REQUEST", "invalid expected display revision")
         try:
             job = self.store.set_job_display(arguments["job_id"], arguments["metadata"],
                 expected_submit_key=arguments["expected_submit_key"],
-                expected_owner=arguments["expected_owner"], expected_name=arguments["expected_name"],
-                expected_display_revision=arguments.get("expected_display_revision"))
+                expected_owner=arguments["expected_owner"], expected_name=arguments["expected_name"])
         except StoreNotFoundError as exc:
             raise ApiError("NOT_FOUND", str(exc)) from exc
         except StoreConflictError as exc:
             raise ApiError("CONFLICT", str(exc)) from exc
         except (ValueError, TypeError) as exc:
             raise ApiError("BAD_REQUEST", str(exc)) from exc
-        result = {"job_id": job["id"], "display_metadata": job["display_metadata"]}
-        if "expected_display_revision" in arguments:
-            from .job_display import display_revision
-            result["revision"] = display_revision(job["display_metadata"])
-        return result
+        return {"job_id": job["id"], "display_metadata": job["display_metadata"]}
 
     def _api_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
         _require_exact_fields(arguments, allowed={"all", "limit"})
@@ -5029,7 +4855,7 @@ class Coordinator:
         return {
             "daemon": {
                 **self._health_payload(),
-                "capabilities": ["native-release-gate-v1", "job-display-v1", "job-display-cas-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1"],
+                "capabilities": ["job-display-v1", "priority-policy-v1", "preempt-idle-only-v1", "priority-rank-v1", "preempt-opt-in-only-v1", "elastic-batch-v1", "gpu-placement-v1", "gpu-sharing-v1"],
                 "observe_only": self._observe_only,
                 "managed_indices": managed_indices,
                 "managed_gpus": managed_gpus,
@@ -5193,7 +5019,6 @@ class Coordinator:
             "latest_event_id": self.store.latest_event_id(job["id"]),
         }
 
-    @_release_mutation
     def _api_cancel(self, arguments: dict[str, Any]) -> dict[str, Any]:
         _require_exact_fields(arguments, allowed={"job_id"}, required={"job_id"})
         try:
@@ -5274,7 +5099,6 @@ class Coordinator:
             )
         return {"job_id": job["id"], "state": JobState.CANCELED.value}
 
-    @_release_mutation
     def _api_set_priority(self, arguments: dict[str, Any], *, rank_only: bool = False) -> dict[str, Any]:
         field = "priority" if rank_only else "priority_class"
         _require_exact_fields(arguments, allowed={"job_id", field, "expected"},
@@ -5299,7 +5123,6 @@ class Coordinator:
             "preempt_idle_only": updated["preempt_idle_only"],
         }
 
-    @_release_mutation
     def _api_retry(self, arguments: dict[str, Any]) -> dict[str, Any]:
         _require_exact_fields(arguments, allowed={"job_id"}, required={"job_id"})
         try:
@@ -5371,7 +5194,6 @@ class Coordinator:
             limit=limit,
         )
 
-    @_release_mutation
     def _api_set_observe(self, arguments: dict[str, Any]) -> dict[str, Any]:
         _require_exact_fields(
             arguments,
@@ -5420,7 +5242,6 @@ class Coordinator:
         return result
 
     def _health_payload(self) -> dict[str, Any]:
-        gate = self._refresh_release_gate()
         managed_quarantines = set(self.config.managed_gpu_uuids).intersection(
             self._quarantines
         )
@@ -5430,13 +5251,12 @@ class Coordinator:
             capacity_health = "blocked"
         else:
             capacity_health = "partial"
-        schedulable = self._free_devices() if self._health == "ok" and gate["state"] == "ABSENT" else []
+        schedulable = self._free_devices() if self._health == "ok" else []
         return {
             "health": self._health,
             "error": self._last_error,
             "recovery_scans": self._recovery_scans,
             "boot_id": self.boot_id,
-            "native_release_gate": dict(gate),
             "capacity_health": capacity_health,
             "quarantined_gpus": self._quarantine_payloads(),
             "schedulable_gpu_indices": [item.index for item in schedulable],

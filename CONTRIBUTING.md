@@ -1,25 +1,5 @@
-# 参与开发
+# 参与贡献
 
-欢迎提功能建议和 PR。日常命令面向用户，同时保持结构化输出、退出码和非交互输入可供脚本使用。
+从最新 main 建分支，只改任务范围。开发、测试、权限与发布规范统一以 [AGENTS.md](AGENTS.md) 为准。
 
-1. Fork 仓库，从 `main` 建功能分支。
-2. `npm ci`，用 `npm start` 的本地 demo 开发。生产数据库、域名、密钥和 GPU 集群都不需要。
-3. 修改权限、CLI、执行桥或文件操作时补相应测试；涉及 GPU 时说明模型、驱动和实测范围。
-4. 跑 `npm test`、`npm run test:python`、`python3 scripts/build-gpuq.py` 和 `git diff --check`。
-5. 提 PR，写清目的、行为变化、迁移/回退方案以及没测的范围。
-
-## 约束
-
-- 普通注册不能直接获得管理员；最大 GPU 配额不等于 root。
-- 不以客户端传来的用户 ID、用户名或 GPUQ owner 标签判定权限。
-- 状态未知不释放配额；取消必须确认；提交必须可安全重试。
-- 不为了方便放开 shell 拼接、SSH 转发、证书校验或宽泛的 sudo。
-- 不提交 `.env`、`inventory.json`、数据库、私钥、训练数据、用户任务日志或生产截图。
-- 默认不要将完整家庭/学校网络、外部模型服务的身份信息带进项目。
-- 不自动更新/部署生产。维护者审阅并验收后，选择版本手动发布。
-
-## 项目布局
-
-`dist/` 是网页源码（没有隐藏的前端构建步骤）；`portal-*.mjs` / `execution.mjs` 是生产后端；`cli.mjs` 是客户端；`deploy/` 是节点和 VPS 程序；`gpuq/gpuq/` 是队列源码；`tests/` 是不需要 GPU 的回归测试；`scripts/` 负责准备构建。
-
-运行 `configure.mjs` 会重写部署用 `dist/machines.js`；提交 PR 前恢复示例机器表，不提交你的实际资产配置。新增外部代码或资源必须保留来源和许可证，并更新第三方清单。
+提交前运行 `npm test`、`npm run test:ui`、`npm run test:python` 和相关构建；提 PR 说明验证范围。

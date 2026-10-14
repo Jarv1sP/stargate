@@ -1,6 +1,5 @@
-import {infoHTML} from './workbench-ui.js';
+import {infoHTML,escapeUI as escape} from './workbench-ui.js';
 import {progressPercent,progressText} from './job-progress.js';
-const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function jobProgressHTML(job){
   const progress=job.progress,s=progress?.snapshot,percent=progressPercent(progress);
   const metrics=s?Object.entries(s.metrics||{}).slice(0,4).map(([key,value])=>key+'='+Number(value).toPrecision(5)).join(' · '):'';
@@ -8,7 +7,7 @@ export function jobProgressHTML(job){
 }
 
 export function jobNotificationHTML(job,userId){
-  if(job.userId!==userId||!job.notifications?.configured)return '';
+  if(!job.notifications?.configured)return '';
   if(job.notifications.degraded)return '<small>通知存储暂不可用</small>';
   const enabled=job.notifications.enabled===true,terminal=['SUCCEEDED','FAILED','CANCELED'].includes(job.state);
   return `<button class="button" data-job-notify="${escape(job.id)}" ${terminal&&!enabled?'disabled':''}>${enabled?'关闭 Telegram 通知':'开启 Telegram 通知'}</button>`;

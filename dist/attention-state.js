@@ -40,10 +40,10 @@ export function createAttentionReads({storage=()=>globalThis.localStorage,now=()
 
 // Partial reads update known records; only a complete directory proves absence.
 export function mergeAttentionActivities(previous,incoming,userId,complete=false){
-  const rows=new Map((complete?[]:previous).filter(row=>row.userId===userId&&typeof row.id==='string').map(row=>[row.id,row]));
+  const rows=new Map((complete?[]:previous).filter(row=>typeof row.id==='string').map(row=>[row.id,row]));
   for(const row of incoming){
-    if(!row||typeof row.id!=='string'||!row.id||row.userId&&row.userId!==userId||row.owner?.id&&row.owner.id!==userId)continue;
-    rows.set(row.id,{id:row.id,userId,kind:row.kind,state:row.state,machine:row.machine,name:row.name||row.reference?.dataset||'数据传输',finishedAt:row.finishedAt,updatedAt:row.updatedAt,error:row.error||row.result?.error});
+    if(!row||typeof row.id!=='string'||!row.id)continue;
+    rows.set(row.id,{id:row.id,userId:row.ownerId||row.userId||row.owner?.id,kind:row.kind,state:row.state,machine:row.machine,name:row.name||row.reference?.dataset||'数据传输',finishedAt:row.finishedAt,updatedAt:row.updatedAt,error:row.error||row.result?.error});
   }
   return [...rows.values()];
 }

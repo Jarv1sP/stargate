@@ -4,6 +4,7 @@ import {createSubmissionKeys} from './submission-keys.js';
 import {createTaskNotesUI,taskNotesMarkup} from './task-notes-ui.js';
 import {revealSheet,dismissSheet} from './motion-ui.js';
 import {copyHelp} from './copy-help-ui.js';
+import {defaultAppearance,applyAnnouncementAppearance} from './announcement-appearance.js';
 export {createSubmissionKeys} from './submission-keys.js';
 const kinds={announcement:'公告',feedback:'问题反馈',discussion:'讨论'};
 const statuses={open:'待处理',investigating:'处理中',resolved:'已解决',closed:'已关闭'};
@@ -61,6 +62,9 @@ export function createCommunityUI(store,toast){
     q('#community-kind').addEventListener('change',()=>{setTabs();loadPosts();});q('#community-filter').addEventListener('change',()=>loadPosts());q('#community-refresh').addEventListener('click',()=>loadPosts());q('#community-more').addEventListener('click',()=>loadPosts(true));q('#community-create').addEventListener('click',()=>openComposer('post'));
     q('#chat-refresh').addEventListener('click',()=>{history=false;loadChat('refresh');});q('#chat-older').addEventListener('click',()=>loadChat('older'));q('#chat-latest').addEventListener('click',()=>{history=false;loadChat('refresh');});
     q('#chat-new').addEventListener('click',()=>{q('#community-messages').scrollTop=q('#community-messages').scrollHeight;unread=0;q('#chat-new').hidden=true;});
+    const announcements=button('全部公告',()=>{q('#community-kind').value='announcement';if(tab!=='posts')selectTab('posts');else{setTabs();loadPosts();}});announcements.id='community-announcements';
+    const publish=button('发布公告',()=>{if(admin())openComposer('post',null,true);});publish.id='community-publish-announcement';publish.hidden=!admin();
+    q('.community-toolbar-actions').append(announcements,publish);
     notes=createTaskNotesUI(root,store,toast);q('#task-note-form [type=submit]').classList.remove('primary');q('#community-task-notes').addEventListener('toggle',syncNotes);q('#community-chat-form').addEventListener('submit',sendChat);setTabs();
     for(const control of root.querySelectorAll('button,input,select,textarea'))if(!control.dataset.communityTab&&!control.hasAttribute('data-copy-help'))control.disabled=true;
   }
@@ -76,7 +80,7 @@ export function createCommunityUI(store,toast){
   function syncNotes(){notes?.sync(visible&&chatShown()&&q('#community-task-notes').open,ready&&notesCapable);}
   async function enable(){
     if(infoBusy||ready||!identity)return;infoBusy=true;const stamp=context();message('正在连接协作区…');
-    try{const info=await store.call('community.info',{});if(!valid(stamp))return;if(info?.enabled!==true)throw Error('协作区尚未启用');ready=true;notesCapable=Array.isArray(info.capabilities)&&info.capabilities.includes('task-notes-v1');setTabs();for(const control of root.querySelectorAll('button,input,select,textarea'))control.disabled=false;syncNotes();message('');await Promise.all([...(postsShown()?[loadPosts()]:[]),...(chatShown()?[loadChat('refresh')]:[])]);}
+    try{if(!valid(stamp))return;ready=true;notesCapable=true;setTabs();for(const control of root.querySelectorAll('button,input,select,textarea'))control.disabled=false;syncNotes();message('');await Promise.all([...(postsShown()?[loadPosts()]:[]),...(chatShown()?[loadChat('refresh')]:[])]);}
     catch(error){if(valid(stamp))message('协作区暂不可用，请稍后刷新。尚未发送任何内容。',true);}
     finally{if(valid(stamp))infoBusy=false;}
   }
@@ -109,7 +113,7 @@ export function createCommunityUI(store,toast){
     }
     if(post.canDelete)actions.append(button('删除',()=>remove('post',post),'button danger'));
   }
-  async function moderate(change){if(!selected)return;const current=selected,stamp=context();try{const result=await store.call('community.posts.update',{id:current.id,revision:current.revision,...change});if(!valid(stamp)||selected?.id!==current.id)return;selected=result.post;renderDetail();loadPosts();detail.querySelector('#community-detail-status').textContent='已更新。';}catch(error){if(valid(stamp)&&selected?.id===current.id)detail.querySelector('#community-detail-status').textContent=error.status===409?'帖子已被更新，请重新打开后再操作。':error.message;}}
+  async function moderate(change){if(!selected)return;const current=selected,stamp=context();try{const result=await store.call('community.posts.update',{id:current.id,...change});if(!valid(stamp)||selected?.id!==current.id)return;selected=result.post;renderDetail();loadPosts();detail.querySelector('#community-detail-status').textContent='已更新。';}catch(error){if(valid(stamp)&&selected?.id===current.id)detail.querySelector('#community-detail-status').textContent=error.status===409?'帖子已被更新，请重新打开后再操作。':error.message;}}
   async function loadComments(more=false){if(!selected)return;const id=selected.id,stamp=context(),request=++commentRequest,opened=detailRequest;try{const result=await store.call('community.comments.list',{postId:id,...(more&&commentCursor?{cursor:commentCursor}:{}),limit:50});if(!valid(stamp)||request!==commentRequest||opened!==detailRequest||selected?.id!==id)return;comments=more?[...comments,...result.comments]:result.comments;commentCursor=result.nextCursor;renderComments();}catch(error){if(valid(stamp)&&request===commentRequest&&selected?.id===id)detail.querySelector('#community-detail-status').textContent='回复暂不可用：'+error.message;}}
   function itemActions(item,type){const actions=el('div','community-item-actions');if(item.canEdit)actions.append(button('编辑',()=>openComposer(type,item),'community-text-button'));if(item.canDelete)actions.append(button('删除',()=>remove(type,item),'community-text-button danger'));return actions;}
   function renderComments(){const list=detail.querySelector('#community-comments');list.replaceChildren();for(const item of comments){const row=el('article','community-comment');row.dataset.commentId=item.id;row.append(el('p','community-meta',(item.author?.name||item.author?.username||'成员')+' · '+date(item.createdAt)),el('p','community-body',item.body),itemActions(item,'comment'));list.append(row);}if(!comments.length)list.append(el('p','community-empty','还没有回复。'));detail.querySelector('#community-comments-more').hidden=!commentCursor;}
@@ -118,23 +122,58 @@ export function createCommunityUI(store,toast){
   function ensureComposer(){
     if(composer)return;composer=el('dialog','community-dialog community-composer');composer.setAttribute('aria-labelledby','community-compose-title');
     composer.innerHTML=`<form id="community-compose-form"><div class="modal-head"><div class="copy-caption"><h2 id="community-compose-title"></h2>${copyHelp('发布内容','所有登录成员可见。反馈问题时请附操作步骤、任务编号和错误信息。','/guide/queue')}</div><button class="icon-button" type="button" data-compose-close aria-label="关闭编辑器">×</button></div><div class="community-sheet-body"><label class="field" id="community-kind-field">类型<select name="kind"><option value="feedback">问题反馈</option><option value="discussion">讨论</option>${admin()?'<option value="announcement">公告</option>':''}</select></label><label class="field" id="community-title-field">标题<input name="title" maxlength="120" required placeholder="用一句话说明内容"></label><label class="field" id="community-type-field">公告类型<select name="announcementType"><option value="notice">通知</option><option value="maintenance">维护安排</option><option value="outage">故障通知</option></select></label><label class="field">内容<textarea name="body" rows="8" maxlength="8000" required placeholder="写下内容"></textarea></label><label class="community-pin" id="community-pin-field"><input type="checkbox" name="pinned">置顶这条公告</label><p class="community-compose-note">请勿填写密码或令牌。</p><p class="form-error" id="community-compose-error" role="status"></p></div><div class="modal-actions"><button type="button" class="button" data-compose-close>取消</button><button type="submit" class="button primary">发布</button></div></form>`;
+    const targeting=el('div');targeting.id='community-announcement-target';
+    targeting.innerHTML='<label class="field">谁能看到<select name="audience"><option value="all">全部登录成员</option><option value="users">指定成员（可多选）</option><option value="member">普通成员</option><option value="admin">管理员</option></select></label><div id="community-audience-members" role="group" aria-label="公告接收成员" hidden></div><label class="community-pin"><input type="checkbox" name="popup">打开网站时弹出大公告</label>';
+    composer.querySelector('[name=body]').closest('label').before(targeting);
+    targeting.insertAdjacentHTML('beforeend','<details id="announcement-appearance-editor"><summary>布局与颜色</summary><label class="field">布局<select name="layout"><option value="standard">标准</option><option value="centered">居中</option><option value="compact">紧凑</option></select></label><div class="announcement-colors"><label>背景<input type="color" name="background"></label><label>文字<input type="color" name="textColor"></label><label>强调色<input type="color" name="accent"></label></div><section class="announcement-preview" aria-label="公告预览"><header><small>公告预览</small><h3></h3></header><p></p></section></details>');
+    composer.querySelector('form').addEventListener('input',previewAppearance);
+    targeting.querySelector('[name=audience]').addEventListener('change',composerKind);
     document.body.append(composer);for(const node of composer.querySelectorAll('[data-compose-close]'))node.addEventListener('click',()=>{if(composeBusy)return;if(keys.hasUncertain('post')){toast('发送结果尚未确认，请先重试原内容。');return;}dismissSheet(composer);});composer.addEventListener('cancel',event=>{event.preventDefault();if(!composeBusy&&!keys.hasUncertain('post'))dismissSheet(composer);});composer.querySelector('form').addEventListener('submit',sendComposer);composer.querySelector('[name=kind]').addEventListener('change',composerKind);
   }
-  function composerKind(){const form=composer.querySelector('form'),post=editing?.type==='post',announcement=post&&form.elements.kind.value==='announcement';composer.querySelector('#community-kind-field').hidden=!post;composer.querySelector('#community-type-field').hidden=!announcement;composer.querySelector('#community-pin-field').hidden=!announcement||Boolean(editing?.item);}
-  function openComposer(type,item=null){
-    ensureComposer();if(composeBusy)return;if(keys.hasUncertain('post')){if(!composer.open){composer.showModal();revealSheet(composer);}toast('请先确认上次发送结果。');return;}
-    const filter=q('#community-kind').value;editing={type,item,kind:item?.kind||(filter&&!(filter==='announcement'&&!admin())?filter:'feedback')};
-    const form=composer.querySelector('form'),post=type==='post';form.reset();form.elements.kind.value=editing.kind;form.elements.kind.disabled=Boolean(item);form.elements.pinned.disabled=false;form.elements.title.value=post?item?.title||'':'';form.elements.body.value=item?.body||'';form.elements.body.maxLength=post?8000:type==='message'?2000:4000;form.elements.announcementType.value=item?.announcementType||'notice';form.elements.title.required=post;form.elements.title.disabled=!post;composer.querySelector('#community-title-field').hidden=!post;composerKind();composer.querySelector('#community-compose-title').textContent=item?'编辑'+(post?'帖子':type==='message'?'消息':'回复'):'发帖';composer.querySelector('[type=submit]').textContent=item?'保存修改':'发布';composer.querySelector('#community-compose-error').textContent='';for(const field of [form.elements.title,form.elements.body])field.readOnly=false;form.elements.announcementType.disabled=false;if(!composer.open){composer.showModal();revealSheet(composer);}(post?form.elements.title:form.elements.body).focus();
+  function composerKind(){const form=composer.querySelector('form'),post=editing?.type==='post',announcement=post&&form.elements.kind.value==='announcement';composer.querySelector('#community-kind-field').hidden=!post;composer.querySelector('#community-type-field').hidden=!announcement;composer.querySelector('#community-pin-field').hidden=!announcement||Boolean(editing?.item);composer.querySelector('#community-announcement-target').hidden=!announcement;composer.querySelector('#community-audience-members').hidden=form.elements.audience.value!=='users';}
+  function appearanceFields(){const f=composer.querySelector('form').elements;return {layout:f.layout.value,background:f.background.value,text:f.textColor.value,accent:f.accent.value};}
+  function previewAppearance(){const f=composer.querySelector('form').elements,p=composer.querySelector('.announcement-preview');applyAnnouncementAppearance(p,appearanceFields());p.querySelector('h3').textContent=f.title.value||'公告标题';p.querySelector('p').textContent=f.body.value||'这里显示公告正文。';}
+  function audienceFields(){const form=composer.querySelector('form'),type=form.elements.audience.value;return {appearance:appearanceFields(),popup:form.elements.popup.checked,audience:type==='all'?{type:'all'}:type==='users'?{type:'users',userIds:[...form.querySelectorAll('[name=audienceUser]:checked')].map(n=>n.value)}:{type:'role',role:type}};}
+  function lockAudience(locked){for(const field of composer.querySelectorAll('[name=audience],[name=audienceUser],[name=popup],#announcement-appearance-editor input,#announcement-appearance-editor select'))field.disabled=locked;}
+  function fillAudience(item,announcement){
+    const form=composer.querySelector('form'),audience=item?.audience||{type:'all'},members=composer.querySelector('#community-audience-members');
+    form.elements.audience.value=audience.type==='role'?audience.role:audience.type;
+    form.elements.popup.checked=item?item.popup===true:announcement;
+    form.elements.pinned.checked=item?item.pinned===true:announcement;
+    const style=item?.appearance||defaultAppearance;
+    for(const [name,key] of [['layout','layout'],['background','background'],['textColor','text'],['accent','accent']])form.elements[name].value=style[key];
+    previewAppearance();
+    members.replaceChildren();
+    for(const user of store.users){
+      const label=el('label'),check=el('input');check.type='checkbox';check.name='audienceUser';check.value=user.id;check.checked=audience.userIds?.includes(user.id)||false;
+      label.append(check,el('span','',user.name||user.username));members.append(label);
+    }
+    lockAudience(false);composerKind();
+    if(!item&&announcement)composer.querySelector('#community-compose-title').textContent='发布公告';
   }
-  async function sendComposer(event){event.preventDefault();if(composeBusy||!editing)return;composeBusy=true;const stamp=context(),current=editing,form=event.currentTarget,submit=form.querySelector('[type=submit]'),kind=current.item?.kind||form.elements.kind.value;submit.disabled=true;const error=composer.querySelector('#community-compose-error');error.textContent='';form.elements.title.readOnly=true;form.elements.body.readOnly=true;for(const name of ['kind','announcementType','pinned'])form.elements[name].disabled=true;const fields={body:form.elements.body.value,...(current.type==='post'?{title:form.elements.title.value,...(kind==='announcement'?{announcementType:form.elements.announcementType.value,...(!current.item?{pinned:form.elements.pinned.checked}:{})}:{})}:{})};try{
-      const result=current.item?await store.call('community.'+({post:'posts',comment:'comments',message:'chat'}[current.type])+'.update',{id:current.item.id,revision:current.item.revision,...fields}):await create('post','community.posts.create',{kind,...fields});
+  function openComposer(type,item=null,announcement=false){
+    ensureComposer();if(composeBusy)return;if(keys.hasUncertain('post')){if(!composer.open){composer.showModal();revealSheet(composer);}toast('请先确认上次发送结果。');return;}
+    const filter=q('#community-kind').value;editing={type,item,kind:item?.kind||(announcement?'announcement':filter&&!(filter==='announcement'&&!admin())?filter:'feedback')};
+    const form=composer.querySelector('form'),post=type==='post';form.reset();
+    form.elements.kind.value=editing.kind;form.elements.kind.disabled=Boolean(item);form.elements.pinned.disabled=false;
+    form.elements.title.value=post?item?.title||'':'';form.elements.body.value=item?.body||'';
+    form.elements.body.maxLength=post?8000:type==='message'?2000:4000;form.elements.announcementType.value=item?.announcementType||'notice';
+    form.elements.title.required=post;form.elements.title.disabled=!post;composer.querySelector('#community-title-field').hidden=!post;
+    composer.querySelector('#community-compose-title').textContent=item?'编辑'+(post?'帖子':type==='message'?'消息':'回复'):'发帖';
+    composer.querySelector('[type=submit]').textContent=item?'保存修改':'发布';composer.querySelector('#community-compose-error').textContent='';
+    for(const field of [form.elements.title,form.elements.body])field.readOnly=false;
+    form.elements.announcementType.disabled=false;fillAudience(item,announcement);
+    if(!composer.open){composer.showModal();revealSheet(composer);}(post?form.elements.title:form.elements.body).focus();
+  }
+  async function sendComposer(event){event.preventDefault();if(composeBusy||!editing)return;composeBusy=true;const stamp=context(),current=editing,form=event.currentTarget,submit=form.querySelector('[type=submit]'),kind=current.item?.kind||form.elements.kind.value;submit.disabled=true;const error=composer.querySelector('#community-compose-error');error.textContent='';form.elements.title.readOnly=true;form.elements.body.readOnly=true;for(const name of ['kind','announcementType','pinned'])form.elements[name].disabled=true;lockAudience(true);const fields={body:form.elements.body.value,...(current.type==='post'?{title:form.elements.title.value,...(kind==='announcement'?{announcementType:form.elements.announcementType.value,...(!current.item?{pinned:form.elements.pinned.checked}:{}),...audienceFields()}:{})}:{})};try{
+      const result=current.item?await store.call('community.'+({post:'posts',comment:'comments',message:'chat'}[current.type])+'.update',{id:current.item.id,...fields}):await create('post','community.posts.create',{kind,...fields});
       if(!valid(stamp))return;dismissSheet(composer);editing=null;if(result.deleted)toast('这条内容已被删除，没有重复发布。');else toast(current.item?'修改已保存。':'已发布。');
       if(current.type==='post'){loadPosts();if(selected?.id===current.item?.id&&result.post){selected=result.post;renderDetail();}}
       else if(current.type==='comment')loadComments();else loadChat('refresh');
     }catch(e){if(valid(stamp)){const uncertain=!current.item&&keys.hasUncertain('post');error.textContent=uncertain?'发送结果未确认。请重试原内容，不会重复发帖。':e.status===409?'内容已被更新。你的文字仍保留，请取消并重新打开最新内容后再修改。':e.message;form.elements.title.readOnly=uncertain;form.elements.body.readOnly=uncertain;form.elements.kind.disabled=uncertain||Boolean(current.item);form.elements.announcementType.disabled=uncertain;form.elements.pinned.disabled=uncertain;}}
-    finally{if(valid(stamp)){composeBusy=false;submit.disabled=false;}}
+    finally{if(valid(stamp)){composeBusy=false;submit.disabled=false;lockAudience(!current.item&&keys.hasUncertain('post'));}}
   }
-  async function remove(type,item){if(!window.confirm('确定删除这'+(type==='post'?'篇帖子及其回复':type==='message'?'条消息':'条回复')+'？'))return;const stamp=context();try{await store.call('community.'+({post:'posts',comment:'comments',message:'chat'}[type])+'.delete',{id:item.id,revision:item.revision});if(!valid(stamp))return;if(type==='post'){if(selected?.id===item.id)dismissSheet(detail,{drilldown:true});loadPosts();}else if(type==='comment')loadComments();else{messages=messages.filter(row=>row.id!==item.id);renderMessages(false);}toast('已删除。');}catch(error){if(valid(stamp))toast(error.status===409?'内容已被更新，请刷新后重新确认删除。':error.message);}}
+  async function remove(type,item){if(!window.confirm('确定删除这'+(type==='post'?'篇帖子及其回复':type==='message'?'条消息':'条回复')+'？'))return;const stamp=context();try{await store.call('community.'+({post:'posts',comment:'comments',message:'chat'}[type])+'.delete',{id:item.id});if(!valid(stamp))return;if(type==='post'){if(selected?.id===item.id)dismissSheet(detail,{drilldown:true});loadPosts();}else if(type==='comment')loadComments();else{messages=messages.filter(row=>row.id!==item.id);renderMessages(false);}toast('已删除。');}catch(error){if(valid(stamp))toast(error.status===409?'内容已被更新，请刷新后重新确认删除。':error.message);}}
   function arm(){stop();if(visible&&ready&&chatShown()&&!document.hidden&&!history)timer=setTimeout(()=>loadChat('poll'),5000);}
   async function loadChat(mode){
     if(!ready||chatBusy)return;chatBusy=true;

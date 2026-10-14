@@ -1,0 +1,24 @@
+/* ── 19 phone — fixed 390 × 844 roots (class="sb m") ──────────────────────────────── */
+/* phone modal sheet over a receding page (static = presented end state) */
+
+/* ── 20 Porcelain (light) specifics ───────────────────────────────────────────────── */
+.sb.light :not(pre) > code{background:var(--code-bg);border-radius:4px;padding:.1em .38em;font-size:.88em;color:var(--ink);white-space:nowrap}
+
+/* ── 21 responsive — desktop comps at narrow widths (phone roots .m are excluded) ──── */
+@media (max-width:1100px){
+  .sb:not(.m){--gutter:24px}
+  .nav a{padding:0 10px}
+}
+@media (max-width:760px){
+  .sb:not(.m){--gutter:16px}
+  .topbar{grid-template-columns:1fr auto;height:auto;row-gap:0}
+  .topbar .wordmark{align-self:center;margin:21px 0}
+  .topbar .nav{grid-column:1/-1;grid-row:2;overflow-x:auto;scrollbar-width:none;margin:0 calc(-1 * var(--edge));padding:0 12px 8px}
+  .topbar .nav a{height:44px;flex:none}
+  .sb:not(.m) .head{flex-direction:column;align-items:flex-start;padding:28px 0 24px}
+  .sb:not(.m) .job{grid-template-columns:minmax(0,1fr)}
+  .sb:not(.m) .job-side{align-items:flex-start;margin-top:16px;min-width:0}
+  .tl{overflow:hidden}
+  .ctxbar{overflow-x:auto;scrollbar-width:none}
+}
+

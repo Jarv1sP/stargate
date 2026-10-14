@@ -1,138 +1,46 @@
 # STARGATE
 
-把项目、数据与算力，放在同一个工作空间。STARGATE 是独立开源研究计算工作台，使用「Λ 门」标识。
+STARGATE 是把项目、数据和 GPU 任务放在同一工作空间的研究计算工作台；网页与 `gpuctl` 共用账号和授权，GPUQ负责节点调度。
 
-独立开源研究计算项目；名称与 SpaceX、Tesla、Elon Musk、OpenAI 的 Stargate 计划或 MGM《星际之门》系列均无隶属、合作或背书关系。
+本项目独立于 SpaceX、Tesla、Elon Musk、OpenAI 的 Stargate 计划和 MGM《星际之门》。品牌参考不表示隶属、合作或背书。
 
-仓库为 [Jarv1sP/stargate](https://github.com/Jarv1sP/stargate)，原名 `gpuq-console`（旧 GitHub 地址会自动重定向）。后端 GPUQ、`gpuctl` 命令、已有登录配置和部署标识保持兼容。字标与界面说明见 [品牌与界面](docs/BRAND.md)。
+## 使用
 
-为实验室搭建一套**账号 + GPU 配额 + 个人终端 + 训练队列**，与服务器厂商无关。普通用户从网页或自己的命令行登录，不必全部加入管理员的 VPN；管理员按服务器和 GPU 数量授权。后端复用 GPUQ，管理网络使用 Tailscale / Headscale + OpenSSH。
-
-本仓库包括网页、CLI、VPS 部署、Headscale 示例、节点执行桥、GPUQ 源码、用户与管理员手册。不是只有界面的演示；同时保留一个与生产隔离的本地 demo，方便贡献者开发。
-
-## 使用是什么样
+先按[使用指南](docs/USER_GUIDE.md)安装并登录；管理员开通机器与GPU额度后：
 
 ```sh
-gpuctl login
-gpuctl use MACHINE_ID
-gpuctl project create my-project # 创建并选中该机的项目
-gpuctl push .                    # 在本地项目目录上传草稿代码
-gpuctl ssh                       # 安装项目依赖，完成后 exit
-gpuctl project publish
-gpuctl project status            # 对应版本 READY 后再训练
-gpuctl run -g 2 -- python train.py --output /outputs
-# 环境已准备好后，可用 run --sync 合并上传、发布和等待；确认本次版本后才提交
-gpuctl run --sync -g 2 -- python train.py --output /outputs
-gpuctl jobs
-gpuctl logs 任务ID
-gpuctl pull --job 任务ID model.pt ./model.pt
+gpuctl login USERNAME
+gpuctl use SERVER
+gpuctl project create my-project
+gpuctl push .
+gpuctl ssh
 ```
 
-这是新版项目接口的工作流，需部署匹配的门户和节点代码；`--output` 是示例训练程序参数，请按自己的程序修改。第一次使用请先读 [使用指南](docs/USER_GUIDE.md)，其中包含 Windows PowerShell、macOS/Linux 的安装步骤；Windows 不需要 WSL。项目功能的完整实机验收范围以 [测试记录](docs/TESTING.md) 为准，不因文档更新自动视为已上线。
-
-- 注册平台账号（不是登记设备）→ 初始零权限 → 管理员分配机器、逐机卡数和总卡数。用户电脑只需 HTTPS，不用加入 Tail，也不会被自动添加为 Tail 设备。
-- “我的工作台”在手选服务器上处理自己的项目、终端、文件、任务和额度；“算力总览”显示逐卡利用率、显存、温度、功耗和 CUDA 计算进程（不含图形进程）。同机器授权成员可查看平台任务的姓名、任务名和自填描述；原始命令、日志、结果及程序／系统用户仍按原权限保护。外部／未关联任务不猜测提交者。
-- 管理员专用“成员授权”处理待审批账号、角色、注册码和机器额度；网页只保留一个“使用指南”入口，按功能分章。管理员与部署手册保留在仓库，不由网站提供。
-- 网页与 CLI 共用权限、任务和工作区。默认输出给人看，`--json` 用于自动化。
-- “数据集”支持成员上传自己的目录，或准备管理员分配的固定版本：校验到服务器本地 `/data2` 后，用 `run --data 名称@版本` 只读挂载训练。个人上传按账号隔离，网页与 CLI 均支持断点续传；批准的跨节点来源可走实验室内网。未就绪不会占卡等待复制。
-- “数据 → 云端副本”可将指定存储节点个人 `/data2` 中的文件保存到平台云盘，核验后取回到新路径；后台账号和令牌不发给成员。它是**服务器与云盘之间**的可选传输，不是浏览器直传云盘，也不自动替代电脑到服务器的校内直传或经确认的 VPS 中转。见[私人云文件](docs/CLOUD_FILES.md)。
-- 新项目分离草稿代码、私人 venv 与每次训练产物；发布后训练只读使用固定代码/环境版本，结果写 `/outputs`。普通终端安装依赖不覆盖基础 Conda。旧个人工作区与任务保留。
-- 默认在用户选择的服务器分配显卡；已发布的 OCI 个人容器项目可用 `run --machine auto` 明确开启自动选机，先准备项目和数据再排队，不占卡搬运、不在重试时偷偷改派。配套节点确认能力后也可固定卡号或主动单卡共享；多卡仍在同一台机器内，训练代码须自行支持。
-- 只有角色为 `admin` 且节点显式开启该能力，才可 `gpuctl ssh --root` 进入真实宿主机。
-
-节点约每分钟采样、页面每 15 秒同步最近快照；缺失、不可达或过期状态不会显示成空闲。新用户未获批前仅查看机器容量，不获得实时节点监控或终端权限。
-
-## 系统结构
-
-```text
-用户网页 / gpuctl CLI
-        │ HTTPS
-        ▼
-VPS: Caddy → Portal (Node.js + SQLite)
-                    │ 本地 Unix socket
-                    ▼
-             受限执行桥 / 只读采集
-                    │ Tailscale 网络 + OpenSSH 强制命令
-                    ▼
-GPU 服务器: 节点桥 → GPUQ → systemd 作业 → 个人隔离工作区 + 获配 GPU
-```
-
-Headscale 是可选的自建控制面；已有 Tailscale 网络可直接复用。Tail 仅用于 VPS 到 GPU 节点的管理通路，用户端浏览器和 CLI 通过 HTTPS 连接门户。平台注册不创建系统 SSH 账号，也不授予原有 Tail + OpenSSH 的直接登录权限；`gpuctl ssh` 提供个人工作区终端。**本系统没有把家庭代理、VPN 出口节点或校园网配置绑进训练平台。**
-
-## 从零搭建
-
-完整可操作步骤：[部署手册](docs/DEPLOYMENT.md)。顺序如下：
-
-1. 准备一台 Linux VPS、域名和至少一台 NVIDIA GPU Linux 服务器。
-2. 建立或复用 Tail 网络，仅放通 VPS 执行节点到 GPU 服务器的 OpenSSH。
-3. 克隆仓库，填写 `inventory.json`，生成部署文件。
-4. 在每台 GPU 节点安装 GPUQ 和受限执行桥，确认主机指纹。
-5. VPS 启动采集、执行桥、Portal/Caddy，登录后轮换注册邀请码。
-6. 用普通新用户实测一次授权、训练、取消、越权拒绝，再交给团队。
+在个人容器内安装依赖，再从本机另一个终端提交：
 
 ```sh
-git clone https://github.com/Jarv1sP/stargate.git
-cd stargate
-cp config/inventory.example.json inventory.json
-# 编辑自己的域名、Tail 地址、服务用户、GPU 数量和磁盘目录
-node scripts/configure.mjs inventory.json
-python3 scripts/build-gpuq.py
+gpuctl run -g 1 -- python train.py --output /outputs
+gpuctl logs JOB_ID
+gpuctl pull --job JOB_ID model.pt ./model.pt
 ```
 
-`configure` 仅生成本地文件，不远程修改网络或启动服务。示例地址不是任何生产系统的凭据或资产清单。不要把填好的 `inventory.json`、`.env`、数据库、私钥、工作区或运行日志提交 Git。
+默认使用可变工作区，无需先发布；新任务输出独立，代码/环境/HOME共享。需要固定版本时显式 `--release`，固定数据 `--data` 仍保留原准备等待。为什么：新工作区减掉准备步骤，不能改变旧请求的实验身份或覆盖别的任务输出。
 
-## 文档
+AUTO只在已有本人工作区的授权候选中选机；手动固定版本复制仍可用。`run --sync`先上传再提交，不自动发布。为什么：资源快照不是预约，已删除的自动项目复制不应由旧说明重新成为必经步骤。
 
-| 文档 | 内容 |
-|---|---|
-| [部署手册](docs/DEPLOYMENT.md) | VPS、TLS、Tail/Headscale、GPUQ、节点、初始账号、升级与回退 |
-| [名称更新与兼容](docs/MIGRATION.md) | 旧客户端、登录缓存、邀请码及已有部署的保留规则 |
-| [使用指南](docs/USER_GUIDE.md) | 首次上手、Windows/macOS/Linux 安装、开发、训练、数据集、结果、排队与排错；与网页指南共用正文 |
-| [管理员手册](ADMIN_README.md) | 用户授权、最高权限、邀请、备份、故障处理 |
-| [项目手册](docs/PROJECTS.md) | 手选服务器、草稿代码、项目 venv、固定版本与独立训练输出 |
-| [数据集手册](docs/DATASETS.md) | `/data2`、固定版本、按需副本、只读来源、租约与恢复 |
-| [私人云文件](docs/CLOUD_FILES.md) | 个人文件云端副本、确认、取回、取消与单存储节点授权 |
-| [GPUQ 手册](gpuq/README.md) | 打包、单机队列、原有高级功能与门户边界 |
-| [架构与安全边界](docs/ARCHITECTURE.md) | 信任关系、配额一致性、隔离与限制 |
-| [测试与发布检查](docs/TESTING.md) | CPU 自动测试与 GPU 实机验收 |
-| [0.5.0 更新说明](docs/RELEASE-0.5.0.md) | 个人容器、终端交互、升级要求与启用边界 |
-| [贡献指南](CONTRIBUTING.md) | 提 Issue / PR、分支、测试与发布流程 |
-| [开源依赖与出处](THIRD_PARTY_NOTICES.md) | 每个依赖的职责、来源、许可证 |
+## 文档与边界
 
-## 本地开发
+- [USER_GUIDE](docs/USER_GUIDE.md)：成员操作，也是网页指南正文。
+- [PROJECTS](docs/PROJECTS.md)：工作区、显式发布、原编号恢复、归档与回收站。
+- [DATASETS](docs/DATASETS.md)：固定数据版本与来源/租约/恢复。
+- [TESTING](TESTING.md)：保留行为的离线验证和实机验收边界。
+- [AGENTS](AGENTS.md)：代理规则；[CLAUDE](CLAUDE.md)引用同一正文。
+- [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)：依赖、字体与来源。
 
-Node.js 24 LTS、Python 3.10+；生产节点要求 Linux + systemd/cgroup v2、支持用户命名空间的内核、NVIDIA 驱动和支持 `--bind-fd` 的 bubblewrap。命令行客户端最低 Node.js 22.13。
+Portal管理账号、政策和回执，经受限桥交给节点执行；文件使用本次获授权的通道。成员只需平台HTTPS，`gpuctl ssh`是PTY而非原生SSH；宿主root另外鉴权。为什么：平台注册和容器权限不授予宿主或管理网络权限。
 
-```sh
-npm ci
-npm run build:client
-npm test
-npm run test:python
-python3 scripts/build-gpuq.py
-python3 build/gpuq.pyz --help
-npm start
-```
+只把实际确认的状态作为依据；代码合入、节点加载和业务验收分别记录，未知不当空闲/零/成功。为什么：源码和健康页不能证明原任务或字节传输已经完成。
 
-`npm start` 仅监听本地的内存 demo，使用明确标识的假账号，不连接真实 GPU/SSH；**不要把 demo 暴露公网**。生产入口是 `portal-server.mjs`。GitHub CI 不连接任何真实服务器，不使用部署密钥；PR 不会自动部署生产。
+原创包元信息标记MIT；GPUQ源来自既有source zipapp整理，第三方版权和许可独立保留。分发说明见THIRD_PARTY_NOTICES。
 
-安装客户端是 `build/gpuctl.mjs` 单文件产物，共享源码模块由锁定版本的 esbuild 构建。
-`npm test` 自动先构建；直接运行测试或源码门户前先执行 `npm run build:client`。
-Docker 在构建阶段生成产物，运行容器不含 esbuild。源码仍可用 `node cli.mjs`；
-修改 CLI 或其共享模块后需重建下载产物，不会在每次下载时动态编译。
-
-## 边界先说清
-
-以下说明仓库已实现的入口与限制；代码合入不表示任何节点已部署或完成实机验收。是否可用仍取决于配套版本、节点能力核验和账号授权。
-
-- 面向互相信任的实验室，不是恶意公网多租户的 VM 级隔离。持有旧服务器 sudo/共享账号的人仍可绕过门户配额。
-- `gpuctl ssh` 是 HTTPS PTY 的简写，不是原生 SSH 协议，暂不支持拿它直接连接 VS Code Remote-SSH / SFTP / rsync。
-- 门户已接入独立调度与抢占请求、弹性卡数与保存后扩卡、固定/共享选卡和可选 HAMi；各模式仍受授权、配额、训练适配与节点能力限制，详见[使用指南](docs/USER_GUIDE.md)。不自动启动跨机 DDP，也不提供 MIG 分区管理。
-- 日常开发使用个人项目 `create → push → ssh → publish → run → logs/pull`；自动选机需已发布的 OCI 项目及目标复制能力，不能从已合并源码推断节点已支持。历史手动同步接口保留兼容，详见[同步参考](docs/SYNC.md)，不是首次使用必选项；代码复制完成 `CODE_READY` 不代表环境已经可训练。
-- 用户代码/结果传输经门户 HTTPS；完整数据原件只进入经核验的机械仓库，校内直传与已批准的 LAN 缓存准备不经过 VPS 文件中转，不自动改存训练固态。默认磁盘安全预留不是个人硬配额；可选内核 byte/inode 硬配额必须完成文件系统、归属与超限验收后开启，不能仅升级脚本就宣称已启用。没有自动结果归档或独立数据备份。日志最近 200 行；5000 条门户任务记录需要维护归档。
-- 新建项目只使用已验收并启用的个人 OCI 容器，可安装容器系统包并固定镜像版本；能力未确认时拒绝，不退回 shared/isolated。容器 root 不是宿主机 root，历史 venv 项目与结果继续保留。Slurm 适配已有源码，Slurm/Pyxis/Enroot 尚未接入生产执行链，不能作为已开通的用户选项。
-- root 是真实且不隔离的高风险权限；节点默认关闭，部署者明确开启后才可使用。
-- 不声称“零 bug”。已有部署做过 CUDA、双卡 NCCL、任务取消、权限与重启恢复测试；从空白机器搭建仍须按验收清单测试自己的环境。
-
-## 许可证与致谢
-
-本项目原创部分采用 [MIT](LICENSE)。GPUQ 源码来自本项目既有实验室部署的 source zipapp，经整理纳入仓库；不是把某个同名第三方项目改名为原创。Tailscale、Headscale、OpenSSH、Caddy、xterm.js、bubblewrap、slirp4netns 等均为独立上游项目，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。NVIDIA 驱动/CUDA 不属于本仓库开源代码，也不随仓库分发。
+平台功能与存储模型统一以 [功能清单](docs/FEATURES.md) 为准。

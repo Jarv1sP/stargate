@@ -38,6 +38,20 @@ export function applyJobFeedback(job,result){
   job.latestAttempt=normalizeAttempt(result.latestAttempt);
 }
 
+// A cached native report is not a new observation. Age only the public view;
+// failed control queries must not refresh its timestamp or lifecycle.
+export function projectProgress(job,now=Date.now()){
+  if(!job.progress)return {};
+  const checkedAt=job.progressCheckedAt??job.schedulerCheckedAt;
+  const checked=Date.parse(checkedAt),elapsed=(now-checked)/1000;
+  const ageSeconds=Number.isFinite(elapsed)&&elapsed>=-30?Math.max(0,elapsed):null;
+  const observationStale=ageSeconds===null||ageSeconds>60;
+  const aged=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&ageSeconds!==null?value+ageSeconds:value;
+  return {progressObservation:{checkedAt:Number.isFinite(checked)?new Date(checked).toISOString():null,ageSeconds,stale:observationStale},
+    progress:{...job.progress,stale:job.progress.stale===true||observationStale,observationStale,
+      heartbeatAgeSeconds:aged(job.progress.heartbeatAgeSeconds),progressAgeSeconds:aged(job.progress.progressAgeSeconds)}};
+}
+
 const EXITED_ATTEMPTS=new Set(['EXITED_SUCCESS','EXITED_FAILURE','CANCELED','PREEMPTED']);
 function isoTime(value,seconds=false){
   if(seconds?!finite(value)||value<=0:typeof value!=='string'||!value)return null;
@@ -76,19 +90,20 @@ export function progressText(progress){
   if(s.stepsTotal)parts.push(`步数 ${s.stepsCompleted}/${s.stepsTotal}`);
   const percent=progressPercent(progress);if(percent!==null)parts.push(percent+'%');
   if(s.etaSeconds!==null)parts.push('预计剩余 '+Math.ceil(s.etaSeconds/60)+' 分钟');
-  if(progress.stale)parts.push('进度停滞（训练上报超时）');
+  if(progress.stale)parts.push(progress.observationStale?'进度快照已过期（节点核验未更新）':'进度停滞（训练上报超时）');
   if(s.severity!=='info')parts.push(s.severity==='error'?'训练报告异常':'训练报告警告');
   if(s.message)parts.push(s.message);
   return parts.join(' · ');
 }
 
 export function feedbackKey(job){
-  return JSON.stringify([job.state,job.cancelRequested===true,job.error,job.latestAttempt,job.progress?.stale,job.progress?.error,job.progress?.snapshot]);
+  return JSON.stringify([job.state,job.cancelRequested===true,job.error,job.queueReason,job.latestAttempt,job.progress?.stale,job.progress?.error,job.progress?.snapshot]);
 }
 
 export function jobFeedbackText(job){
   const parts=[`${clean(job.name,64)||'train'} · ${clean(job.username,24)||'-'} · ${clean(job.id,256)||'-'}`,
     `${clean(job.machine,128)||'待选服务器'} · ${clean(job.state,40)||'UNKNOWN'} · ${progressText(job.progress)}`];
+  if(['PENDING','QUEUED','SUBMITTING','PREPARING_DATA'].includes(job.state)&&job.queueReason)parts.push('排队原因：'+clean(job.queueReason,400));
   if(job.error)parts.push(clean(job.error,512));
   const attempt=job.latestAttempt;
   if(attempt?.exitCode!==null&&attempt?.exitCode!==undefined)parts.push('退出码 '+attempt.exitCode);

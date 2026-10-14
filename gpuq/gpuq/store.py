@@ -2390,14 +2390,9 @@ class Store:
     create_job = submit_job
 
     def set_job_display(self, job_id: str, metadata: Any, *, expected_submit_key: str,
-                        expected_owner: str, expected_name: str,
-                        expected_display_revision: str | None = None) -> dict[str, Any]:
-        from .job_display import normalize_display, display_revision
+                        expected_owner: str, expected_name: str) -> dict[str, Any]:
+        from .job_display import normalize_display
         normalized = normalize_display(metadata)
-        if expected_display_revision is not None and (not isinstance(expected_display_revision, str)
-                or len(expected_display_revision) != 64
-                or any(c not in "0123456789abcdef" for c in expected_display_revision)):
-            raise ValueError("invalid expected display revision")
         with self.transaction() as tx:
             connection = tx._get_connection()
             row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -2405,8 +2400,6 @@ class Store:
                 raise StoreNotFoundError(f"job not found: {job_id}")
             if (row["submit_key"], row["owner"], row["name"]) != (expected_submit_key, expected_owner, expected_name):
                 raise StoreConflictError("job display binding does not match original submission")
-            if expected_display_revision is not None and display_revision(_json_load(row["display_json"])) != expected_display_revision:
-                raise StoreConflictError("job display has changed; read the original job before editing again")
             encoded = _json_dump(normalized)
             if row["display_json"] != encoded:
                 # No updated_at, digest, state, scheduling, argv, env or lease changes.

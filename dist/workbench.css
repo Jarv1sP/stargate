@@ -1,5 +1,5 @@
 /* PR1 workbench and viewport sheets; all data comes from the existing client. */
-.sb .wb-job-heading,.sb .sheet-object{display:inline-flex;align-items:baseline;gap:12px;min-width:0}.sb .wb-focus-state{min-height:260px;display:flex;flex-direction:column;justify-content:center}.sb .wb-focus-state .wb-job-name{font:300 24px var(--display)}.sb .wb-scroll-list{max-height:560px;overflow:auto;scrollbar-width:thin;overscroll-behavior:contain}.sb .wb-attention .wb-scroll-list{max-height:360px}.sb .job-scheduling-facts{display:grid;gap:12px;margin-block:14px;font:12px/1.8 var(--mono);color:var(--ink-2)}
+.sb .wb-job-heading,.sb .sheet-object{display:inline-flex;align-items:baseline;gap:12px;min-width:0}.sb .wb-focus-state{min-height:260px;display:flex;flex-direction:column;justify-content:center}.sb .wb-focus-state .wb-job-name{font:300 24px var(--display)}.sb .wb-scroll-list{max-height:560px;overflow:auto;scrollbar-width:thin;overscroll-behavior:contain}.sb .job-scheduling-facts{display:grid;gap:12px;margin-block:14px;font:12px/1.8 var(--mono);color:var(--ink-2)}
 @media(max-width:759px){.sb .wb-scroll-list,.sb .wb-attention .wb-scroll-list{max-height:none;overflow:visible}}
 .sb .page-heading:has(.work-project-title){display:grid;grid-template-columns:minmax(180px,1fr) auto auto;gap:32px;padding:36px 0 28px}
 .sb .page-heading .work-project-title{font:300 34px var(--display);letter-spacing:-.015em}
@@ -40,7 +40,7 @@
 .sb .job .job-acts{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:24px 0 0}.sb .job .job-acts .button{font-size:12px;min-height:34px;padding:0 9px}.sb .job .job-acts .job-notify{font-size:11px;white-space:normal}
 .sb .compact-job{background:none;border:0;border-top:1px solid var(--line);border-radius:0;padding:20px 0;margin:0}.sb .compact-job .wb-job-name{font-size:14px}.sb .compact-job .job-acts{margin-top:14px}.sb .compact-job .wb-trajectory{margin-top:14px}
 .sb .wb-list-title{display:flex;justify-content:space-between;align-items:center;margin:36px 0 10px}.sb .wb-list-title h2{font-size:16px;font-weight:500}.sb .wb-list-title>span{font-size:11px;color:var(--ink-3)}
-.sb .wb-ended,.sb .wb-attention{margin:28px 0}.sb .wb-ended>summary,.sb .wb-attention>summary{padding:16px 0;min-height:44px;font-size:14px;color:var(--ink-2);border-bottom:1px solid var(--line);cursor:pointer}.sb .wb-attention .st{font-size:13px}.sb .wb-priority>summary{font-size:11px;padding:7px;cursor:pointer}.sb .wb-priority select{font-size:12px;min-height:32px;margin:8px 0}
+.sb .wb-ended,.sb .wb-attention{margin:28px 0}.sb .wb-ended>summary,.sb .wb-attention>summary{padding:16px 0;min-height:44px;font-size:14px;color:var(--ink-2);border-bottom:1px solid var(--line);cursor:pointer}
 .sb .wb-job-explanation{font-size:11px;line-height:1.7}.sb .wb-jobs>.section-kicker{padding:12px 0;border-top:1px solid var(--line);margin-top:36px;font:11px var(--mono)}
 .sb .wb-empty{padding:42px 32px;min-height:440px;display:flex;flex-direction:column;justify-content:center}.sb .wb-empty h2{font-size:24px;font-weight:500;margin:0 0 16px}.sb .wb-empty p{font-size:14px;color:var(--ink-2);line-height:1.8}.sb .wb-empty ol{margin-top:24px;list-style-position:inside;padding:0;display:grid;gap:14px;color:var(--ink-3);font-size:13px}
 .sb .work-sheet{position:fixed;inset:0 0 0 auto;margin:0;padding:0;width:640px;max-width:100%;height:100dvh;max-height:100dvh;background:var(--bg);color:var(--ink);border:0;border-left:1px solid var(--line-2);border-radius:0;box-shadow:var(--shadow);overflow:hidden}
@@ -90,7 +90,6 @@
 .page-heading>div:first-child{display:flex;align-items:center;gap:10px;min-width:0}
 .page-heading .ui-info-content{left:0;right:auto}
 .ui-info-content{left:0;right:auto}
-.wb-submit-rail .ui-info-content,.wb-scroll .ui-info-content{left:auto;right:0}
 .wb-focal .subline{display:flex;align-items:center;gap:8px;color:var(--ink-2);font:12px var(--sans);margin:8px 0 0}
 .wb-job-name{overflow-wrap:anywhere}
 .job-project-preparation{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0;font:12px var(--mono);color:var(--ink-2)}
@@ -158,10 +157,6 @@
 /* Personal project creation and observed publication receipts. */
 .sb .project-environment{display:inline-block;margin-top:8px;padding:3px 8px;border:1px solid var(--line);font:11px var(--mono);color:var(--ink-2)}
 .sb .project-environment-choice{margin:0;padding:0;border:0;min-width:0}.sb .project-environment-choice legend{padding:0;margin-bottom:8px;font-size:12px;color:var(--ink-2)}
-.sb .project-environment-segments{display:grid;grid-template-columns:1.2fr .7fr 1fr;border:1px solid var(--line);min-width:0}
-.sb .project-environment-segments label{position:relative;display:block;min-width:0;margin:0}.sb .project-environment-segments label+label{border-left:1px solid var(--line)}
-.sb .project-environment-segments input{position:absolute;width:1px;height:1px;opacity:0;margin:0}.sb .project-environment-segments span{display:flex;align-items:center;justify-content:center;min-height:42px;padding:4px 6px;white-space:nowrap;font-size:12px;color:var(--ink-3);cursor:pointer;transition:background-color 220ms,color 220ms}
-.sb .project-environment-segments input:checked+span{background:var(--bg-3);color:var(--ink)}.sb .project-environment-segments input:focus-visible+span{outline:1px solid var(--ink);outline-offset:-3px}.sb .project-environment-segments input:disabled+span{opacity:.45;cursor:default}
 .sb .wb-rail #project-create .project-name-error{display:block;color:var(--err);font-size:11px;line-height:1.5;margin-top:6px}.sb .project-name-error[hidden]{display:none!important}
 .sb .wb-rail #project-create .ui-info{margin-top:0}.sb .wb-rail #project-create-error{margin:0;color:var(--err);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
 .sb .wb-rail #project-create-error:not([hidden]){display:block}
@@ -169,7 +164,7 @@
 .sb .publication-progress,.sb .publication-actions{width:100%;min-width:0}.sb .publication-actions{display:flex;gap:8px;flex-wrap:wrap}.sb .wb-rail .publication-actions .button{flex:1 1 110px;width:auto;font-size:12px;white-space:nowrap}
 .sb .publication-trajectory{margin:8px 0 0;padding-bottom:0;gap:8px}.sb .publication-trajectory li{font-size:10px;white-space:nowrap}.sb .publication-count{display:block;margin-top:8px;font-size:11px;color:var(--ink-3)}
 .sb .workspace-status>.st{display:inline-flex;vertical-align:middle;margin-right:8px}.sb .wb-rail .workspace-status.publication-unknown{color:var(--queue)}.sb .wb-rail .workspace-status.publication-ready{color:var(--run)}
-@media(prefers-reduced-motion:reduce){.sb .project-environment-segments span{transition-duration:150ms}}
+@media(prefers-reduced-motion:reduce){}
 .sb .wb-history-filter{display:flex;align-items:center;gap:12px;max-width:280px;margin:12px 0}
 .sb .wb-history-filter select{flex:1;min-width:0;min-height:40px}
 @media(max-width:759px){.sb .wb-history-filter select{min-height:44px}}
@@ -191,8 +186,6 @@
 .sb #page-work .field-caption,.sb #project-create .project-environment-choice legend,.sb #page-work .section-kicker>span:has(.ui-info){display:flex;align-items:center;gap:8px}
 .sb #page-work .field-caption>.ui-info,.sb #project-create .project-environment-choice legend>.ui-info{margin:0}
 .sb .wb-rail:has(#project-create[open],#workspace-files[open],#host-maintenance[open]){position:static}
-.sb .project-environment-segments{grid-template-columns:repeat(3,minmax(0,1fr))}
-.sb .project-environment-segments span{min-height:48px;padding:4px 2px;white-space:normal;line-height:18px;text-align:center}
 .sb .wb-ledger-groups>details>summary{min-height:40px}
 .sb .wb-rail #host-maintenance>summary{min-height:40px;display:flex;align-items:center}
 .sb .wb-progress-hero{container-type:inline-size;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:clamp(16px,3cqi,32px)}
@@ -217,7 +210,6 @@
  .sb .wb-job-name,.sb .wb-rail #project-create>summary,.sb .wb-rail #workspace-files>summary,.sb .wb-ledger-groups>details>summary{min-height:44px}
  .sb .ui-info>summary{width:44px;height:44px}
  .sb .wb-rail #host-maintenance>summary{min-height:44px}
- .sb .project-environment-segments span{min-height:44px}
  .sb .job .job-acts .button{min-height:44px}
  .sb .wb-progress-number{font-size:clamp(48px,32cqi,104px)}
  .sb .wb-focus-state .wb-job-name{min-height:44px}
@@ -269,21 +261,26 @@
 .sb #project-management [data-catalog-output]{display:grid;gap:8px;margin-top:16px}
 .sb #project-management [data-catalog-output] button{text-align:left;white-space:normal;overflow-wrap:anywhere}
 .sb #project-management [hidden]{display:none!important}
+.sb #project-management .project-trash{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.sb #project-management :is([data-trash-items],[data-project-trash-items]){display:grid;gap:12px;margin:12px 0}
+.sb #project-management :is([data-trash-current],[data-project-trash]){margin-top:16px;min-width:0}
+.sb #project-management .project-trash h4{margin:0 0 12px}
+.sb #project-management .project-trash-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px}
+.sb #project-management .project-trash-row>span:nth-child(2){grid-column:1;font-size:12px}
+.sb #project-management .project-trash-row>.file-actions{grid-column:2;grid-row:1/3;align-self:center}
+@media(max-width:759px){.sb #project-management .project-trash-row{grid-template-columns:minmax(0,1fr)}.sb #project-management .project-trash-row>.file-actions{grid-column:1;grid-row:auto}.sb #project-management [data-trash-release]{width:100%}}
 @media(max-width:759px){.sb #project-management .project-archive-filter input{width:48px;height:48px;min-height:48px}}
 .sb #workspace-files>summary{min-height:40px;display:flex;align-items:center}
 .sb #workspace-files [type=file]{height:40px;min-height:40px;padding:0 8px;line-height:38px}
 .sb #workspace-files [type=file]::file-selector-button{height:32px;margin:0 8px 0 0;padding:0 8px;font:inherit;vertical-align:middle}
 .sb :is(#train-form,#work-submit-panel,#project-create-form,#workspace-files,.job-notes) [hidden],.sb #control-training-preview[hidden]{display:none!important}
 .sb #training-data-field>.field-caption{flex-wrap:wrap}
-.sb .training-read-mode{display:inline-flex;gap:4px;margin-inline-start:auto;padding:3px;border:1px solid var(--line-2);border-radius:8px;max-width:100%}
-.sb .training-read-mode .button{min-height:40px;padding:6px 10px;white-space:nowrap}
-.sb .training-read-mode .button[aria-pressed=true]{background:var(--seg-on);color:var(--ink)}
 .sb .training-selection{display:flex;align-items:center;gap:8px;min-width:0;margin:6px 0;flex-wrap:wrap}
 .sb .training-selection-machine{display:inline-flex;align-items:center;gap:8px;min-width:0}
 .sb .training-selection .server-id{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sb .training-selection>.ui-info{flex:none;margin:calc((1lh - 32px)/2) 0}
 .sb .training-selection .ui-info-content{white-space:pre-line}
-@media(max-width:759px){.sb .training-read-mode .button{min-height:44px;font-size:16px}.sb .training-selection>.ui-info{margin:calc((1lh - 44px)/2) 0}}
+@media(max-width:759px){.sb .training-selection>.ui-info{margin:calc((1lh - 44px)/2) 0}}
 @media(max-width:759px){
  .sb :is(#train-form>.sheet-scroll,#work-submit-panel>.sheet-scroll,#project-create-form,.job-notes form,.mc-natural,#workspace-files){--field-help-size:44px}
  .sb :is(#train-form,#work-submit-panel,#project-create-form,.job-notes,#workspace-files) label,.sb #project-create-form>.project-environment-choice>legend,.sb .mc-natural-version,.sb .mc-natural-fields dt{font-size:16px}
@@ -302,3 +299,6 @@
 .sb .job-result-file:hover{background:var(--bg-2)}
 .sb .job-result-file:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
 .sb [data-job-result-slot]:not([hidden]){display:inline-flex}
+
+.sb .job-result-entry{display:grid;grid-template-columns:minmax(0,1fr) max-content;align-items:center;gap:8px;min-width:0}
+.sb .job-result-entry>.button{min-height:44px;white-space:nowrap}

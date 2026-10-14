@@ -237,22 +237,6 @@ def _matching_ack(directory: Path, request: CheckpointRequest) -> bool:
     )
 
 
-def _matching_error(
-    directory: Path, request: CheckpointRequest
-) -> dict[str, Any] | None:
-    value = _read_json_object(directory / ERROR_FILE_NAME)
-    if value is None:
-        return None
-    if (
-        value.get("version") != SCHEMA_VERSION
-        or value.get("nonce") != request.nonce
-        or value.get("attempt_id") != request.attempt_id
-        or value.get("requested_by_job_id") != request.requested_by_job_id
-        or not isinstance(value.get("error_type"), str)
-        or not isinstance(value.get("message"), str)
-    ):
-        return None
-    return value
 
 
 def validate_ack_identity(

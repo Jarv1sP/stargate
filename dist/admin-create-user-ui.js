@@ -17,7 +17,7 @@ export function mountCreateUser(store,root,ctx,{active,canCreate,onCreated,toast
     form.querySelector('[type=submit]').hidden=!!pending;form.querySelector('[type=submit]').disabled=busy;
     query.hidden=!pending;query.disabled=busy;status.textContent=pending?(busy?'正在确认 · ':'创建结果待确认 · ')+pending.username:'';
   }
-  function clearPending(){localStorage.removeItem(key);pending=null;}
+  function clearPending(){try{localStorage.removeItem(key);}catch{}pending=null;}
   button.addEventListener('click',()=>{if(!current()||!canCreate())return;error.textContent='';render();dialog.showModal();},{signal:ctx.signal});
   dialog.addEventListener('click',event=>{if(event.target.closest('[data-create-user-close]'))dialog.close();},{signal:ctx.signal});
   dialog.addEventListener('close',()=>{form.reset();error.textContent='';},{signal:ctx.signal});
@@ -26,11 +26,10 @@ export function mountCreateUser(store,root,ctx,{active,canCreate,onCreated,toast
     const fields=new FormData(form),username=String(fields.get('username')).trim(),name=String(fields.get('name')).trim();
     const request={username,password:fields.get('password'),role:'member',...(name?{name}:{})};
     error.textContent='';
-    try{localStorage.setItem(key,JSON.stringify({username}));}catch{error.textContent='浏览器无法保存请求记录，尚未创建账号。';return;}
+    try{localStorage.setItem(key,JSON.stringify({username}));}catch{toast('浏览器未保存恢复记录，请记下用户名：'+username);}
     pending={username};busy=true;render();
     try{
       const result=await store.call('users.create',request);
-      if(!result||typeof result.id!=='string'||!result.id||result.username!==username||result.role!=='member')throw Error('创建回执未确认。');
       clearPending();
       if(!current())return;
       dialog.close();onCreated(result);toast('账号已创建 · 额度为 0');

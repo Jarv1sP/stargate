@@ -2,12 +2,12 @@ import {readFile} from 'node:fs/promises';
 
 export const chapters=[
   {id:'start',title:'首次使用',description:'Windows、WSL、Linux 安装并登录，开始完整 CLI 流程。'},
-  {id:'development',title:'项目开发',description:'上传代码、安装依赖，准备可重复运行的版本。'},
-  {id:'training',title:'提交训练',description:'发布后运行，选择多卡、弹性或共享方式。'},
-  {id:'data',title:'数据集',description:'上传、准备和使用数据；大文件也有合适的方式。'},
+  {id:'development',title:'项目开发',description:'上传代码、安装依赖，持续使用同一个工作区。'},
+  {id:'training',title:'提交训练',description:'直接运行或连接 GPU 终端，选择多卡、弹性或共享方式。'},
+  {id:'data',title:'数据目录',description:'直接读取本机数据，独立上传和跨机复制。'},
   {id:'results',title:'日志与结果',description:'查询进度，设置通知与留言，下载结果。'},
   {id:'queue',title:'排队与协作',description:'分清等级、抢占、保存让位与自动恢复。'},
-  {id:'troubleshooting',title:'常见问题',description:'手动同步、排查故障，反馈系统依赖问题。'},
+  {id:'troubleshooting',title:'常见问题',description:'容器网络诊断、排查故障与反馈问题。'},
 ];
 const aliases={'/guide/':'/guide','/guide/user':'/guide/start','/guide/projects':'/guide/development','/guide/datasets':'/guide/data','/guide/community':'/guide/queue','/guide/terminal-sessions':'/guide/development','/guide/diagnostics':'/guide/results','/guide/ray-resources':'/guide/troubleshooting','/guide/project-network':'/guide/troubleshooting'};
 const escape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));

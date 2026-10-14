@@ -1,7 +1,25 @@
 """Synthetic local mount tables for disposable storage fixtures only."""
 import os
 from pathlib import Path
+import shutil
 from unittest.mock import patch
+
+
+def copy_node_sources(target):
+    """Keep disposable executors on the same real source closure as node/."""
+    source = Path(__file__).resolve().parents[1] / 'node'
+    for path in sorted([*source.glob('*.py'), source / 'gpuq-network', source / 'gpuq-ray']):
+        shutil.copy2(path, Path(target) / path.name)
+
+
+def synthetic_capacity(testcase):
+    """Dedicated fixture disk; do not depend on the host's 64GiB free floor."""
+    capacity = os.statvfs_result((4096, 4096, 2**28, 2**27, 2**27,
+                                 2**24, 2**23, 2**23, 0, 255))
+    for name in ('statvfs', 'fstatvfs'):
+        guard = patch.object(os, name, return_value=capacity)
+        guard.start()
+        testcase.addCleanup(guard.stop)
 
 
 def isolated_platform_pin(testcase):

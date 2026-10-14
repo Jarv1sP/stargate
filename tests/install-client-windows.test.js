@@ -15,10 +15,10 @@ test('Windows installer pins an HTTPS origin and bounds same-origin downloads', 
   for (const field of ['UserInfo', 'AbsolutePath', 'Query', 'Fragment']) assert.ok(installer.includes(`$parsed.${field}`));
   assert.match(installer, /AllowAutoRedirect = \$false/);
   assert.match(installer, /Resolve-GpuqOrigin \$Origin\) \+ '\/gpuctl\.mjs'/);
-  assert.match(installer, /StatusCode -ne 200/);
-  assert.match(installer, /\$limit = 8 \* 1024 \* 1024/);
-  assert.match(installer, /\$read\.Wait\(\[TimeSpan\]::FromSeconds\(15\)\)/);
-  assert.match(installer, /FromSeconds\(60\)/);
+  assert.match(installer, /status -ne 200 -and \$status -ne 206/);
+  assert.match(installer, /\$limit = 64 \* 1024 \* 1024/);
+  assert.match(installer, /FromSeconds\(\[Math\]::Min\(120, \$remaining\)\)/);
+  assert.match(installer, /AddSeconds\(900\)/);
   assert.doesNotMatch(installer, /SkipCertificateCheck|ServerCertificateCustomValidationCallback|TrustAll|ServerCertificateValidationCallback/);
 });
 

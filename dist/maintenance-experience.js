@@ -1,124 +1,14 @@
-import {maintenanceFor,maintenanceActive,maintenanceConsequence,recoveryConfirmation,recoveryChecks,recoveryPlan,executeRecovery,maintenanceInfoHTML as info,maintenanceClock} from './maintenance-state.js';
-import {copyHelp} from './copy-help-ui.js';
-import {serverIdHTML} from './workbench-ui.js';
-const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const pause='<span class="maintenance-pause" aria-hidden="true"></span>';
-const tag=()=>`<span class="maintenance-tag">${pause}维护中</span>`;
-export function maintenanceExperienceUI(store,toast,{getPage,refresh}){
-  const host=document.createElement('section');host.id='maintenance-experience';host.hidden=true;
-  document.querySelector('#execution-host').before(host);
-  const context=document.createElement('div');context.id='maintenance-context';context.hidden=true;context.setAttribute('role','status');document.querySelector('#shell-context').append(context);
-  const adminHost=document.createElement('section');adminHost.id='admin-maintenance-console';
-  let adminContext=null,adminMarkup='',actor=null,markup='',sessions=[],selected=new Set(),busy=false,plan=null;const folded=new Map(),foldedOrigins=new WeakMap();
-  const dialog=document.createElement('dialog');dialog.id='maintenance-console-dialog';dialog.className='modal maintenance-console-dialog';dialog.setAttribute('aria-labelledby','maintenance-dialog-title');document.body.append(dialog);
-  const adminActive=()=>!!adminContext&&!adminContext.signal.aborted&&!store.authPending&&getPage()==='admin'&&store.principal?.role==='admin'&&store.principal.userId===adminContext.principal.userId;
-  const current=stamp=>adminActive()&&stamp===store.authGeneration&&store.principal?.userId===actor;
-  const value=()=>store.data?.operationalMaintenance;
-  const machines=()=>store.data?.machines||[];
-  function foldCopy(active){
-    for(const [node,wrapper] of folded)if(!active||!wrapper.isConnected||!node.textContent.trim()){const origin=foldedOrigins.get(node);if(origin?.isConnected){origin.replaceWith(node);wrapper.remove();foldedOrigins.delete(node);}else if(wrapper.isConnected)wrapper.replaceWith(node);folded.delete(node);}
-    if(!active)return;
-    const selectors='#page-description,.resource-explainer,.node-queue>p.muted:first-of-type,#workspace-mode-note,#terminal-mode-note,.wb-job-explanation,#environment-mode-note,#project-create>p,#project-detail>.muted,#priority-note,#custom-policy-note,#elastic-note,#placement-note,#work-submit .sheet-scroll>p,#work-submit label>small,#work-submit .submit-cli>p,#page-datasets p.muted,#page-datasets .dataset-upload-notes p,#page-datasets .data-workspace-footnote,#page-datasets .datasets-next,#transfer-copy .transfer-form-heading>p,#transfer-copy label>small,.maintenance-settings>p';
-    for(const node of document.querySelectorAll(selectors)){if(folded.has(node)||node.closest('.maintenance-info')||node.classList.contains('form-error')||!node.textContent.trim())continue;const wrapper=document.createElement('div');wrapper.className='maintenance-info maintenance-copy-info';wrapper.innerHTML='<button type="button" data-maintenance-info aria-expanded="false" aria-label="操作说明">ⓘ</button><div class="maintenance-info-body" role="note"></div>';const summary=node.matches('.maintenance-settings>p')?node.parentElement.querySelector(':scope>summary'):null;if(summary){const origin=document.createComment('maintenance explanation');node.before(origin);foldedOrigins.set(node,origin);summary.append(wrapper);}else node.before(wrapper);wrapper.querySelector('.maintenance-info-body').append(node);folded.set(node,wrapper);}
-  }
-  function placeInfo(wrapper){const button=wrapper.querySelector('[data-maintenance-info]'),body=wrapper.querySelector('.maintenance-info-body');if(!body||!button)return;const anchor=button.getBoundingClientRect(),width=Math.min(280,innerWidth-32);body.style.width=width+'px';body.style.left=Math.max(16,Math.min(anchor.left,innerWidth-width-16))+'px';const height=Math.min(body.scrollHeight,innerHeight-32);body.style.top=Math.max(16,Math.min(anchor.bottom+6+height<=innerHeight-16?anchor.bottom+6:anchor.top-height-6,innerHeight-height-16))+'px';}
-  document.addEventListener('click',event=>{const button=event.target.closest('[data-maintenance-info]');if(button){const open=button.getAttribute('aria-expanded')!=='true';button.setAttribute('aria-expanded',String(open));const wrapper=button.closest('.maintenance-info');wrapper.classList.toggle('is-open',open);if(open)placeInfo(wrapper);}});
-  document.addEventListener('pointerover',event=>{const button=event.target.closest('[data-maintenance-info]');if(button)placeInfo(button.closest('.maintenance-info'));});
-  const placeOpenInfo=()=>{for(const wrapper of document.querySelectorAll('.maintenance-info.is-open'))placeInfo(wrapper);};
-  addEventListener('resize',placeOpenInfo);document.addEventListener('scroll',placeOpenInfo,{capture:true,passive:true});
-  document.addEventListener('keydown',event=>{if(event.key==='Escape')for(const button of document.querySelectorAll('[data-maintenance-info][aria-expanded=true]')){button.setAttribute('aria-expanded','false');button.closest('.maintenance-info').classList.remove('is-open');}});
-  function close(){if(!busy){dialog.close();plan=null;}}
-  dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
-  store.onAuthChange(()=>{foldCopy(false);dialog.close();dialog.replaceChildren();plan=null;selected.clear();sessions=[];actor=null;markup='';busy=false;host.hidden=true;host.replaceChildren();context.hidden=true;context.replaceChildren();});
-  function updateContext(){
-    const machine=document.querySelector('[name=workspace-machine]')?.value,entry=maintenanceFor(value(),machine);
-    context.hidden=true;context.replaceChildren();
-    const create=document.querySelector('[data-shell-action=new-project]');if(create){create.disabled=!!entry;create.title=entry?'维护中：新建项目暂停':'';}
-    const submit=document.querySelector('#open-submit');if(submit){submit.textContent=entry?'提交前检查':'提交训练';submit.title=entry?'维护中：新任务暂停，可查看提交前检查':'';}
-  }
-  function checksHTML(id){
-    const facts=recoveryChecks(store.data,id,sessions);
-    return `<ul class="maintenance-checks">${facts.checks.map(check=>`<li><div><strong>${esc(check.label)}</strong> ${info(check.detail,check.label)}</div><span class="maintenance-check-status" data-check-status="${esc(check.status)}">${esc(check.status)}</span></li>`).join('')}</ul>`;
-  }
-  function adminHTML(){
-    const state=value()||{global:null,machines:{}},active=machines().filter(machine=>maintenanceFor(state,machine.id)),chosen=[...selected].filter(id=>active.some(machine=>machine.id===id));
-    return `<header class="maintenance-console-heading"><div><p class="maintenance-eyebrow">${pause} 管理员</p><div class="maintenance-title-row"><h2>维护控制台 ${info(maintenanceConsequence,'维护说明')}</h2><div class="maintenance-heading-actions"><button type="button" class="button quiet" data-maintenance-settings>维护设置</button><button type="button" class="button" data-console-refresh>刷新</button></div></div></div></header><div class="maintenance-console-rows" aria-label="服务器维护状态">${machines().map(machine=>{
-      const entry=maintenanceFor(state,machine.id),facts=recoveryChecks(store.data,machine.id,sessions),independent=state.machines[machine.id];
-      return `<article class="maintenance-server-row" data-maintenance-server="${esc(machine.id)}"><div class="maintenance-server-name"><label class="maintenance-select"><input type="checkbox" data-recovery-select="${esc(machine.id)}" aria-label="选择恢复 ${esc(machine.id)}" ${selected.has(machine.id)?'checked':''} ${!entry||!facts.ready||busy?'disabled':''}>${serverIdHTML(machine.id,'maintenance-server-id')}</label></div><div class="maintenance-server-state">${entry?tag():'<span>未开启维护</span>'}${entry&&!state.global?`<p>${esc(entry.reason)}</p>`:''}${independent&&state.global?info(independent.reason,'单台维护原因'):''}${entry?`<small>自 ${esc(maintenanceClock(entry.since))}</small>`:''}</div><div class="maintenance-server-facts"><strong>${facts.host?.reachable===true?'在线':facts.host?.reachable===false?'离线':'待确认'}</strong><small>${facts.checkedAt?'更新于 '+esc(maintenanceClock(facts.checkedAt)):'更新时间未知'}${store.data?.gpuq?.stale?' · 已过期':''}</small><span>${facts.ready?`运行 ${facts.running.length} 项`:'运行待确认'} ${info(`平台记录：${facts.running.map(job=>job.name||job.id).join('、')||'本次未返回'}。等待 ${facts.queued.length} 项；本页面已知 ROOT ${facts.roots.length} 个。`,'任务与终端')}</span></div><div class="maintenance-server-actions"><button type="button" class="button" data-maintenance-root="${esc(machine.id)}" ${store.data?.executionEnabled===true?'':'disabled'}>ROOT 终端</button>${facts.roots.length?`<button type="button" class="button quiet" data-maintenance-reconnect="${esc(machine.id)}">重连 ROOT</button>`:''}<button type="button" class="button quiet" data-maintenance-host="${esc(machine.id)}">主机状态</button><button type="button" class="button quiet" data-maintenance-check="${esc(machine.id)}">恢复前检查</button><button type="button" class="button quiet" data-maintenance-start="${esc(machine.id)}">开始维护</button></div></article>`;
-    }).join('')}</div><div class="maintenance-recovery-bar"><p>${chosen.length?`恢复 ${esc(chosen.join('、'))}；${esc(active.filter(machine=>!selected.has(machine.id)).map(machine=>machine.id).join('、')||'无其他服务器')} ${active.length>chosen.length?'继续维护':'待恢复'}`:'选择服务器'} ${info('维护中，暂停提交与数据写入。ROOT 终端和主机状态仍可使用。','可用操作')}</p><div><button type="button" class="button" data-maintenance-start="all">全平台维护</button><button type="button" class="button primary" data-maintenance-stage ${!chosen.length||busy?'disabled':''}>分阶段恢复${chosen.length?' · '+chosen.length+' 台':''}</button></div></div>`;
-  }
+import {maintenanceFor,maintenanceClock} from './maintenance-state.js';
+import {serverIdHTML,escapeUI as esc} from './workbench-ui.js';
+export function maintenanceExperienceUI(store,toast,{getPage}){
+  const host=document.createElement('section');host.id='admin-maintenance-console';let context=null;
   function update(){
-    const next=store.principal?.userId;if(actor!==next){actor=next;selected.clear();markup='';}
-    const active=!!actor&&maintenanceActive(value());
-    host.hidden=true;host.replaceChildren();
-    document.body.classList.remove('maintenance-focus','maintenance-global');
-    if(adminActive()&&value()?.version===1){const nextMarkup=adminHTML();if(adminMarkup!==nextMarkup){const focused=document.activeElement,hook=adminHost.contains(focused)?[...focused.attributes].find(attribute=>attribute.name.startsWith('data-')):null;adminMarkup=nextMarkup;adminHost.innerHTML=adminMarkup;if(hook)for(const element of adminHost.querySelectorAll(`[${hook.name}]`))if(element.getAttribute(hook.name)===hook.value){element.focus({preventScroll:true});break;}}}
-    if(adminActive()&&(store.maintenanceStatusUnknown||value()?.version!==1)){if(!adminMarkup){adminMarkup=adminHTML();adminHost.innerHTML=adminMarkup;}for(const row of adminHost.querySelectorAll('.maintenance-server-state'))row.textContent='维护状态未确认';for(const button of adminHost.querySelectorAll('[data-maintenance-start],[data-maintenance-stage],[data-maintenance-settings],[data-recovery-select]'))button.disabled=true;}
-    if(active){const snapshot=store.data?.gpuq,monitor=document.querySelector('#monitor-status');if(monitor)monitor.innerHTML=`${store.production&&Number.isFinite(Date.parse(snapshot?.checkedAt))?'更新于 '+esc(maintenanceClock(snapshot.checkedAt))+(snapshot.stale?' · 已过期':''):'监控待确认'} ${info('页面每 15 秒同步，节点约每分钟采样。监控过期时不能推断 GPU 空闲。','监控时间')}`;}
-    updateContext();foldCopy(active);document.dispatchEvent(new Event('gpuq-maintenance-state'));
+    if(!context||context.signal.aborted||getPage()!=='admin'||store.principal?.role!=='admin')return;
+    const value=store.data?.operationalMaintenance;
+    host.innerHTML=`<header class="maintenance-console-heading"><h3>维护模式</h3><button type="button" class="button" data-maintenance-settings>设置范围与开关</button></header><p>维护暂停新操作，不结束正在运行的任务。</p><div class="maintenance-server-list">${(store.data?.machines||[]).map(machine=>{const entry=maintenanceFor(value,machine.id);return `<article class="maintenance-server-row"><strong>${serverIdHTML(machine.id)}</strong><span>${value?entry?'维护中 · '+esc(entry.reason)+' · '+esc(maintenanceClock(entry.since)):'未开启维护':'维护状态未知，可刷新或直接设置'}</span><button type="button" class="button quiet" data-maintenance-host="${esc(machine.id)}">主机状态</button></article>`;}).join('')}</div>`;
   }
-  function show(title,content,machine){dialog.innerHTML=`<div class="modal-head"><div class="maintenance-object-title"><h2 id="maintenance-dialog-title" title="${esc(title)}">${esc(title)}</h2>${machine?`<span class="server-id" title="${esc(machine)}">${esc(machine)}</span>`:''}</div><button type="button" class="button quiet" data-maintenance-dialog-close>关闭</button></div>${content}`;dialog.showModal();}
-  async function refreshState(){const result=await store.call('maintenance.status');if(store.data)store.data.operationalMaintenance=result;await store.refresh();refresh();}
-  async function start(scope){
-    if(store.maintenanceStatusUnknown||value()?.version!==1){toast('维护状态未确认');return;}
-    const revision=value().revision;
-    show('开始维护',`<form id="maintenance-start-form" data-revision="${revision}"><label>维护范围<select name="scope"><option value="all">全平台</option>${machines().map(machine=>`<option value="${esc(machine.id)}">${esc(machine.id)}</option>`).join('')}</select></label><div class="maintenance-reason-field"><div class="field-caption"><label for="maintenance-start-reason">公开维护原因</label><span data-maintenance-public-reason></span></div><input id="maintenance-start-reason" name="reason" maxlength="300" required placeholder="例如：存储维护"></div>${info(maintenanceConsequence,'维护影响')}<p class="form-error" role="alert" data-console-error></p><button class="button primary" type="submit">确认开始维护</button></form>`);
-    dialog.querySelector('[name=scope]').value=scope;updateReasonHint(scope);dialog.querySelector('[name=reason]').focus();
-  }
-  function updateReasonHint(scope){
-    dialog.querySelector('[data-maintenance-public-reason]').innerHTML=scope==='all'?copyHelp('全平台维护原因说明','全平台维护原因会公开显示在登录页，请勿写服务器名或内部信息。'):'';
-  }
-  function stage(){
-    if(store.maintenanceStatusUnknown||value()?.version!==1){toast('维护状态未确认');return;}
-    const ids=[...selected];if(ids.some(id=>!recoveryChecks(store.data,id,sessions).ready)){toast('有服务器尚未通过恢复前检查，请刷新核对。');return;}
-    try{plan=recoveryPlan(value(),machines(),ids);}catch(error){toast(error.message);return;}
-    show('确认分阶段恢复',`<p class="maintenance-plan">将恢复 <strong>${esc(plan.selected.join('、'))}</strong>；${plan.remaining.length?`${esc(plan.remaining.join('、'))} 继续维护，原因不变`:'全部所选服务器恢复准入'}。</p>${plan.selected.map(id=>`<h3>${esc(id)}</h3>${checksHTML(id)}`).join('')}<details><summary>将按以下顺序变更维护状态 · revision ${plan.revision}</summary><ol>${plan.steps.map(step=>`<li>${esc(step.scope==='all'?'全平台':step.scope)} · ${step.enabled?'保留维护':'明确恢复'}</li>`).join('')}</ol>${info('每一步单独审计；有版本冲突立即停止，并显示已完成的步骤。','恢复步骤')}</details>${info(recoveryConfirmation,'恢复确认')}<label class="maintenance-ack"><input type="checkbox" data-recovery-ack>我已完成维修，并核对待确认项。</label><p class="form-error" role="alert" data-console-error></p><ol data-recovery-applied aria-label="已完成的恢复步骤"></ol><div class="modal-actions"><button type="button" class="button" data-recovery-refresh>刷新后重新检查</button><button type="button" class="button primary" data-recovery-apply disabled>明确恢复所选服务器</button></div>`);
-  }
-  adminHost.addEventListener('change',event=>{const id=event.target.dataset.recoverySelect;if(!id||busy||!adminActive())return;if(event.target.checked)selected.add(id);else selected.delete(id);adminMarkup='';update();});
-  document.addEventListener('gpuq-terminal-state',event=>{sessions=(event.detail?.sessions||[]).filter(session=>session.userId===store.principal?.userId);update();});
-  document.addEventListener('gpuq-workspace-rendered',()=>{updateContext();foldCopy(maintenanceActive(value()));});
-  document.addEventListener('gpuq-workspace-context',()=>queueMicrotask(updateContext));
-  document.addEventListener('gpuq-maintenance-observation',()=>{adminMarkup='';if(store.maintenanceStatusUnknown){dialog.close();document.querySelector('#admin-maintenance-settings dialog')?.close();selected.clear();plan=null;}update();});
-  document.addEventListener('gpuq-maintenance-restore',event=>{
-    if(busy||dialog.open||!adminActive()||event.detail?.userId!==actor)return;
-    const ids=machines().map(machine=>machine.id).filter(id=>(event.detail.scope==='all'||id===event.detail.scope)&&maintenanceFor(value(),id)),unready=ids.filter(id=>!recoveryChecks(store.data,id,sessions).ready);
-    if(!ids.length){toast('该范围没有已确认的维护状态，请刷新核对。');return;}
-    if(unready.length){show('恢复前仍需核对',unready.map(id=>`<h3>${esc(id)}</h3>${checksHTML(id)}`).join(''));return;}
-    selected=new Set(ids);stage();
-  });
-  adminHost.addEventListener('click',async event=>{
-    const button=event.target.closest('button');if(!button||button.disabled||busy||!adminActive())return;
-    const id=button.dataset.maintenanceRoot||button.dataset.maintenanceReconnect;
-    if(id){const known=sessions.find(session=>session.machine===id&&session.hostAdmin);document.dispatchEvent(new CustomEvent('gpuq-maintenance-root',{detail:{machine:id,...(button.dataset.maintenanceReconnect?{id:known?.id}:{}),userId:actor}}));return;}
-    if(button.dataset.maintenanceStart){start(button.dataset.maintenanceStart);return;}
-    if(button.hasAttribute('data-maintenance-stage')){stage();return;}
-    if(button.dataset.maintenanceCheck){const id=button.dataset.maintenanceCheck,facts=recoveryChecks(store.data,id,sessions);show('恢复前检查',checksHTML(id)+`<p>${facts.ready?'检查通过':'请先处理待确认项'}</p><button type="button" class="button" data-select-checked="${esc(id)}" ${!maintenanceFor(value(),id)||!facts.ready?'disabled':''}>选择此服务器，返回控制台</button>`,id);return;}
-    if(button.dataset.maintenanceHost){document.dispatchEvent(new CustomEvent('gpuq-maintenance-host',{detail:{machine:button.dataset.maintenanceHost,userId:actor}}));return;}
-    if(button.hasAttribute('data-console-refresh')){button.disabled=true;try{await refreshState();}catch(error){toast(error.message);}finally{button.disabled=false;}}
-  });
-  dialog.addEventListener('change',event=>{if(event.target.form?.id==='maintenance-start-form'&&event.target.name==='scope')updateReasonHint(event.target.value);if(event.target.hasAttribute('data-recovery-ack'))dialog.querySelector('[data-recovery-apply]').disabled=!event.target.checked||!plan||busy;});
-  dialog.addEventListener('click',async event=>{
-    const button=event.target.closest('button');if(!button||button.disabled||busy||!adminActive())return;
-    if(button.hasAttribute('data-maintenance-dialog-close')){close();return;}
-    if(button.dataset.selectChecked){const id=button.dataset.selectChecked;if(recoveryChecks(store.data,id,sessions).ready){selected.add(id);close();adminMarkup='';update();}return;}
-    if(button.hasAttribute('data-recovery-refresh')){button.disabled=true;try{await refreshState();selected.clear();close();update();}catch(error){dialog.querySelector('[data-console-error]').textContent=error.message;}finally{button.disabled=false;}return;}
-    if(!button.hasAttribute('data-recovery-apply')||!plan||store.principal?.role!=='admin')return;
-    const pending=plan,stamp=store.authGeneration;busy=true;dialog.querySelectorAll('button,input').forEach(control=>control.disabled=true);
-    const errorNode=dialog.querySelector('[data-console-error]'),appliedNode=dialog.querySelector('[data-recovery-applied]');errorNode.textContent='';
-    try{const result=await executeRecovery(pending,(operation,args)=>store.call(operation,args),()=>current(stamp));if(!current(stamp))return;selected.clear();plan=null;busy=false;dialog.close();refresh();toast(`已明确恢复 ${pending.selected.join('、')}；${result.applied.length} 步已完成。`);}
-    catch(error){if(!current(stamp))return;plan=null;selected.clear();errorNode.textContent=error.message+' 已停止后续恢复；请刷新核对，不会自动重试。';appliedNode.innerHTML=error.applied?.length?error.applied.map(step=>`<li>${esc(step.scope)} · ${step.enabled?'已启用维护':'已明确恢复'} · revision ${step.revision}</li>`).join(''):'<li>尚无已确认完成的步骤。</li>';try{await refreshState();}catch(refreshError){errorNode.textContent+=' 刷新失败：'+refreshError.message;}}
-    finally{if(current(stamp)){busy=false;dialog.querySelectorAll('button,input').forEach(control=>control.disabled=false);dialog.querySelector('[data-recovery-apply]')?.setAttribute('disabled','');update();}}
-  });
-  dialog.addEventListener('submit',async event=>{
-    const form=event.target;if(form.id!=='maintenance-start-form')return;event.preventDefault();if(busy||!adminActive())return;
-    const stamp=store.authGeneration,errorNode=form.querySelector('[data-console-error]'),button=form.querySelector('[type=submit]');busy=true;button.disabled=true;errorNode.textContent='';
-    try{
-      if(form.id==='maintenance-start-form'){await store.call('maintenance.set',{scope:form.elements.scope.value,enabled:true,reason:form.elements.reason.value,revision:Number(form.dataset.revision)});if(current(stamp)){busy=false;dialog.close();selected.clear();refresh();toast('维护已开始；已有运行任务不会自动结束。');}}
-
-    }catch(error){if(current(stamp))errorNode.textContent=error.message;}
-    finally{if(current(stamp)){busy=false;button.disabled=false;}}
-  });
-  update.mountAdmin=(el,ctx)=>{adminContext=ctx;el.append(adminHost,dialog);ctx.subscribe(update);document.dispatchEvent(new Event('gpuq-terminal-state-request'));};
-  update.unmountAdmin=()=>{adminContext=null;dialog.close();dialog.replaceChildren();document.body.append(dialog);adminHost.replaceChildren();adminHost.remove();adminMarkup='';selected.clear();plan=null;busy=false;};
+  host.addEventListener('click',event=>{const button=event.target.closest('[data-maintenance-host]');if(button)document.dispatchEvent(new CustomEvent('gpuq-maintenance-host',{detail:{machine:button.dataset.maintenanceHost,userId:store.principal?.userId}}));});
+  update.mountAdmin=(element,ctx)=>{context=ctx;element.append(host);ctx.subscribe(update);};
+  update.unmountAdmin=()=>{context=null;host.replaceChildren();host.remove();};
   return update;
 }

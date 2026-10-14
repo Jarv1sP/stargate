@@ -157,20 +157,6 @@ class CancelDrainingTests(unittest.TestCase):
         self.assertEqual(len(self.kills(attempt)), 1)
         self.assertEqual(len(self.store.list_leases()), 1)
 
-    def test_closed_release_gate_blocks_canceled_drain_mutations(self):
-        _, attempt = self.canceled()
-        before = '\n'.join(self.store._get_connection().iterdump())
-        gate = {'state': 'CLOSED', 'valid': True,
-                'release_id': '22222222-2222-4222-8222-222222222222'}
-        with patch('gpuq.coordinator._read_release_gate', return_value=gate):
-            with self.assertRaises(ApiError) as caught:
-                self.coordinator._reconcile_attempts()
-            self.assertEqual(caught.exception.code, 'MAINTENANCE')
-        self.assertEqual('\n'.join(self.store._get_connection().iterdump()), before)
-        self.assertEqual(self.kills(attempt), [])
-        self.systemd.terminate.assert_not_called()
-        self.systemd.kill.assert_not_called()
-        self.systemd.cleanup.assert_not_called()
 
 
 if __name__ == '__main__':

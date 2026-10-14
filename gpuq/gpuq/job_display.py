@@ -2,18 +2,9 @@
 from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
-import hashlib
-import json
 import unicodedata
 
 CAPABILITY = "job-display-v1"
-CAS_CAPABILITY = "job-display-cas-v1"
-
-
-def display_revision(value: Any) -> str:
-    normalized = {} if value == {} else normalize_display(value)
-    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True,
-                                    separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _text(value: Any, chars: int, byte_limit: int, field: str, *, multiline: bool = False) -> str:

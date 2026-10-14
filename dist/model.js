@@ -62,5 +62,5 @@ export class DemoStore {
     if(occupied+cards>host.cards)throw Error('模拟资源暂时不足；真实接入后交由 GPUQ 排队。');
     const job={id:`DEMO-${String(++this.sequence).padStart(3,'0')}`,userId:id,machine,cards};this.jobs.push(job);return clone(job);
   }
-  release(id,userId){const i=this.jobs.findIndex(j=>j.id===id);if(i<0)throw Error('找不到这个模拟任务。');if(this.jobs[i].userId!==userId)throw Error('不能结束其他用户的任务。');this.jobs.splice(i,1);}
+  release(id,userId){const i=this.jobs.findIndex(j=>j.id===id);if(i<0)throw Error('找不到这个模拟任务。');this.jobs.splice(i,1);}
 }

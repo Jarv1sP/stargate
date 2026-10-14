@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
-from .constants import CheckpointCapability, DispatchMode, MAX_PRIORITY
+from .constants import CheckpointCapability, DispatchMode
 
 
 def priority_class_contract(value: Any) -> dict[str, Any]:
@@ -73,8 +73,6 @@ def preemption_mode(mode: str, candidate: VictimCandidate) -> str | None:
     return DispatchMode.PREEMPT_NOW.value
 
 
-def queue_sort_key(job: dict[str, Any]) -> tuple[int, int]:
-    return (-int(job["priority"]), int(job["sequence"]))
 
 
 def select_scale_target(
@@ -264,19 +262,3 @@ def select_victims(
     return min(choices, key=lambda item: item[0])[1]
 
 
-def managed_gpu_pids(
-    devices: Iterable[Any],
-    attempt_control_groups: dict[str, str],
-    pid_to_control_group: dict[int, str | None],
-) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
-    """Partition compute PIDs into managed and protected-external sets."""
-
-    managed: dict[str, set[int]] = {}
-    external: dict[str, set[int]] = {}
-    known_groups = set(attempt_control_groups.values())
-    for device in devices:
-        for pid in device.compute_pids:
-            group = pid_to_control_group.get(pid)
-            destination = managed if group in known_groups else external
-            destination.setdefault(device.uuid, set()).add(pid)
-    return managed, external

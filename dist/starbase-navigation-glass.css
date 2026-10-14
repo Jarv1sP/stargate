@@ -1,0 +1,24 @@
+/* ── R3 · navigation layer as glass, hero frame (design lead, see handoff/DIRECTION.md) ─────────
+   HIG: controls float above content as a distinct functional layer; glass only on navigation,
+   never on content. The hero frame marks the ONE object a page is about (once per page). */
+.sb .topbar{position:sticky;top:0;z-index:7}
+.sb .topbar ~ .ctxbar,.sb .topbar + * .ctxbar{top:60px}
+.sb .topbar,.sb .ctxbar,.sb .tabbar,.sb .dock,.sb .m-actions,.sb .glass{
+  background:color-mix(in srgb,var(--bg) 74%,transparent);
+  -webkit-backdrop-filter:blur(22px) saturate(1.35);backdrop-filter:blur(22px) saturate(1.35)}
+@media (prefers-reduced-transparency:reduce){
+  .sb .topbar,.sb .ctxbar,.sb .tabbar,.sb .dock,.sb .m-actions,.sb .glass{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
+  }
+.hero-frame{--tick:var(--ink-3);--tl:14px;position:relative;padding:28px 32px 30px;
+  background:
+    linear-gradient(var(--tick),var(--tick)) left top/var(--tl) 1px no-repeat,
+    linear-gradient(var(--tick),var(--tick)) left top/1px var(--tl) no-repeat,
+    linear-gradient(var(--tick),var(--tick)) right top/var(--tl) 1px no-repeat,
+    linear-gradient(var(--tick),var(--tick)) right top/1px var(--tl) no-repeat,
+    linear-gradient(var(--tick),var(--tick)) left bottom/var(--tl) 1px no-repeat,
+    linear-gradient(var(--tick),var(--tick)) left bottom/1px var(--tl) no-repeat,
+    linear-gradient(var(--tick),var(--tick)) right bottom/var(--tl) 1px no-repeat,
+    linear-gradient(var(--tick),var(--tick)) right bottom/1px var(--tl) no-repeat}
+.hero-frame>.hero-label{position:absolute;top:-8px;left:22px;padding:0 8px;background:var(--bg);font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--ink-3);line-height:16px}
+.light .hero-frame{--tick:var(--ink-3)}
+

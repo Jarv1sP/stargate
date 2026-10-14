@@ -1,2 +1,0 @@
-gpuops ALL=(root) NOPASSWD: /usr/local/libexec/gpuq-console-root-shell
-gpuops ALL=(root) NOPASSWD: /usr/local/libexec/gpuq-console-admin-command ""

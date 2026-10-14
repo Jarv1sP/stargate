@@ -1,5 +1,4 @@
 // Exact trusted read-only replies for offline API/placement fixtures.
-import {trainingStorageDigest} from '../training-storage.mjs';
 export const projectFootprint={codeBytes:1,codeEntries:1,imageUnpackedBytes:1024,imageEntries:1024};
 export function trainingSource(machine,args,{state='READY',bytes=0,files=0,directories=0}={}){
   return {protocol:'dataset-training-source-v1',machine,dataset:args.dataset,version:args.version,
@@ -20,6 +19,6 @@ export function trainingPlan(machine,args,{availableBytes=2**40,activeReservedBy
     remainingBytes:quotaBytes,remainingInodes:1000000,requiredBytes,requiredInodes}]};
   const fits=availableBytes>=1024+activeReservedBytes+requiredBytes&&(budgetBytes===null||cacheBudget.requiredBytes<=budgetBytes)&&
     (quotaBytes===null||quotaBytes>=requiredBytes);
-  return {protocol:'training-storage-plan-v1',machine,owner:args.userId,requestSHA256:trainingStorageDigest(args),
+  return {protocol:'training-storage-plan-v1',machine,owner:args.userId,
     checkedAt:new Date().toISOString(),noReclaim:true,fits,volumes:[volume],cacheBudget,quota};
 }

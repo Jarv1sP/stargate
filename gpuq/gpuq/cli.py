@@ -31,7 +31,6 @@ from .job_display import labels as display_labels
 
 DEFAULT_CONFIG = Path(os.environ.get("GPUQ_CONFIG", "/data1/gpu-scheduler/config.json"))
 WATCH_POLL_SECONDS = 1.0
-WATCH_MAX_CONSECUTIVE_ERRORS = 5
 WATCH_EXIT_CODES = {
     "SUCCEEDED": 0,
     "FAILED": 1,
@@ -820,16 +819,9 @@ def watch_job(
                 if _watch_error_is_permanent(exc):
                     raise
                 consecutive_errors += 1
-                if consecutive_errors >= WATCH_MAX_CONSECUTIVE_ERRORS:
-                    raise ProtocolError(
-                        "watch stopped after "
-                        f"{WATCH_MAX_CONSECUTIVE_ERRORS} consecutive daemon errors: "
-                        f"{_watch_text(exc, maximum=240)}"
-                    ) from exc
                 retry_line = (
                     f"{_watch_text(job_id, maximum=32)}  daemon temporarily "
-                    f"unavailable; retrying {consecutive_errors}/"
-                    f"{WATCH_MAX_CONSECUTIVE_ERRORS}"
+                    f"unavailable; waiting to retry ({consecutive_errors})"
                 )
                 if tty:
                     refresh_tty_line(retry_line)
@@ -1213,15 +1205,12 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
 
 def cmd_set_display(args: argparse.Namespace) -> int:
-    payload = {
+    result = get_client(args).call("set_job_display", {
         "job_id": args.job_id, "expected_submit_key": args.expected_submit_key,
         "expected_owner": args.expected_owner, "expected_name": args.expected_name,
         "metadata": {"name": args.name, "description": args.description,
                      "submitter": {"name": args.submitter_name, "username": args.username}},
-    }
-    if getattr(args, "expected_display_revision", None) is not None:
-        payload["expected_display_revision"] = args.expected_display_revision
-    result = get_client(args).call("set_job_display", payload)
+    })
     print_result(result, args.json)
     return 0
 
@@ -1524,7 +1513,6 @@ def build_parser() -> argparse.ArgumentParser:
     for option in ("expected-submit-key", "expected-owner", "expected-name", "name", "submitter-name", "username"):
         display.add_argument("--"+option, required=True)
     display.add_argument("--description", default="")
-    display.add_argument("--expected-display-revision", help="compare current display SHA256 atomically; read before editing")
     display.set_defaults(func=cmd_set_display)
 
     priority = subparsers.add_parser("set-priority", help="change a pending job's complete priority/yield contract")

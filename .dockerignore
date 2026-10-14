@@ -1,10 +1,13 @@
 **
 !dist/**
 !*.mjs
+!tasks/**
 !proto/clouddrive-pilot.proto
 !package.json
 !package-lock.json
 !scripts/build-client.mjs
+!scripts/build-frontend-vendor.mjs
+!build/campus-native/embedded-artifacts.private.json
 !docs/USER_GUIDE.md
 !deploy/Dockerfile
 !deploy/install-client.sh

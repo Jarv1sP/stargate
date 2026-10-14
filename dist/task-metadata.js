@@ -19,14 +19,13 @@ export function taskDescription(value){
   return description;
 }
 // Native presentation is never execution identity. Only the original platform
-// login may supply labels for an exact joined task; unknown fields are dropped
-// by rejecting the complete envelope, not copied into the public response.
+// node supplies labels; take known display fields without changing job ownership.
 export function nativeTaskDisplay(value,username){
-  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).sort().join(',')!=='description,name,submitter')return null;
+  if(!value||typeof value!=='object'||Array.isArray(value))return null;
   const actor=value.submitter;
-  if(!actor||typeof actor!=='object'||Array.isArray(actor)||Object.keys(actor).sort().join(',')!=='name,username'||actor.username!==username)return null;
+  if(!actor||typeof actor!=='object'||Array.isArray(actor))return null;
   if(typeof value.name!=='string'||!value.name.isWellFormed()||!value.name.trim()||[...value.name].length>64||encoder.encode(value.name).length>256||controls.test(value.name))return null;
-  try{return {name:value.name,description:taskDescription(value.description),submitter:{name:displayName(actor.name),username}};}catch{return null;}
+  try{return {name:value.name,description:taskDescription(value.description),submitter:{name:displayName(actor.name),username:typeof actor.username==='string'?actor.username:username}};}catch{return null;}
 }
 export function taskIdentity(job,users=[]){
   const account=users.find(u=>u.id===job.userId),username=typeof job.username==='string'?job.username:account?.username||'未知用户';

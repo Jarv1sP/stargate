@@ -94,7 +94,7 @@ export class AliyunShare{
       for(const file of data.items){
         if(file.type!=='file')continue;
         if(typeof file.file_id!=='string'||!/^[A-Za-z0-9_-]{1,256}$/.test(file.file_id)||typeof file.name!=='string'||file.name.length>512||!Number.isSafeInteger(file.size)||file.size<0)continue;
-        files.push({id:file.file_id,name:file.name,size:file.size,driveId:typeof file.drive_id==='string'?file.drive_id:'',...(file.content_hash_name==='sha1'&&/^[a-f0-9]{40}$/i.test(file.content_hash||'')?{sha1:file.content_hash.toLowerCase()}:{})});
+        files.push({id:file.file_id,name:file.name,size:file.size,driveId:typeof file.drive_id==='string'?file.drive_id:''});
       }
       marker=data.next_marker||'';if(!marker)return files;
     }

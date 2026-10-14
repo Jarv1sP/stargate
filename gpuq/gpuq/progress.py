@@ -81,15 +81,6 @@ def _finite_number(value: Any, field: str) -> float:
     return result
 
 
-def _identifier(value: Any, field: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= MAX_ID_CHARS
-        or value != value.strip()
-        or not value.isprintable()
-    ):
-        raise ProgressProtocolError(f"{field} is invalid")
-    return value
 
 
 def _single_line_text(value: Any, field: str, maximum: int) -> str:
@@ -239,8 +230,8 @@ def validate_progress_payload(value: Any) -> ProgressSnapshot:
     normalized_severity = _severity(value["severity"])
     snapshot = ProgressSnapshot(
         version=PROGRESS_PROTOCOL_VERSION,
-        job_id=_identifier(value["job_id"], "job_id"),
-        attempt_id=_identifier(value["attempt_id"], "attempt_id"),
+        job_id=_single_line_text(value["job_id"], "job_id", MAX_ID_CHARS),
+        attempt_id=_single_line_text(value["attempt_id"], "attempt_id", MAX_ID_CHARS),
         sequence=int(sequence),
         phase=_single_line_text(value["phase"], "phase", MAX_PHASE_CHARS),
         epochs_completed=epochs_completed,
@@ -392,8 +383,8 @@ class ProgressReporter:
             directory = Path(control_dir)
             if not directory.is_absolute():
                 raise ProgressProtocolError("GPUQ_CONTROL_DIR must be absolute")
-            self._job_id = _identifier(job_id, "GPUQ_JOB_ID")
-            self._attempt_id = _identifier(attempt_id, "GPUQ_ATTEMPT_ID")
+            self._job_id = _single_line_text(job_id, "GPUQ_JOB_ID", MAX_ID_CHARS)
+            self._attempt_id = _single_line_text(attempt_id, "GPUQ_ATTEMPT_ID", MAX_ID_CHARS)
             self._path = directory / PROGRESS_FILE_NAME
             existing = load_progress_file(self._path)
             if existing is not None:

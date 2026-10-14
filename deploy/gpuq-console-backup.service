@@ -1,9 +1,0 @@
-[Unit]
-Description=GPUQ portal consistent SQLite backup
-
-[Service]
-Type=oneshot
-ExecStart=/opt/gpuq-console/backup.sh
-UMask=0077
-Nice=10
-IOSchedulingClass=idle

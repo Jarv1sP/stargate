@@ -1,4 +1,4 @@
-// Public sample inventory. Generate your deployment copy with configure.mjs.
+// Public sample inventory. Keep deployment inventory outside the public repository.
 export const MACHINES = Object.freeze([
   {id:'gpu-1',model:'RTX 5090',cards:8,memory:'32 GB'},
   {id:'gpu-2',model:'RTX 4090',cards:8,memory:'24 GB'},

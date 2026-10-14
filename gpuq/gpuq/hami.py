@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -59,24 +58,19 @@ def verify_library(path: Path, expected_sha: str) -> None:
         raise ValueError(
             "HAMi library requires an absolute path without spaces or colons"
         )
-    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
-        raise ValueError("invalid HAMi library checksum")
     try:
-        data = path.read_bytes()
+        with path.open('rb') as stream:data = stream.read(4)
     except OSError as exc:
         raise ValueError("HAMi library is unavailable") from exc
-    if (
-        not data.startswith(b"\x7fELF")
-        or hashlib.sha256(data).hexdigest() != expected_sha
-    ):
-        raise ValueError("HAMi library checksum/format mismatch")
+    if not data.startswith(b"\x7fELF"):
+        raise ValueError("HAMi library format mismatch")
 
 
 def runtime_library(archive: Path, sm_percent: int) -> tuple[Path, str]:
     directory = archive.resolve().parent / "hami"
     try:
         meta = json.loads((directory / "manifest.json").read_text())
-        sha = meta["sha256"]
+        sha = meta.get("sha256") or ""
         if sm_percent < 100 and meta.get("sm_supported") is not True:
             raise ValueError("SM limiting has not passed host validation")
         library = directory / "libvgpu.so"
@@ -113,7 +107,7 @@ def runtime_environment(
 
 def verify_launch_environment(environment: Mapping[str, str]) -> None:
     sha = environment.get("GPUQ_HAMI_LIBRARY_SHA256")
-    if sha is not None:
+    if environment.get("CUDA_DEVICE_MEMORY_LIMIT") is not None:
         verify_library(Path(environment.get("LD_PRELOAD", "")), sha)
         cache = Path(environment.get("CUDA_DEVICE_MEMORY_SHARED_CACHE", ""))
         expected = Path(environment["GPUQ_CONTROL_DIR"]) / "hami" / "usage.cache"

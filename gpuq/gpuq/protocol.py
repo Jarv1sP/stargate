@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import socket
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,12 +53,26 @@ class Client:
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
 
-    def call(
+    def call(self, operation: str, arguments: dict[str, Any] | None = None, *, request_id: str | None = None) -> Any:
+        request_id = request_id or str(uuid.uuid4())
+        deadline = time.monotonic() + self.timeout
+        for attempt in range(3):
+            try:
+                return self._call_once(operation, arguments, request_id=request_id, timeout=max(.001,deadline-time.monotonic()))
+            except ProtocolError as error:
+                if (operation not in {"status", "show", "job_watch", "queue", "gpus", "events"}
+                        or not isinstance(error.__cause__, OSError) or attempt == 2
+                        or time.monotonic() >= deadline):
+                    raise
+                time.sleep(min(.1 * (attempt + 1), max(0, deadline-time.monotonic())))
+
+    def _call_once(
         self,
         operation: str,
         arguments: dict[str, Any] | None = None,
         *,
         request_id: str | None = None,
+        timeout: float | None = None,
     ) -> Any:
         request_id = request_id or str(uuid.uuid4())
         wire = encode_request(operation, arguments or {}, request_id)
@@ -67,7 +82,7 @@ class Client:
                 f"limit {self.max_request_bytes})"
             )
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
+        sock.settimeout(self.timeout if timeout is None else timeout)
         try:
             sock.connect(os.fspath(self.socket_path))
             sock.sendall(wire)

@@ -1,139 +1,146 @@
-"""Independent regression checks for project publication and identity barriers.
-
-Only synthetic temporary directories and mocked service-manager responses are
-used. These tests do not contact machines, start units, or execute user code.
-"""
-import base64
-import hashlib
-import importlib.util
-import json
-import os
+"""OCI/gitalike project behavior, task allocation and the two filesystem walls."""
+import base64,importlib.util,json,os,shutil,subprocess,tempfile,unittest,uuid
 from pathlib import Path
-import shutil
-import sys
-import tempfile
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
-import uuid
-
-DEPLOY = Path(__file__).resolve().parents[1] / 'deploy'
-
-
-class ProjectSecurity(unittest.TestCase):
-    def setUp(self):
-        __import__('runpy').run_path(str(Path(__file__).with_name('storage_test_helpers.py')))['isolated_platform_pin'](self)
-        self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name).resolve()
-        for name in ('platform-root-guard.py','node-executor.py', 'scheduling-policy.py', 'project-ops.py', 'project-store.py', 'project-lifecycle.py'):
-            shutil.copy2(DEPLOY / name, self.root / name)
-        conda = self.root / 'base'
-        for name in ('bin', 'conda-meta', 'lib'):
-            (conda / name).mkdir(parents=True)
-        (conda / 'bin/python').write_text('synthetic interpreter; never executed')
-        (self.root / 'node-config.json').write_text(json.dumps({'root': str(self.root / 'state'), 'conda': str(conda)}))
-        spec = importlib.util.spec_from_file_location('project_security_executor', self.root / 'node-executor.py')
-        self.node = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = self.node
-        spec.loader.exec_module(self.node)
-        self.args = {'userId': 'demo-user-42', 'project': 'test'}
-        self.node.workspace(self.args['userId'])
-        self.ops = self.node.projects()
-        self.node.process('projects.create', self.args)
-        self.space = patch.object(self.node.os, 'statvfs', return_value=SimpleNamespace(f_bavail=100000000, f_frsize=4096))
-        self.space.start()
-        # Project admission uses a pinned descriptor; keep the same synthetic
-        # capacity for that probe instead of depending on the host's disk.
-        fd_space = patch.object(self.node.os, 'fstatvfs', return_value=SimpleNamespace(f_bavail=100000000, f_frsize=4096))
-        fd_space.start()
-        self.addCleanup(fd_space.stop)
-
-    def tearDown(self):
-        self.space.stop()
-        self.temp.cleanup()
-
-    def upload(self, data, **extra):
-        return self.node.process('files.put', {**self.args, 'path': 'train.py',
-            'uploadId': str(uuid.uuid4()), 'totalSize': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
-            'offset': 0, 'final': True, 'data': base64.b64encode(data).decode(), **extra})
-
-    def test_unknown_service_manager_state_must_not_confirm_terminal_stopped(self):
-        unavailable = SimpleNamespace(returncode=1, stdout='', stderr='Failed to connect to bus: No medium found')
-        with patch.object(self.node.subprocess, 'run', return_value=unavailable):
-            self.assertFalse(self.ops.terminal_stopped(str(uuid.uuid4())))
-
-    def test_unknown_stop_keeps_project_pointer_and_does_not_publish(self):
-        jid = str(uuid.uuid4())
-        pointer = self.node.terminal_pointer(self.args)
-        pointer.parent.mkdir(exist_ok=True)
-        pointer.write_text(jid)
-        unavailable = SimpleNamespace(returncode=1, stdout='', stderr='Failed to connect to bus')
-        with patch.object(self.node, 'terminal_alive', return_value=False), \
-             patch.object(self.node.subprocess, 'run', return_value=unavailable), \
-             patch.object(self.node, 'run', return_value='') as launch:
-            with self.assertRaises((ValueError, RuntimeError)):
-                self.node.process('projects.publish', self.args)
-            launch.assert_not_called()
-        self.assertEqual(pointer.read_text(), jid)
-
-    def test_reopen_cannot_replace_unknown_old_terminal_pointer(self):
-        jid = str(uuid.uuid4())
-        pointer = self.node.terminal_pointer(self.args)
-        pointer.parent.mkdir(exist_ok=True)
-        pointer.write_text(jid)
-        unavailable = SimpleNamespace(returncode=1, stdout='', stderr='Failed to connect to bus')
-        with patch.object(self.node, 'terminal_alive', return_value=False), \
-             patch.object(self.node.subprocess, 'run', return_value=unavailable), \
-             patch.object(self.node.time, 'sleep'), \
-             patch.object(self.node, 'run', return_value='') as launch:
-            with self.assertRaises((ValueError, RuntimeError)):
-                self.node.process('terminal.open', {**self.args, 'username': 'alice', 'key': str(uuid.uuid4())})
-            launch.assert_not_called()
-        self.assertEqual(pointer.read_text(), jid)
-
-    def test_upload_identity_is_scoped_by_user_and_project(self):
-        other = {**self.args, 'userId': 'demo-user-4'}
-        self.node.process('projects.create', other)
-        uid = str(uuid.uuid4())
-        self.upload(b'first', uploadId=uid)
-        request = {**other, 'path': 'train.py', 'uploadId': uid, 'offset': 0, 'totalSize': 6,
-                   'sha256': hashlib.sha256(b'second').hexdigest(), 'final': True,
-                   'data': base64.b64encode(b'second').decode()}
-        self.node.process('files.put', request)
-        own = self.node.process('files.get', {**self.args, 'path': 'train.py'})
-        theirs = self.node.process('files.get', {**other, 'path': 'train.py'})
-        self.assertEqual(base64.b64decode(own['data']), b'first')
-        self.assertEqual(base64.b64decode(theirs['data']), b'second')
-
-    def test_failing_final_digest_retains_old_complete_code_and_blocks_publish(self):
-        self.upload(b'old complete code')
-        with self.assertRaisesRegex(ValueError, 'SHA256'):
-            self.upload(b'new broken code', sha256='a' * 64)
-        old = self.node.process('files.get', {**self.args, 'path': 'train.py'})
-        self.assertEqual(base64.b64decode(old['data']), b'old complete code')
-        with self.assertRaisesRegex(ValueError, 'Unfinished'):
-            self.node.process('projects.publish', self.args)
-
-    def test_final_target_symlink_is_replaced_without_touching_target(self):
-        code = self.ops.store.dev_paths(self.args['userId'], self.args['project'])['code']
-        elsewhere = self.root / 'unrelated'
-        elsewhere.write_text('untouched')
-        (code / 'train.py').symlink_to(elsewhere)
-        self.upload(b'new safe code')
-        self.assertEqual(elsewhere.read_text(), 'untouched')
-        self.assertFalse((code / 'train.py').is_symlink())
-        self.assertEqual((code / 'train.py').read_bytes(), b'new safe code')
-
-    def test_code_symlink_parent_cannot_escape_to_other_project(self):
-        other = {**self.args, 'project': 'second'}
-        self.node.process('projects.create', other)
-        code = self.ops.store.dev_paths(self.args['userId'], self.args['project'])['code']
-        other_code = self.ops.store.dev_paths(other['userId'], other['project'])['code']
-        (code / 'escape').symlink_to(other_code)
-        with self.assertRaises(OSError):
-            self.upload(b'blocked', path='escape/train.py')
-        self.assertFalse((other_code / 'train.py').exists())
+ROOT=Path(__file__).resolve().parents[1]
+s=importlib.util.spec_from_file_location('directory_fixture',Path(__file__).with_name('node-friction.test.py'))
+f=importlib.util.module_from_spec(s);s.loader.exec_module(f)
 
 
-if __name__ == '__main__':
-    unittest.main()
+class ProjectContract(unittest.TestCase):
+    setUp=f.DirectoryContract.setUp
+    key=f.DirectoryContract.key
+
+    def test_create_with_repository_and_git_status_are_container_commands(self):
+        source=self.base/'repo';source.mkdir(mode=0o700)
+        subprocess.run(['git','init','--initial-branch=main',str(source)],check=True,capture_output=True)
+        (source/'train.py').write_text('print("hello")\n')
+        subprocess.run(['git','-C',str(source),'add','train.py'],check=True)
+        subprocess.run(['git','-C',str(source),'-c','user.name=Test','-c','user.email=test@example.invalid','commit','-m','fixture'],check=True,capture_output=True)
+        ops=f.module('project-ops').ProjectOperations(SimpleNamespace(CONFIG=self.config,ROOT=Path(self.config['root']),run=lambda *a,**k:None))
+        calls=[]
+        class LocalGitTransport:
+            # The test substitutes only OCI transport; the git commands/bytes are real.
+            def git(_,user,project,args):
+                calls.append(args);path=ops.store.dev_paths(user,project)['code']
+                result=subprocess.run(['git','-C',str(path),*args],capture_output=True,text=True)
+                if result.returncode:raise ValueError(result.stderr)
+                return result.stdout.strip()
+        with patch.object(ops,'oci',return_value=LocalGitTransport()):
+            created=ops.process('projects.create',{'userId':'alice','project':'demo','repo':str(source)})
+            self.assertEqual(created['cloneState'],'PENDING');self.assertEqual(ops.initialize('alice','demo'),0);created=ops.process('projects.status',{'userId':'alice','project':'demo'})
+            self.assertEqual(created['git']['url'],str(source));self.assertEqual(created['git']['branch'],'main')
+            self.assertEqual(len(created['git']['commit']),40)
+            replay=ops.process('projects.create',{'userId':'alice','project':'demo','repo':str(source)})
+            self.assertEqual(replay['git']['commit'],created['git']['commit'])
+            self.assertEqual(sum(a[0]=='clone' for a in calls),1)
+
+    def test_oci_arguments_are_private_namespace_only_and_training_dataset_is_readonly(self):
+        oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI)
+        engine.config={'machine':'test','personalOci':{'cdiSpec':str(self.base/'cdi.json')}};engine.owner='alice'
+        engine._mount_sources={3:str(self.base/'work'),4:str(self.base/'dataset'),5:str(self.base/'output')}
+        (self.base/'cdi.json').write_text(json.dumps({'kind':'nvidia.com/gpu','devices':[{'name':'GPU-a'}]}))
+        spec={'project':'demo','argv':['python','train.py'],'id':self.key()}
+        args=engine.arguments(spec,{'environmentMode':'oci','workspace':True},False,['GPU-a'],[(3,'/workspace',False),(4,'/datasets',True),(5,'/outputs',False)])
+        self.assertIn('nvidia.com/gpu=GPU-a',args);self.assertIn(str(self.base/'dataset')+':/datasets:ro',args)
+        self.assertIn('--pid=private',args);self.assertIn('--network=slirp4netns:allow_host_loopback=false',args)
+        for forbidden in ('--privileged','--pid=host','--network=host','docker.sock','/data/mine'):
+            self.assertFalse(any(forbidden in a for a in args),forbidden)
+
+    def test_terminal_mounts_dataset_writable_and_does_not_get_gpu(self):
+        oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI);engine.config={'machine':'test'};engine.owner='alice';engine._mount_sources={3:str(self.base/'dataset')}
+        args=engine.arguments({'project':'demo','argv':['/bin/bash']},{'environmentMode':'oci','workspace':True},True,[],[(3,'/datasets',False)])
+        self.assertIn(str(self.base/'dataset')+':/datasets:rw',args);self.assertFalse('--device' in args)
+
+    def test_only_assigned_cdi_device_is_used(self):
+        engine=f.module('personal-oci').PersonalOCI.__new__(f.module('personal-oci').PersonalOCI);engine.owner='alice';engine._mount_sources={}
+        file=self.base/'cdi.json';file.write_text(json.dumps({'kind':'nvidia.com/gpu','devices':[{'name':'GPU-a'},{'name':'GPU-b'}]}));engine.config={'machine':'test','personalOci':{'cdiSpec':str(file)}}
+        args=engine.arguments({'project':'demo','argv':['python']},{'environmentMode':'oci'},False,['GPU-a'],[])
+        self.assertEqual([args[i+1] for i,a in enumerate(args[:-1]) if a=='--device'],['nvidia.com/gpu=GPU-a'])
+
+    def test_argv_limit_is_resource_floor_and_not_field_whitelist(self):
+        resources=f.module('job-resources');spec={'cards':2,'futureField':'ignored'}
+        limits=resources.requested_limits(spec,False,{'jobMemoryGiBPerCard':16})
+        self.assertEqual(limits['memory'],32*1024**3)
+        with self.assertRaises(ValueError):resources.requested_limits({'cards':0},False,{})
+
+    def test_unknown_scheduling_fields_do_not_refuse_current_request(self):
+        policy=f.module('scheduling-policy')
+        value={'rank':'P2','yieldPolicy':'never','restartPolicy':'never','checkpointable':False,'extra':'ignored'}
+        self.assertEqual(policy.normalize_job_policy({'scheduling':value})['priority'],2)
+
+    def test_deleting_project_does_not_probe_or_cancel_active_tasks(self):
+        ops=f.module('project-ops').ProjectOperations(SimpleNamespace(CONFIG=self.config,ROOT=Path(self.config['root']),run=lambda *a,**k:None))
+        ops.store.create('alice','demo');row=ops.process('projects.retire',{'userId':'bob','ownerId':'alice','project':'demo','key':self.key(),'actor':{'userId':'bob'}})
+        self.assertEqual(row['kind'],'project');self.assertEqual(row['actor']['userId'],'bob');self.assertEqual(ops.store.list(),[])
+
+    def test_disk_samples_use_private_mounts_and_report_missing_without_zero(self):
+        samples=self.data.disk_samples(self.config);self.assertEqual(len(samples),1)
+        self.assertIn('availableBytes',samples[0]);self.assertEqual(samples[0]['mountPoint'],str(self.base))
+        with patch('os.statvfs',side_effect=OSError('offline')):self.assertIsNone(self.data.disk_samples(self.config)[0]['availableBytes'])
+
+    def test_cdi_cannot_add_a_system_disk_device(self):
+        oci=f.module('personal-oci');file=self.base/'cdi.json'
+        file.write_text(json.dumps({'kind':'nvidia.com/gpu','devices':[{'name':'GPU-a','containerEdits':{'deviceNodes':[{'path':'/dev/sda'}]}}]}))
+        with self.assertRaisesRegex(ValueError,'系统盘设备'):oci.cdi_selection({'personalOci':{'cdiSpec':str(file)}},['GPU-a'])
+
+    def test_gpu_interactive_terminal_accepts_assigned_cdi_and_rw_datasets(self):
+        oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI)
+        engine.owner='alice';engine._mount_sources={3:str(self.base/'workspace'),4:str(self.base/'datasets')}
+        file=self.base/'cdi.json';file.write_text(json.dumps({'kind':'nvidia.com/gpu','devices':[{'name':'GPU-a'}]}))
+        engine.config={'machine':'test','personalOci':{'cdiSpec':str(file)}}
+        args=engine.arguments({'id':self.key(),'project':'demo','interactive':True},{'environmentMode':'oci'},True,['GPU-a'],[(3,'/workspace',False),(4,'/datasets',False)],['--setenv','PATH','/opt/gpuq/bin:/usr/bin'])
+        self.assertIn('nvidia.com/gpu=GPU-a',args);self.assertIn(str(self.base/'datasets')+':/datasets:rw',args);self.assertIn('--tty',args)
+
+    def test_sampler_unavailable_gpu_is_unknown_and_does_not_crash(self):
+        probe=f.module('node-probe')
+        with patch.object(probe,'command',side_effect=OSError('no local GPU')):
+            result=probe.probe({**self.config,'gpu':'/test-only/missing-gpu'})
+        self.assertIsNone(result['gpus']);self.assertIsNone(result['tasks']);self.assertEqual(len(result['disks']),1)
+
+    def test_unknown_submit_and_cancel_stay_unknown_under_original_key(self):
+        node=self.node();node.projects().store.create('alice','demo');jid=self.key()
+        spec={'id':jid,'userId':'bob','ownerId':'alice','username':'bob','project':'demo','cards':1,'argv':['python','train.py'],'workspace':True}
+        node.gpu=lambda *a:(_ for _ in ()).throw(TimeoutError('lost reply'))
+        self.assertEqual(node.process('watch',{'job':spec})['schedulerState'],'NOT_SUBMITTED')
+        with self.assertRaises(TimeoutError):node.process('sync',{'job':spec})
+        self.assertEqual(node.process('watch',{'job':spec})['schedulerState'],'UNKNOWN')
+        self.assertEqual(node.process('cancel',{'job':spec})['state'],'UNKNOWN')
+        self.assertEqual(node.process('sync',{'job':spec})['state'],'UNKNOWN')
+
+    def node(self):
+        code=self.base/'code';code.mkdir(mode=0o700)
+        for source in (ROOT/'node').glob('*.py'):shutil.copy2(source,code/source.name)
+        self.config.update(database=str(self.base/'gpuq.sqlite'),gpu='/fixed/gpu',jobMemoryGiBPerCard=16)
+        (code/'node-config.json').write_text(json.dumps(self.config))
+        import sqlite3,sys
+        with sqlite3.connect(self.config['database']) as db:db.execute('create table jobs(id text,submit_key text)')
+        spec=importlib.util.spec_from_file_location('test_node',code/'node-executor.py');node=importlib.util.module_from_spec(spec)
+        sys.modules[spec.name]=node;spec.loader.exec_module(node);return node
+
+    def test_submit_watch_cancel_outputs_and_original_key_use_current_project(self):
+        import sqlite3
+        node=self.node();node.projects().store.create('alice','demo');jid=self.key()
+        spec={'id':jid,'userId':'alice','username':'alice','project':'demo','cards':1,'argv':['python','train.py'],'name':'test','minVramGiB':0,'workspace':True}
+        calls=[]
+        def native(*args):
+            calls.append(args)
+            if args[0]=='submit':
+                with sqlite3.connect(self.config['database']) as db:db.execute('insert into jobs values(?,?)',('J000000000001',jid))
+                return {'job_id':'J000000000001'}
+            return {'job':{'id':'J000000000001','state':'SUCCEEDED','priority':2,'submit_key':jid,'name':'portal-'+jid[:8],'owner':'portal:alice'},'attempts':[]}
+        node.gpu=native
+        self.assertEqual(node.process('sync',{'job':spec})['state'],'SUCCEEDED')
+        self.assertEqual(node.process('sync',{'job':spec})['state'],'SUCCEEDED')
+        self.assertEqual(sum(a[0]=='submit' for a in calls),1)
+        submit=next(a for a in calls if a[0]=='submit');self.assertIn('GPUQ_CONSOLE_OCI=1',submit);self.assertIn(str(Path(node.HERE)/'oci-runner.py'),submit)
+        path=node.projects().store.runtime_paths(spec,jid)['output'];(path/'result.txt').write_bytes(b'result')
+        data=node.process('files.get',{'userId':'bob','area':'output','runId':jid,'path':'result.txt'})
+        self.assertEqual(base64.b64decode(data['data']),b'result')
+        key=self.key();deleted=node.process('outputs.delete',{'userId':'bob','jobId':jid,'path':'result.txt','key':key,'actor':{'userId':'bob'}})
+        self.assertEqual(deleted['kind'],'output')
+        node.process('projects.retire.restore',{'userId':'carol','key':key,'actor':{'userId':'carol'}})
+        self.assertEqual((path/'result.txt').read_bytes(),b'result')
+
+if __name__=='__main__':unittest.main()

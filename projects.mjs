@@ -1,85 +1,46 @@
-import {authorizationPolicy} from './dist/model.js';
+import {UUID,selectFields} from './portal-request-validation.mjs';
 import {projectCatalogCall} from './project-catalog.mjs';
-// Project identities are always derived from the authenticated account. A
-// client chooses a node and an opaque project/release, never a host filesystem.
+export {UUID};
 export const PROJECT=/^[a-z][a-z0-9_-]{0,47}$/;
-export const RELEASE=/^[a-f0-9]{64}$/;
-export const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
-export function projectReference(args,{optional=true,release=false}={}){
-  if(args.project===undefined){if(!optional||args.release!==undefined)fail('请先选择项目。');return {};}
-  if(typeof args.project!=='string'||!PROJECT.test(args.project))fail('项目名称须以小写字母开头，仅用字母、数字、下划线或连字符，最长 48 位。');
-  if(release&&(typeof args.release!=='string'||!RELEASE.test(args.release)))fail('训练必须使用已发布的完整项目版本。先发布代码和环境。');
-  return {project:args.project,...(release?{release:args.release}:{})};
+export function projectReference(args,{optional=true}={}){
+  if(args.project===undefined){if(!optional)fail('请先选择项目。');return {};}
+  if(typeof args.project!=='string'||!PROJECT.test(args.project))fail('项目目录名称无效。');
+  return {project:args.project};
 }
-export async function projectCall(service,principal,user,operation,args,authorizedMachine){
-  const presentation=await projectCatalogCall(service,principal,user,operation,args,authorizedMachine);
+export async function projectCall(service,principal,user,operation,args,authorize){
+  const ownerId=args.ownerId??user.id;
+  const owner=service.store.users.find(row=>row.id===ownerId)||{id:ownerId};
+  const presentation=await projectCatalogCall(service,principal,owner,operation,args,authorize);
   if(presentation!==undefined)return presentation;
-  const lifecycle=['projects.archive','projects.unarchive','projects.retire.plan','projects.retire','projects.retire.status'].includes(operation);
-  if(!lifecycle&&!['projects.list','projects.quota','projects.create','projects.status','projects.publish','projects.local-import.begin','projects.local-import.status','projects.local-import.cancel'].includes(operation))return undefined;
-  authorizedMachine(args.machine);
-  const ownerOnly=['projects.list','projects.quota'].includes(operation);
-  const allowed=ownerOnly?['machine']:['machine','project'];
-  if(operation==='projects.create')allowed.push('environmentMode');
-  if(operation==='projects.publish')allowed.push('key');
-  if(['projects.archive','projects.unarchive','projects.retire'].includes(operation))allowed.push('revision');
-  if(['projects.retire','projects.retire.status'].includes(operation))allowed.push('key');
-  if(operation==='projects.retire')allowed.push('manifestSha256');
-  if(operation.startsWith('projects.local-import.'))allowed.push('key');
-  if(operation==='projects.local-import.begin')allowed.push('sourcePath','destinationPath');
-  if(Object.keys(args).some(k=>!allowed.includes(k)))fail('项目参数无效。');
-  if(args.key!==undefined&&(typeof args.key!=='string'||!UUID.test(args.key)))fail('发布标识必须是完整 UUID。');
-  if(['projects.archive','projects.unarchive','projects.retire'].includes(operation)&&(!Number.isSafeInteger(args.revision)||args.revision<0||args.revision>=Number.MAX_SAFE_INTEGER))fail('请使用当前项目生命周期 revision。');
-  if(['projects.retire','projects.retire.status'].includes(operation)&&!UUID.test(args.key||''))fail('退役须使用固定完整 UUID。');
-  if(operation==='projects.retire'&&!RELEASE.test(args.manifestSha256||''))fail('退役须使用准确的清单摘要。');
-  if(operation==='projects.create'&&args.environmentMode!==undefined&&args.environmentMode!=='oci')fail('新项目统一使用个人容器；不能新建共享或隔离 venv 环境。');
-  if(operation==='projects.local-import.begin')for(const key of ['sourcePath','destinationPath']){
-    const value=args[key];
-    if(typeof value!=='string'||value.length>1024||value.includes('\\')||/[\p{Cc}\p{Cf}]/u.test(value)||value.split('/').some(p=>!p||p==='.'||p==='..'||p.length>255))fail('同机导入只接受个人数据区和项目草稿内的相对目录。');
-  }
-  if(operation.startsWith('projects.local-import.')&&args.key===undefined)fail('同机导入必须使用固定 UUID 操作标识。');
-  const reference=ownerOnly?{}:projectReference(args,{optional:false});
-  if(operation==='projects.create')await service.ociProjectAdmission?.(args.machine,user.id,args.project,{creatingOCI:true});
-  if(operation==='projects.publish')await service.ociProjectAdmission?.(args.machine,user.id,args.project);
-  const priorJobs=service.store.jobs.filter(job=>job.userId===user.id&&job.machine===args.machine&&job.project===args.project);
-  if(operation==='projects.retire'&&priorJobs.some(job=>!['SUCCEEDED','FAILED','CANCELED','STOPPED'].includes(job.state)))fail('项目仍有进行中或待确认的任务，不能退役。',409);
-  if(operation==='projects.archive'&&priorJobs.some(job=>!['SUCCEEDED','FAILED','CANCELED'].includes(job.state)&&!job.nodeJobId))fail('已有任务尚未确认派发到节点；先核对其原状态，再归档项目。',409);
-  const policy=authorizationPolicy(user);
-  const result=await service.bridge(args.machine,operation,{...reference,...(operation==='projects.create'?{environmentMode:'oci'}:{}),...(args.key!==undefined?{key:args.key}:{}),...(args.revision!==undefined?{revision:args.revision}:{}),...(args.manifestSha256!==undefined?{manifestSha256:args.manifestSha256}:{}),...(operation==='projects.local-import.begin'?{sourcePath:args.sourcePath,destinationPath:args.destinationPath}:{}),userId:user.id});
-  if(authorizationPolicy(service.store.get(user.id))!==policy)fail('账号权限已改变，请重新查询原操作状态。',403);
-  if(operation==='projects.create'&&(result?.project!==args.project||result.environmentMode!=='oci'))fail('服务器未确认个人容器项目；请查询原项目，不会回退或新建替代环境。',503);
-  if(operation==='projects.quota')return quotaStatus(result,user.id);
-  if(['projects.create','projects.publish','projects.local-import.begin','projects.local-import.cancel','projects.archive','projects.unarchive','projects.retire'].includes(operation))service.audit(principal.username,operation,args.machine,args.project);
-  if(operation==='projects.list')return {...result,environmentModes:Array.isArray(result.environmentModes)&&result.environmentModes.includes('oci')?['oci']:[],projects:(result.projects||[]).map(row=>service.projectPresentation(user.id,args.machine,row))};
-  return ['projects.status','projects.create'].includes(operation)?service.projectPresentation(user.id,args.machine,result):result;
-}
-export function quotaStatus(value,owner){
-  const unknown=()=>fail('磁盘硬配额用量未确认，请联系管理员；不会当作零用量。',503);
-  if(!value||typeof value!=='object'||Array.isArray(value)||value.owner!==owner||typeof value.enabled!=='boolean')unknown();
-  if(!value.enabled){
-    const keys=Object.keys(value).sort().join(',');
-    if(!['enabled,enforcement,owner,volumes','enabled,enforcement,owner,reason,volumes'].includes(keys)||value.enforcement!==null||value.volumes!==null||(keys.includes('reason')&&value.reason!=='OWNER_NOT_ACTIVATED'))unknown();
-    return value;
-  }
-  if(Object.keys(value).sort().join(',')!=='enabled,enforcement,owner,projectId,volumes'||value.enforcement!=='kernel-project-quota'||!Number.isSafeInteger(value.projectId)||value.projectId<10000||value.projectId>=2**31||!Array.isArray(value.volumes)||!value.volumes.length||value.volumes.length>8)unknown();
-  const seen=new Set();
-  for(const row of value.volumes){
-    if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).sort().join(',')!=='bytes,inodes,remainingBytes,remainingInodes,usedBytes,usedInodes,volume'||typeof row.volume!=='string'||!/^[a-z][a-z0-9_-]{0,47}$/.test(row.volume)||seen.has(row.volume))unknown();
-    for(const key of ['bytes','inodes','usedBytes','usedInodes','remainingBytes','remainingInodes'])if(!Number.isSafeInteger(row[key])||row[key]<0)unknown();
-    if(!row.bytes||!row.inodes||row.remainingBytes!==Math.max(0,row.bytes-row.usedBytes)||row.remainingInodes!==Math.max(0,row.inodes-row.usedInodes))unknown();
-    seen.add(row.volume);
-  }
-  return value;
+  const names=new Set(['projects.list','projects.quota','projects.create','projects.status','projects.archive','projects.unarchive',
+    'projects.retire','projects.retire.status','projects.retire.list','projects.retire.restore','projects.retire.purge','projects.retire.empty']);
+  if(!names.has(operation))return undefined;
+  authorize(args.machine);
+  args=selectFields(args,['machine','ownerId','project','key','kind',...(operation==='projects.create'?['repo']:operation==='projects.status'?['diagnoseNetwork']:[])]);
+  const collection=['projects.list','projects.quota','projects.retire.list','projects.retire.empty'].includes(operation);
+  const trash=operation.startsWith('projects.retire.');
+  if(!collection&&!trash)projectReference(args,{optional:false});
+  if(args.key!==undefined&&!UUID.test(args.key))fail('请使用原 UUID 编号。');
+  if(['projects.retire','projects.retire.restore','projects.retire.purge'].includes(operation)&&!UUID.test(args.key||''))fail('请使用原回收站编号。');
+  if(['projects.retire.purge','projects.retire.empty'].includes(operation)&&principal.role!=='admin')fail('立即清空仅管理员可用。',403);
+  if(args.repo!==undefined&&(typeof args.repo!=='string'||Buffer.byteLength(args.repo)>4096||/[\x00-\x1f\x7f]/.test(args.repo)))fail('仓库地址格式或长度无效。');
+  if(args.repo){try{const url=new URL(args.repo);if(url.password||['http:','https:'].includes(url.protocol)&&url.username)fail('仓库地址不要带密码或令牌，请在容器终端里配置 Git 凭据。');}catch(error){if(error.status)throw error;}}
+  const {machine,...request}=args;
+  const result=await service.bridge(machine,operation,{...request,...(!collection||operation==='projects.quota'||args.ownerId!==undefined?{ownerId}:{}),userId:principal.userId,actor:{userId:principal.userId,isAdmin:principal.role==='admin'}});
+  if(!['projects.list','projects.quota','projects.status','projects.retire.list','projects.retire.status'].includes(operation))
+    service.audit(principal.username,operation,machine,JSON.stringify({project:args.project,key:args.key,kind:args.kind,ownerId}));
+  if(operation==='projects.list')return {...result,projects:result.projects?.map(row=>{
+    const id=row.ownerId??ownerId,account=service.store.users.find(user=>user.id===id);
+    return {...service.projectPresentation(id,machine,row),ownerId:id,ownerName:account?.name??'已删除账号'};
+  })};
+  if(['projects.create','projects.status'].includes(operation))return service.projectPresentation(ownerId,machine,result);
+  return result;
 }
 export function validateProjectFile(args){
-  const reference=projectReference(args);
-  if(!reference.project){
-    if(['area','runId','uploadId','totalSize','sha256','final'].some(k=>args[k]!==undefined))fail('这些文件参数仅用于项目工作区。');
-    return {};
-  }
-  if(args.area!==undefined&&!['code','output'].includes(args.area))fail('只能访问项目代码或本人的任务输出。');
-  const area=args.area||'code';
-  if(area==='output'&&(typeof args.runId!=='string'||!UUID.test(args.runId)))fail('下载输出时必须指定任务 ID。');
-  if(area==='code'&&args.runId!==undefined)fail('代码工作区不能指定任务 ID。');
+  if(args.area==='dataset')return {area:'dataset',dataset:args.dataset};
+  const reference=projectReference(args,{optional:false}),area=args.area||'code';
+  if(!['code','output'].includes(area))fail('请选择工作区、数据集或任务输出。');
+  if(area==='output'&&!UUID.test(args.runId||''))fail('请指定任务 UUID。');
   return {...reference,area,...(area==='output'?{runId:args.runId}:{})};
 }

@@ -24,51 +24,42 @@ function gpuStatus(gpu){
     processes:valid.slice(0,128).map(p=>({pid:p.pid,name:text(p.name)?.split(/[\\/]/).pop()||null,owner:text(p.owner,80),memoryUsedMiB:number(p.memoryUsedMiB),type:'compute',...(scheduling(p.scheduling)?{scheduling:scheduling(p.scheduling)}:{})}))};
 }
 
-export async function readGPUQStatus(path,now=Date.now()){
-  const empty={checkedAt:null,stale:true,hosts:[]};
-  if(!path)return empty;
+export async function readGPUQStatus(path,now=Date.now(),previous){
+  let data={checkedAt:null,hosts:[]},stale=true;
   try{
-    if((await stat(path)).size>2_000_000)return empty;
-    const data=JSON.parse(await readFile(path,'utf8'));
-    const checked=Date.parse(data.checkedAt);
-    if(data.version!==1||!Number.isFinite(checked)||!Array.isArray(data.hosts))return empty;
-    const stale=now-checked>180000||checked-now>30000;
-    return {checkedAt:data.checkedAt,stale,hosts:MACHINES.map(machine=>{
-      const host=data.hosts.find(item=>item.id===machine.id);
-      if(!host||stale)return {id:machine.id,reachable:false,gpus:[],hostCommand:{version:1,available:false},gpuq:{connected:false,jobs:[]},error:stale?'状态已过期':'暂无状态'};
-      return {...host,reachable:host.reachable===true,
-        hostCommand:{version:1,available:host.reachable===true&&host.hostCommand?.version===1&&host.hostCommand?.available===true},
+    if(path&&(await stat(path)).size<=2_000_000){
+      const value=JSON.parse(await readFile(path,'utf8')),checked=Date.parse(value.checkedAt);
+      if(Number.isFinite(checked)&&Array.isArray(value.hosts)){
+        data=value;stale=now-checked>180000||checked-now>30000;
+      }
+    }
+  }catch{/* Preserve the previous observation, never manufacture a new one. */}
+  return {checkedAt:data.checkedAt||previous?.checkedAt||null,stale,hosts:MACHINES.map(machine=>{
+      const host=data.hosts.find(item=>item?.id===machine.id);
+      const last=previous?.hosts?.find(item=>item.id===machine.id);
+      if((stale||host?.reachable!==true||!Array.isArray(host.gpus)||!host.gpus.length)&&last?.reachable===true&&last.gpus?.length)
+        return {...last,samplingStale:true,checkedAt:last.checkedAt||previous.checkedAt,
+          };
+      if(!host||stale)return {id:machine.id,reachable:false,gpus:[],gpuq:{connected:false,jobs:[]},error:stale?'状态已过期':'暂无状态'};
+      return {...host,checkedAt:host.checkedAt||data.checkedAt,samplingStale:host.samplingStale===true,reachable:host.reachable===true,
         gpus:Array.isArray(host.gpus)?host.gpus.filter(g=>g&&Number.isInteger(g.index)&&g.index>=0).slice(0,machine.cards).map(gpuStatus):[],
         gpuq:{...host.gpuq,connected:host.gpuq?.connected===true,
           healthIssue:host.gpuq?.health==='degraded'?healthIssue(host.gpuq?.healthIssue,machine.cards):undefined,
           jobs:Array.isArray(host.gpuq?.jobs)?host.gpuq.jobs.slice(0,100):[]}};
     })};
-  }catch{return empty;}
 }
 
 export function visibleGPUQStatus(snapshot,principal,limits,context){
-  const admin=principal.role==='admin';
-  const hosts=snapshot.hosts.filter(host=>principal.role==='admin'||limits[host.id]);
-  return {...snapshot,hosts:hosts.map(host=>{
-    const catalog=context?taskCatalog(host,context,admin):null;
-    const base=admin?structuredClone(host):{
-      id:host.id,reachable:host.reachable,
-      gpuq:{connected:host.gpuq.connected,health:host.gpuq.health,capabilities:host.gpuq.capabilities,
-        ...(host.gpuq.health==='degraded'&&healthIssue(host.gpuq.healthIssue)?{healthIssue:healthIssue(host.gpuq.healthIssue)}:{}),
-        observeOnly:host.gpuq.observeOnly,schedulableIndices:host.gpuq.schedulableIndices},
-      ...(host.error?{error:host.error}:{}),...(host.gpuError?{gpuError:'部分 GPU 指标暂不可用'}:{})
-    };
-    // Shared task metadata is an allowlisted catalog. OS fields still follow
-    // their old role boundary; supplying metadata never forwards a job spec.
-    base.gpus=host.gpus.map(gpu=>({
-      ...(admin?structuredClone(gpu):{...gpuMetrics(gpu),processesAvailable:gpu.processesAvailable===true,
-        ...(gpu.processesError?{processesError:'进程列表暂不可用或不完整'}:{})}),
-      processes:(gpu.processes||[]).map(p=>{
-        const task=catalog?.byNode.get(p.scheduling?.jobId),policy=scheduling(p.scheduling,false);
-        return {...(admin?structuredClone(p):{pid:p.pid,memoryUsedMiB:number(p.memoryUsedMiB),type:'compute',...(policy?{scheduling:policy}:{})}),...(task?{task}:{})};
-      })
-    }));
+  return {...snapshot,hosts:snapshot.hosts.map(host=>{
+    const base=structuredClone(host),catalog=context?taskCatalog(host,context,true):null;
+    // All team members receive the same sampled GPU/data-volume facts.
+    // No host shell or filesystem read is dispatched for these diagnostics.
+    base.gpus=host.gpus.map(gpu=>({...structuredClone(gpu),processes:(gpu.processes||[]).map(process=>{
+      const task=catalog?.byNode.get(process.scheduling?.jobId);
+      return {...structuredClone(process),...(task?{task}:{})};
+    })}));
     if(catalog)base.tasks=catalog.tasks;
+    delete base.hostCommand;
     return base;
   })};
 }

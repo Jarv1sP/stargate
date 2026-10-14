@@ -64,43 +64,100 @@ function Set-GpuqPathValue {
 function Receive-GpuqClient {
     param([string]$Origin, [string]$Destination)
     Add-Type -AssemblyName System.Net.Http
-    $handler = [Net.Http.HttpClientHandler]::new()
-    $handler.AllowAutoRedirect = $false
-    $handler.SslProtocols = [Security.Authentication.SslProtocols]::Tls12
-    $client = [Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds(60)
-    $response = $null
-    $inputStream = $null
-    $outputStream = $null
-    $limit = 8 * 1024 * 1024
+    $uri = [Uri]::new((Resolve-GpuqOrigin $Origin) + '/gpuctl.mjs')
+    $limit = 64 * 1024 * 1024
+    $deadline = [DateTime]::UtcNow.AddSeconds(900)
+    $total = [long]0
+    $expectedBytes = [long]0
+    $etag = $null
+    $attempt = 0
+    $done = $false
+    $shown = -10
+    $outputStream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try {
-        $uri = [Uri]::new((Resolve-GpuqOrigin $Origin) + '/gpuctl.mjs')
-        $response = $client.GetAsync($uri, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-        if ([int]$response.StatusCode -ne 200) {
-            throw "Client download failed (HTTP $([int]$response.StatusCode)); redirects are not permitted."
+        while (-not $done) {
+            $remaining = ($deadline - [DateTime]::UtcNow).TotalSeconds
+            if ($remaining -le 0 -or $attempt -ge 8) { throw 'Client download exceeded its 15-minute budget; the previous installation is unchanged.' }
+            $attempt++
+            $handler = [Net.Http.HttpClientHandler]::new()
+            $handler.AllowAutoRedirect = $false
+            $handler.SslProtocols = [Security.Authentication.SslProtocols]::Tls12
+            # Resume offsets refer to decoded bytes. Never range a gzip stream.
+            if ($total -eq 0) { $handler.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate }
+            $client = [Net.Http.HttpClient]::new($handler)
+            $client.Timeout = [TimeSpan]::FromSeconds([Math]::Min(120, $remaining))
+            $cancel = [Threading.CancellationTokenSource]::new()
+            $cancel.CancelAfter([int][Math]::Min(900000, $remaining * 1000))
+            $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $uri)
+            if ($total -gt 0) {
+                $request.Headers.Range = [Net.Http.Headers.RangeHeaderValue]::new($total, $null)
+                if ($etag) { [void]$request.Headers.TryAddWithoutValidation('If-Range', $etag) }
+                [void]$request.Headers.TryAddWithoutValidation('Accept-Encoding', 'identity')
+            }
+            $response = $null
+            $inputStream = $null
+            $phase = 'headers'
+            try {
+                $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancel.Token).GetAwaiter().GetResult()
+                $status = [int]$response.StatusCode
+                if ($status -ne 200 -and $status -ne 206) { throw "Client download failed (HTTP $status); redirects are not permitted." }
+                if ($status -eq 206) {
+                    $range = $response.Content.Headers.ContentRange
+                    if ($total -eq 0 -or -not $range -or $range.Unit -cne 'bytes' -or $range.From -ne $total -or $range.To -ne ($range.Length - 1) -or $range.Length -gt $limit -or $range.Length -le $total) { throw 'Invalid client resume range; the previous installation is unchanged.' }
+                    if ($response.Content.Headers.ContentEncoding.Count -gt 0) { throw 'Compressed partial client responses are not permitted.' }
+                    $expectedBytes = $range.Length
+                } else {
+                    $etag = if ($response.Headers.ETag) { $response.Headers.ETag.Tag } else { $null }
+                    if ($total -gt 0) {
+                        if ($response.Content.Headers.ContentEncoding.Count -gt 0) { throw 'Server did not honor the identity resume request.' }
+                        $outputStream.SetLength(0); $outputStream.Position = 0; $total = 0
+                    }
+                    if ($response.Headers.Contains('X-GPUQ-Client-Bytes')) { $expectedBytes = [long](@($response.Headers.GetValues('X-GPUQ-Client-Bytes'))[0]) }
+                    elseif ($response.Content.Headers.ContentLength) { $expectedBytes = $response.Content.Headers.ContentLength }
+                    if ($expectedBytes -lt 0 -or $expectedBytes -gt $limit) { throw 'Client download exceeds 64 MiB.' }
+                }
+                $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+                $buffer = [byte[]]::new(65536)
+                $phase = 'reading'
+                while ($true) {
+                    $remaining = ($deadline - [DateTime]::UtcNow).TotalSeconds
+                    if ($remaining -le 0) { throw [TimeoutException]::new('Client download exceeded its 15-minute budget.') }
+                    $read = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $cancel.Token)
+                    if (-not $read.Wait([TimeSpan]::FromSeconds([Math]::Min(120, $remaining)))) { $cancel.Cancel(); throw [TimeoutException]::new('Client download stalled for 120 seconds.') }
+                    $count = $read.GetAwaiter().GetResult()
+                    if ($count -eq 0) { break }
+                    if ($total + $count -gt $limit -or ($expectedBytes -gt 0 -and $total + $count -gt $expectedBytes)) { throw 'Client download exceeds its size limit.' }
+                    $phase = 'saving'; $outputStream.Write($buffer, 0, $count); $phase = 'reading'
+                    $total += $count
+                    if ($expectedBytes -gt 0) {
+                        $percent = [int][Math]::Floor(100 * $total / $expectedBytes)
+                        if ($percent -ge $shown + 10) { Write-Host ("Download {0}%" -f $percent); $shown = $percent }
+                    }
+                }
+                if ($total -eq 0 -or ($expectedBytes -gt 0 -and $total -ne $expectedBytes)) { throw [IO.IOException]::new('Client download ended early.') }
+                $done = $true
+            } catch {
+                # PowerShell wraps failed .NET async calls in invocation and
+                # aggregate exceptions. Retry only their transport cause.
+                $retryable = $false
+                $failure = $_.Exception
+                while ($failure) {
+                    if ($failure -is [Net.Http.HttpRequestException] -or $failure -is [IO.IOException] -or $failure -is [OperationCanceledException] -or $failure -is [TimeoutException]) { $retryable = $true; break }
+                    $failure = $failure.InnerException
+                }
+                if ($expectedBytes -gt 0 -and $total -eq $expectedBytes) { $done = $true }
+                elseif ($phase -notin @('headers', 'reading') -or -not $retryable) { throw }
+                else { Write-Host ("Connection interrupted; resume at {0} bytes" -f $total) }
+            } finally {
+                $cancel.Cancel()
+                if ($inputStream) { $inputStream.Dispose() }
+                if ($response) { $response.Dispose() }
+                $request.Dispose(); $cancel.Dispose(); $client.Dispose()
+            }
+            if (-not $done) { Start-Sleep -Milliseconds 500 }
         }
-        if ($response.Content.Headers.ContentLength -gt $limit) { throw 'Client download exceeds 8 MiB.' }
-        $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-        $outputStream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        $buffer = [byte[]]::new(65536)
-        $total = 0
-        $deadline = [DateTime]::UtcNow.AddSeconds(60)
-        while ($true) {
-            $read = $inputStream.ReadAsync($buffer, 0, $buffer.Length)
-            if (-not $read.Wait([TimeSpan]::FromSeconds(15))) { throw 'Client download stalled.' }
-            $count = $read.GetAwaiter().GetResult()
-            if ($count -eq 0) { break }
-            $total += $count
-            if ($total -gt $limit -or [DateTime]::UtcNow -gt $deadline) { throw 'Client download exceeds its size or time limit.' }
-            $outputStream.Write($buffer, 0, $count)
-        }
-        if ($total -eq 0) { throw 'Downloaded client is empty.' }
-    } finally {
-        if ($outputStream) { $outputStream.Dispose() }
-        if ($inputStream) { $inputStream.Dispose() }
-        if ($response) { $response.Dispose() }
-        $client.Dispose()
-    }
+        $outputStream.Flush($true)
+    } finally { $outputStream.Dispose() }
 }
 
 function Move-GpuqLauncher {

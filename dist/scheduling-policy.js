@@ -3,10 +3,10 @@ const FIELDS=new Set(['rank','yieldPolicy','restartPolicy','checkpointable','mod
 const DEFAULTS=Object.freeze({rank:'P2',yieldPolicy:'never',restartPolicy:'never',checkpointable:false});
 
 export function schedulingPolicy(value,admin=false){
-  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(k=>!FIELDS.has(k))){
+  if(!value||typeof value!=='object'||Array.isArray(value)){
     throw Error('自定义调度参数无效。');
   }
-  const policy={...DEFAULTS,...value};
+  const policy={...DEFAULTS,...Object.fromEntries([...FIELDS].filter(key=>Object.hasOwn(value,key)).map(key=>[key,value[key]]))};
   const {rank,yieldPolicy,restartPolicy,checkpointable}=policy;
   if(Object.hasOwn(value,'mode')){
     const modes={queue:'queue','preempt1':'preempt-save','preempt2':'preempt-now','preempt-save':'preempt-save','preempt-now':'preempt-now'};
@@ -15,7 +15,6 @@ export function schedulingPolicy(value,admin=false){
     if(policy.mode==='queue')delete policy.mode; // Preserve historical default retry identities and old-node wire.
   }
   if(typeof rank!=='string'||!/^P[0-4]$/.test(rank))throw Error('排队等级必须为 P0–P4。');
-  if(Number(rank[1])>2&&!admin)throw Object.assign(Error('P3/P4 仅管理员可用。'),{status:403});
   if(!['never','now','save'].includes(yieldPolicy)||!['never','on-preempt'].includes(restartPolicy)||typeof checkpointable!=='boolean'){
     throw Error('让位或恢复策略无效。');
   }

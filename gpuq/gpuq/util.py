@@ -3,20 +3,15 @@ from __future__ import annotations
 import json
 import os
 import re
-import stat
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Iterable
 
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:+-]{0,63}$")
-UNIT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
-def now_ts() -> float:
-    return time.time()
 
 
 def json_dumps(value: Any) -> str:
@@ -104,12 +99,6 @@ def secure_create_empty(path: Path, mode: int = 0o600) -> None:
     os.close(fd)
 
 
-def require_regular_owned_file(path: Path, uid: int) -> None:
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode):
-        raise RuntimeError(f"not a regular file: {path}")
-    if info.st_uid != uid:
-        raise RuntimeError(f"file is not owned by uid {uid}: {path}")
 
 
 def read_boot_id() -> str:
@@ -133,20 +122,6 @@ def process_start_ticks(pid: int) -> int | None:
         return None
 
 
-def read_cgroup_processes(control_group: str) -> list[int]:
-    relative = control_group.lstrip("/")
-    path = Path("/sys/fs/cgroup") / relative / "cgroup.procs"
-    try:
-        raw = path.read_text(encoding="ascii")
-    except (FileNotFoundError, PermissionError):
-        return []
-    result: list[int] = []
-    for line in raw.splitlines():
-        try:
-            result.append(int(line.strip()))
-        except ValueError:
-            continue
-    return result
 
 
 def read_cgroup_tree_processes(control_group: str) -> list[int]:

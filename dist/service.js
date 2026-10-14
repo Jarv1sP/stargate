@@ -37,7 +37,7 @@ export class DemoService{
   issueSession(principal){const token=random();this.sessions.set(token,{...principal,expires:Date.now()+8*60*60*1000});return token;}
   revokeSession(token){this.sessions.delete(token);}
   principal(token){const session=this.sessions.get(token);if(!session||session.expires<Date.now()){this.revokeSession(token);const e=Error('请先登录，或重新登录。');e.status=401;throw e;}return session;}
-  state(principal){const state=this.store.snapshot();if(principal.role!=='admin'){state.users=state.users.filter(u=>u.id===principal.userId);state.jobs=state.jobs.filter(j=>j.userId===principal.userId);state.machines=state.machines.filter(m=>state.users[0]?.limits[m.id]);}return state;}
+  state(principal){const state=this.store.snapshot();return state;}
   invalidate(username){for(const [token,session] of this.sessions)if(session.username===username)this.sessions.delete(token);}
   async invoke(token,operation,args={}){
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
@@ -48,7 +48,7 @@ export class DemoService{
       case 'state':break;
       case 'logout':this.revokeSession(token);return {result:{loggedOut:true}};
       case 'users.create':{admin();validatePassword(args.password);const role=args.role||'member';if(!['admin','member'].includes(role))throw Error('角色无效。');const username=String(args.username??'').trim();if(username==='admin')throw Error('这个用户名已存在，请换一个。');const record=await credential(args.password,this.production?600000:210000);const user=this.store.create(args.name??username,username);this.credentials.set(user.username,record);result=this.store.setRole(user.id,role);break;}
-      case 'profile.update':{if(Object.keys(args).some(k=>k!=='name'))throw Error('个人姓名参数无效，不能修改其他账号或权限。');const user=this.store.get(principal.userId);if(!user.enabled)throw Error('账号已暂停。');result=this.store.setName(user.id,args.name);break;}
+      case 'profile.update':{const user=this.store.get(principal.userId);if(!user.enabled)throw Error('账号已暂停。');result=this.store.setName(user.id,args.name);break;}
       case 'users.reset':{admin();const user=this.store.get(args.userId);validatePassword(args.password);this.credentials.set(user.username,await credential(args.password,this.production?600000:210000));this.invalidate(user.username);result={userId:user.id,reset:true};break;}
       case 'users.enabled':{admin();const user=this.store.get(args.userId);if(user.role==='admin'&&!args.enabled&&!this.store.users.some(u=>u.id!==user.id&&u.enabled&&u.role==='admin'))throw Error('不能暂停最后一名可登录管理员。');if(args.userId===principal.userId&&!args.enabled)throw Error('不能暂停当前登录账号。');result=this.store.setEnabled(args.userId,args.enabled);if(!args.enabled)this.invalidate(result.username);break;}
       case 'users.role':{admin();const user=this.store.get(args.userId);if(user.role==='admin'&&args.role!=='admin'&&!this.store.users.some(u=>u.id!==user.id&&u.enabled&&u.role==='admin'))throw Error('不能降级最后一名可登录管理员。');if(args.userId===principal.userId)throw Error('请使用其他管理员账号修改自己的角色。');result=this.store.setRole(args.userId,args.role);this.invalidate(result.username);break;}

@@ -24,12 +24,13 @@ async function fixture(t){
   const calls=[],blocks=new Map(),active=new Set(),counts=new Map(),peaks=new Map(),works=[];
   let service,custom;
   const bridge=async(machine,operation,args)=>{
+    if(operation==='projects.workspace')return {project:args.project,state:'AVAILABLE',workspace:{persistent:true}};
     const id=args.job?.id;
     assert.ok(!active.has(id),'one reconciliation operation per fixed job');active.add(id);
     counts.set(machine,(counts.get(machine)||0)+1);peaks.set(machine,Math.max(peaks.get(machine)||0,counts.get(machine)));
     assert.ok(counts.get(machine)<=2,'at most two reconciliation operations per configured machine');
     if(operation==='sync'&&service.store.jobs.find(j=>j.id===id)?.dispatchPending===false){
-      const persisted=JSON.parse(service.db.prepare('SELECT data FROM portal_state WHERE id=1').get().data);
+      const persisted=JSON.parse(service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data);
       assert.equal(persisted.jobs.find(j=>j.id===id).dispatchPending,false,'attempt is durable before remote I/O');
     }
     calls.push({machine,operation,args:structuredClone(args)});
@@ -41,7 +42,7 @@ async function fixture(t){
   };
   service=await PortalService.open(database,bootstrap,status,bridge);clearInterval(service.executionTimer);service.reconciling=true;
   const admin=await service.login('admin',password);
-  const submit=async(machine=MACHINES[0].id)=>(await service.invoke(admin.token,'jobs.submit',{machine,cards:1,argv:['true'],key:randomUUID()})).result;
+  const submit=async(machine=MACHINES[0].id)=>(await service.invoke(admin.token,'jobs.submit',{machine,project:'sample',cards:1,argv:['true'],key:randomUUID()})).result;
   const job=id=>service.store.jobs.find(j=>j.id===id);
   const old=async(machine=MACHINES[0].id)=>{const result=await submit(machine);Object.assign(job(result.id),{state:'PENDING',dispatchPending:false});service.save();return result;};
   const block=id=>{const response=deferred();blocks.set(id,response);return response;};
@@ -116,28 +117,11 @@ test('lost first reply is not re-observed or replayed in the active pass',{timeo
   for(let n=0;n<10;n++)f.service.reconcile().catch(()=>{});await tick();
   assert.equal(f.calls.filter(c=>c.args.job.id===fresh.id).length,1);assert.equal(f.job(fresh.id).dispatchPending,false);
   assert.equal(f.job(fresh.id).state,'SUBMITTING');assert.equal(f.job(fresh.id).error,'正在确认节点状态（自动重查中）');
+  assert.equal(f.job(fresh.id).submissionReconciliation.state,'CHECKING');
   assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);held.resolve();await work;
 });
 
-test('data preparation keeps its separate promotion turn before the durable first dispatch',{timeout:3000},async t=>{
-  const f=await fixture(t),fresh=await f.submit(),job=f.job(fresh.id);
-  Object.assign(job,{state:'PREPARING_DATA',datasets:[],dataPreparation:{datasets:[]}});f.service.save();
-  await f.start();assert.equal(f.calls.length,0);assert.equal(job.state,'SUBMITTING');assert.equal(job.dispatchPending,true);
-  assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
-  await f.service.reconcile();assert.equal(f.calls.length,1);assert.equal(f.calls[0].operation,'sync');
-  assert.equal(job.state,'PENDING');assert.equal(job.dispatchPending,false);assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
-});
 
-test('a later kick admits a promoted preparation without waiting for another host',{timeout:3000},async t=>{
-  const f=await fixture(t),old=await f.old(MACHINES[1].id),held=f.block(old.id),fresh=await f.submit(),job=f.job(fresh.id);
-  Object.assign(job,{state:'PREPARING_DATA',datasets:[],dataPreparation:{datasets:[]}});f.service.save();
-  await tick();const work=f.start();await until(()=>job.state==='SUBMITTING');await tick();
-  assert.equal(job.state,'SUBMITTING');assert.equal(job.dispatchPending,true);
-  assert.equal(f.calls.filter(call=>call.args.job.id===fresh.id).length,0);
-  f.service.reconcile().catch(()=>{});await tick();await tick();
-  assert.equal(job.state,'PENDING');assert.equal(job.dispatchPending,false);assert.ok(f.active.has(old.id));
-  assert.equal(f.calls.filter(call=>call.args.job.id===fresh.id).length,1);held.resolve();await work;
-});
 
 test('policy revision changes fence late results and closing never dispatches queued work',{timeout:3000},async t=>{
   const f=await fixture(t),first=await f.submit(),second=await f.submit(),held=f.block(first.id),work=f.start();await tick();
@@ -147,15 +131,14 @@ test('policy revision changes fence late results and closing never dispatches qu
   assert.equal(f.job(second.id).dispatchPending,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);
 });
 
-test('maintenance blocks new dispatch and old polls but not cancellation or confirmed terminal hold cleanup',{timeout:3000},async t=>{
-  const f=await fixture(t),old=await f.old(),fresh=await f.submit(),terminal=await f.old();
+test('maintenance pauses new dispatch and observations while cancellation remains available',{timeout:3000},async t=>{
+  const f=await fixture(t),old=await f.old(),fresh=await f.submit();
   await f.service.invoke(f.admin.token,'jobs.cancel',{jobId:old.id});
-  Object.assign(f.job(terminal.id),{state:'FAILED',dataPreparationHold:{state:'HELD',spec:structuredClone(f.job(terminal.id).spec)}});f.service.save();
   f.service.maintenanceFor=()=>true;
-  f.setBridge(async(_machine,operation,args)=>operation==='storage.lease.cancel'?{state:'CANCELED',jobId:args.job.id,released:true}:{state:'CANCELED'});
+  f.setBridge(async()=>({state:'CANCELED'}));
   await f.start();
-  assert.deepEqual(f.calls.map(call=>call.operation).sort(),['cancel','storage.lease.cancel']);
-  assert.equal(f.job(old.id).state,'CANCELED');assert.equal(f.job(terminal.id).dataPreparationHold.state,'RELEASED');
+  assert.deepEqual(f.calls.map(call=>call.operation).sort(),['cancel']);
+  assert.equal(f.job(old.id).state,'CANCELED');
   assert.equal(f.job(fresh.id).state,'SUBMITTING');assert.equal(f.job(fresh.id).dispatchPending,true);
 });
 

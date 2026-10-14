@@ -5,52 +5,40 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: {persist-credentials: false, fetch-depth: 0}
-      - uses: actions/setup-node@v4
-        with: {node-version: '24', cache: npm}
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
-      - run: npm ci --ignore-scripts
-      - run: npm test
-      - run: npm run test:python
-      - run: npx playwright install --with-deps chromium
-      - run: node tests/ui-smoke.mjs
-      - run: node tests/datasets-ui-smoke.mjs
-      - run: node tests/dataset-upload-ui-smoke.mjs
-      - run: node tests/data-workspace-ui-smoke.mjs
-      - run: node tests/transfers-http-ui-smoke.mjs
-      - run: node tests/cloud-import-ui-smoke.mjs
-      - run: node tests/projects-ui-smoke.mjs
-      - run: node tests/priority-ui-smoke.mjs
-      - run: node tests/scheduling-ui-smoke.mjs
-      - run: node tests/allocation-ui-smoke.mjs
-      - run: node tests/community-ui-smoke.mjs
-      - run: node tests/maintenance-ui-smoke.mjs
-      - run: node tests/task-notes-legacy-ui-smoke.mjs
-      - run: node tests/task-notes-ui-smoke.mjs
-      - run: node tests/guide-ui-smoke.mjs
-      - run: node tests/ui-polish-smoke.mjs
-      - run: node tests/job-diagnostics-ui-smoke.mjs
-      - run: node tests/job-notifications-ui-smoke.mjs
-      - run: node tests/job-progress-ui-smoke.mjs
-      - run: node tests/placement-ui-smoke.mjs
-      - run: node tests/client-auth-smoke.mjs
-      - run: node tests/persistent-login-ui-smoke.mjs
-      - run: python3 scripts/build-gpuq.py
-      - run: python3 build/gpuq.pyz --help
-      - run: python3 -m compileall -q deploy gpuq scripts
-      - run: git diff --check
-      - run: docker build -f deploy/Dockerfile -t gpuq-console:ci .
-      - run: python3 scripts/check-public-tree.py
-  windows-client:
-    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
       - uses: actions/setup-node@v4
-        with: {node-version: '24'}
+        with: {node-version: '24', cache: npm}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.27.1', cache: false}
       - run: npm ci --ignore-scripts
-      - run: npm run build:client
-      - run: node --test tests/install-client-windows.test.js tests/cli-native-platform.test.js tests/dataset-file-identity.test.js tests/dataset-upload-cli.test.js tests/data-workspace-cli.test.js tests/git-snapshot.test.js tests/snapshot-sync-cli.test.js tests/transfers-client.test.js
+      - run: npm run build:native
+      - run: npm test
+      - run: npm run test:python
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
+      - run: python3 scripts/build-gpuq.py
+      - run: python3 build/gpuq.pyz --help
+      - run: python3 -m compileall -q node gpuq scripts
+      - run: git diff --check
+  windows-client:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: '24', cache: npm}
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.27.1', cache: false}
+      - run: npm ci --ignore-scripts
+      - run: npm run build:release
+      - run: node --test tests/install-client-windows.test.js

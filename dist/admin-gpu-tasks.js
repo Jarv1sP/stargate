@@ -1,10 +1,9 @@
 import {resourceCards,fitResourceNames} from './resources-ui.js';
 import {renderTaskTable} from './execution-ui.js';
-import {endedJob,personalQuotaReadout} from './workbench-ui.js';
+import {endedJob,personalQuotaReadout,escapeUI as esc} from './workbench-ui.js';
 import {maintenanceFor} from './maintenance-state.js';
 import {controlSnapshot} from './control-ui.js';
 
-const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export function adminTasks(store,{owner='',machine='',state='active'}={}){
   return store.jobs.filter(job=>(!owner||job.userId===owner)&&(!machine||job.machine===machine)&&
     (state==='all'||(state==='ended'?endedJob(job):state==='active'&&!endedJob(job))));

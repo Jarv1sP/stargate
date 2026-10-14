@@ -12,7 +12,7 @@ import sys
 import uuid
 from typing import Any, Sequence
 
-ALLOWED = {"submit", "run", "status", "q", "queue", "list", "show", "cancel", "retry", "set-priority", "set-rank", "set-display", "logs", "events", "watch", "attach", "health", "_cluster", "_sync"}
+ALLOWED = {'_cluster', '_sync', 'attach', 'cancel', 'events', 'health', 'list', 'logs', 'q', 'queue', 'retry', 'run', 'set-display', 'set-priority', 'set-rank', 'show', 'status', 'submit', 'watch'}
 MAX_PACKET = 1024 * 1024
 
 
@@ -20,7 +20,9 @@ def host_paths(host: dict[str, Any]) -> tuple[str, str]:
     """Require explicit remote paths; never guess the service user's home."""
     paths = []
     for key in ("binary", "config"):
-        value = host.get(key)
+        # Private deployment: retain existing inventory path defaults.
+        defaults = {"binary": "/home/platform-user/bin/gpu", "config": "/data1/gpu-scheduler/config.json"}
+        value = host.get(key, defaults[key])
         if not isinstance(value, str) or not value.startswith("/") or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ValueError(f"fleet host requires explicit absolute {key} path")
         paths.append(value)

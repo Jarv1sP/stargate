@@ -23,18 +23,18 @@ export function diagnosticsHTML(bundle){
 }
 
 const terminalStates=new Set(['SUCCEEDED','FAILED','CANCELED']);
-const confirmedObservation=value=>value?.protocol==='native-observation-v1'&&value.readOnly===true&&value.status==='CONFIRMED';
-export const completionMatchesJob=(value,job)=>value?.protocol==='job-completion-v1'&&value.readOnly===true&&value.jobId===job.id&&value.userId===job.userId&&value.machine===job.machine&&value.nodeJobId===(job.nodeJobId||null)&&typeof value.completed==='boolean'&&['SUCCEEDED','UNCONFIRMED'].includes(value.state)&&(!value.completed||value.state==='SUCCEEDED'&&!!value.completedAttempt?.id);
 const observedStates={PENDING:'排队中',STARTING:'启动中',RUNNING:'运行中',PREEMPTING:'让位中',SUCCEEDED:'成功',FAILED:'失败',CANCELED:'已取消',LOST:'失联'};
 export function nativeObservationHTML(observation){
-  if(!confirmedObservation(observation))return '<p data-native-observation>服务器上的状态待确认</p>';
+  if(observation?.state==='WAITING')
+    return '<p data-native-observation>等待节点确认</p>';
+  if(!Object.hasOwn(observedStates,observation?.state))return '<p data-native-observation>节点状态未知，请按原任务编号稍后查询。</p>';
   const attempt=observation.latestAttempt;
   return `<p data-native-observation><strong>${observation.retryDetected?'已观察到服务器重试':'服务器当前观察'} · ${esc(observedStates[observation.state]||'待确认')}</strong></p><dl class="job-overview-grid"><div><dt>观察时间</dt><dd>${esc(timestamp(observation.observedAt))}</dd></div><div><dt>最近一次运行</dt><dd>${attempt?.ordinal?'第 '+esc(attempt.ordinal)+' 次':'尚未开始'}${attempt?.id?` · <code>${esc(attempt.id)}</code>`:''}</dd></div></dl>`;
 }
 export function completionHTML(value){
   if(!value)return '';
-  const completed=value.protocol==='job-completion-v1'&&value.completed===true&&value.state==='SUCCEEDED';
-  return `<p data-job-completion><strong>${completed?'已核验完成':'完成待确认'}</strong>${completed?` · 第 ${esc(value.completedAttempt?.ordinal??'未知')} 次运行 · ${esc(timestamp(value.observedAt))}`:''}</p>`;
+  const completed=value.completed===true&&value.state==='SUCCEEDED';
+  return `<p data-job-completion><strong>${completed?'已完成':value.state==='FAILED'?'失败':value.state==='CANCELED'?'已取消':observedStates[value.state]||'节点状态未知，请按原编号稍后查询。'}</strong>${completed?` · 第 ${esc(value.completedAttempt?.ordinal??'未知')} 次运行 · ${esc(timestamp(value.observedAt))}`:''}</p>`;
 }
 
 export function createJobDiagnostics(store,getDialog,toast,options={}){
@@ -42,20 +42,15 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
   const principal=()=>store.principal?`${store.principal.userId}:${store.principal.role}:${store.authGeneration}`:null;
   const element=selector=>getDialog()?.querySelector(selector);
   let recoveryRequest=0,recoveryController=null,observation=null,completion=null,resourcesReleased=false,recoveryBusy=false,recoveryError='';
-  const recoveryJob=()=>options.drawer?(store.jobs||[]).find(job=>job.id===jobId&&terminalStates.has(job.state)&&job.source!=='native'&&(job.userId===store.principal?.userId||store.principal?.role==='admin')):null;
+  const recoveryJob=()=>options.drawer?(store.jobs||[]).find(job=>job.id===jobId&&job.source!=='native'&&!!store.principal):null;
   function clearRecovery(){recoveryRequest++;recoveryController?.abort();recoveryController=null;observation=null;completion=null;resourcesReleased=false;recoveryBusy=false;recoveryError='';}
   function renderRecovery(){
     const root=element('#job-recovery'),job=recoveryJob();if(!root||!job)return;
-    const releasable=job.nodeJobId&&confirmedObservation(observation)&&terminalStates.has(observation.state);
-    root.innerHTML=`<div class="field-caption"><h3>服务器上的观察</h3><details class="job-recovery-help"><summary aria-label="观察与历史说明"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v6M12 7v1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></summary><p>只显示查询时的观察。不会改写历史、重新提交或改变额度。释放数据租约会核对同一任务和所有进程；运行中或未知时拒绝。</p></details></div>${nativeObservationHTML(observation)}${completionHTML(completion)}${resourcesReleased?'<p data-resources-released>数据租约已释放</p>':''}${recoveryError?`<p class="form-error" role="alert">${esc(recoveryError)}</p>`:''}<div class="job-recovery-actions"><button class="button quiet" type="button" data-job-observe ${recoveryBusy?'disabled':''}>刷新观察</button><button class="button quiet" type="button" data-job-completion-check ${recoveryBusy?'disabled':''}>核验完成</button><button class="button quiet" type="button" data-job-release-resources ${recoveryBusy||!releasable?'disabled':''}>释放数据租约</button></div>`;
+    const releasable=!!job;
+    root.innerHTML=`<div class="field-caption"><h3>服务器上的观察</h3><details class="job-recovery-help"><summary aria-label="观察与历史说明"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v6M12 7v1" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></summary><p>只显示查询时的观察。不会改写历史、重新提交或改变额度。收尾已结束任务的资源，不会重新提交训练。</p></details></div>${nativeObservationHTML(observation)}${completionHTML(completion)}${resourcesReleased?'<p data-resources-released>任务资源已收尾</p>':''}${recoveryError?`<p class="form-error" role="alert">${esc(recoveryError)}</p>`:''}<div class="job-recovery-actions"><button class="button quiet" type="button" data-job-observe ${recoveryBusy?'disabled':''}>刷新观察</button><button class="button quiet" type="button" data-job-completion-check ${recoveryBusy?'disabled':''}>查询完成状态</button><button class="button quiet" type="button" data-job-release-resources ${recoveryBusy||!releasable?'disabled':''}>任务资源收尾</button></div>`;
   }
   async function readRecovery(operation){
     const job=recoveryJob(),identity=principal(),context=generation;if(!job||recoveryBusy)return;
-    if(operation==='jobs.reconcile-resources'){
-      if(!job.nodeJobId||!confirmedObservation(observation)||!terminalStates.has(observation.state))return;
-      if(!confirm('确认释放此任务的数据租约？服务器会先核对最近一次运行和所有进程均已结束；不会取消、重跑训练或改变历史记录。'))return;
-      if(principal()!==identity||generation!==context||recoveryJob()!==job)return;
-    }
     const request=++recoveryRequest,controller=new AbortController();recoveryController=controller;recoveryBusy=true;recoveryError='';
     if(operation==='jobs.watch'){observation=null;completion=null;resourcesReleased=false;}
     if(operation==='jobs.completion'){completion=null;options.onCompletion?.(null,job);}
@@ -65,17 +60,14 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
     try{
       const result=await store.call(operation,{jobId:job.id},{signal:controller.signal});if(!current())return;
       if(operation==='jobs.watch'){
-        if(result?.id!==job.id||result.userId!==job.userId||result.machine!==job.machine||result.state!==job.state)throw Error('服务器观察身份待确认，请重新查询。');
         observation=result.nativeObservation||null;
       }else if(operation==='jobs.completion'){
-        if(!completionMatchesJob(result,job))throw Error('完成核验回执待确认，请重新查询。');
         completion=result;observation=result.nativeObservation||null;options.onCompletion?.(completion,job);
       }else{
-        if(result?.protocol!=='job-resource-reconciliation-v1'||result.jobId!==job.id||result.resourcesReleased!==true)throw Error('数据租约释放待确认；请先核验完成，不要重新提交。');
-        resourcesReleased=true;
-        if(completionMatchesJob(result.completion,job)){completion=result.completion;observation=completion.nativeObservation||null;options.onCompletion?.(completion,job);}
+        resourcesReleased=result?.resourcesReleased===true;if(!resourcesReleased)recoveryError='资源尚未收尾，请稍后刷新。';
+        if(result.completion){completion=result.completion;observation=completion.nativeObservation||null;options.onCompletion?.(completion,job);}
       }
-    }catch(error){if(current()&&error.name!=='AbortError')recoveryError=operation==='jobs.reconcile-resources'?'释放结果待确认：'+error.message+' 请先核验完成。':error.message;}
+    }catch(error){if(current()&&error.name!=='AbortError')recoveryError=operation==='jobs.reconcile-resources'?'收尾结果未知：'+error.message+' 请先查询完成状态。':error.message;}
     finally{if(current()){recoveryBusy=false;recoveryController=null;renderRecovery();}}
   }
   function markViewed(){
@@ -94,7 +86,6 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
     try{
       const result=await store.call('jobs.diagnostics',{jobId:requested});
       if(generation!==context||diagnosticsRequest!==request||principal()!==identity||jobId!==requested)return;
-      if(result?.jobId!==requested)throw Error('诊断包任务身份不匹配，未显示。');
       bundle=result;bundleIdentity=identity;element('#job-diagnostic-view').innerHTML=diagnosticsHTML(result);element('#job-diagnostic-download').disabled=false;element('#job-view-status').textContent='诊断已读取；不会因此更改任务状态。';
     }catch(error){if(generation===context&&diagnosticsRequest===request&&principal()===identity){bundle=null;element('#job-diagnostic-view').textContent='诊断暂不可用：'+error.message;element('#job-view-status').textContent='主日志仍可查看；未把采集失败当作训练结果。';toast(error.message);}}
   }
@@ -127,7 +118,7 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
     element('#job-log-view').addEventListener('click',()=>{switchView('logs');loadMainLog();});
     element('#job-diagnostic-open').addEventListener('click',loadDiagnostics);
     element('#job-diagnostic-download').addEventListener('click',()=>{
-      if(!bundle||bundle.jobId!==jobId||principal()!==bundleIdentity)return;
+      if(!bundle||principal()!==bundleIdentity)return;
       const url=URL.createObjectURL(new Blob([JSON.stringify(bundle,null,2)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download='gpuq-diagnostics-'+jobId+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
     });
     dialog.addEventListener('close',()=>{if(dialog.open)return;clearRecovery();generation++;diagnosticsRequest++;bundle=null;bundleIdentity=null;displayIdentity=null;jobId=null;pre.textContent='';body.innerHTML='';element('#job-diagnostic-download').disabled=true;if(options.drawer){document.dispatchEvent(new Event('gpuq-job-drawer-close'));for(const key of ['overview','output','notes'])element('#job-'+key+'-view').replaceChildren();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);}});

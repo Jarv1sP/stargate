@@ -23,12 +23,12 @@ class Display(unittest.TestCase):
 
     def metadata(self, **changes):
         return {'name':'fashion-hm-teachers0-20261003','description':'当前实验\n不是执行命令',
-            'submitter':{'name':'刘鹏亮','username':'刘鹏亮'},**changes}
+            'submitter':{'name':'示例成员','username':'示例成员'},**changes}
     def args(self,job,**changes):
         return {'job_id':job['id'],'metadata':self.metadata(),'expected_submit_key':job['submit_key'],
             'expected_owner':job['owner'],'expected_name':job['name'],**changes}
     def test_running_job_display_roundtrips_without_any_lifecycle_or_idempotency_change(self):
-        job,attempt=self.running((0,1),name='portal-34b24399',owner='portal-b720135b6e2fd1034922057c')
+        job,attempt=self.running((0,1),name='portal-00000001',owner='portal-000000000000000000000001')
         before=self.store.get_job(job['id']);leases=self.store.list_leases();history=self.store.list_allocation_history(job_id=job['id'])
         digest=self.store._get_connection().execute('SELECT submit_digest FROM jobs WHERE id=?',(job['id'],)).fetchone()[0]
         self.coordinator.handle_api('set_job_display',self.args(job))
@@ -39,8 +39,8 @@ class Display(unittest.TestCase):
         self.assertEqual(self.store.list_attempts(job_id=job['id'])[0]['id'],attempt['id'])
         self.assertEqual(self.coordinator.handle_api('show',{'job_id':job['id']})['job']['display_metadata'],self.metadata())
         status=self.coordinator.handle_api('status',{});self.assertIn('job-display-v1',status['daemon']['capabilities'])
-        lines='\n'.join(cli.format_status_table(status['jobs'],{}));self.assertIn('刘鹏亮',lines);self.assertIn(self.metadata()['name'],lines)
-        self.assertNotIn('portal-b720',lines);self.assertEqual(status['jobs'][0]['owner'],job['owner'])
+        lines='\n'.join(cli.format_status_table(status['jobs'],{}));self.assertIn('示例成员',lines);self.assertIn(self.metadata()['name'],lines)
+        self.assertNotIn('portal-0000',lines);self.assertEqual(status['jobs'][0]['owner'],job['owner'])
         count=len(self.store.list_events(job_id=job['id']));self.coordinator.handle_api('set_job_display',self.args(job));self.assertEqual(len(self.store.list_events(job_id=job['id'])),count)
         self.store.close();self.store.open();self.assertEqual(self.store.get_job(job['id'])['display_metadata'],self.metadata())
     def test_legacy_job_fallback_and_distinct_username_preserve_labels(self):
@@ -84,31 +84,11 @@ class Display(unittest.TestCase):
     def test_cli_writes_typed_metadata_with_fences(self):
         args=cli.build_parser().parse_args(['set-display','Jjob','--expected-submit-key','key',
           '--expected-owner','portal-owner','--expected-name','portal-name','--name','中文 任务',
-          '--submitter-name','刘鹏亮','--username','刘鹏亮','--description','内容'])
+          '--submitter-name','示例成员','--username','示例成员','--description','内容'])
         with patch.object(cli,'get_client') as get:
             get.return_value.call.return_value={'job_id':'Jjob'}
             with patch('sys.stdout',new=io.StringIO()):args.func(args)
             op,payload=get.return_value.call.call_args.args
             self.assertEqual(op,'set_job_display');self.assertEqual(payload['metadata']['name'],'中文 任务');self.assertEqual(payload['expected_submit_key'],'key')
-    def test_display_cas_is_atomic_and_stale_edits_do_not_mutate_execution(self):
-        from gpuq.job_display import display_revision
-        job,attempt=self.running((0,1));before=self.store.get_job(job['id']);leases=self.store.list_leases()
-        old=display_revision({})
-        changed=self.coordinator.handle_api('set_job_display',self.args(job,expected_display_revision=old))
-        self.assertEqual(changed['revision'],display_revision(self.metadata()))
-        for value in (old,None,'x'*64,42):
-            with self.assertRaises(ApiError):self.coordinator.handle_api('set_job_display',self.args(job,metadata=self.metadata(name='冲突改名'),expected_display_revision=value))
-        after=self.store.get_job(job['id'])
-        self.assertEqual({k:v for k,v in before.items() if k!='display_metadata'},{k:v for k,v in after.items() if k!='display_metadata'})
-        self.assertEqual(self.store.list_leases(),leases);self.assertEqual(self.store.list_attempts(job_id=job['id'])[0]['id'],attempt['id'])
-        self.assertIn('job-display-cas-v1',self.coordinator.handle_api('status',{})['daemon']['capabilities'])
-    def test_revision_hash_is_order_independent_and_cli_carries_exact_expectation(self):
-        from gpuq.job_display import display_revision
-        value=self.metadata();reordered={'submitter':{'username':value['submitter']['username'],'name':value['submitter']['name']},'description':value['description'],'name':value['name']}
-        self.assertEqual(display_revision(value),display_revision(reordered))
-        args=cli.build_parser().parse_args(['set-display','Jjob','--expected-submit-key','key','--expected-owner','alice',
-          '--expected-name','raw','--name','标签','--submitter-name','alice','--username','alice','--expected-display-revision','a'*64])
-        with patch.object(cli,'get_client') as client,patch.object(cli,'print_result'):
-            args.func(args);self.assertEqual(client.return_value.call.call_args.args[1]['expected_display_revision'],'a'*64)
 
 if __name__=='__main__':unittest.main()

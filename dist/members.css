@@ -39,7 +39,6 @@
 .sb #page-users .permission-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin:0 0 8px}
 .sb #page-users .permission-heading h3{font-size:15px;font-weight:500}
 .sb #page-users .permission-heading .button{font-size:12px;min-height:40px;padding:8px 12px}
-.sb #page-users .subtext{font-size:12px;line-height:1.7;color:var(--ink-2)}
 .sb #page-users .permissions{display:block;margin:16px 0 0}
 .sb #page-users .permission,.sb #page-users .permission.granted{container:permission / inline-size;min-width:0;border:0;border-top:1px solid var(--line);border-radius:0;padding:14px 0;background:none}
 .sb #page-users .permission-top{min-height:48px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px 10px;align-items:center;font-size:15px;font-weight:500;color:var(--ink)}
@@ -64,7 +63,6 @@
 .sb #page-users :is(.account-settings,.team-jobs)>summary::-webkit-details-marker{display:none}
 .sb #page-users .account-settings :is(p,small){color:var(--ink-2);font-size:12px;line-height:1.75}
 .sb #page-users .account-actions{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
-.sb #page-users .team-jobs{margin-top:40px}
 .sb #page-users .approval-note,.sb .member-dialog .approval-note{padding:16px 0;background:none;color:var(--ink-2);font-size:14px;line-height:1.75}
 .sb #page-users .editor-empty{padding:10px 0 28px}
 .sb #page-users .editor-empty h2{font:300 32px/1.4 var(--display);margin-bottom:14px}

@@ -1,0 +1,138 @@
+"""One shared seven-day trash for projects, datasets and task outputs."""
+import contextlib,fcntl,importlib.util,os,shutil,time,uuid
+from pathlib import Path
+
+
+def module(name):
+    s=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
+    m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
+
+
+class Trash:
+    def __init__(self,config):
+        self.config=config;self.d=module('local-data');self.s=module('project-store')
+        self.roots=[self.d.root(config,k) for k in ('datasetsRoot','workspacesRoot','root')]
+
+    def base(self,path):
+        path=Path(path)
+        matches=[r for r in self.roots if path!=r and r in path.parents]
+        if not matches:raise ValueError('删除对象必须在数据目录内。')
+        return max(matches,key=lambda p:len(p.parts))
+
+    def folders(self,base,create=False):
+        folder=base/'.trash'
+        if create:self.s.private_dir(folder,create=True)
+        return folder
+
+    def key(self,key):
+        if not isinstance(key,str) or str(uuid.UUID(key))!=key:raise ValueError('请使用原删除UUID。')
+        return key
+
+    @contextlib.contextmanager
+    def locked(self,folder,key):
+        fd=os.open(folder/(self.key(key)+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        try:self.s.wait_project_lock(fd,fcntl.LOCK_EX,'回收站忙，请沿原编号稍后重试。');yield
+        finally:os.close(fd)
+
+    def move(self,folder,row):
+        source=Path(row['originalPath']);base=folder.parent;relative=str(source.relative_to(base))
+        payload=folder/(row['key']+'.data')
+        if not payload.exists():
+            with self.d.parent(base,relative) as (fd,name):
+                trashfd=self.d.open_directory(folder)
+                try:os.rename(name,payload.name,src_dir_fd=fd,dst_dir_fd=trashfd);os.fsync(fd);os.fsync(trashfd)
+                finally:os.close(trashfd)
+        row['state']='TRASHED';self.s.atomic_json(folder/(row['key']+'.json'),row)
+        return row
+
+    def delete(self,source,key,kind,actor,**metadata):
+        key=self.key(key);path=Path(source);base=self.base(path);folder=self.folders(base,create=True)
+        request={'path':str(path),'kind':kind}
+        with self.locked(folder,key):
+            record=folder/(key+'.json')
+            if record.exists():
+                row=self.s.read_json(record)
+                if row['request']!=request:raise ValueError('原删除编号已用于不同对象。')
+                return self.move(folder,row) if row['state']=='MOVING' else row
+            # Walk parents without following links; the final symlink is never traversed.
+            with self.d.parent(base,str(path.relative_to(base))) as (fd,name):
+                info=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                if not (__import__('stat').S_ISDIR(info.st_mode) or __import__('stat').S_ISREG(info.st_mode)) or __import__('stat').S_ISLNK(info.st_mode):raise ValueError('请选择数据目录或普通文件。')
+            row={**metadata,'key':key,'retirementId':key,'kind':kind,'request':request,
+                 'state':'MOVING','originalPath':str(path),'actor':actor,'deletedAt':time.time(),
+                 'retainUntil':time.time()+7*86400}
+            self.s.atomic_json(record,row);return self.move(folder,row)
+
+    def find(self,key):
+        key=self.key(key)
+        for base in self.roots:
+            folder=self.folders(base)
+            try:
+                row=self.s.read_json(folder/(key+'.json'));row['key']=key;return folder,row
+            except FileNotFoundError:continue
+        raise FileNotFoundError('回收站条目不存在。')
+
+    def listing(self,args=None):
+        rows=[]
+        for base in self.roots:
+            folder=self.folders(base)
+            if not folder.exists():continue
+            for file in sorted(folder.glob('*.json')):
+                try:row=self.s.read_json(file)
+                except (ValueError,OSError):continue
+                try:row['key']=self.key(file.stem)
+                except ValueError:continue
+                if row['state']=='MOVING':
+                    with self.locked(folder,row['key']):row=self.move(folder,row)
+                if row['state']=='TRASHED':rows.append(row)
+        return {'items':rows}
+
+    def restore(self,args):
+        folder,row=self.find(args['key'])
+        with self.locked(folder,row['key']):
+            key=row['key'];row=self.s.read_json(folder/(key+'.json'));row['key']=key
+            if row['state']=='RESTORED':return row
+            if time.time()>row['retainUntil']:raise ValueError('已超过7天恢复期。')
+            if row['state']=='MOVING':row=self.move(folder,row)
+            path=Path(row['originalPath']);self.base(path)
+            with self.d.parent(folder.parent,str(path.relative_to(folder.parent)),create=True) as (fd,name):
+                try:os.stat(name,dir_fd=fd,follow_symlinks=False)
+                except FileNotFoundError:pass
+                else:raise ValueError('原位置已有同名内容，请先改名再恢复。')
+                source=self.d.open_directory(folder)
+                try:os.rename(row['key']+'.data',name,src_dir_fd=source,dst_dir_fd=fd);os.fsync(fd);os.fsync(source)
+                finally:os.close(source)
+            row.update(state='RESTORED',restoredBy=args.get('actor'),restoredAt=time.time())
+            self.s.atomic_json(folder/(row['key']+'.json'),row);return row
+
+    def purge(self,args,automatic=False):
+        if not automatic and not args.get('actor',{}).get('isAdmin'):raise ValueError('只有管理员可以立即清空回收站。')
+        folder,row=self.find(args['key'])
+        with self.locked(folder,row['key']):
+            key=row['key'];row=self.s.read_json(folder/(key+'.json'));row['key']=key
+            if row['state'] in ('PURGED','RESTORED'):return row
+            if automatic and time.time()<row['retainUntil']:return row
+            if row['state']=='MOVING':row=self.move(folder,row)
+            fd=self.d.open_directory(folder)
+            try:
+                name=row['key']+'.data'
+                try:info=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                except FileNotFoundError:info=None
+                if info is not None:
+                    if row['kind']=='project':
+                        try:head=self.s.read_json(folder/name/'oci.json')
+                        except FileNotFoundError:head={}
+                        if head.get('container'):
+                            owner=Path(row['originalPath']).parent.name
+                            engine=module('personal-oci').PersonalOCI(self.config,owner)
+                            # Remove the actual private container, not only its workspace files.
+                            engine.run('rm','--force',head['container'])
+                    if __import__('stat').S_ISDIR(info.st_mode):shutil.rmtree(name,dir_fd=fd)
+                    else:os.unlink(name,dir_fd=fd)
+                os.fsync(fd)
+            finally:os.close(fd)
+            row.update(state='PURGED',purgedBy=args.get('actor'),purgedAt=time.time())
+            self.s.atomic_json(folder/(row['key']+'.json'),row);return row
+
+    def collect(self):
+        return [self.purge({'key':r['key']},automatic=True) for r in self.listing()['items'] if time.time()>=r['retainUntil']]

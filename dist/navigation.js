@@ -1,6 +1,6 @@
-// Transfers is a dataset tab. Keep its controller/page hook and legacy links.
+// Transfers share the dataset navigation.
 export const roomOrder=['work','resources','datasets','community'];
-const pages=new Set([...roomOrder,'transfers','maintenance','me','admin']);
+const pages=new Set([...roomOrder,'transfers','me','admin']);
 export function pageForRoute(route){
   const value=String(route??'').replace(/^#/,'');
   if(value==='storage')return 'datasets';

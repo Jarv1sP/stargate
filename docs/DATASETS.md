@@ -3,7 +3,6 @@
 本页描述仓库中的数据集接口与部署步骤，不代表某台服务器已经完成配置。所有已登录且启用的成员可浏览数据仓库目录；使用数据仍须读取授权、机器授权及本机 `READY`。源码测试通过不能替代真实节点的挂载、只读和断网验收。
 
 固定版本目录预览使用独立只读 `datasets.files.list {dataset,version,path?,cursor?}`，详见
-[目录契约](DATASET_FILES.md)。只有本人内容 ACL 与真实节点能力均确认才能读；未知节点
 返回 unavailable 而非空树。页读取持整页版本锁但不建立持久下载租约，不提供文件正文。
 
 个人工作区的旧发布接口 `data workspace-status OPERATION_ID` 返回该次发布的阶段 `SCANNING / REGISTERING / REGISTERED / ARCHIVE_INTENT / MATERIALIZING / COMPLETED`。登记成功后即保留完整数据集与版本编号，后续失败不会丢失它们。锁等待失败另有 `failureKind:CACHE_BUSY` 和 `lockWait`：`scope` 区分全缓存锁与单版本锁，`limit` 区分单次等待上限和累计争用预算，`timeoutSeconds` 是这次取锁允许等待的时长；它们不证明谁持锁、磁盘已满或数据 READY。旧回执没有这些字段时阶段仍未知。
@@ -44,13 +43,17 @@ gpuctl data upload-discard UPLOAD_ID --machine gpu-1
 
 取消仅处理自己的未完成上传；`DISCARDING` 是后台处理中，只有 `DISCARDED` 才确认结束，READY 数据不能由这个命令删除。取消完成后可重新运行上传命令开始一份新上传。重试标识保存在现有客户端会话缓存；浏览器仅保存本机续传标识，不保存数据文件或密码。丢失响应不代表服务器停止，先查询原上传；退出客户端不会停止已经开始的服务器校验。
 
-每份清单仍支持最多 **500,000 个文件和目录条目、64 MiB 清单 JSON**，两项上限同时适用；清单块和 VPS 中转的文件块不超过 1 MiB。校内直传的文件块可按新版票据协商到 16 MiB，旧客户端仍兼容；CLI 从 1 MiB 起步，按已确认的传输速度调节，不自动重发未知写入结果。详见[校内直传](DIRECT_UPLOAD.md)。目录层级、空文件和 CLI 选择中的空目录会保留。拒绝软链接、特殊文件、多硬链接文件、路径穿越和已知凭据/环境目录。节点还检查上传容量、账号保留容量和未完成数量；遇到限额错误，应取消不再需要的未完成上传或联系管理员，不能通过换名称绕过。
 
 个人上传的默认额度是：单份文件内容 **1 TiB**、每个账号在每个节点合计 **2 TiB 存储预算**、最多 **4 个未完成上传**、**256 个保留上传记录**、**200 万个保留文件和目录条目**、**1,024 个历史上传会话**。存储预算还计入清单和每个条目的保守元数据开销，因此不等于文件净大小；取消或管理员注销后释放保留额度，但历史会话需管理员审核归档。管理员可在节点 `datasets.uploads` 配置中调整 `maxUploadBytes`、`maxUserBytes`、`maxActiveUploads`、`maxUserUploads`、`maxUserEntries`、`maxUserSessions`。这些不是覆盖项目、结果和所有宿主文件的硬磁盘配额；节点仍检查实际可用空间、inode 与安全余量。
 
+精简节点上，同一上传 UUID 若只留下未初始化的目录、准入标记或预约而没有 session，查询按实际 worker 和写锁判断：空闲时可沿原 UUID 清掉暂存、重新准入；仍有写入者或暂时查不清时等待重试。查询不删除字节。已存在 session 的上传仍从原持久偏移续传，不能用同一个 key 换请求参数。
+
+项目上传列表按旧记录内容读取，不用元数据文件名与摘要互验；坏记录跳过并记日志。能继续的旧部分提交按路径、大小、偏移原子完成，无法完成的私有暂存按原 UUID 隔离。取消与恢复不要求旧 targetStamp、generation 或回执证明，不覆盖当前代码文件或已发布版本。
+
+项目退役不再扫描 records 清单或生成、比较 manifestSha256/rootIdentity。计划展示现有生命周期、版本名与活动引用；执行仍保留当前 owner、真实活动保护和原 key，以原子改名进入七天回收站。恢复与到期清理不要求旧 rootIdentity 证明，仍不跟随目录链接或覆盖新目标。
+
 实验室也可采用**共享容量、不限制每个人的存储份额**：管理员显式设置 `datasets.uploads.maxUserBytes: 0`，即可关闭个人上传及链接导入的累计字节预算。全节点的真实可用空间、安全余量、并发空间预留仍强制检查；单次上传大小、清单/条目和并发上限保留。此设置不启用或撤销已有的内核硬配额，也不意味着容量无限。管理员应为共享数据卷保留恢复空间；正在运行的程序直接写文件不受上传入口检查控制。
 
-`gpuctl data upload` 和新版网页目录上传优先使用管理员启用的受限直传入口，清单和文件字节直接到节点，门户仅处理身份、授权与发布控制。没有入口时，小目录可用 VPS 中转；超过 256 MiB 必须明确加 `--via relay`（网页需确认）才使用中转带宽。选择直传后连接失败不会自动改走 VPS。`data put` 与个人数据空间的单文件上传仍是门户中转；不要将目录直传理解成所有文件接口均已绕过 VPS。部署与验收见 [校内直传](DIRECT_UPLOAD.md)。大量小文件仍有逐文件请求成本。
 
 启用机械仓库入库后，新版 CLI／网页仅对没有旧续传标识的新目录上传，先保存本地固定意图，再由门户持久分配新的服务器上传 UUID，最后准入固定 HDD；不等待无关旧节点在线。分配丢响应时只查原意图，不能换编号或自动重开；原有上传编号、浏览器 handle 和旧传输记录仍走原位置核实与恢复，离线不当作不存在，全节点都确认不存在的旧裸编号也不能新建。新上传命令仍是 `gpuctl data upload`；新建 `transfer upload`／`transfers.create kind=upload` 在此策略启用时关闭，已有传输可沿原编号恢复。入口能力不证明磁盘、容量或直传网络已可用，最终仍须节点准入与完整 READY 校验。
 
@@ -242,7 +245,6 @@ sudo python3 deploy/prepare-data-root.py --service-user CACHE_SERVICE_USER --app
 
 `CACHE_SERVICE_USER` 必须是实际执行缓存操作的服务账号。若 `/data2` 由已确认的非 root 管理员 UID 持有，只有经过核实才添加 `--trusted-parent-uid UID`；不能借此信任普通用户。工具只创建缺失的 `/data2/datasets`，不递归 `chown` 或修复已有目录。已有权限不匹配时停止并人工核查。
 
-若还没有合格的 `/data2` 挂载，应先按 [部署手册](DEPLOYMENT.md) 与 `deploy/storage-layout.py --help` 预览存储映射。不得用创建一个空 `/data2` 目录来掩盖数据盘未挂载。
 
 独立管理 CLI 从 root 所有、仅 root 可读的配置文件读取来源，例如 `/etc/gpuq/datasets.json`：
 
@@ -310,7 +312,7 @@ JSON
 
 来源必须是明确批准的独立目录。拒绝宽泛系统/家目录、穿越、软链接、特殊文件和多硬链接文件；凭据与环境目录不属于数据集。版本内容只包含清单列出的文件和目录，后来新增的源文件不会混入旧版本。
 
-数据集与来源编号使用 1–64 位 ASCII 字母、数字、下划线或连字符，并以字母或数字开头；这不限制平台用户使用中文显示名。当前单份清单最多 500,000 个文件与目录条目，清单/元数据 JSON 上限仍为 64 MiB；两个上限均须满足。超过时需要管理员按合理范围分组，不能承诺任意规模目录都能一次登记。节点数据集后台任务单独限 2 GiB 主存、1 核 CPU 额度；这不改变训练、终端或其他服务的额度，也不保证任意文件名长度/目录形状都能装入上限。
+数据集与来源编号使用 1–64 位 ASCII 字母、数字、下划线或连字符，并以字母或数字开头；这不限制平台用户使用中文显示名。节点数据集后台任务单独限 2 GiB 主存、1 核 CPU 额度；这不改变训练、终端或其他服务的额度，也不保证任意文件名长度/目录形状都能装入上限。
 
 ## 管理员：清缓存与注销登记
 
@@ -320,7 +322,6 @@ JSON
 
 门户在派发前把目标机器、登记名、完整版本、原操作编号、门户发起时间和目录提供的登记身份写入现有 SQLite。已派发或结果未确认的副本不计作保留，重启及部署切换不清除这项保护；同机未决删除也不能再次派发。管理员刷新目录会核对排除记录：原编号返回 `UNREGISTERED`，或返回 `FAILED` 且之后的新读取仍确认完整副本，可以解除排除。新的完整读取若明确显示目标机器上该确切版本已不存在，也可解除，不依赖旧编号是否可查；机器被移出清单、读取失败或 `UNKNOWN` 都不算不存在。
 
-缺编号的记录还有一个严格的宽限期出口：门户发起时间之后至少 **25 小时**（[旧节点 worker](../deploy/node-executor.py) 的 `RuntimeMaxSec=86400s` 加 1 小时余量），再开始的新完整读取仍报告 `READY`，且登记名、版本和读取中可比较的 owners、字节数、文件数与派发前一致，才可解除。计时只用门户时钟；期限前开始的读取、登记身份缺失或变化都不能解除。worker 可能先清理旧 trash 再移动当前副本，因此几分钟后仍为 READY 不能证明删除没有执行。测试解析实际 worker 的硬上限，并要求门户常量至少覆盖上限加 3600 秒；有原编号的记录不按时间解除。未决提示为「这台服务器上的删除结果待确认」，原因与宽限期放进 ⓘ。
 
 租约、固定保留等旧节点拒绝发生在异步 worker 中，首次响应已给出原 `operationId`，之后以该编号的 `FAILED` 和新读取中的 READY 确认副本保留。同步响应丢失或 bridge 错误不能证明未受理，不能凭 HTTP 状态或错误文字删除排除记录。解除排除只恢复副本的保留计数，不把未知的删除回执改成成功；放弃网页本地记录不会直接清除服务端保护，也不会自动重发删除。
 
@@ -341,7 +342,7 @@ gpuctl data status OPERATION_ID
 
 清理失败时保留登记与恢复日志，可能已有本地副本被安全隔离；不能把“登记仍在”当成 READY。成功后，恢复包位于缓存根下 `.trash/unregister-<编号>/`，包含 `REMOVAL.json` 和 `registration/`。整集保留完整登记目录；单版本保留其原始版本 JSON 及 `dataset.json` 所有者快照。恢复包不是原数据备份，已清理的副本须从原始来源重新准备。不要自动覆盖后来新增的登记/授权；恢复前先比对恢复包与当前目录。
 
-配套新版门户和节点后，管理员也可用同一裸名称命令注销**已确认没有版本的个人空登记**。节点核对唯一所有者与个人命名空间、登记身份，以及载荷、租约、来源证明、删除围栏和上传意图均不再使用它；任何版本、未知依赖或本登记的未完成上传都拒绝。其他数据集的容量预留仅在服务私有会话、所有者、原上传编号、预留文件哈希与完整字节／inode 预算全部吻合时排除；未知、孤儿、临时写入及不安全文件仍阻止注销。每个最终移动检查点重新核验，不要求无关上传停止，也不删除其预留或历史。残留的完全默认存储记录不会清除，原字节和身份写入私有删除审计；有保留卡位或恢复来源的记录仍不能按空登记处理。此例外不允许删除最后一份实际数据，旧节点仍拒绝。
+配套新版门户和节点后，管理员也可用同一裸名称命令注销**已确认没有版本的个人空登记**。节点核对唯一所有者与个人命名空间、载荷、租约和上传意图均不再使用它；任何版本、未知依赖或本登记的未完成上传都拒绝。其他数据集的容量预留仅在服务私有会话、所有者、原上传编号、实际字节／inode 预算可读取时排除；未知、孤儿、临时写入及不安全文件仍阻止注销。在最终移动前直接查询活动引用，不要求无关上传停止，也不删除其预留或历史。残留的完全默认存储记录不会清除，原字节和身份写入私有删除审计；有保留卡位或恢复来源的记录仍不能按空登记处理。此例外不允许删除最后一份实际数据，旧节点仍拒绝。
 
 不经过门户时，管理员也可在节点使用下面的 root-only CLI；它同步等待结束，大规模清理可能很久，不应套用执行桥的短超时。配置仍须 root-owned、0600，操作按配置降至缓存服务账号执行。
 
@@ -367,9 +368,9 @@ sudo python3 deploy/dataset-cache.py --config /etc/gpuq/datasets.json <<'JSON'
 JSON
 ```
 
-`tiny-lan` 必须预先存在于可信 `sources` 映射。普通用户不能调用绑定接口，配置外的来源编号会被拒绝。`attach_source` 并不证明网络内容正确；准备只读取清单指定的文件，对续传前缀与单文件变化做检查，最终在本地全树 SHA256 验证通过才发布。它不在网络源上反复做 TB 级全量哈希。
+`tiny-lan` 必须预先存在于可信 `sources` 映射。普通用户不能调用绑定接口，配置外的来源编号会被拒绝。`attach_source` 并不证明网络内容正确；准备只读取清单指定的文件，按原 key 和已写偏移续传，大小核对完成后原子发布。它不在网络源上反复做 TB 级全量哈希。
 
-当前复制库也提供 `plan`、1 MiB 有界 `put_chunk`、已发布版本的 `read_chunk` 和 `publish`。断点计划包含已写偏移与前缀 SHA256；重试不能覆盖不同内容。管理员限定的 `prepare_transfer` 可返回 staging 目标供可信传输器使用，但它**不会自行启动 rsync，也不是给普通用户的任意目标传输服务**。任何外部写入者必须退出并关闭文件后，才能调用 `publish`。
+当前复制库也提供 `plan`、1 MiB 有界 `put_chunk`、已发布版本的 `read_chunk` 和 `publish`。断点计划包含已写偏移；重复偏移保留已接收字节，恢复沿用原 key 和原路线。管理员限定的 `prepare_transfer` 可返回 staging 目标供可信传输器使用，但它**不会自行启动 rsync，也不是给普通用户的任意目标传输服务**。任何外部写入者必须退出并关闭文件后，才能调用 `publish`。
 
 ## LAN / NFS 只做来源，不做训练盘
 
@@ -434,82 +435,23 @@ python3 tests/dataset-cache.test.py
 python3 tests/prepare-data-root.test.py
 ```
 
-本地测试不连接真实设备。节点上线仍必须用小样本验证：授权与未授权两种身份、断点续传、错误哈希不发布、可用空间不足、`/data2` 挂载缺失、进程内只读挂载、运行中租约禁止清理，以及取消/完成后确认子进程已退出再释放租约。跨节点另验只读来源、服务 UID/GID、来源断开时失败关闭；既有本地 `READY` 副本应不依赖原网络源持续在线。
+本地测试不连接真实设备。节点上线仍必须用小样本验证：授权与未授权两种身份、断点续传、大小不符不发布、可用空间不足、`/data2` 挂载缺失、进程内只读挂载、运行中租约禁止清理，以及取消/完成后确认子进程已退出再释放租约。跨节点另验只读来源、服务 UID/GID、来源断开时等待恢复；既有本地 `READY` 副本应不依赖原网络源持续在线。
 
 
 ## 删除个人数据版本与完整保留
 
-成员只能删除具有新版版本来源证明的本人上传、本人工作区发布或本人副本。单一 owner、个人名称、旧记录或归档 `RETIRED` 不能替代证明；多人共享、管理员登记、旧数据和未知来源只能由管理员删除。节点和门户分别核对登录身份，客户端不能指定 owner、角色、路径或删除期限。
+精简节点使用单动作删除和恢复。Portal 先直接查询同版本编号在另一个实际位置是否存在、大小是否正确；不同版本、同一物理原件的别名不算副本。节点按当前数据集记录判断本人或管理员权限，直接检查活动任务、挂载、租约和写入状态，以及已配置的独立同版本副本。唯一副本继续保留。
 
-`gpuctl data unregister NAME@FULL_VERSION_HASH --machine SERVER` 删除这台服务器上的一个登记版本。成员必须指定完整版本；裸 `NAME` 仍仅管理员可用。原件 authority pin、训练/传输租约、其他 pin 或未确认的写入会阻止删除。新版节点只清除可从实际完整来源重新准备的缓存；若将删掉最后一份完整数据，会拒绝并提示“这是最后一份数据，请用彻底删除（7 天内可恢复）”。管理员不能绕过新版节点的保护。
+删除请求只传原 `operationId`、`action`、`dataset`、`version`、`location{machine,dataset}` 和 `actor{userId,isAdmin}`。删除用 `action=delete`，恢复用 `action=restore`，未知结果查询同一个编号；返回只含 `state`、`active`、`exists`、`size`、`retainUntil`。暂时无法观察活动状态或锁忙时返回等待，未知值不当作零或完成。
 
-节点更新前，管理员按机器删除先用 PR-M2 门户守卫证明另有完整副本；未知、离线或已派发/结果未知的副本不算保留，无法证明时409 `LAST_COPY_UNPROVEN`。实时读取与原请求派发在同一跨机器版本锁内；排除跨重启持久化，解除排除完全复用[共享守卫规则](#管理员清缓存与注销登记)，不另加超时或回执策略。节点更新后启用节点最后副本保护、成员删除和彻底删除。成员删除、彻底删除和隔离恢复在能力未确认时409零写。能力查询失败不是数据或依赖不存在的证据。
-```sh
-gpuctl data delete NAME@FULL_VERSION_HASH --key UUID
-gpuctl data delete-status UUID
-gpuctl data retire-status OPERATION_ID
-gpuctl data retire-restore OPERATION_ID --machine SERVER
-gpuctl data retire-continue OPERATION_ID
-gpuctl data retire-cancel OPERATION_ID
-gpuctl data retire-discard-registration OPERATION_ID --machine SERVER --key UUID [--name PHYSICAL_NAME]
-```
+通过直接检查后，以不覆盖目标的原子改名进入同文件系统的私有回收站，记录原操作编号和到期时间。普通删除保留至少七天；七天内按原编号改名回来，不覆盖新上传的数据；到期由现有本地收集入口清理，清理前仍直接查活动引用和同版本独立副本。缓存副本同样先保留在回收站，不立即递归删除。64GiB 空间底线和现有额度保持。
 
-彻底删除覆盖可信清单中全部服务器及数据库原件，门户先保存 key、任务和每个物理版本的子编号。查询可以用提交前打印的 key，首次回包丢失也不需要另建任务。相同 key、身份和版本返回原任务；换目标或账号拒绝。所有节点必须确认 `datasetDelete:1`，离线、旧节点、未知物理别名、在途归档/传输或任何依赖未确认都会停止。新门户先上线且节点未更新时，能力为 0，拒绝彻底删除；前端不得显示可用的彻底删除操作。
+新节点不再生成或比较快照、generation、proof/receipt 摘要、targets 或 sourceResult。磁盘上的旧字段忽略，不迁移；旧 FENCED/ISOLATED 等进行中日志按实际回收站字节处理，能恢复、到期能清理，不要求补旧证明或 commit ACK，也不以 NTP 证明放行。旧阶段入口只作兼容映射，不构成新的确认轮次。
 
-完整数据保留至少 7 天（节点可信配置 `datasets.retireRetentionDays`，7–365，默认 7）。每台完整副本都移入同一文件系统的私有隔离区，登记、tier、来源和事务一起保留，逐次 no-replace rename 并 fsync。它不会立即释放磁盘或退回上传配额。只有原有本机 storage 收集入口已明确开启，全部步骤隔离已提交、日志/身份/文件/期限均确认，并且内核 NTP 已同步（STA_UNSYNC 未置位）后才会清理；墙钟跳到期限后不能单独触发清除，未完成的整体任务不清除。本 PR 不开启 timer。节点部分另约发布窗口。
+Portal 先上线、节点仍旧的过渡期，仅由 Portal 的一个旧节点适配函数原样转交节点返回的不透明值；Portal 不计算、不比较、不存档。节点全部切换后删除该适配。现役旧节点上的完整删除/恢复 smoke 和安装仍须由 m1/m2 在批准窗口执行，本地回归不能代替上线门禁。
 
-状态为 `PLANNED`、`RUNNING`、`REMOVING_CACHES`、`RETIRING_ORIGINAL`、`DELETED`，或 `BLOCKED`、`FAILED`、`UNKNOWN`、`WAITING_CONTINUE`、`CANCELING`、`CANCELED`。`DELETED` 表示当前逻辑版本及固定授权依赖已经隔离，其他名称下的副本不受影响（transfers 产生的独立副本）。`DELETED` 要求逐个核对节点当前代次的完整隔离回执，不表示物理字节已立即抹除；期限后实际清理已确认时，步骤显示 `PURGED`。历史隔离回执不能掩盖后来恢复、节点离线或回执改变。RUNNING 没有30秒完成截止；已确认上一阶段完成可继续派发尚未派发的下一阶段，这不是重投。不会自动重投未知或失败阶段。管理员显式 `retire-continue` 先查原编号；仅在原 worker 明确 STOPPED 且原阶段 FAILED 或没有结果时，才审计并重派同一个固定阶段，每次 attempt 去重并按 journal 续做。继续始终沿用原发起人的授权；原成员403拒绝不能升级为管理员删除。门户重启后等待管理员继续，不伪装成无人推进的 RUNNING。`retire-cancel` 只回滚：未移动的直接解除围栏，部分移动还原已移动项，完整隔离恢复；不调用 isolate，不新撤销授权，失败可按相同条件重试。已撤销 grant 保持撤销。取消不杀进程或训练，未知终止状态拒绝恢复。节点写入之前的权限拒绝原子释放门户围栏。原件栅栏先于其他节点写入，阻止新授权、恢复、租约、发布和重建；原件直到全部固定依赖已确认隔离后才撤销 grant 并隔离；目标节点自己枚举 grant 的全部物理别名，每个都必须 ISOLATED，门户遗漏一个也会拒绝撤销。门户与节点最低保留截止允许5分钟时差，超出时为待确认，保留管理员继续或取消出口。无数据库原件时，也保留至少最后一份完整副本。
+## 网页项目存储明细
 
-只有管理员可用上面的 `retire-restore` 命令恢复已确认的完整隔离副本。恢复先核对全部哈希、期限、原事务及无占名/租约；新登记使用新代次，旧 grant/token 永久不可复活。恢复原完整来源时，会一起恢复同一任务全部步骤：真实完整副本还原，被驱逐的登记和空命名空间释放栅栏；已 PURGED 的副本只凭精确源恢复回执释放名称，不声称字节还在。已到期但尚未清除的副本也仅凭此源证明还原。成功阶段只查询，失败阶段只有管理员确认停止后才能显式重试；明确拒绝（包括到期）为 FAILED 并显示原因。已经 RESTORING 的事务允许跨过原截止时间完成。管理员取消已由节点证明从未提交收集许可的部分任务时，也可恢复期限之后仍实际保留的完整数据；损坏或回执不明的提交不能作为这个证明。未确认/中断事务先由管理员核对固定节点编号和真实 worker 终止状态，不能根据目录缺失、已读或时间猜成功。
+存储页和项目详情按项目显示「实际 X（逻辑 Y，共享 Z）」。宽屏卡片占满内容区，各层两列，窄屏单列。展开可查看开发区、有效发布、退役发布、输出、OCI 写入层和其他；各层有重叠，不能直接相加。未取得的数值显示「未统计」，共享 OCI 镜像不会被算成零。
 
-存在同一服务器上的多个实际完整别名时，门户恢复命令拒绝猜选。管理员先核对任务步骤及节点私有日志，再按固定节点事务恢复；查询确认已恢复后，仅解除该物理版本属于本任务的门户栅栏，不自动释放其他空命名空间或重放后续步骤。中断隔离保留原身份、快照、动作和日志；管理员显式继续或取消时先核对真实 worker 终止。退役 worker 不再设置24小时 RuntimeMaxSec，普通缓存 worker 的原限时保持。
-
-外部 `storage.archive.retire` 的意图退役保持其原有严格模式；`authority-target-v1` / `authority-source-v1` 则是有完整替代来源的旧原件退役，保持所有外部锁、永久墓碑及 API 条件。只有它的实际 `REVOKED` 私有日志、严格包含校验和仍有效的完整 protected 替代源，才能在持锁重新核对后作为普通注销的可重建来源。删除任务单独记录“归档意图退役（外部原语，模式 same-HDD / queued-ingest-v1）”或“外部替代退役”；这两个结果都不等于版本 `DELETED`。模式标签只读取外部意图已有的固定元数据；旧记录缺少这些字段时显示“模式待确认”，不补造证明，也不代替本任务的栅栏和完整隔离。
-
-### 清除后重新上传或登记
-
-后台 prepare、旧复制和归档不会自动重建已删除代次。实际确认 PURGED 后，有权用户可以显式重新上传同名同字节，或从自己的工作区再次发布；管理员也可在本机用受信配置重新登记来源/清单。节点核对原清除日志、所有者和当前目录为空，先持久化新登记 inode 与来源意图，再 no-replace 安装；重试只完成这一新意图，不采用别人的登记。旧 grant、token、复制和归档授权仍永久失效。
-
-`RUNNING` 仅表示门户正在推进原删除任务。门户停止推进后，即使节点已确认隔离或原 worker 仍在运行，也显示 `WAITING_CONTINUE`；worker 仍在运行时先等待，确认停止后管理员才能明确继续原步骤或取消。只查询状态不会派发任务，也不需要重启门户才能得到继续入口。
-
-准备阶段已选出原件，不表示全部依赖位置和空副本计划已确认。若此时检查中断，管理员应先解决原拒绝原因，再用原 `retire-continue OPERATION_ID` 完成检查；它沿用原 key 和每个已保存的节点子编号，不创建新的删除任务。查询状态不会补做检查。已授权或已派发阶段的旧任务保留原快照，不因缺少新增检查标记而重新准备或重放写入。
-
-继续请求在原 worker 已停止并通过当前授权核验后，先保存 `RUNNING`、清除上一轮错误，再启动后台检查。此时不要把旧 `UNKNOWN` 当成本轮结果或退出登录；保持当前登录，按原编号查询到新的完成或停止结果。登录失效仍会停止推进，不绕过认证；查询超时不自动重发继续请求。
-
-门户凭精确新登记证明释放这个位置的旧围栏。要重新使用同一任务的其他位置，先让新的原源达到 READY，再由管理员用原 `retire-restore OPERATION_ID --machine SOURCE` 核对这个新源；它会还原仍保留的副本、凭源证明释放已清除或空的命名空间。然后可以重新准备、复制或创建新的删除任务；旧删除编号不可继续执行。新源不完整、证据改变、占名或权限改变均拒绝，不会复活旧授权。
-
-登记意图按删除 operationId 分代保存，旧代次不能阻止下一次删除、清除和显式登记。若容量等错误使新登记的准备 inode 从未安装，管理员可用 `retire-discard-registration` 撤回这份意图；必须指定原删除任务、服务器和固定 UUID key，物理别名使用 `--name`。门户和节点均先保存固定请求与审计，只有当前 PURGED 代次、无登记、READY、STAGING、来源记录、租约及固定保留时，才把这一份未安装元数据移入审计区。它不删除数据载荷，不移除删除墓碑，也不采用其他人的登记。成功为 `DISCARDED`；回执丢失先核对原任务，必要时只重试相同命令和 key。已经安装、意图改变或权限不明均拒绝。
-
-取消以实际 journal 为准：ISOLATED 已落盘而节点投影中断时只补投影并恢复，不再次隔离；个人来源记录随第一次回滚一起还原。终态删除的门户墓碑不挡整数据集的普通注销，精确版本的后台重建仍受节点墓碑保护。原 worker 仍在进行时，继续和恢复保持等待且不派发；取消等待保持 CANCELING。完整副本确未提交收集许可时，源恢复也可还原过期但仍保留的字节，未知或损坏的提交不算未提交。
-
-普通注销后留下的旧缓存授权不是可忽略的别名。仅当完整 `REMOVAL` 已确认注销、归档登记的 inode 与不可变清单及所有者仍匹配、固定 authority 适配器确认同一 grant，且没有载荷、租约、来源或固定保留时，节点才允许把它作为“已无数据的授权别名”纳入原删除任务。该步骤只保存证明并建立持久版本围栏，不删除注销审计或 tier，不复原旧缓存。全部物理别名仍须逐一确认隔离，原件才能撤销授权；未知或改变的旧元数据继续阻止删除。后续准备、发布、租约及恢复不能越过围栏；取消或恢复原源也不复活旧 grant，只有明确的新登记代次可重新使用名称。
-
-门户先完整核对该节点返回的物理位置，按每个实际名称汇总固定 grant 引用。已无登记的别名计划携带既定完整来源的私有授权及仅属于该名称的全部引用；仍有登记的计划只由节点读取本地证明，不使用外供所有者。同一 grant 的多个别名分别核对，同一节点的不同 grant 不混用。检查或回包中断仍沿用原任务及子编号，查询不会补做计划；已有计划的固定引用改变时停止，不用空引用绕过旧授权。
-
-
-### 网页：彻底删除对话框与原编号恢复
-
-数据集详情的入口由房间控制器提供。主界面调用 `datasetRemoveUI(store, section, toast, {reload, catalog: () => currentCatalog, management: false})`，返回 `canOpenFullDelete(dataset, version)` 和 `openFullDelete(dataset, version)`，只挂载独立对话框，不改变数据集布局，也不读取管理目录或显示管理员操作。catalog getter 必须返回当前账号的最新目录，切换账号或尚未读取时返回 null；所有服务器名称来自目录和任务步骤。只有 `datasetDelete === 1` 且这个版本至少一个 location 的 `deletionPermissions.memberAllowed === true` 才显示主界面入口，管理员在主界面也遵循此条件。旧节点缺字段或 false 时不显示入口，不从用户名或所属用户文字推断权限。
-
-后台数据与存储区调用同一工厂，传 `{reload, catalog: () => adminCatalog, readCatalog: () => freshAdminAllNodeListings, management: true}`。`readCatalog` 必须重新读取全部服务器，供按机器删除核对真实登记名和其他完整副本；缓存的 catalog getter 不能替代此读取。后台管理员在能力为 1 时不受 `memberAllowed` 限制，继续、取消和恢复也只出现在后台。省略 management 时暂保留旧数据集页的管理入口，迁移完成的调用方应显式传入该参数。
-
-输入准确的数据集名称后，网页先在当前账号的本地记录里保存固定 UUID key 和原 dataset/version，再发送 `datasets.delete`。无法保存时不派发。重复打开同一目标使用原记录；丢回执先 `datasets.delete.status {key}`，不换 key、不自动再次删除，包括 404。刷新后本地终态也先显示待确认，只有匹配原 key、任务编号和目标的服务器回执恢复当前事实。主界面和后台共用按账号的记录，保存一条任务时保留其他任务的 key。`fullDelete.records` 是本地恢复引用，`fullDelete.openFullDeleteRecord(key)` 可供任务记录入口调用；它只读取当前账号的记录，不授予跨账号访问权。
-
-有 operationId 时直接显示短请求编号，可复制完整编号；没有编号时不渲染此行。步骤角色只依据目录事实：`ARCHIVED + originalRetained + archiveMachine` 证明的服务器显示「隔离原件（可恢复）」，已知普通缓存显示「移除缓存」。角色未知但步骤 complete 为真时显示「隔离完整副本（可恢复）」，其余显示「检查并移除」，不把 complete 推断成原件。成员删除完成后显示联系管理员恢复和真实保留期限；只有 BLOCKED、UNKNOWN、WAITING_CONTINUE 才提示需要管理员处理。
-
-任务显示当前步骤、原服务器 ID 和服务器原因，不画百分比。UNKNOWN 只提供重新查询；DELETED 显示服务器的 retainUntil，并注明「其他名称下的副本不受影响」，不声称磁盘空间已释放。403 和能力未开通的 409 保留后台原文。成员看到需继续、取消或恢复的任务时显示「需要管理员处理」，不渲染管理按钮。管理员继续沿用原 operationId；取消先确认停止后续删除并还原数据、不强制中断已执行步骤；恢复由管理员选择任务中已确认完整的保留副本，回执可能使用真实物理别名且不带 key，网页核对绑定后再查询原任务。所有未知写结果都不自动重放。
-
-上传首次初始化回执丢失时保留服务器签发的原 UUID。重复原上传命令先查询该编号；只有固定仓库按本人账号、原准入和完整清单返回 `NOT_INITIALIZED` 的只读证明，且当前策略未变，才使用同一编号恢复初始化。普通 400/404、503、ENOENT、损坏或缺失控制记录都不是该证明，不能授权换编号或自动重发。
-
-
-## Single-archive campus intake (protocol 1)
-
-A node declares `archive:{protocol:1,formats:["zip","tar","tar.gz"],maxBytes}` on its authenticated upload-routes response only after the complete archive-intake runtime is installed and the trusted fixed-HDD configuration explicitly enables `datasets.archiveUpload.enabled`. Portal projects this declaration as `datasetUploadAdmission.archive`; absent or malformed capability preserves the directory uploader. `.tgz` is an alias of declared `tar.gz`. Existing directory UUIDs retain their original specification when the new capability is enabled; fresh directory admissions are refused.
-
-`datasets.upload.admission.create` binds the original key and node upload UUID to the single archive specification `{protocol:1,fileName,format,bytes,sha256}`, alongside the transport-manifest hash/length, one entry and compressed byte count. Only the declared campus-direct route can issue this archive's ticket or accept its raw bytes. Client disconnects query the original UUID and confirmed offset; neither relay nor a new key is selected automatically.
-
-The intake reports `phase:UPLOADING|EXTRACTING|VERIFYING|READY|FAILED`, with `reasonCode` on failure and the ordinary immutable dataset/version fields only after registration. The compressed file is never itself a registered dataset. The worker verifies the compressed hash, performs a bounded inspection, checks available warehouse bytes/inodes and retained-principal quotas, safely extracts into its own new scratch tree, hashes every extracted file, then uses the existing fenced registration and atomic publication path. Only confirmed READY means the unpacked version is available.
-
-Absolute/traversal paths, all symlinks/hardlinks, devices and special files, conflicting entries, encrypted or unsupported-compression ZIPs, and malformed archives are refused. Trusted limits `archiveUpload.maxExpandedBytes` (defaults to the upload byte limit) and `archiveUpload.maxEntries` (defaults to the dataset entry limit) cannot exceed those existing limits. Metadata and decompression buffers are bounded; ZIP supports stored and deflate entries. Errors include `ARCHIVE_FORMAT_UNSUPPORTED`, `ARCHIVE_UNSAFE_PATH`, `ARCHIVE_TOO_LARGE`, `ARCHIVE_CORRUPT`, `ARCHIVE_EMPTY`, `ARCHIVE_PUBLISH_FAILED`, and `CAMPUS_ROUTE_UNAVAILABLE`.
-
-Deployment is a paired Portal/CLI and immutable node-runtime release. Preserve each live runtime's other patches; enable the capability only on a fixed HDD warehouse after a no-training/no-upload or approved maintenance window. Adding this code to GitHub alone does not declare a live capability.
+退役发布显示可回收量和到期日期，项目拥有者可打开回收站，或确认后永久删除已退役发布。仍被使用的版本会保留，页面显示实际释放量和跳过数量。旧节点未提供分层时沿用原明细；展开已有读数不发起扫描，项目详情缺少读数时只查询当前服务器的现有容量快照。

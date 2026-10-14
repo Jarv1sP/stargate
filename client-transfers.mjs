@@ -1,95 +1,68 @@
-import {mkdir,lstat,open,rename,unlink,link} from 'node:fs/promises';
+import {lstat,open,readdir,mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {constants} from 'node:fs';
-import {resolve,dirname,join} from 'node:path';
-import {createHash,randomUUID} from 'node:crypto';
-import {remoteSnapshot} from './client-snapshot-sync.mjs';
-import {dataPath,scanLocalDataset,uploadDatasetSnapshot,snapshotKey,DATA_CHUNK,sameDatasetFile} from './client-data-upload.mjs';
-import {transferUploadCall} from './dist/transfer-upload.js';
-const fail=message=>{throw Error(message);};
+import {dirname,join,resolve,basename} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {uploadPersonalFile} from './dist/personal-upload.js';
+import {createPersonalFileTransport} from './client-personal-file-campus.mjs';
+import {dataPath,sameDatasetFile} from './client-file-path.mjs';
+import {recoverOriginalWrite,uncertainWrite} from './client-http.mjs';
+import {downloadResultFile} from './client-result-download.mjs';
 const safe=value=>String(value??'').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,c=>'\\u{'+c.codePointAt(0).toString(16)+'}');
-export function transferText(row){const result=row.result||{},bytes=result.bytes??(result.totalBytes!==undefined&&result.remainingBytes!==undefined?result.totalBytes-result.remainingBytes:0),total=result.totalBytes??row.snapshot?.totalBytes??row.manifest?.totalBytes;return `${safe(row.id)} · ${safe(row.kind)} · ${safe(row.from?row.from+' → '+row.machine:row.machine)} · ${safe(row.state)}\n  ${bytes} / ${total??'?'} bytes${result.path?' · '+safe(result.path):''}${row.error||result.error?'\n  '+safe(row.error||result.error):''}`;}
-export async function uploadTransfer(call,{machine,name,userId,directory,progress=()=>{},key,via='auto'}){
-  const scan=await scanLocalDataset(directory,progress);let handle;
-  const adapter=transferUploadCall(async(op,args)=>(await call(op,args)).result,row=>{handle=row;progress('HANDLE',{transferId:row.id});});
-  try{return {...await uploadDatasetSnapshot(async(op,args)=>({result:await adapter(op,args)}),{machine,name,userId,scan,progress,via,legacyTransfer:true,keyStore:{get:()=>key,set:async()=>fail('Canceled upload cannot be silently replaced')}}),transferId:handle.id};}
-  catch(error){throw Error(error.message+(handle?'\n传输：'+handle.id+'；gpuctl transfer status '+handle.id:''));}
-}
-async function exists(path){try{return await lstat(path);}catch(e){if(e.code==='ENOENT')return null;throw e;}}
-async function realDirectory(path){const value=await lstat(path);if(!value.isDirectory()||value.isSymbolicLink())fail('Unsafe local download directory: '+path);}
-async function readReceipt(path,expected){
-  let file;
+export function transferText(row){const result=row.result||{},bytes=result.bytes??row.bytes??(Number.isFinite(result.totalBytes)&&Number.isFinite(result.remainingBytes)?result.totalBytes-result.remainingBytes:'?'),total=result.totalBytes??row.totalBytes;return `${safe(row.id)} · ${safe(row.kind)} · ${safe(row.from?row.from+' → '+row.machine:row.machine)} · ${safe(row.state)}\n  ${bytes} / ${total??'?'} bytes${result.path?' · '+safe(result.path):''}${row.error||result.error?'\n  '+safe(row.error||result.error):''}`;}
+export async function uploadLocalFile(call,{machine,context,path,local,key=randomUUID(),transferId,via='auto',progress=()=>{},transportFactory=createPersonalFileTransport,lstatFile=lstat,openFile=open,platform=process.platform}){
+  dataPath(path);const named=await lstatFile(local,{bigint:true});if(!named.isFile()||named.isSymbolicLink()||named.size>BigInt(Number.MAX_SAFE_INTEGER))throw Error('请选择普通文件，链接不会上传。');
+  const file=await openFile(local,constants.O_RDONLY|(constants.O_NOFOLLOW||0));let transport;
+  const scope={machine,...context,path,key,...(transferId?{transferId}:{})};
   try{
-    file=await open(path,constants.O_RDONLY|(constants.O_NOFOLLOW||0)|(constants.O_NONBLOCK||0));
-    const info=await file.stat({bigint:true}),named=await lstat(path,{bigint:true});
-    if(!info.isFile()||named.isSymbolicLink()||info.nlink!==1n||info.size>1024n||!sameDatasetFile(named,info,{pathToHandle:true}))fail('Unsafe download receipt');
-    const bytes=Buffer.alloc(1025),{bytesRead}=await file.read(bytes,0,bytes.length,0);
-    if(BigInt(bytesRead)!==info.size||!sameDatasetFile(info,await file.stat({bigint:true}))||!sameDatasetFile(named,await lstat(path,{bigint:true})))fail('Download receipt changed while reading');
-    const value=JSON.parse(bytes.subarray(0,bytesRead).toString('utf8'));
-    if(!value||Object.keys(value).sort().join(',')!=='id,manifestSha256'||value.id!==expected.id||value.manifestSha256!==expected.manifestSha256)fail('Existing download receipt belongs to different content; no overwrite performed');
-    return value;
-  }catch(error){if(error.code==='ENOENT')return null;throw error;}
-  finally{await file?.close();}
+    const info=await file.stat({bigint:true});if(!sameDatasetFile(named,info,{pathToHandle:true,platform}))throw Error('本地路径改变，原上传已保留。');
+    const size=Number(info.size),request=async(operation,args)=>{
+      const send=async()=>{
+        if(operation==='data.upload.chunk'&&via!=='relay'){
+          transport ||= await transportFactory(call,{machine,context,path,action:'put',identity:{uploadId:key,totalSize:size}});
+          return {result:await transport.request({offset:args.offset,bytes:Buffer.from(args.data,'base64'),final:false})};
+        }
+        return call(operation,args);
+      };
+      if(operation==='data.upload.status')return (await send()).result;
+      return (await recoverOriginalWrite(send,{shouldRecover:uncertainWrite,canReplay:true,query:signal=>call('data.upload.status',scope,signal),classify:reply=>{
+        const row=reply.result;
+        if(row?.state==='ABSENT')return operation==='data.upload.begin'?{absent:true}:undefined;
+        if(operation==='data.upload.begin')return {value:reply};
+        if(operation==='data.upload.finish'){if(row?.state==='COMPLETE')return {value:reply};if(row?.offset===size)return {absent:true};}
+        if(operation==='data.upload.chunk'){const next=args.offset+Buffer.from(args.data,'base64').length;if(row?.offset===next)return {value:reply};if(row?.offset===args.offset)return {absent:true};}
+      },unresolved:error=>Object.assign(error,{key,message:error.message+'\n上传结果未知，请保留 --key '+key})})).result;
+    };
+    const result=await uploadPersonalFile({call:request,machine,...context,path,key,transferId,size,overwrite:true,chunkBytes:512*1024,...(context.area==='code'?{ownerExecutable:!!(Number(info.mode)&0o100)}:{}),read:async(offset,length)=>{const bytes=Buffer.alloc(length),part=await file.read(bytes,0,length,offset);return bytes.subarray(0,part.bytesRead);},onProgress:row=>progress({path,...row})});
+    return {...result,machine,path,bytes:size};
+  }finally{await file.close();await transport?.close();}
 }
-async function publishReceipt(path,value){
-  // A private random inode is fully written before publishing. Hard-link
-  // publication is atomic and exclusive on POSIX and Windows NTFS; unlike
-  // rename(), it cannot replace an existing destination or follow a symlink.
-  if(await readReceipt(path,value))return;
-  const pending=path+'.pending-'+randomUUID();
-  const file=await open(pending,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|(constants.O_NOFOLLOW||0),0o600);
-  try{
-    await file.writeFile(JSON.stringify(value));await file.sync();await file.close();
-    try{await link(pending,path);}catch(error){if(error.code!=='EEXIST'||!await readReceipt(path,value))throw error;}
-  }finally{await file.close().catch(()=>{});await unlink(pending);}
-}
-async function hashFile(file,size){const buffer=Buffer.alloc(DATA_CHUNK),hash=createHash('sha256');for(let at=0;at<size;){const {bytesRead}=await file.read(buffer,0,Math.min(buffer.length,size-at),at);if(!bytesRead)fail('Incomplete local file');hash.update(buffer.subarray(0,bytesRead));at+=bytesRead;}return hash.digest('hex');}
-function codepointOrder(a,b){const x=Array.from(a),y=Array.from(b);for(let i=0;i<Math.min(x.length,y.length);i++){const n=x[i].codePointAt(0)-y[i].codePointAt(0);if(n)return n;}return x.length-y.length;}
-function canonicalDigest(raw){const m=JSON.parse(raw);return createHash('sha256').update(JSON.stringify({directories:m.directories.sort(codepointOrder),files:m.files.sort((a,b)=>codepointOrder(a.path,b.path)).map(({path,size,sha256})=>({path,sha256,size})),schema:1})).digest('hex');}
-export async function downloadTransfer(call,{machine,dataset,version,destination,key,progress=()=>{}}){
-  key||=snapshotKey(['download',machine,dataset,version,resolve(destination)]);
-  const row=(await call('transfers.create',{key,kind:'download',machine,dataset,version})).result;progress('HANDLE',{transferId:row.id});
-  const target=resolve(destination),partial=target+'.gpuq-partial-'+row.id;
-  if(row.state==='CANCELED'||row.cancelRequested)fail('Download was canceled; partial files were retained');
-  if(row.state==='FAILED'){
-    const protectedSource='可回收缓存不支持无租约的旧下载或 sync data；请从受保护原件读取，或使用节点间 transfer copy。';
-    fail(row.error===protectedSource?protectedSource:'Download failed; inspect the original transfer. Transfer: '+row.id);
+export async function uploadLocalTree(call,{machine,context,local,remote='.',key=randomUUID(),stateDirectory,transferId,via='auto',inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
+  if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key))throw Error('上传编号必须是完整 UUID。');
+  const keyFile=stateDirectory?join(stateDirectory,key+'.json'):null;let keys={};
+  if(keyFile)try{keys=JSON.parse(await readFile(keyFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+  const save=async()=>{if(!keyFile)return;await mkdir(dirname(keyFile),{recursive:true,mode:0o700});const temporary=keyFile+'.'+randomUUID()+'.new';await writeFile(temporary,JSON.stringify(keys),{mode:0o600});await rename(temporary,keyFile);};
+  let count=0,bytes=0;const files=[];
+  const single=(await lstat(local)).isFile();
+  async function visit(source,path){
+    if(exclude(basename(source)))return;
+    const info=await lstat(source);if(info.isSymbolicLink())throw Error('链接不会上传：'+source);
+    if(info.isDirectory()){for(const name of (await readdir(source)).sort())await visit(join(source,name),path==='.'?name:path+'/'+name);return;}
+    if(!info.isFile())throw Error('请选择普通文件或目录：'+source);dataPath(path);
+    keys[path] ||= single?key:randomUUID();await save();
+    const result=inspectOnly?(await call('data.upload.status',{machine,...context,path,key:keys[path]})).result:await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via,progress});
+    files.push({path,...result});count++;bytes+=info.size;
   }
-  if(row.state==='UNKNOWN'||!row.snapshot)fail('Download source unconfirmed; repeat original command. Transfer: '+row.id);
-  const receiptPath=target+'.gpuq-receipt.json',expectedReceipt={id:row.id,manifestSha256:row.snapshot.manifestSha256};
-  const receipt=await readReceipt(receiptPath,expectedReceipt);
-  const recovered=receipt?.id===row.id&&receipt.manifestSha256===row.snapshot.manifestSha256&&!!await exists(target);
-  const finalized=row.state==='SUCCEEDED'||recovered;if(await exists(target)&&!finalized)fail('Destination already exists; choose a NEW directory (no overwrite)');
-  if(!finalized){await mkdir(dirname(target),{recursive:true});await mkdir(partial,{mode:0o700,recursive:true});await realDirectory(partial);}
-  const root=finalized?target:partial;await realDirectory(root);
-  const lockPath=root+'.gpuq-client-lock';let lock;
-  try{lock=await open(lockPath,'wx',0o600);}catch(e){if(e.code!=='EEXIST')throw e;fail('Another client or interrupted-client lock exists: '+lockPath+'; confirm the old client stopped before removing ONLY this lock');}
-  await lock.writeFile(JSON.stringify({pid:process.pid,id:row.id}));
-  const controller=new AbortController(),stop=()=>controller.abort(Error('Local client interrupted; partial payload retained'));
-  const signals=['SIGINT','SIGTERM','SIGHUP'];for(const signal of signals)process.on(signal,stop);
-  const request=(op,args)=>{if(controller.signal.aborted)throw controller.signal.reason;return call(op,args,controller.signal);};
-  try{
-    if(finalized){const scan=await scanLocalDataset(root,()=>{});if(canonicalDigest(scan.manifest)!==row.snapshot.manifestSha256)fail('Completed local directory changed; choose a new destination and key');if(row.state!=='SUCCEEDED')await call('transfers.progress',{id:row.id,bytes:scan.totalBytes,complete:true});return {transferId:row.id,state:'SUCCEEDED',downloaded:target,bytes:scan.totalBytes};}
-    const adapter=async(op,args)=>{const action=op.slice('datasets.snapshot.'.length),{machine,dataset,version,...fields}=args;return request('transfers.io',{id:row.id,action,...fields});};
-    const scan=await remoteSnapshot(adapter,'datasets',{machine,dataset,version},progress),manifest=JSON.parse(scan.manifest);
-    if(scan.manifestSha256!==row.snapshot.manifestSha256)fail('Fixed source manifest changed after transfer registration');
-    const names=new Set();for(const path of [...manifest.directories,...manifest.files.map(f=>f.path)]){dataPath(path);if(names.has(path))fail('Duplicate manifest path');names.add(path);}
-    for(const folder of manifest.directories){await mkdir(join(root,folder),{recursive:true,mode:0o700});await realDirectory(join(root,folder));}
-    let transferred=0,last=0;
-    for(const entry of scan.files){
-      const path=join(root,entry.path);await mkdir(dirname(path),{recursive:true,mode:0o700});await realDirectory(dirname(path));
-      const prior=await exists(path);if(prior&&(!prior.isFile()||prior.isSymbolicLink()||prior.nlink!==1||prior.size>entry.size))fail('Unsafe or oversized local partial file: '+entry.path);
-      const file=await open(path,(prior?constants.O_RDWR:constants.O_RDWR|constants.O_CREAT|constants.O_EXCL)|(constants.O_NOFOLLOW||0),0o600),source=await scan.openEntry(entry);
-      try{
-        let offset=(await file.stat()).size;transferred+=offset;
-        while(offset<entry.size){const bytes=await source.read(offset);if(!bytes.length)fail('Source returned an incomplete file');let at=0;while(at<bytes.length){const {bytesWritten}=await file.write(bytes,at,bytes.length-at,offset+at);if(!bytesWritten)fail('Local write made no progress');at+=bytesWritten;}offset+=bytes.length;transferred+=bytes.length;await file.sync();progress('DOWNLOADING',{path:entry.path,bytes:transferred,totalBytes:scan.totalBytes});if(Date.now()-last>1000){await call('transfers.progress',{id:row.id,bytes:transferred,complete:false});last=Date.now();}}
-        if(await hashFile(file,entry.size)!==entry.sha256)fail('Local SHA256 differs for '+entry.path+'; no success reported. Inspect/remove ONLY this partial file before retrying');await file.sync();
-      }finally{await file.close();await source.close();}
-    }
-    await scan.verify();
-    const verified=await scanLocalDataset(root,()=>{});if(canonicalDigest(verified.manifest)!==scan.manifestSha256)fail('Local directory differs from fixed snapshot');
-    await publishReceipt(receiptPath,expectedReceipt);
-    if(await exists(target))fail('Destination appeared during download; no overwrite performed');await rename(partial,target);
-    await call('transfers.progress',{id:row.id,bytes:transferred,complete:true});return {transferId:row.id,state:'SUCCEEDED',downloaded:target,bytes:transferred};
-  }catch(error){throw Error(error.message+'\n传输：'+row.id+'；重新执行原 download 命令续传。断点目录：'+partial);}
-  finally{for(const signal of signals)process.off(signal,stop);await lock.close();await unlink(lockPath);}
+  progress({key,state:'STARTING'});try{await visit(resolve(local),remote);}catch(error){error.key=key;error.message+='\n上传编号：'+key+'；用原命令加 --key '+key+' 续传。';throw error;}
+  return {machine,...context,key,uploaded:count,files,bytes,state:inspectOnly?'STATUS':'COMPLETE'};
+}
+export async function uploadTransfer(call,{machine,name,dataset=name,directory,key=randomUUID(),via='auto',stateDirectory,progress=()=>{}}){
+  const row=(await call('transfers.create',{key,kind:'upload',machine,reference:{dataset}})).result;
+  progress('HANDLE',{transferId:row.id,key});
+  const result=await uploadLocalTree(call,{machine,context:{area:'dataset',dataset},local:directory,remote:'.',key,via,stateDirectory,transferId:row.id,progress:value=>progress('UPLOADING',value)});
+  await call('transfers.progress',{id:row.id,bytes:result.bytes,complete:true});return {...result,transferId:row.id,state:'SUCCEEDED'};
+}
+export async function downloadTransfer(call,{machine,dataset,destination,path='.',key=randomUUID(),origin,userId,via,progress=()=>{}}){
+  const row=(await call('transfers.create',{key,kind:'download',machine,reference:{dataset,path}})).result;progress('HANDLE',{transferId:row.id,key});
+  try{const result=await downloadResultFile(call,{machine,context:{area:'dataset',dataset},path,destination,origin,userId,via,directory:path==='.',onProgress:value=>progress('DOWNLOADING',value)});await call('transfers.progress',{id:row.id,bytes:result.bytes,complete:true});return {...result,key,transferId:row.id,state:'SUCCEEDED'};}
+  catch(error){error.message+='\n传输编号：'+row.id+'；重试沿用 --key '+key;throw error;}
 }

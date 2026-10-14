@@ -1,4 +1,4 @@
-import {discloseInfo,serverIdHTML,personalQuotaReadout} from './workbench-ui.js';
+import {discloseInfo,serverIdHTML,personalQuotaReadout,escapeUI as esc} from './workbench-ui.js';
 import {DemoClient} from './client.js';
 import {executionUI} from './execution-ui.js';
 import {registerGpuTasksAdmin} from './admin-gpu-tasks.js';
@@ -6,7 +6,8 @@ import {terminalUI} from './terminal-ui.js';
 import {resourcesUI,monitorSummary} from './resources-ui.js';
 import {datasetsUI} from './datasets-ui.js';
 import {createCommunityUI} from './community-ui.js';
-import {maintenanceUI,operationalMaintenanceUI} from './maintenance-ui.js';
+import {createAnnouncementUI} from './announcement-ui.js';
+import {operationalMaintenanceUI} from './maintenance-ui.js';
 import {maintenanceExperienceUI} from './maintenance-experience.js';
 import {maintenanceActive} from './maintenance-state.js';
 import {transfersUI} from './transfers-ui.js';
@@ -16,25 +17,15 @@ import {copyHelp} from './copy-help-ui.js';
 import {installAuthentication} from './auth-ui.js';
 import {pageForRoute,hashForPage} from './navigation.js';
 import {createAdminUI,adminHashForRoute,adminSectionForRoute,hasAdminSections,onAdminSectionsChange,registerAdminSection} from './admin-ui.js';
-import {registerDatasetStorageAdmin} from './admin-data-storage.js';
 import {membersAdminUI,membersRoute} from './admin-members-ui.js';
 import {maintenanceAdminUI} from './admin-maintenance-ui.js';
 import {toastPosition} from './toast-ui.js';
-registerDatasetStorageAdmin(registerAdminSection);
 const store=await DemoClient.create(),$=s=>document.querySelector(s);
-const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const MACHINES=[];let capacity=0;
 async function loadInventory(){
-  const principal=store.principal,generation=store.authGeneration;
-  if(!principal)return;
+  if(!store.principal)return;
   const visible=store.data?.machines||[];
-  // Member state intentionally contains only authorised hosts. Load the
-  // protected capacity directory after login to retain the locked cards.
-  // Drain module requests before changing cookies. A fresh URL also permits
-  // the next login to retry an earlier failed module load.
-  const catalogue=principal.role==='admin'?visible:(await store.track(import(new URL(`./machines.js?login=${generation}`,import.meta.url).href))).MACHINES;
-  if(generation!==store.authGeneration||principal.userId!==store.principal?.userId||principal.role!==store.principal?.role)throw store.stale();
-  MACHINES.splice(0,MACHINES.length,...catalogue.map(machine=>visible.find(row=>row.id===machine.id)||machine));
+  MACHINES.splice(0,MACHINES.length,...visible);
   capacity=MACHINES.reduce((n,m)=>n+m.cards,0);
 }
 await loadInventory();
@@ -45,7 +36,7 @@ const adminConsole=createAdminUI(store,{navigate:choosePage,getPage:()=>page,toa
 const renderExecution=executionUI(store,()=>render(true),toast);
 const renderDatasets=datasetsUI(store,toast);
 const renderCommunity=createCommunityUI(store,toast);
-const renderMaintenance=maintenanceUI(store,toast);
+const renderAnnouncements=createAnnouncementUI(store,{toast});
 const renderOperationalMaintenance=operationalMaintenanceUI(store,toast,()=>render(true));
 const renderMaintenanceExperience=maintenanceExperienceUI(store,toast,{getPage:()=>page,refresh:()=>render(true)});
 const renderTransfers=transfersUI(store,toast);
@@ -78,8 +69,8 @@ function render(preserve=false){
   $('#edit-profile').hidden=!logged||store.production&&store.data?.taskMetadata?.version!==1;
   if(!logged)$('#profile-dialog').close();
   $('#switch-account').textContent=logged?'退出登录':'登录';$('#refresh-state').disabled=!logged;
-  const titles={me:['我的','账号、额度与个人工作区。'],transfers:['存储','后台传输与断点续传；不占用 GPU。'],work:['我的工作台','准备代码与环境，提交训练，跟进每一次实验。'],resources:['算力总览',''],datasets:['存储',''],community:['协作区','查看通知、反馈问题，和大家协调使用安排。'],maintenance:['历史运维记录','维护申请已停用，此处仅保留历史脚本和结果。'],users:['成员与授权','审批新成员，设置服务器权限和用卡额度。'],admin:['管理后台','']};
-  const concisePage=['community','users','maintenance','admin'].includes(page);
+  const titles={me:['我的','账号、额度与个人工作区。'],transfers:['存储','后台传输与断点续传；不占用 GPU。'],work:['我的工作台','准备代码与环境，提交训练，跟进每一次实验。'],resources:['算力总览',''],datasets:['存储',''],community:['协作区','查看通知、反馈问题，和大家协调使用安排。'],users:['成员与授权','审批新成员，设置服务器权限和用卡额度。'],admin:['管理后台','']};
+  const concisePage=['community','users','admin'].includes(page);
   $('#page-title').textContent=titles[page][0];$('#page-description').textContent=concisePage?'':titles[page][1];$('#page-description').hidden=concisePage||!titles[page][1];$('.help-links').hidden=concisePage;$('#breadcrumb').textContent=titles[page][0];
   if(!concisePage&&titles[page][1])discloseInfo($('#page-description'),'页面说明');
   const descriptionInfo=$('#page-description').closest('.ui-info');if(descriptionInfo)descriptionInfo.hidden=concisePage||!titles[page][1];
@@ -95,8 +86,8 @@ function render(preserve=false){
   }else $('#mode-note').textContent=[note,monitorNotice].filter(Boolean).join(' ');
   $('.demo-note').hidden=!note&&!monitorNotice;
   renderOperationalMaintenance();
-  renderTransfers(page==='transfers');renderResources();renderExecution();renderDatasets();renderCommunity(page==='community');renderMaintenance(page==='maintenance');
-  const activeJobs=store.jobs.filter(job=>job.userId===store.principal?.userId&&!['SUCCEEDED','FAILED','CANCELED'].includes(job.state));
+  renderTransfers(page==='transfers');renderResources();renderExecution();renderDatasets();renderCommunity(page==='community');renderAnnouncements();
+  const activeJobs=store.jobs.filter(job=>!['SUCCEEDED','FAILED','CANCELED'].includes(job.state));
   const grouped=new Map();for(const job of activeJobs){const key=job.cancelRequested?'cancel':job.state;grouped.set(key,(grouped.get(key)||0)+1);}
   const stateNames={RUNNING:['st-run','运行'],STARTING:['st-start','启动'],SUBMITTING:['st-start','提交'],PENDING:['st-queue','排队'],QUEUED:['st-queue','排队'],PREPARING_DATA:['st-prep','准备数据'],cancel:['st-cancel','正在取消'],UNKNOWN:['st-unk','待核对'],PREEMPTING:['st-cancel','正在让位'],PREEMPTED:['st-stop','让位结束']};
   const distribution=[...grouped].map(([key,count])=>{const [css,text]=stateNames[key]||['st-unk','状态未知'];return `<span class="st ${css}"><span class="g" aria-hidden="true"></span>${count} ${text}</span>`;}).join('');
@@ -135,10 +126,10 @@ function renderUsers(){
 function renderEditor(){
   if(!draft){$('#editor').innerHTML='<div class="editor-empty"><h2>审批都处理好了</h2><p class="muted">切到“全部账号”可调整已有授权。</p><button class="button" data-action="invites">查看注册码</button></div>';return;}
   const u=store.get(selected),self=u.id===store.principal.userId,admin=u.role==='admin';
-  const permissionsHelp=copyHelp('服务器额度','勾选服务器后才能使用，卡数不绑定具体显卡。新账号会自动出现在待处理，额度为 0，批准后才能提交训练。','/guide/start');
+  const permissionsHelp=copyHelp('服务器额度','勾选服务器分配用卡额度，所有成员都能查看和操作团队项目与数据。新账号会自动出现在待处理，额度为 0，批准后才能提交训练。','/guide/start');
   const totalHelp=copyHelp('合计额度','排队也占用额度，所有服务器同时受这个上限限制。有额度仍可能需要等空卡。','/guide/queue');
   const accountHelp=()=>copyHelp('账号权限','管理员免个人累计卡数额度，单次申请仍受目标物理卡数限制，资源不足正常排队；可管理账号，并访问已启用的服务器管理终端。只授予受信任的维护者。','/guide/start');
-  const deleteHelp=copyHelp('删除条件','先暂停账号、确认没有未完成任务后才能删除，数据和历史保留。不能删除当前账号或移除最后一名管理员。','/guide/start');
+  const deleteHelp=copyHelp('删除条件','删除登录资格，数据和任务历史保留。不能删除当前账号或移除最后一名管理员。','/guide/start');
   $('#editor').innerHTML=`<span class="hero-label">${pending(u)?'待审批':'成员授权'}</span>
     <div class="editor-head"><div><h2>${esc(u.name)}</h2><p class="muted"><span class="member-username">${esc(u.username)}</span> · ${label(u)}${self?' · 当前账号':''}</p></div><button class="button" data-action="reset-password">重置密码</button></div>
     <div class="editor-body">${admin?`<div class="approval-note copy-caption"><span>全部服务器 · 免个人额度</span>${accountHelp()}</div>`:`
@@ -148,7 +139,7 @@ function renderEditor(){
       <div class="permissions">${MACHINES.map(m=>`<div class="permission ${draft.limits[m.id]?'granted':''}"><label class="permission-top"><input type="checkbox" data-machine="${esc(m.id)}" ${draft.limits[m.id]?'checked':''}><span class="permission-name">${serverIdHTML(m.id)}</span><small class="permission-spec">${m.cards} × ${esc(m.model)}</small></label><div class="permission-bottom"><span class="permission-meter" data-permission-meter="${esc(m.id)}" aria-hidden="true">${Array.from({length:m.cards},()=>'<i></i>').join('')}</span><label>最多使用<input class="quota-input" type="number" min="1" max="${m.cards}" data-quota="${esc(m.id)}" value="${draft.limits[m.id]||0}" ${draft.limits[m.id]?'':'disabled'}> / ${m.cards} 张</label></div></div>`).join('')}</div>
       <div class="total-limit"><div class="copy-caption"><label for="member-total"><strong>合计额度</strong></label>${totalHelp}</div><span><input id="member-total" class="quota-input" type="number" min="0" max="${capacity}" data-quota="total" value="${draft.total}"> / ${capacity} 张</span></div>
       <div class="member-draft-note copy-caption" hidden><span>刷新会丢弃修改。</span>${copyHelp('授权草稿','自动更新会保留正在填写的草稿。关闭或刷新页面会丢弃未保存的修改。','/guide/start')}</div>`}
-      <details class="account-settings"><summary>账号权限与状态</summary><div class="copy-caption"><span>管理权限</span>${accountHelp()}</div><div class="account-actions"><button class="button" data-action="role" ${self?'disabled title="不能修改当前账号"':''}>${admin?'改为普通用户':'设为管理员'}</button><button class="button" data-action="enabled" ${self?'disabled title="不能暂停当前账号"':''}>${u.enabled?'暂停账号':'恢复账号'}</button><span class="member-action-help copy-caption"><button class="button danger" data-action="delete" ${self||u.enabled?'disabled':''} title="${self?'不能删除当前账号':u.enabled?'先暂停账号':'删除账号'}">删除账号</button>${deleteHelp}</span></div></details>
+      <details class="account-settings"><summary>账号权限与状态</summary><div class="copy-caption"><span>管理权限</span>${accountHelp()}</div><div class="account-actions"><button class="button" data-action="role" ${self?'disabled title="不能修改当前账号"':''}>${admin?'改为普通用户':'设为管理员'}</button><button class="button" data-action="enabled" ${self?'disabled title="不能暂停当前账号"':''}>${u.enabled?'暂停账号':'恢复账号'}</button><span class="member-action-help copy-caption"><button class="button danger" data-action="delete" ${self?'disabled':''} title="${self?'不能删除当前账号':'删除账号'}">删除账号</button>${deleteHelp}</span></div></details>
     </div>`;updateDirty();
 }
 function updateDirty(){
@@ -165,7 +156,7 @@ function updateDirty(){
 }
 async function refresh(){if(refreshing||!store.principal)return;refreshing=true;shell.syncStatus('syncing');try{await store.refresh();render(true);shell.syncStatus('ready',Date.now());if(members.active()&&$('#invites-dialog').open)await loadInvites();}catch(e){shell.syncStatus('failed');report(e);}finally{refreshing=false;}}
 async function loadInvites(){const stamp=members.capture();if(!members.current(stamp))return false;const result=await store.call('invites.list');if(!members.current(stamp))return false;inviteCode=result.code;const i=result.invitations[0];$('#invites-content').innerHTML=`<section class="invite-card"><div class="invite-heading"><div class="copy-caption"><h3>当前注册码</h3>${copyHelp('注册码','注册码不是登录密码，新账号额度为 0，需要管理员授权，不会获得管理员权限。复制给同学即可注册，换新或停用只影响后续注册。','/guide/start')}</div><span class="badge ${i.available?'active':'pending'}">${i.available?'可用':'未启用'}</span></div>${inviteCode?`<label class="field">注册码<input id="current-invite" readonly spellcheck="false" value="${esc(inviteCode)}"></label><button class="button" data-action="copy-invite">复制注册码</button>`:`<p class="approval-note">${i.available?'旧码无法显示，请换新一次。':'生成一个注册码后即可邀请同学。'}</p>`}<p class="muted">已注册 ${i.uses} 个账号</p><div class="invite-actions"><button class="button primary" data-action="rotate-invite">${i.createdAt?'换新注册码':'生成注册码'}</button><button class="button danger" data-action="disable-invite" ${i.enabled?'':'disabled'}>停用注册</button></div></section>`;return true;}
-async function guardedChange(action){if(dirty()){toast('请先保存或撤销额度草稿。');return;}await action();}
+async function guardedChange(action){await action();}
 document.addEventListener('click',async event=>{
   const b=event.target.closest('button,a[data-nav]');if(!b||b.disabled)return;
   if(members.owns(b)&&!members.active())return;
@@ -189,10 +180,10 @@ document.addEventListener('click',async event=>{
     case 'rotate-invite':confirm('换一个新注册码？','旧码立即失效；已有账号、额度和训练不受影响。',async()=>{await store.call('invites.rotate',{role:'member'});await loadInvites();toast('新注册码已生效');});break;
     case 'disable-invite':confirm('停用新用户注册？','已有用户仍能正常登录和训练。',async()=>{await store.call('invites.disable',{role:'member'});await loadInvites();});break;
     case 'reset-draft':draft=store.get(selected);renderEditor();break;
-    case 'save-policy':{const stamp=members.capture();if(pending(store.get(selected))&&draft.total<1)throw Error('批准时请至少选择一台机器并分配 1 张卡。');b.disabled=true;try{await store.save(selected,draft);if(members.current(stamp)){draft=null;render();toast('额度已保存，用户端会自动更新');}}catch(e){if(members.current(stamp))$('#policy-error').textContent=e.message;}finally{b.disabled=false;}break;}
-    case 'grant-full':confirm('分配全部机器最大额度？','仍是普通用户，不会获得账号管理或宿主机 root 权限。',async()=>{await store.call('policy.full',{userId:selected,policyVersion:store.get(selected).policyVersion});draft=null;render();toast('已批准全部用卡额度');});break;
+    case 'save-policy':{const stamp=members.capture();b.disabled=true;try{await store.save(selected,draft);if(members.current(stamp)){draft=null;render();toast('额度已保存，用户端会自动更新');}}catch(e){if(members.current(stamp))$('#policy-error').textContent=e.message;}finally{b.disabled=false;}break;}
+    case 'grant-full':await store.call('policy.full',{userId:selected});draft=null;render();toast('已批准全部用卡额度');break;
     case 'reset-password':$('#password-form').reset();$('#password-error').textContent='';$('#password-account').textContent=`账号：${store.get(selected).username}`;$('#password-dialog').showModal();break;
-    case 'role':await guardedChange(()=>{const u=store.get(selected),role=u.role==='admin'?'member':'admin';confirm(role==='admin'?'授予管理员权限？':'改为普通用户？',role==='admin'?'可管理全部账号，并在已启用节点访问宿主机 root。只授予完全受信任的维护者。':'恢复个人额度并撤销旧登录。',async()=>{await store.setRole(u.id,role);draft=null;render();});});break;
+    case 'role':await guardedChange(()=>{const u=store.get(selected),role=u.role==='admin'?'member':'admin';confirm(role==='admin'?'授予管理员权限？':'改为普通用户？',role==='admin'?'可管理账号、节点与平台维护。系统盘不向平台操作开放。':'恢复个人额度并撤销旧登录。',async()=>{await store.setRole(u.id,role);draft=null;render();});});break;
     case 'enabled':await guardedChange(()=>{const u=store.get(selected);confirm(u.enabled?'暂停账号？':'恢复账号？','暂停会撤销登录并阻止新任务，但不会结束已有训练。',async()=>{await store.setEnabled(u.id,!u.enabled);draft=null;render();});});break;
     case 'delete':{const u=store.get(selected);confirm(`删除 ${u.username}？`,'删除登录资格和授权，保留任务历史与工作区文件。',async()=>{await store.call('users.delete',{userId:u.id});selected=null;draft=null;render();toast('账号已删除');});break;}
     case 'confirm-action':{const fn=confirmAction;confirmAction=null;b.disabled=true;try{await fn?.();$('#confirm-dialog').close();}finally{b.disabled=false;}break;}
@@ -215,7 +206,7 @@ function syncAuthGuide(){
 }
 const authGuideObserver=new MutationObserver(syncAuthGuide);
 for(const dialog of [$('#login-dialog'),$('#register-dialog')])authGuideObserver.observe(dialog,{attributes:true,attributeFilter:['open']});
-members=membersAdminUI(store,{getPage:()=>page,render:renderMembers,canCreate:()=>!dirty(),onCreated:user=>{selected=user.id;draft=null;filter='all';render(true);},toast,unmount:()=>{selected=null;draft=null;inviteCode=null;confirmAction=null;}});
+members=membersAdminUI(store,{getPage:()=>page,render:renderMembers,canCreate:()=>true,onCreated:user=>{selected=user.id;draft=null;filter='all';render(true);},toast,unmount:()=>{selected=null;draft=null;inviteCode=null;confirmAction=null;}});
 maintenanceAdminUI(store,renderMaintenanceExperience,{getPage:()=>page,toast,refresh:()=>render(true)});
 installAuthentication();
 if(store.principal)defaultPage();render();if(store.principal)shell.syncStatus('ready',Date.now());else openLogin();

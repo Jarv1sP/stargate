@@ -1,16 +1,9 @@
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {randomUUID,createHash} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
 export const password='Retired-Maintenance-Fixture-2026!';
-export function seedLegacy(service,owner,{state='PENDING',approver,script='printf "old audit only\\n"',machine=MACHINES[0].id,title='历史系统维护',...rest}={}){
-  const id=randomUUID(),at=Date.now(),data={payload:{machine,title,reason:'历史记录',script,cwd:'/root',timeoutSec:300},owner:{id:owner.id,username:owner.username},scriptSha256:createHash('sha256').update(script).digest('hex'),executionKey:randomUUID(),...rest};
-  if(approver)data.approver=approver;
-  service.db.prepare('INSERT INTO maintenance_requests(id,owner_id,client_key,digest,state,revision,created_at,updated_at,data) VALUES(?,?,?,?,?,1,?,?,?)').run(id,owner.id,randomUUID(),'historical-digest',state,at,at,JSON.stringify(data));
-  service.audit(owner.username,'maintenance.create',id,'historical-audit');return {id,data};
-}
 export async function fixture(t){
   const dir=await mkdtemp(join(tmpdir(),'gpuq-maintenance-retired-')),database=join(dir,'db'),bootstrap=join(dir,'bootstrap'),status=join(dir,'status');
   await writeFile(bootstrap,JSON.stringify({username:'admin',password}));
@@ -19,9 +12,7 @@ export async function fixture(t){
   const bridge=async(machine,operation,args)=>{
     calls.push({machine,operation,args:structuredClone(args)});
     if(fault)throw fault;
-    if(operation==='host.exec')return {id:args.key,state:'SUCCEEDED',stdout:'fixture admin\n',stderr:'',exitCode:0};
-    if(operation!=='host.status')throw Error('Unexpected mutation');
-    if(!receipts.has(args.id))throw Error('No receipt');return structuredClone(receipts.get(args.id));
+    throw Error('Unexpected mutation');
   };
   let service=await PortalService.open(database,bootstrap,status,bridge);clearInterval(service.executionTimer);
   let beforeCleanup=async()=>{};

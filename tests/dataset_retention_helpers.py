@@ -14,11 +14,11 @@ import threading
 
 def protected_original(cache, module, root, *, source_trees=None):
     spec = importlib.util.spec_from_file_location('retention_fixture_tier',
-        Path(__file__).resolve().parents[1]/'deploy'/'dataset-tier.py')
+        Path(__file__).resolve().parents[1]/'node'/'dataset-tier.py')
     tier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tier)
     spec = importlib.util.spec_from_file_location('retention_fixture_cache',
-        Path(__file__).resolve().parents[1]/'deploy'/'dataset-cache.py')
+        Path(__file__).resolve().parents[1]/'node'/'dataset-cache.py')
     original = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(original)
     backing = original.DatasetCache(Path(root), reserve_bytes=0)
@@ -41,7 +41,7 @@ def protected_original(cache, module, root, *, source_trees=None):
                 owners = cache._dataset(internal, dataset)['owners']
             source_id = 'fixture-' + hashlib.sha256((dataset+version).encode()).hexdigest()[:32]
             backing.sources[source_id] = (source_trees or {}).get(key,cache._paths(dataset, version)['ready']/'data')
-            backing.register_manifest(source_actor, dataset, record['manifest'], owners)
+            backing.register_manifest(source_actor, dataset, record['manifest'], owners, _version_name=version)
             backing.attach_source(source_actor, dataset, version, source_id)
             backing.materialize(source_actor, dataset, version)
             pin = 'authority-fixture-' + hashlib.sha256((dataset+version).encode()).hexdigest()[:32]

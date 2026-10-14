@@ -67,7 +67,9 @@ $unicode = [string][char]0x7528 + [char]0x6237
 $root = Join-Path $TestRoot ("space $unicode ! & client")
 $bin = Join-Path $root 'bin'
 $launcher = Join-Path $bin 'gpuctl.cmd'
-$install = { Install-GpuqClient -Origin 'https://gpu.example.com' -InstallRoot $root -NodePath $NodePath }
+$install = {
+    Install-GpuqClient -Origin 'https://gpu.example.com' -InstallRoot $root -NodePath $NodePath
+}
 
 foreach ($bad in @('http://gpu.example.com', 'https://user:pass@gpu.example.com', 'https://gpu.example.com/path', 'https://gpu.example.com/?x=1', 'https://gpu.example.com/#x', '__GPUQ_PUBLIC_ORIGIN__', "https://gpu.example.com`n")) {
     Assert-Throws { Resolve-GpuqOrigin $bad } "Reject invalid origin $bad"
@@ -87,6 +89,7 @@ Assert-True ($firstLauncher -match 'setlocal DisableDelayedExpansion') 'Disable 
 Assert-True ($firstLauncher -match 'node\.exe "%~dp0\.\.\\releases\\[a-f0-9]{32}\\gpuctl\.mjs" %\*') 'Quoted relative path and literal argument forwarding'
 Assert-True ($script:Paths.User -eq ('C:\Unrelated Path;' + $bin)) 'Only append this installation to user PATH'
 Assert-True ([IO.Directory]::GetDirectories((Join-Path $root 'releases')).Count -eq 1) 'One validated release installed'
+$installedClient = [IO.Directory]::GetFiles((Join-Path $root 'releases'), 'gpuctl.mjs', [IO.SearchOption]::AllDirectories)[0]
 
 $script:Paths.User = 'C:\Unrelated Path;' + $bin + ';"' + $bin.ToUpperInvariant() + '"'
 $second = & $install

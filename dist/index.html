@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="./workspace.css" />
   <link rel="stylesheet" href="./datasets.css" />
   <link rel="stylesheet" href="./community.css" />
+  <link rel="stylesheet" href="./announcements.css" />
   <link rel="stylesheet" href="./maintenance.css" />
   <link rel="stylesheet" href="./fonts.css" />
   <link rel="stylesheet" href="./starbase.css" />
@@ -25,9 +26,7 @@
   <link rel="stylesheet" href="./resources.css" />
   <link rel="stylesheet" href="./members.css" />
   <link rel="stylesheet" href="./copy-help.css" />
-  <link rel="stylesheet" href="./dataset-flow.css" />
   <link rel="stylesheet" href="./admin.css" />
-  <link rel="stylesheet" href="./dataset-warehouse.css" />
   <link rel="stylesheet" href="./admin-gpu-tasks.css" />
   <link rel="preload" href="./vendor/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin />
 </head>
@@ -70,13 +69,11 @@
 <section data-page="datasets" id="page-datasets" hidden></section>
 <section data-page="transfers" id="page-transfers" hidden></section>
 <section data-page="community" id="page-community" hidden></section>
-<section data-page="maintenance" id="page-maintenance" hidden></section>
 <section data-page="resources" id="page-resources" hidden><div class="section-kicker"><span>实验室服务器</span><span id="resource-summary">我的额度：0 张</span></div><p id="monitor-status" class="monitor-status" role="status"></p><div class="resource-grid" id="machine-grid"></div></section>
 <div class="help-links copy-caption" aria-label="使用帮助"><span>首次使用</span><span>从第一次登录，到一次完整训练。</span></div>
 <footer><span class="wordmark footer-wordmark" role="img" aria-label="STARGATE">STARGATE</span><span>独立开源研究计算工作台</span></footer>
 </main>
   </div>
-  <div id="maintenance-root-parking" hidden inert><details id="host-maintenance" class="host-maintenance" hidden><summary>主机运维 · ROOT</summary><label>服务器<select data-maintenance-root-machine></select></label><div class="terminal-controls"><button type="button" id="terminal-root-open" class="button danger">新建 ROOT 运维终端</button><button type="button" id="terminal-root-reconnect" class="button">重连 ROOT 会话</button></div></details></div>
   <div id="members-parking" hidden inert>
 <section id="page-users" aria-label="成员与额度" hidden>
 <div class="management-toolbar"><div class="filter-tabs"><button id="filter-pending" aria-pressed="true">待处理 0</button><button id="filter-all" aria-pressed="false">全部账号</button></div><div class="management-actions"><button class="button" data-action="invites">注册邀请</button><button type="button" class="button primary" data-member-create>新建账号</button></div></div>
