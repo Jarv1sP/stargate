@@ -113,7 +113,8 @@ def job_operation(operation,args):
                 '--env','GPUQ_CONSOLE_OCI=1','-n','portal-'+jid[:8],'-u',gpuq_owner(job),
                 '--cwd',str(workspace(job['userId'])),'--submit-key',jid,'--','/usr/bin/python3',str(HERE/'oci-runner.py'),jid)
             node_id=result['job_id']
-        if node_id is None:return {'state':'UNKNOWN','schedulerState':'UNKNOWN' if dispatched.exists() else 'NOT_SUBMITTED','error':'未知，请按原编号查询。','assignedIndices':[]}
+        # No GPUQ row for this submit key: safe to resubmit, GPUQ dedups by the original key.
+        if node_id is None:return {'state':'UNKNOWN','schedulerState':'NOT_SUBMITTED','error':'未知，请按原编号查询。','assignedIndices':[]}
         data=gpu('show',node_id);state=data.get('job',data)
         if (operation=='cancel' or canceled.exists()) and state.get('state') not in ('SUCCEEDED','FAILED','CANCELED'):
             gpu('cancel',node_id);data=gpu('show',node_id);state=data.get('job',data)
@@ -195,7 +196,8 @@ def terminal_op(operation,args):
                 atomic_json(session,session_state)
                 # The terminal shares the persistent OCI environment with all jobs.
                 command=['/usr/bin/systemd-run','--user','--collect','--unit=amax-term-'+jid,
-                    '--property=KillMode=control-group','--property=Delegate=yes','--property=MemoryMax=8G',
+                    '--property=KillMode=control-group','--property=KillSignal=SIGHUP','--property=TimeoutStopSec=5',
+                    '--property=Delegate=yes','--property=MemoryMax=8G',
                     '--property=CPUQuota=200%','--property=TasksMax=2048']
                 if CONFIG.get('memoryPool'):command+=['--slice=gpuq-workloads.slice','--property=OOMPolicy=kill']
                 run(command+['/usr/bin/python3',str(HERE/'terminal-helper.py'),jid])
@@ -218,7 +220,10 @@ def terminal_op(operation,args):
         if operation=='terminal.close':
             spec=module('project-store').read_json(file)
             if spec.get('interactive'):job_operation('cancel',{'job':spec})
-            else:run(['/usr/bin/systemctl','--user','stop','amax-term-'+jid+'.service'])
+            else:
+                try:run(['/usr/bin/systemctl','--user','stop','amax-term-'+jid+'.service'])
+                except ValueError as e:
+                    if 'not loaded' not in str(e):raise  # Shell already exited and its unit was collected.
             if session_state:session_state['state']='CLOSED';atomic_json(session,session_state)
             return terminal_status({'id':jid})
         if operation=='terminal.exchange':

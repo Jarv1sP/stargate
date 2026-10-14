@@ -144,15 +144,23 @@ class ProjectContract(unittest.TestCase):
             result=probe.probe({**self.config,'gpu':'/test-only/missing-gpu'})
         self.assertIsNone(result['gpus']);self.assertIsNone(result['tasks']);self.assertEqual(len(result['disks']),1)
 
-    def test_unknown_submit_and_cancel_stay_unknown_under_original_key(self):
+    def test_lost_submit_redispatches_and_cancel_stays_unknown_under_original_key(self):
         node=self.node();node.projects().store.create('alice','demo');jid=self.key()
         spec={'id':jid,'userId':'bob','ownerId':'alice','username':'bob','project':'demo','cards':1,'argv':['python','train.py'],'workspace':True}
         node.gpu=lambda *a:(_ for _ in ()).throw(TimeoutError('lost reply'))
         self.assertEqual(node.process('watch',{'job':spec})['schedulerState'],'NOT_SUBMITTED')
         with self.assertRaises(TimeoutError):node.process('sync',{'job':spec})
-        self.assertEqual(node.process('watch',{'job':spec})['schedulerState'],'UNKNOWN')
+        # Absent from GPUQ after a lost reply: redispatch is safe, GPUQ dedups by the original key.
+        self.assertEqual(node.process('watch',{'job':spec})['schedulerState'],'NOT_SUBMITTED')
         self.assertEqual(node.process('cancel',{'job':spec})['state'],'UNKNOWN')
         self.assertEqual(node.process('sync',{'job':spec})['state'],'UNKNOWN')
+
+    def test_terminal_close_after_shell_exit_is_closed(self):
+        node=self.node();jid=self.key();folder=node.module('project-store').private_dir(node.ROOT/'terminals',create=True)
+        node.atomic_json(folder/(jid+'.json'),{'id':jid,'userId':'alice','project':'demo'})
+        def run(argv,timeout=18):raise ValueError('Failed to stop amax-term-'+jid+'.service: Unit amax-term-'+jid+'.service not loaded.')
+        node.run=run;node.terminal_alive=lambda folder,jid:False
+        self.assertEqual(node.process('terminal.close',{'id':jid})['state'],'STOPPED')
 
     def node(self):
         code=self.base/'code';code.mkdir(mode=0o700)
