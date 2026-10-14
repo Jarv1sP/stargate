@@ -54,6 +54,7 @@ try{
   assert.doesNotMatch(await row.textContent(),/训练上报超时/);assert.equal(JSON.stringify(stored),before);
   assert.equal(await page.locator('body img[src="x"]').count(),0);assert.deepEqual(errors,[]);
   const progressDetail=row.locator('summary[aria-label="进度状态"]');if(!await progressDetail.evaluate(el=>el.parentElement.open))await progressDetail.click();
-  await page.screenshot({path:'/home/platform-user/work/stargate-handoff/m3-community-status/combined-job99-390.png',animations:'disabled'});
-  console.log(JSON.stringify({status:'passed',checks:['real SQLite/cookie HTTP/assets','390px cached progress shows expired observation','no stale live percentage','original lifecycle and receipt unchanged','fresh native report stays fresh','no starts/cancel/retry'],screenshot:'m6-job99-stale-progress.png'}));
+  const screenshot=join(dir,'job-progress-390.png');
+  await page.screenshot({path:screenshot,animations:'disabled'});
+  console.log(JSON.stringify({status:'passed',checks:['real SQLite/cookie HTTP/assets','390px cached progress shows expired observation','no stale live percentage','original lifecycle and receipt unchanged','fresh native report stays fresh','no starts/cancel/retry'],screenshot}));
 }finally{await browser?.close();if(server)await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});}

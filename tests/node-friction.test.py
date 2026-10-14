@@ -96,6 +96,15 @@ class DirectoryContract(unittest.TestCase):
         self.assertEqual(later['retainUntil'],first['retainUntil'])
         self.assertEqual(self.trash.purge({'key':key,'actor':{'userId':'admin','isAdmin':True}})['state'],'PURGED')
 
+    def test_directory_purge_does_not_follow_symlinks_outside_payload(self):
+        self.upload('a.txt',b'data');folder=Path(self.config['datasetsRoot'],'shared')
+        outside=self.base/'outside';outside.mkdir();(outside/'keep.txt').write_bytes(b'keep')
+        (folder/'link').symlink_to(outside,target_is_directory=True)
+        key=self.key();row=self.trash.delete(folder,key,'dataset',{'userId':'alice'})
+        self.assertEqual(self.trash.purge({'key':key,'actor':{'userId':'admin','isAdmin':True}})['state'],'PURGED')
+        self.assertFalse((Path(self.config['datasetsRoot'])/'.trash'/(key+'.data')).exists())
+        self.assertEqual((outside/'keep.txt').read_bytes(),b'keep')
+
     def test_paths_cannot_escape_or_follow_symlink_into_system_disk(self):
         folder=self.data.dataset_root(self.config,'shared',create=True);(folder/'escape').symlink_to('/etc',target_is_directory=True)
         for path in ('../etc/passwd','/etc/passwd','escape/passwd'):

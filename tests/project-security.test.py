@@ -53,6 +53,34 @@ class ProjectContract(unittest.TestCase):
         args=engine.arguments({'project':'demo','argv':['/bin/bash']},{'environmentMode':'oci','workspace':True},True,[],[(3,'/datasets',False)])
         self.assertIn(str(self.base/'dataset')+':/datasets:rw',args);self.assertFalse('--device' in args)
 
+    def test_run_project_keeps_workspace_writable_and_shared_between_tasks(self):
+        oci=f.module('personal-oci');store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config)
+        store.create('alice','demo');dataset_fd=self.data.open_directory(Path(self.config['datasetsRoot']))
+        self.addCleanup(os.close,dataset_fd);outputs=[]
+        for index,terminal in enumerate((False,False,True)):
+            spec={'id':self.key(),'userId':'alice','project':'demo','argv':['python','train.py']}
+            paths=store.runtime_paths(spec,spec['id']);outputs.append(paths['output'])
+            fds={name:self.data.open_directory(paths[name]) for name in ('code','home','output')}
+            for fd in fds.values():self.addCleanup(os.close,fd)
+            engine=oci.PersonalOCI.__new__(oci.PersonalOCI);engine.config={'machine':'test'};engine.owner='alice'
+            def execute(job,project,is_terminal,uuids,mounts,*,control):
+                engine._mount_sources={fd:os.readlink('/proc/self/fd/'+str(fd)) for fd,_,_ in mounts}
+                args=engine.arguments(job,project,is_terminal,uuids,mounts,control)
+                self.assertIn(str(paths['code'])+':/workspace:rw',args)
+                self.assertIn(str(paths['output'])+':/outputs:rw',args)
+                self.assertIn(str(self.config['datasetsRoot'])+':/datasets:'+('rw' if is_terminal else 'ro'),args)
+                # Substitute only OCI transport; shared workspace/output bytes are real.
+                shared=paths['code']/'shared.txt'
+                if index:self.assertEqual(shared.read_text(),str(index-1))
+                shared.write_text(str(index));(paths['output']/'result.txt').write_text(str(index));return 0
+            engine.execute=execute
+            with patch.object(oci,'PersonalOCI',return_value=engine):
+                project={**paths,'readonly':True} if index else paths
+                self.assertEqual(oci.run_project(self.config,spec,project,terminal,[],fds['code'],fds,
+                    [(dataset_fd,'/datasets')]),0)
+        self.assertEqual(len(set(outputs)),3)
+        self.assertEqual([(output/'result.txt').read_text() for output in outputs],['0','1','2'])
+
     def test_only_assigned_cdi_device_is_used(self):
         engine=f.module('personal-oci').PersonalOCI.__new__(f.module('personal-oci').PersonalOCI);engine.owner='alice';engine._mount_sources={}
         file=self.base/'cdi.json';file.write_text(json.dumps({'kind':'nvidia.com/gpu','devices':[{'name':'GPU-a'},{'name':'GPU-b'}]}));engine.config={'machine':'test','personalOci':{'cdiSpec':str(file)}}
@@ -80,10 +108,27 @@ class ProjectContract(unittest.TestCase):
         self.assertIn('availableBytes',samples[0]);self.assertEqual(samples[0]['mountPoint'],str(self.base))
         with patch('os.statvfs',side_effect=OSError('offline')):self.assertIsNone(self.data.disk_samples(self.config)[0]['availableBytes'])
 
-    def test_cdi_cannot_add_a_system_disk_device(self):
-        oci=f.module('personal-oci');file=self.base/'cdi.json'
-        file.write_text(json.dumps({'kind':'nvidia.com/gpu','devices':[{'name':'GPU-a','containerEdits':{'deviceNodes':[{'path':'/dev/sda'}]}}]}))
-        with self.assertRaisesRegex(ValueError,'系统盘设备'):oci.cdi_selection({'personalOci':{'cdiSpec':str(file)}},['GPU-a'])
+    def test_four_real_nvidia_cdi_mount_sets_accept_only_the_assigned_gpu(self):
+        oci=f.module('personal-oci');samples=json.loads((ROOT/'tests/fixtures/nvidia-cdi-mounts.json').read_text())['samples']
+        self.assertEqual(len(samples),4)
+        for sample in samples:
+            with self.subTest(sample=sample['sample']):
+                file=self.base/'cdi.json'
+                file.write_text(json.dumps({'kind':sample['kind'],'devices':[{'name':name} for name in sample['deviceNames']],
+                    'containerEdits':{'mounts':sample['mounts']}}))
+                engine=oci.PersonalOCI.__new__(oci.PersonalOCI);engine.owner='alice';engine._mount_sources={}
+                engine.config={'machine':'test','personalOci':{'cdiSpec':str(file)}}
+                assigned=sample['deviceNames'][:1]
+                args=engine.arguments({'project':'demo','argv':['python']},{'environmentMode':'oci'},False,assigned,[])
+                self.assertEqual([args[i+1] for i,arg in enumerate(args[:-1]) if arg=='--device'],[sample['kind']+'='+assigned[0]])
+                self.assertFalse('--volume' in args)  # Driver mounts belong to the standard CDI, not a second platform list.
+
+    def test_system_disk_path_outside_cdi_is_not_mounted(self):
+        oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI);engine.config=self.config
+        engine._mount_sources={};fd=os.open('/etc/hosts',os.O_RDONLY|os.O_NOFOLLOW);self.addCleanup(os.close,fd)
+        with self.assertRaisesRegex(ValueError,'系统盘'):
+            with engine.named_mounts([(fd,'/etc/hosts',True)],[]):self.fail('Non-CDI system path was mounted')
+        self.assertEqual(engine._mount_sources,{})
 
     def test_gpu_interactive_terminal_accepts_assigned_cdi_and_rw_datasets(self):
         oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI)

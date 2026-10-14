@@ -88,7 +88,7 @@ export class AliyunShare{
   }
   async list(source){
     const share=await this.shareToken(source);const files=[];let marker='';
-    for(let page=0;page<5;page++){
+    while(true){
       const data=await this.json(API+'/adrive/v3/file/list',{share_id:source.shareId,parent_file_id:'root',limit:100,marker,order_by:'name',order_direction:'ASC'},{'x-share-token':share});
       if(!Array.isArray(data.items))fail('无法读取分享文件。');
       for(const file of data.items){
@@ -98,7 +98,6 @@ export class AliyunShare{
       }
       marker=data.next_marker||'';if(!marker)return files;
     }
-    fail('分享内容过多。请将压缩包作为单个文件分享后再导入。',400);
   }
   async resolve(source,file){
     const generation=this.credentialGeneration;

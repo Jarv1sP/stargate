@@ -41,17 +41,8 @@ def cdi_selection(config,uuids):
     value=json.loads(path.read_text())
     selected=[d for d in value.get('devices',[]) if d.get('name') in uuids]
     if any(gpu not in {d.get('name') for d in selected} for gpu in uuids):raise ValueError('所选GPU的CDI尚未配置，请联系安装者。')
-    # Sole system-disk exception: NVIDIA driver files/tools, mounted read-only.
-    for edit in [value.get('containerEdits',{}),*(d.get('containerEdits',{}) for d in selected)]:
-        for device in edit.get('deviceNodes',[]):
-            source=device.get('hostPath',device.get('path',''))
-            if not re.fullmatch(r'/dev/(nvidia(?:[0-9]+|ctl|modeset|uvm|uvm-tools)|nvidia-caps/nvidia-cap[0-9]+)',source):
-                raise ValueError('容器只能使用分配的NVIDIA设备，不能挂入系统盘设备。')
-        for mount in edit.get('mounts',[]):
-            source=Path(mount['hostPath']);base=source.name
-            driver=base.startswith(('libcuda.so','libnvidia-','nvidia-')) or base in ('nvidia-smi','10_nvidia.json')
-            if not driver or source.is_dir() or 'ro' not in mount.get('options',[]) or base=='ld.so.cache':
-                raise ValueError('系统盘只允许CDI以只读方式挂入NVIDIA驱动文件，不能挂入目录或其他系统文件。')
+    # The installer generates this trusted NVIDIA CDI from the installed driver.
+    # Let the engine apply its read-only driver mounts; select only allocated GPUs.
     return [value['kind']+'='+gpu for gpu in uuids]
 
 
@@ -365,7 +356,7 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
     """Both existing scheduler profiles enter here after allocation/limits."""
     owner = PersonalOCI(config, spec.get('ownerId') or spec['userId'])
     owner.stderr_sink = stderr_sink
-    mounts = [(workfd, '/workspace', project.get('readonly', not terminal)), (project_fds['home'], '/home/gpuq', False),
+    mounts = [(workfd, '/workspace', False), (project_fds['home'], '/home/gpuq', False),
               (project_fds['output'], '/outputs', False)]
     mounts += [(fd, target, not terminal) for fd, target in dataset_fds]
     if runtimefd is not None:

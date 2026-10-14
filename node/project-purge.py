@@ -127,7 +127,8 @@ class Trash:
                             engine=module('personal-oci').PersonalOCI(self.config,owner)
                             # Remove the actual private container, not only its workspace files.
                             engine.run('rm','--force',head['container'])
-                    if __import__('stat').S_ISDIR(info.st_mode):shutil.rmtree(name,dir_fd=fd)
+                    # Python 3.10: anchor the symlink-safe traversal at the held data-directory FD.
+                    if __import__('stat').S_ISDIR(info.st_mode):shutil.rmtree('/proc/self/fd/'+str(fd)+'/'+name)
                     else:os.unlink(name,dir_fd=fd)
                 os.fsync(fd)
             finally:os.close(fd)
