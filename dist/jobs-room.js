@@ -17,6 +17,8 @@ const shortServer=id=>String(id||'').replace(/^amax-/,'');
 const STAGES=['提交','排队','启动','运行','结束'];
 const stage=job=>QUEUED.includes(job.state)?1:job.state==='STARTING'?2:job.state==='RUNNING'?3:4;
 const RING=245,ARC=327;
+// Numbers ease up to their value, as in the approved design.
+function tick(element,to,fix=0){if(!element)return;const from=parseFloat(element.dataset.v)||0;element.dataset.v=to;if(reducedMotion()||from===to){element.textContent=(+to).toFixed(fix);return;}const start=performance.now();(function frame(now){const k=Math.min(1,(now-start)/800),e=1-Math.pow(1-k,3);element.textContent=(from+(to-from)*e).toFixed(fix);if(k<1)requestAnimationFrame(frame);})(start);}
 const falcon='<svg class="jr-f9" width="46" height="170" viewBox="0 0 60 220" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><path d="M30 6c6 9 7.5 20 7.5 30v34h-15V36c0-10 1.5-21 7.5-30z"/><path d="M22.5 70h15v9h-15z"/><path d="M24 79h12v104H24z"/><path d="M24 88l-6 3v4l6-1M36 88l6 3v4l-6-1"/><path d="M24 183l-11 20M36 183l11 20M30 183v20"/><path d="M6 205h48"/><path class="jr-plume" d="M27 186c0 8 3 14 3 14s3-6 3-14"/></svg>';
 const tower='<svg class="jr-catch" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="1.2" aria-label="已回收"><path d="M15 2v26M11 28h8"/><path class="jr-arm jr-arm-l" d="M4 12h11"/><path class="jr-arm jr-arm-r" d="M15 12h11"/><rect class="jr-booster" x="12.5" y="8" width="5" height="12" rx="1" fill="currentColor" stroke="none"/></svg>';
 
@@ -63,13 +65,13 @@ export function jobsRoom(store,{toast,machines,getPage}){
     const readout=trainingReadout(job),landed=job.state==='SUCCEEDED',attempt=job.latestAttempt||{};
     const times=[job.createdAt,job.createdAt,attempt.startedAt,attempt.startedAt,endedJob(job)?attempt.finishedAt:null];
     const queued=QUEUED.includes(job.state),r=rank(job);
-    return `<div class="jr-hud" data-util="${util??''}" data-mem="${mem??''}" data-mem-total="${memTotal??''}"><div class="jr-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="trk"/><circle cx="60" cy="60" r="52" class="val" data-ring="util"/></svg><div><b>${util===null?'未知':util}</b><span>GPU 利用率 %</span></div></div>
+    return `<div class="jr-hud" data-util="${util??''}" data-mem="${mem??''}" data-mem-total="${memTotal??''}"><div class="jr-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="trk"/><circle cx="60" cy="60" r="52" class="val" data-ring="util"/></svg><div><b ${util===null?'':`data-tick="${util}" data-fix="0"`}>${util===null?'未知':'0'}</b><span>GPU 利用率 %</span></div></div>
       <div class="jr-tplus"><div class="jr-eyebrow">${queued?'T−':'T+'}</div><b class="mono" data-tplus>${queued?'排队中':esc(elapsedTraining(job)||'—')}</b><span>${readout.percent===null?esc(readout.description||'进度未上报'):'进度 '+readout.percent+'%'+(readout.epoch?' · '+esc(readout.epoch):'')}</span></div>
-      <div class="jr-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="trk"/><circle cx="60" cy="60" r="52" class="val" data-ring="mem"/></svg><div><b>${mem===null?'未知':mem.toFixed(1)}</b><span>显存 GiB</span></div></div></div>
+      <div class="jr-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="trk"/><circle cx="60" cy="60" r="52" class="val" data-ring="mem"/></svg><div><b ${mem===null?'':`data-tick="${mem.toFixed(1)}" data-fix="1"`}>${mem===null?'未知':'0.0'}</b><span>显存 GiB</span></div></div></div>
       <div class="jr-tl"><span class="jr-done-line" style="width:0"></span>${STAGES.map((name,i)=>{const cls=i<s?'past':i===s?(queued||LIVE.includes(job.state)?'now':'past'):'';if(i===4&&landed)return `<div class="past">${tower}${name}<small>${clock(times[i])}</small></div>`;return `<div class="${cls}"><i></i>${name}<small>${i<=s?clock(times[i]):'—'}</small></div>`;}).join('')}</div>
       ${job.state==='FAILED'?`<p class="jr-error">${esc(job.error||job.failure?.message||'任务失败，详情见日志。')}</p>`:''}
       <div class="jr-tabs" role="tablist"><button role="tab" data-tab="log" aria-selected="${tab==='log'}">日志</button><button role="tab" data-tab="out" aria-selected="${tab==='out'}">输出</button><button role="tab" data-tab="diag" aria-selected="${tab==='diag'}">诊断</button><button role="tab" data-tab="note" aria-selected="${tab==='note'}">留言</button><span class="jr-ul" aria-hidden="true"></span></div>
-      <div class="jr-pane" data-pane="log" ${tab==='log'?'':'hidden'}><pre class="jr-log" data-log>读取中…</pre></div>
+      <div class="jr-pane" data-pane="log" ${tab==='log'?'':'hidden'}><div class="jr-log" data-log role="log"><div>读取中…</div></div></div>
       <div class="jr-pane" data-pane="out" ${tab==='out'?'':'hidden'}><div data-outputs class="jr-files">读取中…</div><p class="jr-hint">同一台服务器上的新任务，可以直接读写 /job-outputs/${esc(job.id)}/。</p></div>
       <div class="jr-pane" data-pane="diag" ${tab==='diag'?'':'hidden'}><div data-diag>读取中…</div><div class="jr-recovery"><div data-recovery-result></div><div class="jr-recovery-actions"><button type="button" class="jr-btn ghost" data-recover="jobs.watch">刷新观察</button><button type="button" class="jr-btn ghost" data-recover="jobs.completion">查询完成状态</button><button type="button" class="jr-btn ghost" data-recover="jobs.reconcile-resources">任务资源收尾</button></div><p class="jr-hint">只读取服务器此刻的观察，不会改写历史或重新提交。</p></div></div>
       <div class="jr-pane" data-pane="note" ${tab==='note'?'':'hidden'}><div data-notes class="jr-notes"></div><form class="jr-note-form" data-note-form><textarea class="jr-input" name="body" maxlength="2000" placeholder="给这个任务留言，团队都能看到" aria-label="任务留言"></textarea><button class="jr-btn ghost" type="submit">发布留言</button></form></div>
@@ -82,6 +84,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
       const u=drawer.querySelector('[data-ring=util]'),m=drawer.querySelector('[data-ring=mem]');
       if(u)u.style.strokeDasharray=hud.dataset.util?ringDash(util/100):`0 ${ARC}`;
       if(m)m.style.strokeDasharray=hud.dataset.mem&&total?ringDash(mem/total):`0 ${ARC}`;
+      for(const number of drawer.querySelectorAll('[data-tick]'))tick(number,Number(number.dataset.tick),Number(number.dataset.fix));
       const line=drawer.querySelector('.jr-done-line');if(line)line.style.width=Math.min(stage(job),4)/4*80+'%';
       const c=drawer.querySelector('.jr-catch');if(c)setTimeout(()=>c.classList.add('caught'),reducedMotion()?0:700);
       placeSeg(drawer.querySelector('.jr-foot .jr-seg'));placeTabs();
@@ -90,8 +93,11 @@ export function jobsRoom(store,{toast,machines,getPage}){
   function placeSeg(seg){if(!seg)return;const on=seg.querySelector('[aria-pressed=true]'),pill=seg.querySelector('.jr-pill');if(!on){pill.style.width='0';return;}pill.style.width=on.offsetWidth+'px';pill.style.transform=`translateX(${on.offsetLeft}px)`;}
   function placeTabs(){const on=drawer.querySelector('.jr-tabs [aria-selected=true]'),ul=drawer.querySelector('.jr-ul');if(on&&ul){ul.style.width=on.offsetWidth+'px';ul.style.transform=`translateX(${on.offsetLeft}px)`;}}
   async function loadLog(id){
-    try{const result=await store.call('jobs.logs',{jobId:id});if(openId!==id)return;const pre=drawer.querySelector('[data-log]');if(!pre)return;const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-8;pre.textContent=result.text||'还没有日志。';if(atEnd)pre.scrollTop=pre.scrollHeight;}
-    catch(error){if(openId===id){const pre=drawer.querySelector('[data-log]');if(pre)pre.textContent='日志暂时读不到：'+error.message;}}
+    try{const result=await store.call('jobs.logs',{jobId:id});if(openId!==id)return;const box=drawer.querySelector('[data-log]');if(!box)return;const atEnd=box.scrollTop+box.clientHeight>=box.scrollHeight-8;
+      // Only new lines are added, so they slide in instead of the whole log redrawing.
+      const lines=(result.text||'还没有日志。').replace(/\n$/,'').split('\n'),shown=[...box.children].map(row=>row.textContent),same=shown.length<=lines.length&&shown.every((text,index)=>text===lines[index]);
+      if(!same)box.replaceChildren();for(const text of lines.slice(same?shown.length:0)){const row=document.createElement('div');row.textContent=text;box.append(row);}if(atEnd)box.scrollTop=box.scrollHeight;}
+    catch(error){if(openId===id){const box=drawer.querySelector('[data-log]');if(box){const row=document.createElement('div');row.textContent='日志暂时读不到：'+error.message;box.replaceChildren(row);}}}
   }
   function outputTarget(job){return {machine:job.machine,project:job.project,ownerId:job.ownerId||job.userId,area:'output',runId:job.id};}
   async function loadOutputs(job,path='.'){
@@ -124,6 +130,12 @@ export function jobsRoom(store,{toast,machines,getPage}){
   }
 
   // Submission sheet: project, command, cards, where, optional GPUs and priority.
+  function confirmSheet(title,body,action,run){
+    sheet.querySelector('.jr-sheet-in').innerHTML=`<div class="jr-confirm-title">${esc(title)}</div><p class="jr-confirm-body">${esc(body)}</p><p class="jr-error" data-confirm-error hidden></p><div class="jr-actions"><button type="button" class="jr-btn ghost" data-confirm-back>算了</button><button type="button" class="jr-btn primary danger" data-confirm-go>${esc(action)}</button></div>`;
+    scrim.classList.add('on');sheet.classList.add('on');const go=sheet.querySelector('[data-confirm-go]');setTimeout(()=>sheet.querySelector('[data-confirm-back]').focus(),50);
+    sheet.querySelector('[data-confirm-back]').addEventListener('click',()=>{sheet.classList.remove('on');if(!drawer.classList.contains('on'))scrim.classList.remove('on');});
+    go.addEventListener('click',async()=>{go.disabled=true;try{await run();sheet.classList.remove('on');}catch(error){const box=sheet.querySelector('[data-confirm-error]');box.textContent=error.message;box.hidden=false;go.disabled=false;}});
+  }
   async function projectsFor(){
     const rows=[];await Promise.all(machines.map(async machine=>{try{const result=await store.call('projects.list',{machine:machine.id});for(const p of result.projects||[])if(!p.archived)rows.push({machine:machine.id,project:p.project,ownerId:p.ownerId||p.userId,ownerName:p.ownerName||''});}catch{}}));
     return rows.sort((a,b)=>a.project.localeCompare(b.project)||a.machine.localeCompare(b.machine));
@@ -167,13 +179,12 @@ export function jobsRoom(store,{toast,machines,getPage}){
       catch(problem){error.textContent=problem.message;error.hidden=false;return;}
       const args={...where,project:p.project,ownerId:p.ownerId,cards,name:form.name.value.trim()||'train',priority:form.priority.value,argv:['/bin/bash','-c',form.command.value],key:submitKey,...(placement?{placement}:{})};
       busy=true;form.querySelector('[type=submit]').disabled=true;
-      try{const job=await store.call('jobs.submit',args);remember({machine:p.machine,project:p.project,ownerId:p.ownerId});submitKey=crypto.randomUUID();close();await store.refresh().catch(()=>{});render();toast('已提交，正在排队');launch();if(job?.id)setTimeout(()=>openJob(job.id),reducedMotion()?0:500);}
+      try{const job=await store.call('jobs.submit',args);remember({machine:p.machine,project:p.project,ownerId:p.ownerId});submitKey=crypto.randomUUID();close();await store.refresh().catch(()=>{});render();toast('已提交，正在排队',{launch:true});if(job?.id)setTimeout(()=>openJob(job.id),reducedMotion()?0:500);}
       catch(problem){error.textContent=problem.status&&problem.status<500?problem.message:'提交结果未知。请稍后在列表里查看；重新提交会沿用同一个编号，不会重复。';error.hidden=false;}
       finally{busy=false;form.querySelector('[type=submit]')?.removeAttribute('disabled');}
     });
     setTimeout(()=>form.command.focus(),200);
   }
-  function launch(){if(reducedMotion())return;const ship=document.createElement('div');ship.className='jr-launch';ship.innerHTML='<svg width="14" height="22" viewBox="0 0 12 18" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6 1c2.2 2 3 4.5 3 7v5H3V8c0-2.5.8-5 3-7z"/><path d="M3 13l-2 3M9 13l2 3M6 13v4"/></svg>';document.body.append(ship);setTimeout(()=>ship.remove(),1600);}
 
   host.addEventListener('click',event=>{
     const scopeButton=event.target.closest('[data-scope]');if(scopeButton){scope=scopeButton.dataset.scope;for(const b of host.querySelectorAll('[data-scope]'))b.setAttribute('aria-pressed',b===scopeButton);placePill();renderRows();return;}
@@ -188,8 +199,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
     const job=store.jobs.find(item=>item.id===openId);if(!job)return;
     const tabButton=event.target.closest('[data-tab]');if(tabButton){tab=tabButton.dataset.tab;for(const b of drawer.querySelectorAll('[data-tab]'))b.setAttribute('aria-selected',b===tabButton);for(const pane of drawer.querySelectorAll('[data-pane]'))pane.hidden=pane.dataset.pane!==tab;placeTabs();loadTab(job);return;}
     const p=event.target.closest('[data-priority]');if(p&&p.getAttribute('aria-pressed')!=='true'){try{await store.call('jobs.priority',{jobId:job.id,priority:p.dataset.priority});for(const b of drawer.querySelectorAll('[data-priority]'))b.setAttribute('aria-pressed',b===p);placeSeg(p.closest('.jr-seg'));toast('优先级已改为 '+p.dataset.priority);await store.refresh().catch(()=>{});render();}catch(error){toast(error.message);}return;}
-    if(event.target.closest('[data-cancel]')){if(!event.target.closest('[data-cancel]').dataset.confirm){const b=event.target.closest('[data-cancel]');b.dataset.confirm='1';b.textContent='再点一次确认取消';setTimeout(()=>{if(b.isConnected){delete b.dataset.confirm;b.textContent='取消任务';}},4000);return;}
-      try{await store.call('jobs.cancel',{jobId:job.id});toast('已请求取消，占用的卡会释放');await store.refresh().catch(()=>{});render();openJob(job.id);}catch(error){toast(error.message);}return;}
+    if(event.target.closest('[data-cancel]')){confirmSheet('取消这个任务？','占用的卡会马上释放，输出保留。','取消任务',async()=>{await store.call('jobs.cancel',{jobId:job.id});toast('已请求取消，占用的卡会释放');await store.refresh().catch(()=>{});render();openJob(job.id);});return;}
     const out=event.target.closest('[data-out-path]');if(out&&out.hasAttribute('data-out-dir')){loadOutputs(job,out.dataset.outPath);return;}
     const copy=event.target.closest('[data-out-copy]');if(copy){try{await navigator.clipboard.writeText(resultPullCommand(job,copy.dataset.outCopy));toast('已复制下载命令，把 LOCAL_FILE 换成本地路径');}catch{toast(resultPullCommand(job,copy.dataset.outCopy));}return;}
     const remove=event.target.closest('[data-out-delete]');if(remove){if(!remove.dataset.confirm){remove.dataset.confirm='1';remove.textContent='确认删除';setTimeout(()=>{if(remove.isConnected){delete remove.dataset.confirm;remove.textContent='删除';}},4000);return;}

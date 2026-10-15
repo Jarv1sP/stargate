@@ -51,7 +51,7 @@ try{
   await page.goto('http://127.0.0.1:'+server.address().port+'/?role='+role);await page.waitForFunction(()=>window.ready);
   await page.waitForFunction(()=>document.querySelector('[name=workspace-project] option[data-project=active]'));
   const activeProject=await page.locator('[name=workspace-project] option[data-project=active]').getAttribute('value');
-  await page.locator('[name=workspace-project]').selectOption(activeProject);
+  if(!await page.locator('#pr-switch-sheet[open]').count())await page.locator('#pr-switch').click();await page.locator('[name=workspace-project]').selectOption(activeProject);
   await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   await page.evaluate(()=>document.fonts.ready);
   assert.equal(await page.locator('#project-publish').count(),0,'workspace runs still do not require publication');
@@ -64,10 +64,10 @@ try{
   assert.equal(await page.locator('[name=training-target]').inputValue(),'auto','controls must not force AUTO back to current');
   await page.evaluate(()=>view());
   assert.equal(await page.locator('[name=training-target]').inputValue(),'auto','state refresh preserves the explicit target');
-  await page.locator('#projects-refresh').click();await page.waitForFunction(()=>!document.querySelector('#projects-refresh').disabled);
+  if(!await page.locator('#pr-switch-sheet[open]').count())await page.locator('#pr-switch').click();await page.locator('#projects-refresh').click();await page.waitForFunction(()=>!document.querySelector('#projects-refresh').disabled);await page.locator('#pr-switch-close').click();await page.locator('#pr-switch-sheet').waitFor({state:'hidden'});
   assert.equal(await page.locator('[name=training-target]').inputValue(),'auto','project refresh preserves the explicit target');
   assert.match(await page.locator('#submit-command').textContent(),/--machine auto/);
-  const management=page.locator('#project-management');await management.locator(':scope>summary').click();await management.locator('.project-trash>summary').click();
+  await page.locator('[data-pt=settings]').click();const management=page.locator('#project-management');await management.locator(':scope>summary').click();await management.locator('.project-trash>summary').click();
   await page.locator('[data-trash-restore]').waitFor({state:'visible'});
   const before=await page.evaluate(()=>calls.filter(c=>c.op==='projects.list').length);
   await page.locator('[data-trash-restore]').click();
@@ -82,9 +82,9 @@ try{
   assert.equal(await page.locator('#work-submit[open],#work-submit-panel[open],.job-log-dialog[open]').count(),0,'logout closes project and job drawers');
   await page.evaluate(()=>{store.principal=window.previousPrincipal;store.authGeneration++;for(const fn of [...callbacks])fn();view();});
   await page.locator('[name=workspace-project] option[data-project=active]').waitFor({state:'attached'});
-  await page.locator('[name=workspace-project]').selectOption(activeProject);
+  if(!await page.locator('#pr-switch-sheet[open]').count())await page.locator('#pr-switch').click();await page.locator('[name=workspace-project]').selectOption(activeProject);
   await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
-  assert.equal(await page.locator('[name=workspace-project]').isVisible(),true,'the current project switcher is usable after signing in again');
+  if(!await page.locator('#pr-switch-sheet[open]').count())await page.locator('#pr-switch').click();assert.equal(await page.locator('[name=workspace-project]').isVisible(),true,'the current project switcher is usable after signing in again');
   assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>toasts),[]);await page.close();console.log('PASS external workbench '+role+'/'+width+': workspace automatic target, restore refresh, widths and logout');
  }
 }finally{await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(temporary,{recursive:true,force:true});}

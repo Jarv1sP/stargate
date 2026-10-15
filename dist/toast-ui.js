@@ -15,7 +15,8 @@ export function toastPosition(target){
     const blockers=[...document.querySelectorAll('button,a[href],input:not([type=hidden]),select,textarea,summary,[role=button]')].filter(element=>!target.contains(element)).map(visible).filter(Boolean);
     const positions=[ceiling-gap-box.height,...blockers.map(rect=>rect.top-gap-box.height)].filter(y=>y>=edge&&y+box.height<=ceiling-gap).sort((a,b)=>b-a);
     let point={x:innerWidth-edge-box.width,y:edge};
-    outer:for(const y of positions)for(const x of [innerWidth-edge-box.width,edge]){
+    // Centered first, as in the approved design; then the right and left edges.
+    outer:for(const y of positions)for(const x of [(innerWidth-box.width)/2,innerWidth-edge-box.width,edge]){
       if(blockers.every(rect=>x+box.width<=rect.left-gap||x>=rect.right+gap||y+box.height<=rect.top-gap||y>=rect.bottom+gap)){point={x,y};break outer;}
     }
     Object.assign(target.style,{left:point.x+'px',top:point.y+'px',right:'auto',bottom:'auto'});
