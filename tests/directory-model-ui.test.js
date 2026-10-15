@@ -43,7 +43,7 @@ test('zero GPU quota does not hide shared server readings or the workspace entry
  const machine={id:'node-a',cards:1,model:'Example GPU'},gpu={index:0,model:'Example GPU',utilization:80,memoryUsedMiB:1024,memoryTotalMiB:8192,temperatureC:45,processesAvailable:true,processes:[]};
  const options={limits:{},production:true,snapshot:{stale:false,hosts:[{id:'node-a',reachable:true,checkedAt:'2026-10-14T11:00:00Z',gpus:[gpu],gpuq:{connected:true,health:'ok'}}]}};
  const view=resourceServerView(machine,options);assert.equal(view.quota,0);assert.equal(view.observed,true);assert.equal(view.fresh,true);assert.deepEqual(view.gpus,[gpu]);
- const html=resourceCards({machines:[machine],...options});assert.match(html,/data-use-machine="node-a"/);assert.match(html,/80%/);assert.doesNotMatch(html,/resource-tower[^>]*disabled/);
+ const html=resourceCards({machines:[machine],...options});assert.match(html,/class="resource-gpuline"/);assert.match(html,/80%/);assert.doesNotMatch(html,/resource-tower[^>]*disabled/);
 });
 
 test('storage distinguishes lower bounds, unknown and real zero without filling an unknown bar',()=>{

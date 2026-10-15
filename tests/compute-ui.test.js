@@ -35,7 +35,7 @@ test('disks follow observed inventory, merge known filesystems and keep missing 
 });
 test('all cards stay inspectable with no personal quota and selected drawer contains only that card processes',()=>{
   const html=render({gpus:[gpu(0,{processes:[{pid:123,memoryUsedMiB:1024,task:{id:'peer',name:'peer task'}}]}),gpu(1)],selectedGPU:1});
-  assert.equal((html.match(/class="resource-tower /g)||[]).length,2);assert.match(html,/data-resource-card="1"/);assert.match(html,/data-resource-gpu="1"/);assert.match(html,/data-use-machine="fixture-node-a"/);
+  assert.equal((html.match(/class="resource-tower /g)||[]).length,2);assert.match(html,/data-resource-card="1"/);assert.match(html,/data-resource-gpu="1"/);assert.match(html,/class="resource-gpuline"/);
   assert.doesNotMatch(html.slice(html.indexOf('<section class="resource-detail"')),/peer task/);
   assert.match(render({admin:true,management:true,selectedGPU:0,gpus:[gpu(0,{processes:[{pid:123,name:'python',owner:'fixture-user'}]}),gpu(1)]}),/系统用户/);
   assert.doesNotMatch(render({selectedGPU:0,gpus:[gpu(0,{processes:[{pid:123,name:'python',owner:'fixture-user'}]}),gpu(1)]}),/fixture-user/);

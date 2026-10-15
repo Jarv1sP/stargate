@@ -67,7 +67,7 @@ try{
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
       await page.screenshot({path:join(shots,`compute-${role}-${width}-gpu.png`),animations:'disabled'});
       await page.keyboard.press('Escape');await page.locator('#resource-sheet').waitFor({state:'hidden'});assert.equal(await page.locator('.resource-chassis-bays [data-resource-card="1"]').evaluate(node=>document.activeElement===node),true);
-      await page.locator('.resource-gpu-row[data-resource-card="2"]').click();await page.locator('#resource-sheet[open]').waitFor();await page.keyboard.press('Escape');await page.locator('#resource-sheet').waitFor({state:'hidden'});assert.equal(await page.locator('.resource-gpu-row[data-resource-card="2"]').evaluate(node=>document.activeElement===node),true);
+      await page.locator('.resource-chassis-bays [data-resource-card="2"]').click();await page.locator('#resource-sheet[open]').waitFor();await page.keyboard.press('Escape');await page.locator('#resource-sheet').waitFor({state:'hidden'});assert.equal(await page.locator('.resource-chassis-bays [data-resource-card="2"]').evaluate(node=>document.activeElement===node),true);
       await page.locator('[data-resource-select="fixture-node-six"]').click();assert.equal(await page.locator('.resource-chassis-bays button').count(),6);
       assert.equal(await page.locator('[data-resource-metric=utilization]').getAttribute('aria-pressed'),'true');assert.equal(await page.locator('.resource-disks .resource-disk').count(),1);
       assert.match(await page.locator('.resource-disks').innerText(),/SSD · 工作区与数据集共用/);assert.doesNotMatch(await page.locator('.resource-disks').innerText(),/HDD/);
