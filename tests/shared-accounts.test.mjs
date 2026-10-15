@@ -104,6 +104,9 @@ test('legacy extraction retains the exact user IDs, password records, invitation
   const old=new DatabaseSync(path);
   old.exec('CREATE TABLE portal_state_v2(id INTEGER PRIMARY KEY,data TEXT); CREATE TABLE invites_v2(role TEXT PRIMARY KEY,digest TEXT UNIQUE,enabled INTEGER,uses INTEGER,max_uses INTEGER,created_at TEXT,code_cipher TEXT)');
   old.prepare('INSERT INTO portal_state_v2 VALUES(1,?)').run(JSON.stringify({schema:1,users:[user],jobs:[],sequence:0,credentials:[['alice',{salt:Buffer.from(record.salt).toString('base64'),hash:Buffer.from(record.hash).toString('base64'),iterations:600000}]]}));
+  old.exec('CREATE TABLE portal_state(id INTEGER PRIMARY KEY,data TEXT); CREATE TABLE invites(digest TEXT); CREATE TABLE login_sessions(token TEXT)');
+  old.prepare('INSERT INTO portal_state VALUES(1,?)').run(JSON.stringify({jobs:[{id:'archived-business-job'}],credentials:[['alice',{hash:'inactive-password-copy'}]]}));
+  old.exec("INSERT INTO invites VALUES('inactive-invite'); INSERT INTO login_sessions VALUES('inactive-session')");
   const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,nonce);cipher.setAAD(Buffer.from('amax-invite-v1'));
   const bytes=Buffer.concat([cipher.update(code,'utf8'),cipher.final()]),sealed=Buffer.concat([nonce,cipher.getAuthTag(),bytes]).toString('base64');
   old.prepare('INSERT INTO invites_v2 VALUES(?,?,1,7,NULL,?,?)').run('member',createHash('sha256').update(code).digest('hex'),'fixture',sealed);
@@ -117,5 +120,9 @@ test('legacy extraction retains the exact user IDs, password records, invitation
   service.close();service=await PortalService.open(path,undefined,undefined,undefined,undefined,shared);clearInterval(service.executionTimer);
   assert.equal(service.principal(token).userId,user.id);
   assert.equal(service.accounts.list().length,1);
+  const archived=JSON.parse(service.db.prepare('SELECT data FROM portal_state WHERE id=1').get().data);
+  assert.equal(Object.hasOwn(archived,'credentials'),false);
+  assert.deepEqual(archived.jobs,[{id:'archived-business-job'}]);
+  for(const name of ['invites','login_sessions'])assert.equal(service.db.prepare('SELECT 1 FROM sqlite_master WHERE name=?').get(name),undefined);
   assert.equal(Object.hasOwn(JSON.parse(service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data),'credentials'),false);
 });

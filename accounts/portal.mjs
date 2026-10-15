@@ -16,6 +16,10 @@ export function installTeamAccounts(service,path){
   accounts.importLegacy({users:service.store.users,credentials:service.legacyCredentials||new Map(),
     sessions:exists('login_sessions_v2')?service.db.prepare('SELECT * FROM login_sessions_v2').all():[],invite,inviteCode});
   service.db.exec('DROP TABLE IF EXISTS invites_v2; DROP TABLE IF EXISTS login_sessions_v2;');
+  // Earlier platform snapshots may still sit in the same business database.
+  // Keep their archived jobs, but remove inactive copies of authentication data.
+  if(exists('portal_state'))service.db.exec("UPDATE portal_state SET data=json_remove(data,'$.credentials') WHERE json_valid(data)");
+  service.db.exec('DROP TABLE IF EXISTS invites; DROP TABLE IF EXISTS login_sessions;');
   delete service.legacyCredentials;delete service.credentials;
   service.loginSessions=accounts.sessions;
   service.refreshAccounts=()=>{
