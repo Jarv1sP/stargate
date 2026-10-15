@@ -17,7 +17,7 @@ export async function projectCall(service,principal,user,operation,args,authoriz
     'projects.retire','projects.retire.status','projects.retire.list','projects.retire.restore','projects.retire.purge','projects.retire.empty']);
   if(!names.has(operation))return undefined;
   authorize(args.machine);
-  args=selectFields(args,['machine','ownerId','project','key','kind',...(operation==='projects.create'?['repo']:operation==='projects.status'?['diagnoseNetwork']:[])]);
+  args=selectFields(args,['machine','ownerId','project','key','kind',...(operation==='projects.create'?['repo']:operation==='projects.status'?['diagnoseNetwork']:operation==='projects.list'?['includeUsage']:[])]);
   const collection=['projects.list','projects.quota','projects.retire.list','projects.retire.empty'].includes(operation);
   const trash=operation.startsWith('projects.retire.');
   if(!collection&&!trash)projectReference(args,{optional:false});

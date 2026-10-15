@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {projectStatusText,trainingTarget,projectDiskQuotaHTML} from '../dist/execution-ui.js';
-import {datasetRows} from '../dist/datasets-ui.js';
+import {datasetRows,directoryBytes,storageVolumeHTML} from '../dist/datasets-ui.js';
 import {trashReference,trashLabel} from '../dist/trash-ui.js';
 import {uploadPersonalFile} from '../dist/personal-upload.js';
 import {resourceServerView,resourceCards} from '../dist/resources-ui.js';
@@ -14,7 +14,7 @@ test('ordinary dataset rows show uploader and actions without versions or prepar
 test('projects display repository and automatic jobs can use the default OCI workspace',()=>{
  assert.equal(projectStatusText({git:{url:'https://example.test/team/repo.git',branch:'main',commit:'abc123'}}),'https://example.test/team/repo.git · main · abc123');
  assert.deepEqual(trainingTarget('auto','node-a',null,'node-a',[{id:'node-a'}]),{machine:'auto',machineSelection:{mode:'auto',candidates:['node-a']}});
- assert.match(projectDiskQuotaHTML({enabled:true,owner:'another-member',extra:true,volumes:[{volume:'ssd',usedBytes:1024,bytes:4096}]}),/ssd/);
+ assert.match(projectDiskQuotaHTML({extra:true,volumes:[{kind:'workspace',usedBytes:1024,totalBytes:4096,availableBytes:3072}],projectUsage:{size:12,complete:false}}),/项目文件用量：至少 12 B/);
 });
 test('one shared trash restores outputs and datasets using the original key and kind',()=>{
  const row={key:'original-operation',kind:'output',ownerId:'member-b',project:'vision',jobId:'job',originalPath:'models/final.pt'};
@@ -44,4 +44,10 @@ test('zero GPU quota does not hide shared server readings or the workspace entry
  const options={limits:{},production:true,snapshot:{stale:false,hosts:[{id:'node-a',reachable:true,checkedAt:'2026-10-14T11:00:00Z',gpus:[gpu],gpuq:{connected:true,health:'ok'}}]}};
  const view=resourceServerView(machine,options);assert.equal(view.quota,0);assert.equal(view.observed,true);assert.equal(view.fresh,true);assert.deepEqual(view.gpus,[gpu]);
  const html=resourceCards({machines:[machine],...options});assert.match(html,/data-use-machine="node-a"/);assert.match(html,/80%/);assert.doesNotMatch(html,/resource-tower[^>]*disabled/);
+});
+
+test('storage distinguishes lower bounds, unknown and real zero without filling an unknown bar',()=>{
+ assert.equal(directoryBytes({size:null,complete:false}),'未知');assert.equal(directoryBytes({size:0,complete:true}),'0 B');assert.equal(directoryBytes({size:3,complete:false}),'至少 3 B');
+ const unknown=storageVolumeHTML('workspace',{usedBytes:null,totalBytes:null,availableBytes:null});assert.match(unknown,/is-unknown/);assert.doesNotMatch(unknown,/<i |空间不足/);
+ const low=storageVolumeHTML('datasets',{usedBytes:100,totalBytes:200,availableBytes:50});assert.match(low,/空间不足/);assert.match(low,/data-fill="50"/);
 });

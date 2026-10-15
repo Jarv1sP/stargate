@@ -1,3 +1,4 @@
+import {transferBytes} from './data-route.js';
 import {uploadBrowserFile} from './personal-upload.js';
 import {downloadBrowserPath} from './file-transfer-ui.js';
 import {createJobDiagnostics} from './job-diagnostics-ui.js';
@@ -84,8 +85,8 @@ export function createSubmitSelectionGuard(){
 }
 export function projectDiskQuotaHTML(value){
   const bytes=n=>Number.isFinite(n)?new Intl.NumberFormat('zh-CN',{maximumFractionDigits:1}).format(n/1024**3)+' GiB':'未知';
-  if(value?.enabled===false)return '<p class="disk-quota-status">未启用</p>';
-  return '<ul class="disk-quota-volumes">'+(value?.volumes||[]).map(row=>`<li><strong>${escape(row.volume)}</strong><dl><dt>容量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.bytes)}</dd><dt>文件与目录</dt><dd>${escape(row.usedInodes??'未知')} / ${escape(row.inodes??'未知')}</dd></dl></li>`).join('')+'</ul>';
+  const usage=value?.projectUsage,volumes=['workspace','datasets'].map(kind=>({kind,...value?.volumes?.find(row=>row.kind===kind)}));
+  return (usage?`<p>项目文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${Number.isFinite(usage.size)?transferBytes(usage.size):'未知'}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${row.kind==='workspace'?'工作区盘（SSD）':'数据集盘（HDD）'}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
 }
 export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,current=()=>true,onRecoverySupport=()=>{}}={}){
   const check=()=>{signal?.throwIfAborted();if(!current())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');};
@@ -158,12 +159,12 @@ export function executionUI(store,refresh,toast){
   function cancelDiskQuota(){quotaController?.abort();quotaController=null;if(quotaState==='loading')quotaState='idle';}
   function renderDiskQuota(){
     const panel=query('#project-disk-quota');if(!panel)return;
-    query('#disk-quota-state').textContent=({idle:'',loading:' · 查询中',ready:' · 已启用',disabled:' · 未启用',unknown:' · 待确认'})[quotaState];
+    query('#disk-quota-state').textContent=({idle:'',loading:' · 查询中',ready:'',unknown:' · 未知'})[quotaState];
     const place=query('#disk-quota-machine');place.textContent=machine||'选择项目后查看';place.title=machine;
     query('#disk-quota-refresh').disabled=!enabled()||quotaState==='loading';
     const result=query('#disk-quota-result');
     if(quotaResult!==null)result.innerHTML=quotaResult;
-    else{result.textContent=quotaState==='unknown'?quotaError||'磁盘用量待确认，请稍后刷新。':quotaState==='loading'?'正在查询…':machine?'点击刷新查看项目磁盘用量。':'先选择项目或服务器。';}
+    else{result.textContent=quotaState==='unknown'?quotaError||'磁盘用量未知，请稍后刷新。':quotaState==='loading'?'正在查询…':machine?'点击刷新查看项目磁盘用量。':'先选择项目或服务器。';}
   }
   function syncDiskQuota(){
     const key=currentToken();if(key!==quotaKey){cancelDiskQuota();quotaKey=key;quotaState='idle';quotaResult=null;quotaError='';}
@@ -171,12 +172,12 @@ export function executionUI(store,refresh,toast){
   }
   async function loadDiskQuota(){
     if(!enabled()||!activateProjectActivity()||quotaState==='loading')return;
-    cancelDiskQuota();const token=currentToken(),controller=new AbortController(),target=machine,owner=actor;quotaController=controller;quotaKey=token;quotaState='loading';quotaResult=null;quotaError='';renderDiskQuota();
+    cancelDiskQuota();const token=currentToken(),controller=new AbortController(),target=machine;quotaController=controller;quotaKey=token;quotaState='loading';quotaResult=null;quotaError='';renderDiskQuota();
     const current=()=>!controller.signal.aborted&&token===currentToken()&&query('#project-disk-quota')?.open&&projectActive();
     try{
       const value=await projectActivity.run(signal=>store.call('projects.quota',{machine:target,...(projectOwner?{ownerId:projectOwner}:{}),...(project?{project}:{})},{signal:AbortSignal.any([signal,controller.signal])}));
-      if(!current())return;quotaResult=projectDiskQuotaHTML(value,owner);quotaState=value.enabled?'ready':'disabled';
-    }catch(error){if(!current()||error.name==='AbortError')return;quotaState='unknown';quotaResult=null;quotaError=error.message||'磁盘用量待确认，请稍后刷新。';}
+      if(!current())return;quotaResult=projectDiskQuotaHTML(value);quotaState='ready';
+    }catch(error){if(!current()||error.name==='AbortError')return;quotaState='unknown';quotaResult=null;quotaError=error.message||'磁盘用量未知，请稍后刷新。';}
     finally{if(current()){quotaController=null;renderDiskQuota();}}
   }
   function validateProjectName(){
@@ -225,7 +226,7 @@ export function executionUI(store,refresh,toast){
     const contextInfo=query('#workspace-mode-note').closest('.ui-info'),statusInfo=query('#project-status-detail').closest('.ui-info'),contextCopy=document.createElement('div');contextCopy.className='ui-info-content';
     for(const id of ['workspace-mode-note','project-status-detail']){const note=query('#'+id);note.classList.remove('ui-info-content');contextCopy.append(note);}contextInfo.append(contextCopy);statusInfo.remove();contextInfo.querySelector('summary').setAttribute('aria-label','项目与 Git 说明');query('.workspace-context-heading>div').append(contextInfo);
     const disk=document.createElement('details');disk.id='project-disk-quota';disk.className='execution-panel';
-    disk.innerHTML='<summary>磁盘配额<span id="disk-quota-state"></span></summary><div class="disk-quota-head"><span id="disk-quota-machine" class="server-id mono"></span>'+infoHTML('当前项目所属成员在这台服务器上的磁盘用量。未启用不代表零用量或无限容量，与显卡额度分开。','磁盘配额说明')+'<button id="disk-quota-refresh" class="button quiet" type="button">刷新</button></div><div id="disk-quota-result" role="status" aria-live="polite"></div>';
+    disk.innerHTML='<summary>磁盘用量<span id="disk-quota-state"></span></summary><div class="disk-quota-head"><span id="disk-quota-machine" class="server-id mono"></span>'+infoHTML('项目文件用量不分摊共享容器镜像。盘容量包含同盘其他内容；至少表示有目录读不到，未知不代表零用量。','磁盘用量说明')+'<button id="disk-quota-refresh" class="button quiet" type="button">刷新</button></div><div id="disk-quota-result" role="status" aria-live="polite"></div>';
     query('#workspace-files').before(disk);disk.addEventListener('toggle',()=>{if(disk.open){activateProjectActivity();syncDiskQuota();}else cancelDiskQuota();});query('#disk-quota-refresh').addEventListener('click',()=>void loadDiskQuota());
   }
   const receiptActor=()=>JSON.stringify([store.principal?.userId,store.principal?.role,store.authGeneration]);

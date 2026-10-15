@@ -82,26 +82,46 @@ def dataset_root(config,dataset,create=False):
     finally:os.close(fd)
     return base/dataset
 
-def size(path):
-    total=0
-    fd=open_directory(path)
+def size(path,*,partial=False):
+    total=0;complete=True;readable=False;fd=None
     try:
+        fd=open_directory(path)
         device=os.fstat(fd).st_dev
-        for entry in os.scandir(fd):
-            info=entry.stat(follow_symlinks=False)
-            if info.st_dev!=device:continue
-            if stat.S_ISREG(info.st_mode):total+=info.st_size
-            elif stat.S_ISDIR(info.st_mode):total+=size(Path(path)/entry.name)
-    finally:os.close(fd)
-    return total
+        with os.scandir(fd) as entries:
+            readable=True
+            for entry in entries:
+                try:
+                    info=entry.stat(follow_symlinks=False)
+                    if info.st_dev!=device:continue
+                    if stat.S_ISREG(info.st_mode):total+=info.st_size
+                    elif stat.S_ISDIR(info.st_mode):
+                        child=size(Path(path)/entry.name,partial=partial)
+                        if partial:total+=child['size'] or 0;complete=complete and child['complete']
+                        else:total+=child
+                except OSError:
+                    if not partial:raise
+                    complete=False
+    except OSError:
+        if not partial:raise
+        complete=False
+    finally:
+        if fd is not None:os.close(fd)
+    return {'size':total if readable else None,'complete':complete} if partial else total
+
+def disk_usage(path):
+    row={'totalBytes':None,'usedBytes':None,'availableBytes':None}
+    try:
+        v=os.statvfs(path)
+        row.update(totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
+    except OSError:pass
+    return row
 
 def disk_samples(config):
     result=[]
     for mount in data_mount_points(config):
         row={'mountPoint':str(mount),'totalBytes':None,'usedBytes':None,'availableBytes':None}
         try:
-            require_data_path(config,mount);v=os.statvfs(mount)
-            row.update(totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
+            row.update(disk_usage(require_data_path(config,mount)))
         except (OSError,ValueError):pass
         result.append(row)
     return result

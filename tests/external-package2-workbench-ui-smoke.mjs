@@ -27,7 +27,7 @@ const store={production:true,authGeneration:1,principal:{userId:owner,role},user
  async call(op,args){calls.push({op,args:structuredClone(args)});
   if(op==='projects.list')return {environmentModes:['oci'],projects:args.machine===machines[0].id?[active,...(restored?[{...active,project:'restored'}]:[])]:[]};
   if(op==='projects.status')return {...active,project:args.project};
-  if(op==='projects.quota')return {enabled:false};
+  if(op==='projects.quota')return {volumes:[{kind:'workspace',usedBytes:null,availableBytes:null,totalBytes:null},{kind:'datasets',usedBytes:null,availableBytes:null,totalBytes:null}]};
   if(op==='projects.retire.list')return {protocol:'project-lifecycle-v1',items:restored?[]:[{project:'restored',key:retirement,kind:'project',ownerId:owner,state:'TRASHED',bytes:2048,retiredAt:Date.now()/1000,retainUntil:Date.now()/1000+604800}]};
   if(op==='projects.release.list')return {protocol:'project-release-retirement-v1',items:[]};
   if(op==='projects.retire.restore'){if(args.key!==retirement||args.project!=='restored')throw Error('Wrong original retirement identity');restored=true;return {protocol:'project-lifecycle-v1',state:'RESTORED',project:args.project,retirementId:args.key};}

@@ -28,7 +28,7 @@ try{
    if(op==='projects.status'&&args.diagnoseNetwork)return {network:{dns:'ok',https:'ok'}};
    if(op==='projects.status')return projects.find(row=>row.project===args.project&&(!args.ownerId||row.ownerId===args.ownerId))||{};
    if(op==='projects.create'){const row={project:args.project,ownerId:owner,ownerName:'成员甲',environmentMode:'oci',lifecycle:{state:'ACTIVE'},git:args.repo?{url:args.repo,branch:'main',commit:'def456'}:null};projects.push(row);return row;}
-   if(op==='projects.quota')return {enabled:true,volumes:[{volume:'ssd',usedBytes:12,bytes:1000,usedInodes:2,inodes:100}]};
+   if(op==='projects.quota')return {volumes:[{kind:'workspace',usedBytes:12,totalBytes:1000,availableBytes:988},{kind:'datasets',usedBytes:20,totalBytes:2000,availableBytes:1980}],projectUsage:{size:3,complete:true}};
    if(op==='projects.catalog')return {groups:[]};
    if(op==='datasets.list')return {datasets};
    if(op==='files.list')return {entries:args.path==='.'?[{name:'sample.bin',type:'file',size:3}]:[],hasMore:false};
@@ -94,6 +94,7 @@ try{
   await page.locator('[data-dataset-delete=images]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent.includes('7 天'));
   await page.locator('#page-datasets .project-trash>summary').click();await page.locator('#page-datasets [data-trash-restore]').last().click();await page.locator('[data-dataset-open=images]').waitFor();
   await page.locator('#page-datasets [data-trash-restore]').first().click();assert.ok(calls.some(row=>row.op==='projects.retire.restore'&&row.args.kind==='output'));
+  await page.locator('.storage-import>summary').click();
   await page.locator('[name=cloud-target-name]').fill('images');await page.locator('[name=cloud-url]').fill('https://example.test/payload.bin');await page.locator('[name=cloud-path]').fill('payload.bin');await page.locator('#cloud-import-form [type=submit]').click();await page.waitForTimeout(50);const imported=calls.find(row=>row.op==='cloud.import.start');assert.equal(imported.args.area,'dataset');assert.equal(imported.args.dataset,'images');
   if(role==='admin'){await page.locator('#cloud-admin>summary').click({position:{x:8,y:8}});await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent.includes('未连接'));for(let round=0;round<2;round++){await page.locator('#cloud-auth-begin').click();await page.locator('#cloud-auth-check').waitFor({state:'visible'});await page.locator('#cloud-auth-check').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent==='云盘已连接。');await page.locator('#cloud-auth-disconnect').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent==='已断开。');}await page.locator('#cloud-admin>summary').click({position:{x:8,y:8}});}
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-datasets.png'),fullPage:true});

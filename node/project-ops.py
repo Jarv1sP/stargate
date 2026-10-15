@@ -1,5 +1,5 @@
 """Projects are mutable OCI workspaces. Code is managed by git in the container."""
-import importlib.util,json,os,time,uuid
+import importlib.util,json,time,uuid
 from pathlib import Path
 
 
@@ -37,7 +37,8 @@ class ProjectOperations:
 
     def process(self,operation,args):
         user=args.get('ownerId',args.get('userId'));slug=args.get('project')
-        if operation=='projects.list':return {'projects':self.store.list()}
+        if operation=='projects.list':
+            return self.store.list(include_usage=True) if args.get('includeUsage') is True else {'projects':self.store.list()}
         if operation=='projects.create':
             value=self.store.create(user,slug,args.get('repo'))
             path,_=self.store._project(user,slug)
@@ -60,8 +61,18 @@ class ProjectOperations:
         if operation in ('projects.archive','projects.unarchive'):
             return self.store.update(user,slug,{'archived':operation=='projects.archive'})
         if operation=='projects.quota':
-            path=self.store._project(user,slug)[0] if slug else self.store.path;v=os.statvfs(path)
-            return {'usedBytes':module('local-data').size(path),'availableBytes':v.f_bavail*v.f_frsize,'totalBytes':v.f_blocks*v.f_frsize}
+            d=module('local-data');result={'volumes':[]}
+            for kind,field in (('workspace','workspacesRoot'),('datasets','datasetsRoot')):
+                row={'kind':kind,'usedBytes':None,'availableBytes':None,'totalBytes':None}
+                try:row.update(d.disk_usage(d.root(self.config,field)))
+                except (OSError,ValueError):pass
+                result['volumes'].append(row)
+            if slug:
+                usage={'project':slug,'ownerId':user,'size':None,'complete':False}
+                try:usage.update(d.size(self.store._project(user,slug)[0],partial=True))
+                except OSError:pass
+                result['projectUsage']=usage
+            return result
         trash=module('project-purge').Trash(self.config)
         if operation=='projects.retire.list':return trash.listing(args)
         if operation=='projects.retire.status':
