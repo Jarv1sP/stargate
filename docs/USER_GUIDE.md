@@ -410,6 +410,8 @@ gpuq-network exec --proxy http://PROXY_HOST:PORT -- python -m pip install -r req
 
 维护横幅显示全平台或单机原因，暂停新训练、终端输入和新的文件写入/传输；仍可查状态、历史、日志、取消和关闭终端。开启维护不结束已有训练或后台服务，恢复后已结束任务不自动重跑。
 
+网页在头像菜单进入管理台的「维护」区设置。启用或明确恢复成功后，设置对话框关闭并返回维护入口；操作失败时保留设置和错误信息，可直接修改重试。
+
 ```sh local
 gpuctl maintenance status
 gpuctl maintenance on all --reason "存储诊断维修"

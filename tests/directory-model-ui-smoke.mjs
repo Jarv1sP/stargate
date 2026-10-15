@@ -110,7 +110,19 @@ try{
   await page.locator('[data-nav=resources]').click();await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-resources.png'),fullPage:true});
   await page.locator('[data-nav=community]').click();await page.waitForTimeout(50);await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-community.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'no horizontal page overflow at '+width);
-  if(role==='admin'){await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-dialog [data-maintenance-resume]').click();await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});}
+  if(role==='admin'){
+   await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();
+   await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-reason').fill('隔离测试维护');
+   await page.locator('#maintenance-settings-dialog [type=submit]').click();await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});
+   assert.equal(state.operationalMaintenance.global.reason,'隔离测试维护');
+   await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-dialog [data-maintenance-resume]').click();
+   await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});assert.equal(state.operationalMaintenance.global,null);
+   assert.equal(await page.locator('[data-maintenance-settings]').evaluate(node=>document.activeElement===node),true);
+   await page.locator('[data-maintenance-settings]').click();await page.evaluate(()=>{location.hash='#resources';});
+   await page.locator('#maintenance-settings-dialog').waitFor({state:'detached'});assert.equal(await page.locator('[data-nav=resources][aria-current=page]').count(),1,'leaving admin also closes and removes its maintenance dialog');
+   await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();
+   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});
+  }
   await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
   await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});
   await page.locator('[data-shell-action=quota]').click();await page.locator('#quota-ledger').waitFor();

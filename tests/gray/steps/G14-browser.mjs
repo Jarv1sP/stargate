@@ -14,7 +14,9 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
       await page.route('**/*',route=>{const url=new URL(route.request().url());if(['http:','https:'].includes(url.protocol)&&url.origin!==ctx.stack.origin){external.push(url.origin);return route.abort();}return route.continue();});
       page.on('pageerror',error=>errors.push({role,error:error.message}));
       try{
-        const login=await context.request.post(ctx.stack.origin+'/api/login',{data:{username:account.username,password:account.password}});ctx.check(role+' 测试会话登录成功',login.ok());
+        const login=await context.request.post(ctx.stack.origin+'/api/login',{headers:{Origin:ctx.stack.origin},data:{username:account.username,password:account.password,client:'browser'}});ctx.check(role+' 测试会话登录成功',login.ok(),{status:login.status()});
+        const cookieName=login.headers()['set-cookie']?.split('=',1)[0];
+        ctx.check(role+' 浏览器收到会话 cookie',!!cookieName&&(await context.cookies()).some(cookie=>cookie.name===cookieName));
         await page.goto(ctx.stack.origin);await page.locator('[data-nav=resources][aria-current=page]').waitFor();
         ctx.check('不再显示本地登录注册表单',await page.locator('#login-dialog,#register-dialog').count()===0);
         if(role==='admin'){

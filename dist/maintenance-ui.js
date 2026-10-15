@@ -32,7 +32,7 @@ export function operationalMaintenanceUI(store,toast,onChange=()=>{},{host=docum
           try{
             await store.call('maintenance.set',{scope:form.elements.scope.value,enabled,...(enabled?{reason:form.elements.reason.value}:{})});
             if(store.principal?.userId!==userId||!current())return;
-            select();if(!management)host.querySelector('[data-maintenance-banner]').innerHTML=operationalMaintenanceHTML(store.data.operationalMaintenance);onChange();toast(enabled?'维护已启用；已有任务不会自动结束':'已明确解除所选范围的维护');
+            select();host.querySelector('dialog')?.close();if(!management)host.querySelector('[data-maintenance-banner]').innerHTML=operationalMaintenanceHTML(store.data.operationalMaintenance);onChange();toast(enabled?'维护已启用；已有任务不会自动结束':'已明确解除所选范围的维护');
           }catch(e){if(store.principal?.userId===userId&&current())error.textContent=e.message;}finally{if(current())buttons.forEach(b=>b.disabled=false);}
         };
         form.addEventListener('submit',event=>{event.preventDefault();apply(true);});

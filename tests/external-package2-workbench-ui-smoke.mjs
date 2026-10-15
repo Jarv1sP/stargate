@@ -10,8 +10,8 @@ const out=process.env.PACKAGE2_SHOTS||temporary;
 await mkdir(out,{recursive:true});
 const html=`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${['styles','fonts','starbase','shell','workspace','workbench','datasets','copy-help'].map(name=>'<link rel="stylesheet" href="/'+name+'.css">').join('')}
-<style>body{margin:0}main{max-width:1280px;margin:auto;padding:24px;box-sizing:border-box}#shell-context{display:none}</style>
-<body class="sb" data-room="work"><main data-page="work"><div id="execution-host"></div></main><div id="shell-context"><label><select id="context-machine"></select></label><label><select id="context-project"></select></label></div>
+<style>body{margin:0}main{max-width:1280px;margin:auto;padding:24px;box-sizing:border-box}</style>
+<body class="sb" data-room="work"><main data-page="work"><div id="execution-host"></div></main>
 <script type="module">
 import {executionUI} from '/execution-ui.js';
 const role=new URL(location.href).searchParams.get('role')||'member',owner='fixture-'+role,at=new Date().toISOString();
@@ -50,7 +50,8 @@ try{
   const page=await browser.newPage({viewport:{width,height:1000}}),errors=[];page.on('pageerror',error=>{errors.push(error.message);console.error('Fixture page error: '+error.stack);});page.on('console',message=>{if(message.type()==='error')console.error('Fixture console: '+message.text());});
   await page.goto('http://127.0.0.1:'+server.address().port+'/?role='+role);await page.waitForFunction(()=>window.ready);
   await page.waitForFunction(()=>document.querySelector('[name=workspace-project] option[data-project=active]'));
-  await page.evaluate(()=>{const select=document.querySelector('[name=workspace-project]');select.value=select.querySelector('option[data-project=active]').value;select.dispatchEvent(new Event('change',{bubbles:true}));});
+  const activeProject=await page.locator('[name=workspace-project] option[data-project=active]').getAttribute('value');
+  await page.locator('[name=workspace-project]').selectOption(activeProject);
   await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   await page.evaluate(()=>document.fonts.ready);
   assert.equal(await page.locator('#project-publish').count(),0,'workspace runs still do not require publication');
@@ -75,8 +76,15 @@ try{
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.op==='projects.retire.restore').length),1);
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   await page.screenshot({path:join(out,`external-package2-${role}-${width}.png`),fullPage:true});
-  await page.evaluate(()=>{store.principal=null;store.authGeneration++;for(const fn of [...callbacks])fn();view();});
-  assert.equal(await page.locator('[name=workspace-project]').isDisabled(),true,'logout disables project controls');
+  await page.evaluate(()=>{window.previousPrincipal=store.principal;store.principal=null;store.authGeneration++;for(const fn of [...callbacks])fn();view();});
+  assert.equal(await page.locator('[name=workspace-project]').count(),0,'logout removes the project controls and their account data');
+  assert.equal(await page.locator('#execution-workspace').isVisible(),false,'logout hides the workspace');
+  assert.equal(await page.locator('#work-submit[open],#work-submit-panel[open],.job-log-dialog[open]').count(),0,'logout closes project and job drawers');
+  await page.evaluate(()=>{store.principal=window.previousPrincipal;store.authGeneration++;for(const fn of [...callbacks])fn();view();});
+  await page.locator('[name=workspace-project] option[data-project=active]').waitFor({state:'attached'});
+  await page.locator('[name=workspace-project]').selectOption(activeProject);
+  await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
+  assert.equal(await page.locator('[name=workspace-project]').isVisible(),true,'the current project switcher is usable after signing in again');
   assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>toasts),[]);await page.close();console.log('PASS external workbench '+role+'/'+width+': workspace automatic target, restore refresh, widths and logout');
  }
 }finally{await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(temporary,{recursive:true,force:true});}

@@ -16,6 +16,10 @@ test('new CLI passes the one HTTP generation boundary; old CLI only receives the
  t.after(async()=>{await new Promise(r=>server.close(r));await rm(dir,{recursive:true,force:true});});
  const post=async(path,body,headers={})=>{const res=await fetch(origin+'/api/'+path,{method:'POST',headers:{'content-type':'application/json',Connection:'close',...headers},body:JSON.stringify(body)});return {status:res.status,data:await res.json()};};
  const login=await post('login',{username:'admin',password:'Upgrade-Fixture-2026!',client});assert.equal(login.status,200);
+ const browser=await fetch(origin+'/api/login',{method:'POST',headers:{'content-type':'application/json',Origin:origin,Connection:'close'},body:JSON.stringify({username:'admin',password:'Upgrade-Fixture-2026!',client:'browser'})});
+ assert.equal(browser.status,200);assert.equal((await browser.json()).token,undefined,'browser sessions use HttpOnly cookies');
+ const cookie=browser.headers.get('set-cookie').split(';',1)[0];assert.match(cookie,/^team_session=.+/);
+ assert.equal((await post('call',{operation:'state',args:{view:'summary'}},{Cookie:cookie,Origin:origin})).status,200,'the existing browser login endpoint establishes a usable cookie session');
  const bearer={Authorization:'Bearer '+login.data.token};
  assert.equal((await post('call',{operation:'state',args:{view:'summary'},client:{...client,extension:'ignored'}},bearer)).status,200);
  for(const old of [undefined,{name:'gpuctl',protocol:1}]){
