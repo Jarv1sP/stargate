@@ -27,6 +27,7 @@ class Containers:
     def __init__(self, failure=None):
         self.failure=failure;self.live={'old'};self.calls=[];self.active_hold=None
         self.available=650*MIB;self.time=0;self.stopping_after_failure=False
+        self.new=None
 
     def snapshot(self):
         self.time+=1
@@ -38,11 +39,10 @@ class Containers:
 
     def preflight(self):self.log('preflight');return 'old'
     def create_stopped(self,limit):
-        assert limit==512*MIB;self.log('create-stopped');return 'new'
+        assert limit==512*MIB;self.log('create-stopped');self.new='new';return self.new
     def hold(self):self.log('hold');self.active_hold={'released':False};return self.active_hold
     def drain(self,old,hold):
         self.log('drain')
-        if self.failure=='busy':raise RuntimeError('business RPC busy')
     def running(self,identity):return identity in self.live
     def running_portals(self):return list(self.live)
     def stop(self,identity,hold):
@@ -64,6 +64,8 @@ class Containers:
     def restore_old(self):
         if self.live:raise AssertionError('new still running')
         self.live.add('old');self.available=650*MIB;self.log('restore-old')
+    def cleanup_staged(self):
+        if self.new and self.new not in self.live:self.log('cleanup-staged')
 
 
 class ReleaseTests(unittest.TestCase):
@@ -75,7 +77,7 @@ class ReleaseTests(unittest.TestCase):
         guard=ResourceGuard(self.root/'memory.jsonl',backend.snapshot)
         backend.resources=guard
         if failure:
-            reason={'busy':'business RPC busy','health':'candidate unhealthy','cli':'CLI failed','memory':'MemAvailable below 200MiB'}[failure]
+            reason={'health':'candidate unhealthy','cli':'CLI failed','memory':'MemAvailable below 200MiB'}[failure]
             with self.assertRaisesRegex(RuntimeError,reason):deploy.switch(backend,guard)
         else:self.assertEqual(deploy.switch(backend,guard),'new')
         return backend
@@ -98,9 +100,61 @@ class ReleaseTests(unittest.TestCase):
         backend=self.switch('cli');self.assertEqual(backend.live,{'old'})
         self.assertNotIn('release-new',backend.calls)
 
-    def test_busy_business_rpc_does_not_stop_old(self):
-        backend=self.switch('busy');self.assertEqual(backend.live,{'old'})
-        self.assertNotIn('stop-old',backend.calls);self.assertNotIn('start-new',backend.calls)
+    def drain_backend(self):
+        (self.root/'manifest.json').write_text(json.dumps({'revision':'a'*40}))
+        backend=docker_backend.DockerBackend(self.root,Mock())
+        backend.running=Mock(return_value=True)
+        return backend
+
+    def test_long_connections_and_queued_requests_do_not_delay_handoff(self):
+        backend=self.drain_backend();hold={'deadline':15}
+        backend.control=Mock(return_value={'businessForwarding':3,'pending':7,
+            'inFlightByType':{'terminal':1,'logs':1,'poll':1,'static':1}})
+        with patch.object(docker_backend.time,'monotonic',return_value=0),patch.object(docker_backend.time,'sleep') as sleep:
+            backend.drain('old',hold)
+        sleep.assert_not_called()
+        self.assertEqual(backend.drain_result['remaining'],4)
+        self.assertEqual(backend.drain_result['queued'],7)
+        self.assertFalse(backend.drain_result['timedOut'])
+        self.assertEqual(hold['deadline'],15)
+
+    def test_busy_write_and_long_connections_still_switch_after_thirty_seconds(self):
+        backend=Containers();backend.root=self.root
+        guard=ResourceGuard(self.root/'memory.jsonl',backend.snapshot);backend.resources=guard
+        backend.check=lambda name:guard.checkpoint(name)
+        backend.control=Mock(return_value={'pending':2,'inFlightByType':{'write':1,'terminal':1,'logs':1,'poll':1}})
+        backend.drain=lambda old,hold:docker_backend.DockerBackend.drain(backend,old,hold)
+        clock=[0.0]
+        with patch.object(docker_backend.time,'monotonic',side_effect=lambda:clock[0]), \
+             patch.object(docker_backend.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)):
+            self.assertEqual(deploy.switch(backend,guard),'new')
+        self.assertEqual(clock[0],30)
+        self.assertEqual(backend.live,{'new'})
+        self.assertTrue(backend.drain_result['timedOut'])
+        self.assertEqual(backend.drain_result['byType'],{'write':1,'terminal':1,'logs':1,'poll':1})
+        self.assertEqual(json.loads((self.root/'drain.json').read_text()),backend.drain_result)
+
+    def test_first_update_of_old_supervisor_also_continues_after_thirty_seconds(self):
+        backend=self.drain_backend();backend.control=Mock(return_value={'businessForwarding':1,'staticForwarding':2,'pending':0})
+        clock=[0.0]
+        with patch.object(docker_backend.time,'monotonic',side_effect=lambda:clock[0]), \
+             patch.object(docker_backend.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)):
+            backend.drain('old',{'deadline':45})
+        self.assertEqual(clock[0],30)
+        self.assertEqual(backend.drain_result['byType'],{'unclassifiedBusiness':1,'static':2})
+
+    def test_normal_request_finishing_early_does_not_spend_full_budget(self):
+        backend=self.drain_backend();backend.control=Mock(side_effect=[{'inFlightByType':{'write':1}},{'inFlightByType':{}}])
+        clock=[0.0]
+        with patch.object(docker_backend.time,'monotonic',side_effect=lambda:clock[0]), \
+             patch.object(docker_backend.time,'sleep',side_effect=lambda delay:clock.__setitem__(0,clock[0]+delay)):
+            backend.drain('old',{'deadline':45})
+        self.assertEqual(clock[0],.1)
+        self.assertFalse(backend.drain_result['timedOut'])
+
+    def test_failed_release_cleans_its_stopped_candidate_after_restoring_old(self):
+        backend=self.switch('health')
+        self.assertLess(backend.calls.index('release-old'),backend.calls.index('cleanup-staged'))
 
     def test_memory_floor_stops_candidate_before_restoring_old(self):
         backend=self.switch('memory');self.assertEqual(backend.live,{'old'})
@@ -115,6 +169,7 @@ class ReleaseTests(unittest.TestCase):
                                 'Env': ['PUBLIC_ORIGIN=https://portal.invalid']},
                      'HostConfig': {'Binds': ['/private/previous.js:/app/dist/machines.js:ro', '/database:/data']}}
         backend.api=Mock(return_value={'Id': 'new'})
+        backend.command=Mock(return_value=b'')
         backend.inspect=Mock(return_value={'State': {'Running': False}})
         backend.create_stopped(512*MIB)
         body=backend.api.call_args.args[2]
@@ -133,6 +188,7 @@ class ReleaseTests(unittest.TestCase):
         backend.old={'Config':{'Labels':{'com.docker.compose.project.config_files':'existing.yml'},
                                'Env':['PUBLIC_ORIGIN=https://portal.invalid']},'HostConfig':{}}
         backend.api=Mock(return_value={'Id':'candidate'})
+        backend.command=Mock(return_value=b'')
         backend.inspect=Mock(return_value={'State':{'Running':False}})
         backend.create_stopped(512*MIB)
         first=backend.api.call_args.args[2]['Cmd']
@@ -145,6 +201,32 @@ class ReleaseTests(unittest.TestCase):
         override=json.loads((self.root/'portal-image.override.json').read_text())
         self.assertEqual(override['services']['amax-console']['command'],second)
         self.assertEqual(backend.api.call_args.args[2]['Labels']['org.opencontainers.image.revision'],revision)
+
+    def test_create_removes_only_stopped_staged_name_for_this_release(self):
+        (self.root/'manifest.json').write_text(json.dumps({'revision':'b'*40,'tag':'image'}))
+        backend=docker_backend.DockerBackend(self.root,Mock());backend.network='portal-net'
+        backend.old={'Config':{'Labels':{'com.docker.compose.project.config_files':'existing.yml'},'Env':[]},'HostConfig':{}}
+        backend.command=Mock(side_effect=[b'stale-id\n',b''])
+        backend.inspect=Mock(return_value={'State':{'Running':False}});backend.api=Mock(return_value={'Id':'candidate'})
+        backend.create_stopped(512*MIB)
+        self.assertEqual(backend.command.call_args_list[0].args[0],['docker','ps','-aq','--filter','name=^/amax-console-staged-'+('b'*12)+'$'])
+        self.assertEqual(backend.command.call_args_list[1].args[0],['docker','rm','stale-id'])
+
+    def test_running_same_name_is_never_removed(self):
+        backend=self.drain_backend();backend.command=Mock(return_value=b'active-id\n')
+        backend.inspect=Mock(return_value={'State':{'Running':True}});backend.api=Mock()
+        with self.assertRaisesRegex(RuntimeError,'still running'):backend.create_stopped(512*MIB)
+        self.assertEqual(backend.command.call_count,1);backend.api.assert_not_called()
+
+    def test_cleanup_removes_only_own_stopped_candidate_and_never_active_portal(self):
+        backend=self.drain_backend();backend.new='candidate';backend.command=Mock()
+        backend.running=Mock(return_value=False)
+        backend.inspect=Mock(return_value={'Name':'/amax-console-staged-'+('a'*12)})
+        backend.cleanup_staged();backend.command.assert_called_once_with(['docker','rm','candidate'])
+        backend.command.reset_mock();backend.running.return_value=True
+        backend.cleanup_staged();backend.command.assert_not_called()
+        backend.running.return_value=False;backend.inspect.return_value={'Name':'/amax-console'}
+        backend.cleanup_staged();backend.command.assert_not_called()
 
     def node_run(self):
         run=self.root/'runs'/'candidate';run.mkdir(parents=True)
