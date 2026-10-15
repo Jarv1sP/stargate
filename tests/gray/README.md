@@ -42,7 +42,7 @@ npm run gray -- --commit <被测提交> --level full
 
 | 服务 | 内部地址 | 内存上限与用途 |
 | --- | --- | --- |
-| gray-portal | 172.30.77.5 | 512 MiB；候选原 Dockerfile，uid1000，只读根，cap_drop ALL |
+| gray-portal | 172.30.77.5 | 512 MiB；被测提交自带的 Dockerfile，uid1000，只读根，cap_drop ALL |
 | gray-bridge | 172.30.77.10 | 256 MiB；Unix socket → 固定 SSH forced command，不重试写请求 |
 | gray-collector | 共用 bridge 网络命名空间 | 256 MiB；20秒采集一次，原子替换快照 |
 | gray-node-1 | 172.30.77.21 | 4 GiB；Fedora42/systemd/rootless OCI，外层容器为模拟节点所需的 privileged |
@@ -51,7 +51,7 @@ npm run gray -- --commit <被测提交> --level full
 | gray-init | 无网络 | 256 MiB；一次性设置门户卷属主 |
 
 `gray` 网络为 internal。节点、桥、采集器、Git 和 registry 不发布宿主端口。门户另接 host-access，仅发布到 `127.0.0.1`；门户本身有出网能力，不能把 internal 网络描述成整个栈完全无出网能力。
-构建阶段需要下载公开镜像与锁定依赖。运行期不配置任何生产地址、云盘、通知收件人或生产凭据；节点请求只有本地 Git/registry/SSH。容器网络诊断使用候选自己的公网探测目标，隔离栈可能返回不可达。
+构建阶段需要下载公开镜像与锁定依赖。运行期不配置任何生产地址、云盘、通知收件人或生产凭据；节点请求只有本地 Git/registry/SSH。容器网络诊断使用被测提交自己的公网探测目标，隔离栈可能返回不可达。
 
 每次搭栈自动运行 `inspect-stack.mjs`：检查 internal、发布地址、网络成员、内存和门户权限，观察节点当前已建立 IPv4 连接与路由，并写 `isolation.json`。保留栈时可再次运行：
 
@@ -69,10 +69,10 @@ Playwright 只允许本轮门户源，任何外部请求都会记录并让 G14 �
 | root | /data1/stargate/state；平台元数据放模拟 SSD 数据卷 |
 | datasetsRoot | /data2/datasets；公共数据集放模拟 HDD 数据卷 |
 | workspacesRoot | /data1/stargate/workspaces；工作区和 OCI 引擎均放数据卷 |
-| dataMountPoints | /data1、/data2；保持候选的真实挂载点与设备隔离检查 |
+| dataMountPoints | /data1、/data2；保持被测提交的真实挂载点与设备隔离检查 |
 | database | /srv/gpuq/state/gpuq.db；节点内部调度数据库 |
 | gpu | /home/gpuops/bin/gpu；固定用户的 GPUQ 包装入口 |
-| gpuqArchive | /srv/gpuq/current/gpuq.pyz；候选发布包自己的调度器 |
+| gpuqArchive | /srv/gpuq/current/gpuq.pyz；被测提交发布包自己的调度器 |
 | controlRoot | /data1/stargate/gpuq-control；任务需要挂入此目录，必须在数据盘上 |
 | jobMemoryGiBPerCard | 2；两卡任务上限与节点 4 GiB 容器限制相配 |
 | memoryPool | null；不配置独立内存池 |
@@ -88,8 +88,8 @@ Playwright 只允许本轮门户源，任何外部请求都会记录并让 G14 �
 节点使用假 nvidia-smi、假 /proc/driver/nvidia、major195设备和仅两卡的 CDI。基础镜像内置同一份模拟卡 JSON，CDI 只挂驱动工具及分配设备，不挂系统配置目录。训练夹具为纯 Python，数据集为固定种子的600张28×28 PGM图与标签，另加追加文件；仅核对文件数、总字节数和上传下载字节，不新增内容哈希。
 
 此环境不能证明真 GPU/CUDA、真实显存/OOM、多卡 NCCL、真实 GPU 进程释放、使用个人凭据的远端 Git pull/push、生产六个 profile 分工、外网导入、校园网直连、Windows/macOS真机、规模和长期运行。统一使用7IM；其他 profile 未测。manifest 的后台 storage-collect 未安装，7天自动清理未测；立即删除/恢复通过真实回收站测试。
-安装和覆盖更新脚本要求 HTTPS，而任务指定本地门户为 HTTP；只核对安装入口和候选 CLI 构建运行，不修改安装器、不安装到宿主。通知只检查未配置状态，外部投递未测。
-SDK进度/checkpoint、训练输出和训练中重启等被候选执行失败阻断时，写失败或前置失败，不能豁免成通过。
+安装和覆盖更新脚本要求 HTTPS，而任务指定本地门户为 HTTP；只核对安装入口和被测提交 CLI 构建运行，不修改安装器、不安装到宿主。通知只检查未配置状态，外部投递未测。
+SDK进度/checkpoint、训练输出和训练中重启等因被测提交执行失败而阻断时，写失败或前置失败，不能豁免成通过。
 
 ## 功能与剧本
 
@@ -107,14 +107,14 @@ SDK进度/checkpoint、训练输出和训练中重启等被候选执行失败阻
 | G12 | 无外网/单节点豁免，不伪造传输成功 |
 | G13 | compose重启门户/桥、节点用户GPUQ停止恢复；原编号查询与节点提交数 |
 | G14 | 真实浏览器登录、主要页面与终端、公告、指南；1440/390/320截图和横向溢出 |
-| G15 | 候选CLI构建、登录、状态、项目、提交、日志、PTY终端、公告提醒确认与帮助 |
+| G15 | 被测提交的 CLI构建、登录、状态、项目、提交、日志、PTY终端、公告提醒确认与帮助 |
 
 `node scripts/gray-local/check-features.mjs` 检查漏项、原文变化、未知步骤和过期豁免；也由 `npm test` 运行。豁免负责人均为 TODO-维护者，到期2026-12-31；只在对应cpu/单节点配置生效。
 
 ## 构建与回归
 
-宿主使用 Node24 / Python3.10；节点 Fedora42 安装 Python3.10，/usr/bin/python3 指向 3.10，启动时强制检查，实际版本写入 stack.json 和报告。Git2.34 低于规范。原候选缺少 build/campus-native/embedded-artifacts.private.json，直接 npm test/test:ui 会在前置构建失败。灰度用256 MiB、无网络的临时Go容器运行候选原build-campus-native.mjs生成helper，再用候选原Dockerfile构建门户；不装宿主Go或读取私有部署产物。
-节点发布包在候选 git archive 的导出目录生成。构建器打印的 sourceRevision/gpuqSHA256 原样保存在 node-release.json；真正候选提交另存 stack.json，因为导出目录的临时Git提交编号不同。
+宿主使用 Node24 / Python3.10；节点 Fedora42 安装 Python3.10，/usr/bin/python3 指向 3.10，启动时强制检查，实际版本写入 stack.json 和报告。Git2.34 低于规范。build/campus-native/embedded-artifacts.private.json 是构建产物、不在仓库里，没先生成就直接 npm test/test:ui 会在前置构建失败。灰度用256 MiB、无网络的临时Go容器运行被测提交自带的 build-campus-native.mjs生成helper，再用被测提交自带的 Dockerfile构建门户；不装宿主Go或读取私有部署产物。
+节点发布包在被测提交 git archive 的导出目录生成。构建器打印的 sourceRevision/gpuqSHA256 原样保存在 node-release.json；真正的被测提交另存 stack.json，因为导出目录的临时Git提交编号不同。
 
 补齐公开构建产物后的基线和每轮结果写入本地 out/gray-notes 与 PR 描述，不改基线用例。
 
@@ -142,7 +142,7 @@ sh scripts/gray-local/teardown.sh out/gray/<时间>
 npm run gray -- --commit <要发布的提交> --level full
 ```
 
-报告必须 failed 0、skipped 0、incomplete 0，才能部署；将本轮 `summary.md` 附在发布记录里。cpu 级别不能证明真 GPU/CUDA，上线后仍须按维护者现有流程做真机冒烟。这是建议，最终规则由仓库所有者决定；本 PR 不修改 AGENTS.md §六、§九，也不实施部署。
+报告必须 failed 0、skipped 0、incomplete 0，才能部署；将本轮 `summary.md` 附在发布记录里。cpu 级别不能证明真 GPU/CUDA，上线后仍须按维护者现有流程做真机冒烟。AGENTS.md §六 已写明“运营灰测上线后，灰测不过不部署”，本节是对这条门禁具体怎么跑的建议，最终规则由仓库所有者决定；本 PR 不修改 AGENTS.md §六、§九，也不实施部署。
 
 ## CI 草案
 
