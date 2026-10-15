@@ -1,0 +1,26 @@
+import {readFile} from 'node:fs/promises';
+import {project,call,download,upload,trashRestore} from '../lib/exec.mjs';
+export default {id:'G04',title:'项目、Git 克隆、文件续传与回收站（FEATURES 三）',level:'fast',async run(ctx){
+  const {name,member}=await project(ctx),base={machine:ctx.machine,project:name};
+  const listing=await call(ctx,member,'projects.list',{machine:ctx.machine});
+  ctx.check('项目列出可切换',listing.projects.some(p=>p.project===name));
+  const files=await call(ctx,member,'files.list',{...base,area:'code',path:''});
+  ctx.check('克隆得到 train.py',files.entries.some(f=>f.name==='train.py'));
+  const source=await readFile(new URL('../fixtures/train.py',import.meta.url));
+  ctx.check('克隆文件内容正确',(await download(ctx,member,{project:name,area:'code',path:'train.py'})).equals(source));
+  await call(ctx,member,'projects.label.set',{...base,displayName:'灰度项目'});
+  ctx.check('显示名可读取',(await call(ctx,member,'projects.label.get',base)).displayName==='灰度项目');
+  const group=ctx.key();await call(ctx,member,'projects.group.set',{id:group,displayName:'灰度分组',members:[base],primary:base});
+  ctx.check('分组可读取',(await call(ctx,member,'projects.group.get',{id:group})).members.some(p=>p.project===name));
+  ctx.check('归档',(await call(ctx,member,'projects.archive',base)).archived===true);
+  ctx.check('取消归档',(await call(ctx,member,'projects.unarchive',base)).archived===false);
+  const quota=await call(ctx,member,'projects.quota',base);ctx.check('磁盘配额可用',quota.usedBytes>0&&quota.availableBytes>0&&quota.totalBytes>0);
+  const content=Buffer.alloc(256*1024);for(let i=0;i<content.length;i++)content[i]=i%251;
+  const interrupted=await upload(ctx,member,{project:name,area:'code',path:'resume.bin',content,stopAfter:128*1024});
+  const status=await call(ctx,member,'data.upload.status',{machine:ctx.machine,key:interrupted.key});
+  ctx.check('中断后原 key 保留偏移',status.state==='UPLOADING'&&status.offset===128*1024);
+  await upload(ctx,member,{project:name,area:'code',path:'resume.bin',content,key:interrupted.key});
+  ctx.check('续传后下载字节一致',(await download(ctx,member,{project:name,area:'code',path:'resume.bin'})).equals(content));
+  await trashRestore(ctx,member,{key:ctx.key(),remove:'projects.retire',args:base,kind:'project'});
+  ctx.check('项目恢复后内容保留',(await download(ctx,member,{project:name,area:'code',path:'resume.bin'})).equals(content));
+}};

@@ -1,0 +1,128 @@
+[
+  {
+    "id": "single-node-copy",
+    "reason": "未测：本地栈只有一台节点，无法验证复制到其他服务器。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "server-transfer",
+    "reason": "未测：本地只有一台节点，不能验证服务器之间传输、状态、取消和续传。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "campus-direct",
+    "reason": "未测：本地栈无校园网，未配置直传服务；电脑经门户上传下载由G04/G06测试。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "aliyun-import",
+    "reason": "未测：本地栈无外网和阿里云盘分享。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "https-import",
+    "reason": "未测：本地栈无外网 HTTPS 文件来源。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "cloud-browse",
+    "reason": "未测：本地栈无外网与云盘账号，无法浏览远端云盘。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "cloud-download",
+    "reason": "未测：本地栈无外网与云盘账号，无法从云盘下载到数据集或工作区。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "cloud-upload",
+    "reason": "未测：本地栈无外网与云盘账号，无法把服务器文件上传云盘。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "external-notifications",
+    "reason": "未测：没有外部通知凭据、收件人和外网；仅测试未配置状态。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "real-gpu",
+    "reason": "未测：cpu级别模拟设备不能验证真实GPU/CUDA、显存/OOM和NCCL。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "tier": "cpu"
+    }
+  },
+  {
+    "id": "other-os-install",
+    "reason": "未测：本机是Linux/WSL，Windows/macOS安装更新只能检查提供的入口，不能实测真机。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "tier": "cpu"
+    }
+  },
+  {
+    "id": "https-installer",
+    "reason": "未测：任务规定本地门户使用127.0.0.1 HTTP，候选安装和覆盖更新脚本只接受HTTPS；未修改安装器或宿主配置。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "external-imports",
+    "reason": "未测：本地栈无外网，阿里云盘分享和HTTPS链接导入均无法实测。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  },
+  {
+    "id": "cloud-files",
+    "reason": "未测：本地栈无外网和云盘账号，浏览、下载到数据集或工作区、上传到云盘均无法实测。",
+    "owner": "TODO-维护者",
+    "expires": "2026-12-31",
+    "when": {
+      "nodes": 1
+    }
+  }
+]
