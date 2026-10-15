@@ -23,7 +23,7 @@ function transportFor(code,writeMayHaveReachedPeer=false){
       done();queueMicrotask(()=>child.stdout.write(Buffer.concat([size,meta])));
     }});return child;
   }});
-  return {probe:async()=>true,frames:()=>frames,transportFactory:(call,options)=>createPersonalFileTransport(call,{...options,agentFactory:()=>agent,send:campusNativePersonalFileRequest,retry:{now:()=>elapsed,sleep:async()=>{elapsed+=60000;}}})};
+  return {probe:async()=>true,elapsed:()=>elapsed,frames:()=>frames,transportFactory:(call,options)=>createPersonalFileTransport(call,{...options,agentFactory:()=>agent,send:campusNativePersonalFileRequest,retry:{now:()=>elapsed,sleep:async()=>{elapsed+=60000;}}})};
 }
 for(const code of ['ACK_UNCONFIRMED','RESPONSE_INTERRUPTED'])test(`an ambiguous ${code} keeps the original failure after upload status reconciliation`,async t=>{
   const root=await mkdtemp(join(tmpdir(),'campus-first-ambiguous-'));t.after(()=>rm(root,{recursive:true,force:true}));
@@ -42,7 +42,7 @@ const firstError=code=>error=>{
   assert.equal(error.code,code);assert.equal(error.writeMayHaveReachedPeer,false);assert.doesNotMatch(error.message,/SESSION_STOPPED/);
   assert.match(error.message,/原 key (?:会续传|和偏移已保留)/);return true;
 };
-for(const area of ['code','dataset'])for(const code of ['TCP_TIMEOUT','DNS_FAILED','TCP_REFUSED','NETWORK_UNREACHABLE','PHYSICAL_CONNECT_FAILED'])test(`${area} upload keeps first ${code}; VPS retry stays unavailable to datasets`,async t=>{
+for(const area of ['code','dataset'])for(const code of ['TCP_TIMEOUT','DNS_FAILED','TCP_REFUSED','NETWORK_UNREACHABLE','PHYSICAL_CONNECT_FAILED','NETWORK_CHANGED','ROUTE_UNCONFIRMED','CAMPUS_ADDRESS_REQUIRED','PHYSICAL_BIND_DENIED'])test(`${area} upload keeps first ${code}; VPS retry stays unavailable to datasets`,async t=>{
   const root=await mkdtemp(join(tmpdir(),'campus-first-upload-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const local=join(root,'source'),key=randomUUID(),context={area,...(area==='code'?{project:'fixture'}:{dataset:'fixture'})};await writeFile(local,'abc');
   const f=transportFor(code),calls=[];
@@ -54,7 +54,7 @@ for(const area of ['code','dataset'])for(const code of ['TCP_TIMEOUT','DNS_FAILE
     assert.fail('unwritten native requests must not enter status recovery: '+op);
   };
   const options={machine:'fixture',context,local,path:'file',key,via:'direct',...f};
-  await assert.rejects(uploadLocalFile(call,options),firstError(code));assert.equal(f.frames(),1);assert.ok(!calls.includes('data.upload.chunk'));
+  await assert.rejects(uploadLocalFile(call,options),firstError(code));assert.equal(f.frames(),1);assert.equal(f.elapsed(),60000);assert.ok(!calls.includes('data.upload.chunk'));
   if(area==='dataset')await assert.rejects(uploadLocalFile(call,{...options,via:'relay'}),/数据集只走校园网直连/);else assert.equal((await uploadLocalFile(call,{...options,via:'relay'})).state,'COMPLETE');assert.equal(f.frames(),1);
 });
 for(const area of ['code','dataset'])test(`${area} download keeps first timeout; only workspace permits explicit Portal retry`,async t=>{

@@ -48,13 +48,13 @@ test('direct chunk retries reset/timeouts on the same key and offset, then retur
  try{const result=await transport.request({offset:0});assert.equal(Buffer.from(result.data,'base64').toString(),'abc');assert.deepEqual(offsets,[0,0,0]);assert.deepEqual(delays,[1000,2000]);}finally{await transport.close();}
 });
 
-test('workspace upload continues a partially written chunk over VPS at the confirmed offset and original key',async t=>{
+for(const code of ['TCP_TIMEOUT','NETWORK_CHANGED','ROUTE_UNCONFIRMED','CAMPUS_ADDRESS_REQUIRED','PHYSICAL_BIND_DENIED'])test(`workspace upload ${code} continues over VPS at the confirmed offset and original key`,async t=>{
  const dir=await fixture(t),local=join(dir,'source'),bytes=Buffer.alloc(512*1024+3,97);await writeFile(local,bytes);
  const messages=[],relayed=[],stored=[];let offset=0,direct=0;
  const call=async(op,args)=>{assert.equal(args.key,key);if(op==='data.upload.begin'||op==='data.upload.status')return {result:{state:'UPLOADING',offset}};
    if(op==='data.upload.finish')return {result:{state:'COMPLETE',offset}};assert.equal(op,'data.upload.chunk');relayed.push(args);const part=Buffer.from(args.data,'base64');stored.push(part);offset+=part.length;return {result:{offset}};};
  const options={machine:'fixture',context:{area:'code',project:'vision'},path:'source',local,key,stateDirectory:join(dir,'state'),probe:()=>assert.fail('no pre-probe'),notify:message=>messages.push(message),
-   transportFactory:async()=>({request:async args=>{direct++;if(direct===1){stored.push(args.bytes);offset+=args.bytes.length;return {offset};}stored.push(args.bytes.subarray(0,1));offset++;throw Object.assign(Error('direct retries exhausted'),{code:'TCP_TIMEOUT',writeMayHaveReachedPeer:true});},close:async()=>{}})};
+   transportFactory:async()=>({request:async args=>{direct++;if(direct===1){stored.push(args.bytes);offset+=args.bytes.length;return {offset};}stored.push(args.bytes.subarray(0,1));offset++;throw Object.assign(Error('direct retries exhausted'),{code,writeMayHaveReachedPeer:true});},close:async()=>{}})};
  assert.equal((await uploadLocalFile(call,options)).state,'COMPLETE');assert.equal(relayed.length,1);assert.equal(relayed[0].offset,512*1024+1);assert.equal(relayed[0].key,key);assert.deepEqual(Buffer.concat(stored),bytes);
  assert.deepEqual(messages,['校园直连失败，改经 VPS 继续']);assert.equal(JSON.parse(await readFile(join(dir,'state',key+'.route.json'),'utf8')).via,'relay');
 });
