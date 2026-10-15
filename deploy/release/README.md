@@ -43,8 +43,31 @@ Actions 根据最近成功的发布记录计算节点改动；首次使用 DEPLO
 新门户启动或健康失败时停止新版、恢复原容器和入口，job 失败；成功才更新 deployed-sha。
 日志只报告发布提交、结果、耗时和最低可用内存，不打印容器环境或凭据。
 
-`node/` 或 `gpuq/` 相对上次成功发布有变化时，runner 先构建节点模板包一并传送，目前在切换门户之前明确失败并提示
-“节点有改动，需要安装”。待 `deploy/node/install.py` 入 main 后再接逐台安装，
-本版不自行安装节点。私有配置、节点密钥和用户数据不进入镜像或仓库。
+`node/` 或 `gpuq/` 相对上次成功发布有变化时，runner 构建所有节点模板包，
+并携带该提交的 `deploy/node/install.py`。VPS 依次通过专用 SSH 密钥向各节点
+发送一个 tar：根下 `install.py` 和 `package/`（该机模板包内容）。
+节点的强制入口 `receive.py` 用节点本机私有配置调用
+`install.py package --config <本机私有配置>`；退出码为 0 才安装下一台。
+全部成功后才切门户。某台失败就停止，门户保留原版，之前成功的节点不回滚。
+
+### 节点一次性接线
+
+仅在共同安装器和节点受限入口就绪后启用，由指定节点安装者接线：
+
+- VPS 的 `/opt/stargate-release/node-release-ed25519` 为独立发布私钥，仅在 VPS 保存。
+- 公钥放到各节点管理块之外，绑定
+  `restrict,command="sudo -n /usr/local/sbin/stargate-node-receive"`；
+  sudoers 只允许这个接收命令，不提供宿主 shell。
+- `/opt/stargate-release/nodes.json` 提供机器 ID 与 SSH 目标别名，例如：
+
+  ```json
+  [{"machine":"gpu-1","destination":"node-release-1"}]
+  ```
+
+- `/opt/stargate-release/node-ssh.conf` 只配置这些目标的地址、账号、现有 known_hosts
+  和既有跳转路径。最终节点仅使用专用发布密钥；需要经跳板时，ProxyCommand
+  复用原管理员 SSH 配置和已有跳转密钥，不给发布 key 开转发。
+- 两份配置权限 root/0600，真实地址、私有配置、节点密钥和用户数据不进入仓库或镜像。
+  VPS 沿用现有 SSH 网络路径，不扫描主机指纹、不改网络或 authorized_keys 管理块。
 
 日常维护按 [维护手册](../../docs/MAINTAINING.md)；出现回归通过 Revert PR 重新上线。

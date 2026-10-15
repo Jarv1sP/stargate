@@ -4,21 +4,56 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
+import tarfile
 import time
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from docker_backend import DockerBackend
 from resource_guard import MAX_CONTAINER, ResourceGuard
 
 
-def require_portal_only(run):
-    if json.loads((run/'release.json').read_text())['nodesChanged']:
-        raise RuntimeError('节点有改动，需要安装；deploy/node/install.py 自动接线尚未启用')
+def install_nodes(run, root, resources):
+    if not json.loads((run/'release.json').read_text())['nodesChanged']:
+        return
+    targets={node['machine']: node['destination'] for node in json.loads((root/'nodes.json').read_text())}
+    for package in sorted((run/'nodes').iterdir()):
+        machine=package.name
+        print('Installing node '+machine, flush=True)
+        resources.checkpoint('node '+machine+' begin')
+        try:
+            command=['ssh', '-F', str(root/'node-ssh.conf'),
+                 '-i', str(root/'node-release-ed25519'), '-o', 'IdentitiesOnly=yes',
+                 '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes',
+                 '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15',
+                 '-o', 'ServerAliveCountMax=3', targets[machine]]
+            with (run/('node-'+machine+'.private.log')).open('ab') as log:
+                process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=log, stderr=log)
+                try:
+                    with process.stdin as stream, tarfile.open(fileobj=stream, mode='w|') as archive:
+                        archive.add(run/'install.py', arcname='install.py')
+                        archive.add(package, arcname='package')
+                    while process.poll() is None:
+                        resources.checkpoint('node '+machine+' install')
+                        try: process.wait(timeout=1)
+                        except subprocess.TimeoutExpired: pass
+                    if process.returncode:
+                        raise RuntimeError('SSH/安装返回码 '+str(process.returncode))
+                    resources.checkpoint('node '+machine+' installed')
+                except BaseException:
+                    if process.poll() is None:
+                        process.terminate();process.wait(timeout=10)
+                    raise
+        except Exception as error:
+            raise RuntimeError('节点 '+machine+' 安装失败（'+type(error).__name__+
+                               '）；门户未切换，之前安装成功的节点保留；详情见 VPS 发布日志') from None
+        print('Installed node '+machine, flush=True)
 
 
-def switch(backend, resources):
+def switch(backend, resources, prepare_nodes=lambda: None):
     old=new=hold=None
     try:
         resources.start()
+        prepare_nodes()
         old=backend.preflight()
         new=backend.create_stopped(MAX_CONTAINER)
         hold=backend.hold()
@@ -53,7 +88,6 @@ def switch(backend, resources):
 def main(run, revision):
     os.umask(0o077)
     root=run.parent.parent
-    require_portal_only(run)
     manifest={'revision':revision,'tag':'stargate:auto-'+revision,'rollback':'stargate:previous'}
     (run/'manifest.json').write_text(json.dumps(manifest))
     resource_log=run/'memory.jsonl'
@@ -61,7 +95,7 @@ def main(run, revision):
     backend=DockerBackend(run,resources)
     started=time.monotonic();status='FAILED'
     try:
-        identity=switch(backend,resources)
+        identity=switch(backend,resources,lambda: install_nodes(run,root,resources))
         temporary=root/'deployed-sha.tmp';temporary.write_text(revision+'\n');temporary.replace(root/'deployed-sha')
         status='DEPLOYED'
         return identity

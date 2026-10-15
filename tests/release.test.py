@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tarfile
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -124,14 +125,83 @@ class ReleaseTests(unittest.TestCase):
         override=json.loads((directory/'portal-image.override.json').read_text())
         self.assertEqual(override['services']['amax-console']['volumes'], [inventory])
 
-    def test_node_changes_fail_before_any_portal_action(self):
-        (self.root/'release.json').write_text(json.dumps({'nodesChanged': True}))
-        with self.assertRaisesRegex(RuntimeError, '节点有改动，需要安装'):
-            deploy.require_portal_only(self.root)
+    def node_run(self):
+        run=self.root/'runs'/'candidate';run.mkdir(parents=True)
+        (run/'release.json').write_text(json.dumps({'nodesChanged': True}))
+        (run/'install.py').write_text('# candidate installer')
+        machines=['node-a', 'node-b', 'node-c', 'node-d']
+        for machine in machines:
+            package=run/'nodes'/machine;package.mkdir(parents=True)
+            (package/'manifest.json').write_text(json.dumps({'machine': machine}))
+            (package/'gpuq.pyz').write_bytes(b'candidate runtime')
+        (self.root/'nodes.json').write_text(json.dumps([{'machine': m, 'destination': m+'-release'} for m in machines]))
+        return run, machines
 
-    def test_unchanged_nodes_allow_portal_update_without_git(self):
+    def node_transport(self, run, machines, failure=None):
+        real_spawn=subprocess.Popen;calls=[]
+        # Real stdin pipe and tar reader; SSH/systemd are intentionally not used.
+        script=r"""import json,sys,tarfile
+from pathlib import Path
+journal=Path(sys.argv[1]);machine=sys.argv[2]
+with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as archive:
+    files={item.name:archive.extractfile(item).read() for item in archive if item.isfile()}
+assert files['install.py']==b'# candidate installer'
+assert files['package/gpuq.pyz']==b'candidate runtime'
+assert json.loads(files['package/manifest.json'])['machine']==machine
+if sys.argv[3]=='fail':
+    print('private-node-detail',file=sys.stderr);sys.exit(7)
+with journal.open('a') as output:output.write(machine+'\n')
+"""
+        def spawn(command, **kwargs):
+            number=len(calls)
+            if number:
+                self.assertEqual((run/'installed').read_text().splitlines(), machines[:number])
+            calls.append(command)
+            return real_spawn([sys.executable, '-I', '-B', '-c', script, str(run/'installed'),
+                               machines[number], 'fail' if machines[number]==failure else 'ok'], **kwargs)
+        return spawn, calls
+
+    def test_all_node_packages_install_before_portal_handoff(self):
+        run, machines=self.node_run();spawn, calls=self.node_transport(run,machines)
+        backend=Containers();guard=ResourceGuard(run/'memory.jsonl', backend.snapshot);backend.resources=guard
+        def nodes():
+            deploy.install_nodes(run,self.root,guard)
+            backend.log('nodes-finished')
+        with patch.object(deploy.subprocess, 'Popen', side_effect=spawn):
+            self.assertEqual(deploy.switch(backend,guard,nodes),'new')
+        self.assertLess(backend.calls.index('nodes-finished'),backend.calls.index('preflight'))
+        self.assertEqual((run/'installed').read_text().splitlines(),machines)
+        self.assertEqual([command[-1] for command in calls],[m+'-release' for m in machines])
+        for command in calls:
+            self.assertIn(str(self.root/'node-release-ed25519'),command)
+            self.assertIn(str(self.root/'node-ssh.conf'),command)
+            self.assertIn('StrictHostKeyChecking=yes',command)
+
+    def test_node_failure_keeps_old_portal_and_previous_successful_nodes(self):
+        run,machines=self.node_run();spawn,calls=self.node_transport(run,machines,'node-b')
+        backend=Containers();guard=ResourceGuard(run/'memory.jsonl',backend.snapshot)
+        with patch.object(deploy.subprocess,'Popen',side_effect=spawn):
+            with self.assertRaisesRegex(RuntimeError,'节点 node-b 安装失败') as caught:
+                deploy.switch(backend,guard,lambda:deploy.install_nodes(run,self.root,guard))
+        self.assertNotIn('private-node-detail',str(caught.exception))
+        self.assertIn('private-node-detail',(run/'node-node-b.private.log').read_text())
+        self.assertEqual(len(calls),2)
+        self.assertEqual((run/'installed').read_text().splitlines(),['node-a'])
+        self.assertEqual(backend.calls,[]);self.assertEqual(backend.live,{'old'})
+
+    def test_missing_node_route_is_not_silently_skipped(self):
+        run,machines=self.node_run();spawn,calls=self.node_transport(run,machines)
+        (self.root/'nodes.json').write_text('[]')
+        with patch.object(deploy.subprocess,'Popen',side_effect=spawn), \
+             self.assertRaisesRegex(RuntimeError,'节点 node-a 安装失败'):
+            deploy.install_nodes(run,self.root,Mock())
+        self.assertEqual(calls,[])
+
+    def test_unchanged_nodes_do_not_read_routes_or_launch_ssh(self):
         (self.root/'release.json').write_text(json.dumps({'nodesChanged': False}))
-        deploy.require_portal_only(self.root)
+        with patch.object(deploy.subprocess,'Popen') as spawn:
+            deploy.install_nodes(self.root,self.root,Mock())
+        spawn.assert_not_called()
 
     def test_deployment_key_rejects_shell_commands_without_docker(self):
         with patch.dict(os.environ, {'SSH_ORIGINAL_COMMAND': 'echo forbidden'}), patch.object(entry.subprocess, 'run') as run:

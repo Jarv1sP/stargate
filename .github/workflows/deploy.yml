@@ -96,6 +96,7 @@ jobs:
           if result.returncode:
               raise SystemExit('Node package build failed')
           print(f'Prepared {len(machines)} node packages')
+          subprocess.run(['cp', 'deploy/node/install.py', 'bundle/install.py'], check=True)
           PYTHON
       - name: Prepare one offline stream
         run: |
