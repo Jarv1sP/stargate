@@ -125,7 +125,7 @@ class ReleaseTests(unittest.TestCase):
         override=json.loads((directory/'portal-image.override.json').read_text())
         self.assertEqual(override['services']['amax-console']['volumes'], [inventory])
 
-    def test_redeploy_same_commit_gets_a_fresh_activation_marker(self):
+    def test_redeploy_same_commit_gets_a_fresh_candidate(self):
         revision='a'*40
         (self.root/'manifest.json').write_text(json.dumps({'revision':revision,'tag':'image','rollback':'previous'}))
         backend=docker_backend.DockerBackend(self.root,Mock())
@@ -136,8 +136,10 @@ class ReleaseTests(unittest.TestCase):
         backend.inspect=Mock(return_value={'State':{'Running':False}})
         backend.create_stopped(512*MIB)
         first=backend.api.call_args.args[2]['Cmd']
+        first_path=backend.api.call_args.args[1]
         backend.create_stopped(512*MIB)
         second=backend.api.call_args.args[2]['Cmd']
+        self.assertNotEqual(first_path,backend.api.call_args.args[1])
         # A matching /data/portal-rollout/active marker auto-activates on restart.
         # A new candidate must wait for handoff, even for the same source commit.
         self.assertNotEqual(first[3],second[3])
