@@ -3,6 +3,9 @@
 set -eu
 /usr/bin/python3 --version > /run/gray-node-python
 mount --make-rshared /
+# Keep one complete proc view: the simulated driver and systemd add submounts to /proc.
+install -d /run/gray-proc
+mount -t proc proc /run/gray-proc
 install -d -m 755 /keys/hostkeys
 cp /etc/ssh/ssh_host_ed25519_key.pub /keys/hostkeys/gray-node-1.pub
 install -m 755 /opt/gray-sim/nvidia-smi /usr/bin/nvidia-smi
