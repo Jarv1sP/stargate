@@ -125,6 +125,27 @@ class ReleaseTests(unittest.TestCase):
         override=json.loads((directory/'portal-image.override.json').read_text())
         self.assertEqual(override['services']['amax-console']['volumes'], [inventory])
 
+    def test_redeploy_same_commit_gets_a_fresh_activation_marker(self):
+        revision='a'*40
+        (self.root/'manifest.json').write_text(json.dumps({'revision':revision,'tag':'image','rollback':'previous'}))
+        backend=docker_backend.DockerBackend(self.root,Mock())
+        backend.network='portal-net'
+        backend.old={'Config':{'Labels':{'com.docker.compose.project.config_files':'existing.yml'},
+                               'Env':['PUBLIC_ORIGIN=https://portal.invalid']},'HostConfig':{}}
+        backend.api=Mock(return_value={'Id':'candidate'})
+        backend.inspect=Mock(return_value={'State':{'Running':False}})
+        backend.create_stopped(512*MIB)
+        first=backend.api.call_args.args[2]['Cmd']
+        backend.create_stopped(512*MIB)
+        second=backend.api.call_args.args[2]['Cmd']
+        # A matching /data/portal-rollout/active marker auto-activates on restart.
+        # A new candidate must wait for handoff, even for the same source commit.
+        self.assertNotEqual(first[3],second[3])
+        self.assertEqual(first[:3],second[:3])
+        override=json.loads((self.root/'portal-image.override.json').read_text())
+        self.assertEqual(override['services']['amax-console']['command'],second)
+        self.assertEqual(backend.api.call_args.args[2]['Labels']['org.opencontainers.image.revision'],revision)
+
     def node_run(self):
         run=self.root/'runs'/'candidate';run.mkdir(parents=True)
         (run/'release.json').write_text(json.dumps({'nodesChanged': True}))
