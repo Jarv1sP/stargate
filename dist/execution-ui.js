@@ -88,13 +88,13 @@ export function projectDiskQuotaHTML(value){
   const usage=value?.projectUsage,volumes=['workspace','datasets'].map(kind=>({kind,...value?.volumes?.find(row=>row.kind===kind)}));
   return (usage?`<p>项目文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${Number.isFinite(usage.size)?transferBytes(usage.size):'未知'}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${row.kind==='workspace'?'工作区盘（SSD）':'数据集盘（HDD）'}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
 }
-export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,current=()=>true,onRecoverySupport=()=>{}}={}){
+export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,route,onRoute,current=()=>true,onRecoverySupport=()=>{}}={}){
   const check=()=>{signal?.throwIfAborted();if(!current())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');};
   check();
   if(context.area!=='code')throw Error('请选择项目代码目录。');
   if(!Number.isSafeInteger(file.size)||file.size<0)throw Error('文件大小无效。');
   check();onRecoverySupport(true);
-  return uploadBrowserFile(file,{machine:context.machine,project:context.project,ownerId:context.ownerId,area:'code',path:context.path,key,
+  return uploadBrowserFile(file,{machine:context.machine,project:context.project,ownerId:context.ownerId,area:'code',path:context.path,key,route,onRoute,
     overwrite:true,signal,call:async(operation,args)=>{check();const result=await call(operation,args);check();return result;},
     onProgress:row=>{check();progress(row.offset,file.size,row);}});
 }
@@ -477,9 +477,9 @@ export function executionUI(store,refresh,toast){
     if(button.id==='workspace-upload')guarded(button,async()=>{
       const target=fileContext(),token=currentToken(),dir=query('[name=file-path]').value||'.',files=[...query('[name=files]').files];if(target.area==='output')throw Error('任务输出只支持查看和下载。');if(!files.length)throw Error('先选择文件。');
       query('#workspace-result').textContent='正在上传…';
-      const keys=uploadRecovery?.scope===uploadScope()?uploadRecovery.keys||new Map():new Map();uploadRecovery={scope:uploadScope(),supported:true,keys};
+      const keys=uploadRecovery?.scope===uploadScope()?uploadRecovery.keys||new Map():new Map(),route=uploadRecovery?.scope===uploadScope()?uploadRecovery.route||{}:{};uploadRecovery={scope:uploadScope(),supported:true,keys,route};
       for(const file of files){const path=dir==='.'?file.name:dir+'/'+file.name,progress=(offset,total,info)=>{if(info?.key)keys.set(path,info.key);if(token===currentToken())query('#workspace-result').textContent=`${info?.resumed?'接着上传':'正在上传'} ${file.name}：${offset} / ${total??file.size} B`;};
-          try{await projectActivity.run(signal=>uploadProjectFile(file,{...target,path},(operation,args)=>store.call(operation,{...(projectOwner&&args?.project===project?{ownerId:projectOwner}:{}),...args},{signal}),progress,{signal,key:keys.get(path),current:()=>token===currentToken(),onRecoverySupport:supported=>{if(token===currentToken()){uploadRecovery={scope:uploadScope(),supported,keys};updateControls();}}}));}
+          try{await projectActivity.run(signal=>uploadProjectFile(file,{...target,path},(operation,args)=>store.call(operation,{...(projectOwner&&args?.project===project?{ownerId:projectOwner}:{}),...args},{signal}),progress,{signal,key:keys.get(path),route,onRoute:toast,current:()=>token===currentToken(),onRecoverySupport:supported=>{if(token===currentToken()){uploadRecovery={scope:uploadScope(),supported,keys,route};updateControls();}}}));}
           catch(error){if(token===currentToken())query('#workspace-result').textContent=error.message;throw error;}
       }
       if(token!==currentToken())return;
@@ -501,7 +501,7 @@ export function executionUI(store,refresh,toast){
     if(button.id==='workspace-download')guarded(button,async()=>{
       const target=fileContext(),path=query('[name=file-path]').value,token=currentToken(),turn=fileReadTurn;if(!path)throw Error('请填写工作区或输出内的相对路径。');
       query('#workspace-result').hidden=false;
-      await downloadBrowserPath((op,args)=>call(op,args),target,path,{directory:path==='.',onProgress:row=>{if(token===currentToken()&&turn===fileReadTurn)query('#workspace-result').textContent=`正在下载 ${row.path}：${row.offset} / ${row.size} B`;}});
+      await downloadBrowserPath((op,args)=>call(op,args),target,path,{directory:path==='.',onRoute:toast,onProgress:row=>{if(token===currentToken()&&turn===fileReadTurn)query('#workspace-result').textContent=`正在下载 ${row.path}：${row.offset} / ${row.size} B`;}});
 
     });
     if(button.dataset.jobPull)guarded(button,async()=>{const job=ownJobs().find(row=>row.id===button.dataset.jobPull);if(!job||!resultAccess.allowed(job))throw Error('任务暂未出现在列表，请刷新后重试。');await diagnostics.openLogs(job.id,'output');});

@@ -42,8 +42,8 @@ gpuctl push LOCAL_FILE_OR_DIR [REMOTE_PATH] [--key UUID]
 gpuctl push-status LOCAL_FILE_OR_DIR [REMOTE_PATH] --key UUID
 gpuctl files [PATH] / pull REMOTE_PATH LOCAL_PATH [--job JOB_ID]
 gpuctl pull-status LOCAL_DIRECTORY
-项目文件默认经 VPS，任务输出只走 VPS；数据集开始前探测校园网选路，其余传输可用 --via 明确选择。
-失败保留原编号和偏移，用原 --key 续传；不会自动换路。
+数据集只走校园直连，不支持 --via relay/portal；项目文件和任务输出默认直连，失败改经 VPS 继续。
+项目和输出可用 --via relay（上传）/portal（下载）直接走 VPS，或 --via direct 固定直连；续传沿用原 --key。
 
 gpuctl ssh [--reconnect SESSION_ID] [--takeover]
 gpuctl run -g 1 [--rank P0..P4] -- python train.py --data /datasets/images --output /outputs （P4 最优先，P0 最低）
@@ -208,6 +208,7 @@ async function main() {
   if(options.key!==undefined&&!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(options.key))fail9('--key 必须为原操作的完整 UUID。');
   if(options.repo!==undefined&&!(positionals[0]==='project'&&positionals[1]==='create'))fail9('--repo 仅用于 project create。');
   if(options.via!==undefined&&!['auto','direct','relay','portal'].includes(options.via))fail9('--via 使用 direct、relay 或 portal。');
+  if(positionals[0]==='data'&&['put','get','upload','download'].includes(positionals[1])&&options.via!==undefined&&!['auto','direct'].includes(options.via))fail9('数据集只走校园网直连，不支持 --via relay/portal。');
   const customScheduling = ["rank", "yield", "restart-policy", "checkpointable", "mode"].some((k) => Object.hasOwn(options, k));
   if (customScheduling && (positionals[0] !== "run" || options.priority)) fail9("Custom scheduling is only valid for run and cannot mix with --priority presets");
   const scheduling = customScheduling ? { rank: options.rank || "P2", yieldPolicy: options.yield || "never", restartPolicy: options["restart-policy"] || "never", checkpointable: options.checkpointable === true } : null;

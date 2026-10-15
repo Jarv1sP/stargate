@@ -2,7 +2,7 @@ import {lstat,open,readdir,mkdir,readFile,writeFile,rename} from 'node:fs/promis
 import {constants} from 'node:fs';
 import {dirname,join,resolve,basename} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {uploadPersonalFile} from './dist/personal-upload.js';
+import {uploadPersonalFile,campusRetryable} from './dist/personal-upload.js';
 import {createPersonalFileTransport} from './client-personal-file-campus.mjs';
 import {dataPath,sameDatasetFile} from './client-file-path.mjs';
 import {recoverOriginalWrite,uncertainWrite} from './client-http.mjs';
@@ -10,21 +10,31 @@ import {downloadResultFile} from './client-result-download.mjs';
 import {selectTransferRoute} from './client-transfer-route.mjs';
 const safe=value=>String(value??'').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,c=>'\\u{'+c.codePointAt(0).toString(16)+'}');
 export function transferText(row){const result=row.result||{},bytes=result.bytes??row.bytes??(Number.isFinite(result.totalBytes)&&Number.isFinite(result.remainingBytes)?result.totalBytes-result.remainingBytes:'?'),total=result.totalBytes??row.totalBytes;return `${safe(row.id)} · ${safe(row.kind)} · ${safe(row.from?row.from+' → '+row.machine:row.machine)} · ${safe(row.state)}\n  ${bytes} / ${total??'?'} bytes${result.path?' · '+safe(result.path):''}${row.error||result.error?'\n  '+safe(row.error||result.error):''}`;}
-export async function uploadLocalFile(call,{machine,context,path,local,key=randomUUID(),transferId,via,initialGrant,stateDirectory,probe,progress=()=>{},transportFactory=createPersonalFileTransport,lstatFile=lstat,openFile=open,platform=process.platform}){
+export async function uploadLocalFile(call,{machine,context,path,local,key=randomUUID(),transferId,via,route,initialGrant,stateDirectory,probe,notify=message=>process.stderr.write(message+'\n'),progress=()=>{},transportFactory=createPersonalFileTransport,lstatFile=lstat,openFile=open,platform=process.platform}){
   dataPath(path);const named=await lstatFile(local,{bigint:true});if(!named.isFile()||named.isSymbolicLink()||named.size>BigInt(Number.MAX_SAFE_INTEGER))throw Error('请选择普通文件，链接不会上传。');
   const file=await openFile(local,constants.O_RDONLY|(constants.O_NOFOLLOW||0));let transport;
   const scope={machine,...context,path,key,...(transferId?{transferId}:{})};
   try{
     const info=await file.stat({bigint:true});if(!sameDatasetFile(named,info,{pathToHandle:true,platform}))throw Error('本地路径改变，原上传已保留。');
-    const size=Number(info.size);let selected;
-    try{selected=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{...scope,action:'put',uploadId:key,totalSize:size,overwrite:true})).result});}
+    const size=Number(info.size),automatic=via!=='direct'&&context.area!=='dataset';let selected;
+    try{selected=route??await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{...scope,action:'put',uploadId:key,totalSize:size,overwrite:true})).result});}
     catch(error){error.key=key;error.message+='\n上传编号：'+key+'；续传请沿用原编号。';throw error;}
     via=selected.via;initialGrant??=selected.grant;
     const request=async(operation,args)=>{
       const send=async()=>{
         if(operation==='data.upload.chunk'&&via!=='relay'){
-          transport ||= await transportFactory(call,{machine,context,path,action:'put',initialGrant,identity:{uploadId:key,totalSize:size}});
-          return {result:await transport.request({offset:args.offset,bytes:Buffer.from(args.data,'base64'),final:false})};
+          try{
+            transport ||= await transportFactory(call,{machine,context,path,action:'put',initialGrant,identity:{uploadId:key,totalSize:size}});
+            return {result:await transport.request({offset:args.offset,bytes:Buffer.from(args.data,'base64'),final:false})};
+          }catch(error){
+            if(!automatic||!campusRetryable(error))throw error;
+            let row;try{row=(await call('data.upload.status',scope)).result;}catch{throw error;}
+            const bytes=Buffer.from(args.data,'base64'),end=args.offset+bytes.length;
+            if(!Number.isSafeInteger(row?.offset)||row.offset<args.offset||row.offset>end)throw error;
+            via=selected.via='relay';await selected.save?.(via);notify('校园直连失败，改经 VPS 继续');
+            if(row.offset===end)return {result:row};
+            return call(operation,{...args,offset:row.offset,data:bytes.subarray(row.offset-args.offset).toString('base64')});
+          }
         }
         return call(operation,args);
       };
@@ -55,7 +65,7 @@ export async function uploadLocalTree(call,{machine,context,local,remote='.',key
     if(!info.isFile())throw Error('请选择普通文件或目录：'+source);dataPath(path);
     keys[path] ||= single?key:randomUUID();await save();
     if(!inspectOnly)selected??=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{machine,...context,path,action:'put',uploadId:keys[path],totalSize:info.size,overwrite:true})).result});
-    const result=inspectOnly?(await call('data.upload.status',{machine,...context,path,key:keys[path]})).result:await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via:selected.via,initialGrant:selected.grant,progress});
+    const result=inspectOnly?(await call('data.upload.status',{machine,...context,path,key:keys[path]})).result:await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via,route:selected,initialGrant:selected.grant,progress});
     if(selected)delete selected.grant;
     files.push({path,...result});count++;bytes+=info.size;
   }

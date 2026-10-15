@@ -1,5 +1,17 @@
 const CHUNK=1024*1024;
-export const CAMPUS_CONNECTION_HELP='校园网暂时不通（夜间认证时段），可以加 --via relay（上传）或 --via portal（下载）走 VPS，原 key 不变。';
+export const DATASET_DIRECT_HELP='数据集只走校园网直连，避免挤占 VPS 带宽。请连上校园网后用原命令重试，原 key 会续传。';
+export const CAMPUS_CONNECTION_HELP='校园直连暂时不可用，请用原命令重试，原 key 和偏移已保留。';
+export const campusRetryable=error=>error?.name!=='AbortError'&&(
+  error instanceof TypeError||error?.name==='TimeoutError'||['DNS_FAILED','TCP_TIMEOUT','TCP_REFUSED','CAMPUS_UNAVAILABLE','PHYSICAL_CONNECT_FAILED','PHYSICAL_ROUTE_UNAVAILABLE','NATIVE_START_FAILED','NATIVE_EXITED','ACK_UNCONFIRMED','RESPONSE_INTERRUPTED','CONNECTION_FAILED','CONNECTION_REFUSED','NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET','EPIPE','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','HANDSHAKE_TIMEOUT','HANDSHAKE_EOF'].includes(error?.code)||[429,502,503,504].includes(error?.status));
+export async function retryCampusRequest(send,{signal,now=()=>performance.now(),sleep=(ms)=>new Promise((resolve,reject)=>{const timer=setTimeout(done,ms);function done(){signal?.removeEventListener('abort',abort);resolve();}function abort(){clearTimeout(timer);reject(signal.reason);}signal?.addEventListener('abort',abort,{once:true});})}={}){
+  const deadline=now()+60000;let first,delay=1000;
+  for(;;){signal?.throwIfAborted();try{return await send();}catch(failure){
+    const error=failure?.name==='TimeoutError'?Object.assign(Error(failure.message,{cause:failure}),{code:'TIMEOUT',receiptChecked:failure.receiptChecked}):failure;
+    first??=error;if(error.receiptChecked||!campusRetryable(error))throw error;
+    const remaining=deadline-now();if(remaining<=0)throw first;
+    signal?.throwIfAborted();await sleep(Math.min(delay,remaining));signal?.throwIfAborted();if(now()>=deadline)throw first;delay=Math.min(16000,delay*2);
+  }}
+}
 const encode=bytes=>{let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(text);};
 // One file, one original key, offset resume, atomic finish on the node.
 export async function uploadPersonalFile({call,machine,area='code',project,ownerId,dataset,transferId,ownerExecutable,path,size,read,overwrite=false,key=crypto.randomUUID(),chunkBytes=CHUNK,signal,onProgress=()=>{},timeoutMs=7200000,wait=()=>new Promise(resolve=>setTimeout(resolve,1000))}){
@@ -28,28 +40,35 @@ export async function uploadPersonalFile({call,machine,area='code',project,owner
     onProgress({...result,key,path,totalSize:size,offset:size});return result;
   }catch(error){error.key=key;if(!(error instanceof DOMException))error.message+='\n上传编号：'+key+'；续传请沿用原编号。';throw error;}
 }
-export async function selectBrowserTransferRoute(call,args,{route,signal,onRoute=message=>console.warn(message)}){
-  if(route.via&&route.via!=='auto')return;
+export async function selectBrowserTransferRoute(call,args,{route,signal}){
+  if(route.via&&route.via!=='auto'&&(args.area!=='dataset'||route.via==='direct'))return;
+  if(args.area!=='dataset'){route.via='direct';route.save?.('direct');return;}
   const grant=await call('files.direct-ticket',args);
-  try{
-    await fetch(new URL('/capabilities',grant.endpoint),{mode:'no-cors',cache:'no-store',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(1500)]):AbortSignal.timeout(1500)});
-    route.via='direct';
-  }catch(error){signal?.throwIfAborted();route.via=args.action==='put'?'relay':'portal';}
-  route.save?.(route.via);
-  if(route.via!=='direct')onRoute('校园网不可达，本次经 VPS 传输（较慢）。');
-  return route.via==='direct'?grant:undefined;
+  try{await fetch(new URL('/capabilities',grant.endpoint),{mode:'no-cors',cache:'no-store',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(1500)]):AbortSignal.timeout(1500)});}
+  catch(error){signal?.throwIfAborted();throw Error(DATASET_DIRECT_HELP,{cause:error});}
+  route.via='direct';route.save?.('direct');return grant;
 }
 export async function uploadBrowserFile(file,options){
-  const {call,signal,route={},onRoute}=options;let grant;
+  const {call,signal,route={},onRoute=message=>console.warn(message),key=crypto.randomUUID()}=options;
   const scope={machine:options.machine,area:options.area||'code',...(options.project?{project:options.project}:{}),...(options.ownerId?{ownerId:options.ownerId}:{}),...(options.dataset?{dataset:options.dataset}:{}),path:options.path};
-  return uploadPersonalFile({...options,size:file.size,read:async(offset,length)=>new Uint8Array(await file.slice(offset,offset+length).arrayBuffer()),call:async(operation,args)=>{
-    if(operation!=='data.upload.chunk'||scope.area!=='dataset')return call(operation,args);
-    grant??=await selectBrowserTransferRoute(call,{...scope,action:'put',uploadId:args.key,totalSize:file.size},{route,signal,onRoute});
-    if(route.via==='relay')return call(operation,args);
-    if(!grant||grant.expiresAt*1000<=Date.now()+5000)grant=await call('files.direct-ticket',{...scope,action:'put',uploadId:args.key,totalSize:file.size});
-    const endpoint=new URL(grant.endpoint);if(endpoint.protocol!=='https:')throw Error('校园直连需要 HTTPS 地址。');
-    const url=new URL('/v1/files/'+encodeURIComponent(grant.grantId)+'/put',endpoint);url.searchParams.set('offset',args.offset);url.searchParams.set('final','false');
-    const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+grant.ticket,'Content-Type':'application/octet-stream'},body:Uint8Array.from(atob(args.data),c=>c.charCodeAt(0)),signal}).catch(error=>{if(error instanceof TypeError)error.message+='\n'+CAMPUS_CONNECTION_HELP;throw error;});
-    const value=await response.json();if(!response.ok)throw Error(value.error||'上传连接中断，请沿用原编号续传。');return value.result;
+  let grant;try{grant=await selectBrowserTransferRoute(call,{...scope,action:'put',uploadId:key,totalSize:file.size},{route,signal});}catch(error){error.key=key;if(!(error instanceof DOMException))error.message+='\n上传编号：'+key+'；续传请沿用原编号。';throw error;}
+  return uploadPersonalFile({...options,key,size:file.size,read:async(offset,length)=>new Uint8Array(await file.slice(offset,offset+length).arrayBuffer()),call:async(operation,args)=>{
+    if(operation!=='data.upload.chunk'||route.via==='relay')return call(operation,args);
+    const bytes=Uint8Array.from(atob(args.data),c=>c.charCodeAt(0)),end=args.offset+bytes.length;
+    const status=async error=>{let row;try{row=await call('data.upload.status',{...scope,key:args.key});}catch{error.receiptChecked=true;throw error;}
+      if(!Number.isSafeInteger(row?.offset)||row.offset<args.offset||row.offset>end){error.receiptChecked=true;throw error;}return row;};
+    try{return await retryCampusRequest(async()=>{
+      if(!grant||grant.expiresAt*1000<=Date.now()+5000)grant=await call('files.direct-ticket',{...scope,action:'put',uploadId:args.key,totalSize:file.size});
+      const url=new URL('/v1/files/'+encodeURIComponent(grant.grantId)+'/put',grant.endpoint);if(url.protocol!=='https:')throw Error('校园直连需要 HTTPS 地址。');url.searchParams.set('offset',args.offset);url.searchParams.set('final','false');
+      try{
+        const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+grant.ticket,'Content-Type':'application/octet-stream'},body:bytes,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(30000)]):AbortSignal.timeout(30000)});
+        const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error||'上传连接中断，请沿用原编号续传。'),{status:response.status});return value.result;
+      }catch(error){if(campusRetryable(error)){const row=await status(error);if(row.offset===end)return row;}throw error;}
+    },{...options.retry,signal});}catch(error){
+      signal?.throwIfAborted();
+      if(scope.area==='dataset'||!campusRetryable(error)){if(campusRetryable(error))error.message+='\n'+DATASET_DIRECT_HELP;throw error;}
+      const row=await status(error);route.via='relay';route.save?.('relay');onRoute('校园直连失败，改经 VPS 继续');
+      return row.offset===end?row:call(operation,{...args,offset:row.offset,data:encode(bytes.subarray(row.offset-args.offset))});
+    }
   }});
 }

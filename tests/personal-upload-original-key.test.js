@@ -33,7 +33,7 @@ test('403 never becomes absence or retry and the original UUID remains visible',
 test('the CLI parser retains --key for push and push-status',()=>{
  for(const command of ['push','push-status'])assert.equal(parseCLIOptions([command,'payload','payload','--key',key]).options.key,key);
 });
-test('a saved campus route survives the VPS default until relay is explicitly selected',async t=>{
+test('a saved campus route stays direct until relay is explicitly selected',async t=>{
  const f=await personalHTTPFixture(t),stateDirectory=join(f.root,'states');await mkdir(stateDirectory);await writeFile(join(stateDirectory,key+'.route.json'),JSON.stringify({via:'direct'}));
  f.onCall=(op,args)=>{if(op==='files.direct-ticket')throw Object.assign(Error('campus offline'),{status:400});return f.perform(op,args);};
  await assert.rejects(f.run({stateDirectory,via:undefined}),/campus offline/);assert.equal(f.stored.length,0);
