@@ -13,6 +13,8 @@
 !deploy/Dockerfile
 !deploy/install-client.sh
 !deploy/install-client.ps1
+!deploy/vps/**
+!deploy/gray-local/bridge-entrypoint.sh
 
 accounts/build/**
 accounts/*.egg-info/**

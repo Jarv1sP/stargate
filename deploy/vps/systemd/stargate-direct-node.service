@@ -1,0 +1,18 @@
+[Unit]
+Description=STARGATE node execution bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=STARGATE_VPS_CONFIG=/etc/stargate/vps.json
+ExecStart=/usr/bin/python3 -B /opt/stargate/current/deploy/vps/direct-storage-bridge.py
+Group=1000
+ExecStartPre=/usr/bin/install -d -m 0750 -g 1000 /run/amax-console-executor
+RuntimeDirectory=stargate-direct-node
+RuntimeDirectoryMode=0750
+UMask=0007
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

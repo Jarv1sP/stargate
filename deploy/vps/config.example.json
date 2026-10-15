@@ -1,0 +1,23 @@
+{
+  "transport": {
+    "credentialDirectory": "/etc/stargate/ssh/executor",
+    "hosts": {
+      "node-example": {"user": "nodeops", "address": "192.0.2.1"}
+    }
+  },
+  "bridge": {
+    "runtimeDirectory": "/run/stargate-direct-node",
+    "socket": "/run/amax-console-executor/direct-storage.sock",
+    "socketUid": 0,
+    "socketGid": 1000
+  },
+  "collector": {
+    "credentialDirectory": "/etc/stargate/ssh/collector",
+    "hosts": {
+      "node-example": {"user": "nodeops", "address": "192.0.2.1"}
+    },
+    "target": "/var/lib/stargate/status/snapshot.json",
+    "targetUid": 0,
+    "targetGid": 1000
+  }
+}

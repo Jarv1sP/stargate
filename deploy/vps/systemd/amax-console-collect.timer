@@ -1,0 +1,11 @@
+[Unit]
+Description=STARGATE node status collection schedule
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+Unit=amax-console-collect.service
+
+[Install]
+WantedBy=timers.target

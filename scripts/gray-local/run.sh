@@ -69,7 +69,7 @@ cp "$run/src/deploy/node/install.py" "$run/node-context/node-install.py"
 cp "$TRUSTED"/deploy/gray-local/node-setup.sh "$TRUSTED"/deploy/gray-local/fake-nvidia-smi.py "$TRUSTED"/deploy/gray-local/gray-node-setup.service "$run/node-context/"
 cp "$run/machines.js" "$run/src/dist/machines.js"
 build_image --build-arg STARGATE_RELEASE_REVISION="$commit" -f "$run/src/deploy/Dockerfile" -t "$GRAY_PORTAL_IMAGE" "$run/src" > "$run/build-portal.log" 2>&1
-build_image -f "$TRUSTED/deploy/gray-local/bridge.Dockerfile" -t "$GRAY_BRIDGE_IMAGE" "$TRUSTED/deploy/gray-local" > "$run/build-bridge.log" 2>&1
+build_image -f "$TRUSTED/deploy/gray-local/bridge.Dockerfile" -t "$GRAY_BRIDGE_IMAGE" "$run/src" > "$run/build-bridge.log" 2>&1
 build_image -f "$TRUSTED/deploy/gray-local/node.Dockerfile" -t "$GRAY_NODE_IMAGE" "$run/node-context" > "$run/build-node.log" 2>&1
 docker pull registry:2 > "$run/build-registry.log" 2>&1
 docker tag registry:2 "$GRAY_REGISTRY_IMAGE"
