@@ -4,6 +4,8 @@ Only the trusted runner invokes this helper. No image commit, export, copy or
 publication occurs. The temporary execution container owns the GPU lease;
 the development container owns the filesystem and is not removed on exit.
 """
+import contextlib
+import ctypes
 import json
 import importlib.util
 import os
@@ -12,6 +14,42 @@ import stat
 import signal
 import subprocess
 import sys
+import tempfile
+
+
+@contextlib.contextmanager
+def output_mount(flags, folder):
+    index=next((i for i,value in enumerate(flags) if value.endswith(':/outputs:rw')),None)
+    if index is None:
+        yield flags;return
+    libc=ctypes.CDLL(None,use_errno=True)
+    def invoke(name,*args):
+        if getattr(libc,name)(*args):
+            error=ctypes.get_errno();raise OSError(error,'输出目录挂载失败：'+os.strerror(error))
+    namespace=os.open('/proc/self/ns/mnt',os.O_RDONLY)
+    fd=None;anchor=None;mounted=False
+    try:
+        # Keep Podman's shared rootfs mount in its original namespace. Only this
+        # execution's output anchor is private, so a writable shared directory
+        # cannot redirect the engine to a different host path after opening it.
+        invoke('unshare',0x00020000)  # CLONE_NEWNS
+        invoke('mount',None,b'/',None,ctypes.c_ulong(16384|262144),None)  # MS_REC|MS_PRIVATE
+        fd=os.open(flags[index].removesuffix(':/outputs:rw'),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        anchor=tempfile.mkdtemp(prefix='output-',dir=folder)
+        invoke('mount',os.fsencode('/proc/self/fd/'+str(fd)),os.fsencode(anchor),None,ctypes.c_ulong(4096),None)  # MS_BIND
+        mounted=True
+        private=list(flags);private[index]=anchor+':/outputs:rw'
+        yield private
+    finally:
+        try:
+            if mounted:invoke('umount2',os.fsencode(anchor),2)  # MNT_DETACH
+        finally:
+            if fd is not None:os.close(fd)
+            try:
+                invoke('setns',namespace,0)
+            finally:
+                os.close(namespace)
+                if anchor is not None:os.rmdir(anchor)
 
 
 def execute(request):
@@ -37,13 +75,14 @@ def execute(request):
             if isinstance(value,str) and '=' in value and '\x00' not in value:
                 environment+=['--env',value]
         flags=[value for value in request['flags'] if value!='--pull=never']
-        command=[*prefix,'run','--rm','--name',request['execution'],
-            *environment,*flags,'--rootfs','--entrypoint',request['argv'][0],str(root),*request['argv'][1:]]
-        if request.get('terminalSocket'):
-            spec=importlib.util.spec_from_file_location('workspace_shell',Path(__file__).with_name('workspace-shell.py'))
-            shell=importlib.util.module_from_spec(spec);spec.loader.exec_module(shell)
-            return shell.serve(command,request['terminalSocket'])
-        return subprocess.call(command)
+        with output_mount(flags,graph.parent/'tmp') as flags:
+            command=[*prefix,'run','--rm','--name',request['execution'],
+                *environment,*flags,'--rootfs','--entrypoint',request['argv'][0],str(root),*request['argv'][1:]]
+            if request.get('terminalSocket'):
+                spec=importlib.util.spec_from_file_location('workspace_shell',Path(__file__).with_name('workspace-shell.py'))
+                shell=importlib.util.module_from_spec(spec);spec.loader.exec_module(shell)
+                return shell.serve(command,request['terminalSocket'])
+            return subprocess.call(command)
     finally:
         # Drop only our mount reference. Never commit or delete the workspace.
         result=subprocess.run([*prefix,'unmount',container],capture_output=True)
