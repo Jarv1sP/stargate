@@ -29,6 +29,7 @@ def receive(stream, directory):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with archive.extractfile(member) as source, target.open('xb') as output:
                     shutil.copyfileobj(source, output)
+                target.chmod(member.mode & 0o777)
             else:
                 raise PermissionError('Release archive may only contain files and directories')
 

@@ -208,10 +208,10 @@ with journal.open('a') as output:output.write(machine+'\n')
             with self.assertRaises(PermissionError): entry.main(self.root)
         run.assert_not_called()
 
-    def archive(self, name, data=b'release', kind=tarfile.REGTYPE):
+    def archive(self, name, data=b'release', kind=tarfile.REGTYPE, mode=0o644):
         stream=io.BytesIO()
         with tarfile.open(fileobj=stream, mode='w') as archive:
-            member=tarfile.TarInfo(name);member.type=kind
+            member=tarfile.TarInfo(name);member.type=kind;member.mode=mode
             if kind == tarfile.REGTYPE: member.size=len(data)
             else: member.linkname='/outside'
             archive.addfile(member, io.BytesIO(data) if kind == tarfile.REGTYPE else None)
@@ -221,6 +221,10 @@ with journal.open('a') as output:output.write(machine+'\n')
     def test_offline_stream_preserves_supplied_release_files(self):
         entry.receive(self.archive('./release/deploy.py', b'approved source'), self.root)
         self.assertEqual((self.root/'release/deploy.py').read_bytes(), b'approved source')
+
+    def test_offline_stream_preserves_node_helper_executable_mode(self):
+        entry.receive(self.archive('nodes/node-a/node/gpuq-network', b'helper', mode=0o555), self.root)
+        self.assertEqual((self.root/'nodes/node-a/node/gpuq-network').stat().st_mode & 0o777, 0o555)
 
     def test_offline_entry_loads_image_then_runs_supplied_script_without_git(self):
         stream=io.BytesIO()
