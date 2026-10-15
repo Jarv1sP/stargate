@@ -53,6 +53,7 @@ try{
    if(op==='invites.list')return {invites:[]};
    if(op==='maintenance.set'){if(args.scope==='all')state.operationalMaintenance.global=args.enabled?{reason:args.reason,since:'2026-10-14T11:00:00.000Z'}:null;return state.operationalMaintenance;}
    if(op==='jobs.watch')return {state:'RUNNING',nativeObservation:{state:'RUNNING'}};
+   if(op==='jobs.submit')return {id:'22222222-2222-4222-8222-222222222222',state:'PENDING',key:args.key};
    if(op==='jobs.logs')return {text:'fixture log\n'};
    if(op==='jobs.diagnostics')return {state:'RUNNING'};
    throw Error('Unexpected RPC '+op);
@@ -79,14 +80,19 @@ try{
   assert.equal(calls.find(row=>row.op==='projects.create').args.repo,'https://example.test/team/new.git');await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · '+machine});await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-work.png'),fullPage:true});
   await page.locator('#project-network-check').click();await page.locator('#project-network-result').filter({hasText:'https'}).waitFor();
-  await page.locator('[data-nav=jobs]').click();await page.locator('[data-job-output="'+jobId+'"]').first().click();await page.locator('[data-result-delete="sample.bin"]').waitFor();
+  await page.locator('[data-nav=jobs]').click();await page.locator('.jr-empty').waitFor();await page.screenshot({path:join(shots,role+'-'+width+'-jobs-empty.png'),animations:'disabled'});
+  await page.locator('[data-empty-new]').click();await page.locator('.jr-sheet.on [type=submit]').click();await page.locator('.jr-sheet.on').waitFor({state:'detached'});
+  const submitted=calls.find(row=>row.op==='jobs.submit').args;assert.deepEqual(submitted.argv,['/bin/bash','-c','python train.py --data /datasets --output /outputs']);assert.equal(submitted.cards,1);assert.ok(submitted.project&&submitted.machine===machine&&submitted.key);
+  await page.locator('[data-scope=all]').click();await page.locator('.jr-row[data-job="'+jobId+'"]').click();await page.locator('.jr-drawer.on [data-log]').filter({hasText:'fixture log'}).waitFor();
+  await page.screenshot({path:join(shots,role+'-'+width+'-jobs.png'),animations:'disabled'});
+  await page.locator('[data-tab=out]').click();await page.locator('[data-out-delete="sample.bin"]').waitFor();
   assert.equal(await page.locator('#workspace-upload').isVisible(),false);assert.equal(await page.locator('[name=files]').isVisible(),false);
-  await page.screenshot({path:join(shots,role+'-'+width+'-outputs.png'),fullPage:true,animations:'disabled'});
-  await page.locator('[data-result-path="sample.bin"]').click();const outputDownloaded=page.waitForEvent('download');await page.locator('#workspace-download').click();const outputDownload=await outputDownloaded;assert.deepEqual(await readFile(await outputDownload.path()),Buffer.from('abc'));
+  await page.screenshot({path:join(shots,role+'-'+width+'-outputs.png'),animations:'disabled'});
+  const outputDownloaded=page.waitForEvent('download');await page.locator('[data-out-download="sample.bin"]').click();const outputDownload=await outputDownloaded;assert.deepEqual(await readFile(await outputDownload.path()),Buffer.from('abc'));
   assert.ok(calls.some(row=>row.op==='files.direct-ticket'&&row.args.area==='output'&&row.args.runId===jobId));assert.equal(calls.some(row=>row.op==='files.get'&&row.args.area==='output'),false);
-  const deleteTarget=page.locator('[data-result-delete="sample.bin"]');assert.ok((await deleteTarget.boundingBox()).height>=44);await deleteTarget.click();await page.waitForFunction(()=>document.body.innerText.includes('已删除，7 天内可在项目回收站恢复'),null,{timeout:10000});
+  const deleteTarget=page.locator('[data-out-delete="sample.bin"]');assert.ok((await deleteTarget.boundingBox()).height>=44);await deleteTarget.click();await deleteTarget.click();await page.waitForFunction(()=>document.body.innerText.includes('已删除，7 天内可在项目回收站恢复'),null,{timeout:10000});
   assert.equal(calls.filter(row=>row.op==='outputs.delete').length,1);assert.equal(trash[0].kind,'output');
-  await page.locator('.job-log-dialog').evaluate(node=>node.close());
+  await page.keyboard.press('Escape');await page.locator('.jr-drawer.on').waitFor({state:'detached'}).catch(()=>{});
 
   await page.locator('[data-nav=datasets]').click();await page.locator('[data-dataset-open=images]').waitFor();assert.match(await page.locator('[data-dataset-list]').textContent(),/成员乙/);
   await page.locator('[data-dataset-open=images]').click();await page.locator('[data-file-path="sample.bin"]').waitFor();
@@ -140,8 +146,8 @@ try{
   await page.locator('.command-trigger').click();await page.locator('#control-command').fill('火星');await page.locator('.egg-mars').waitFor();
   await page.screenshot({path:join(shots,role+'-'+width+'-palette.png'),animations:'disabled'});
   await page.locator('#control-command').fill('月球');await page.locator('.egg-moon').waitFor();await page.keyboard.press('Escape');assert.equal(await page.locator('.command-trigger').evaluate(node=>node===document.activeElement),true);
-  await page.keyboard.press('Control+k');await page.locator('#control-command').fill('团队训练');await page.locator('[data-command-id="job:'+jobId+'"]').waitFor();await page.keyboard.press('Enter');await page.locator('.job-log-dialog[open]').waitFor();await page.locator('.job-log-dialog').evaluate(node=>node.close());
-  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('新建任务');await page.locator('[data-command-id=submit]').click();await page.locator('#work-submit[open]').waitFor();await page.locator('#close-submit').click();await page.locator('#work-submit').waitFor({state:'hidden'});
+  await page.keyboard.press('Control+k');await page.locator('#control-command').fill('团队训练');await page.locator('[data-command-id="job:'+jobId+'"]').waitFor();await page.keyboard.press('Enter');await page.locator('.jr-drawer.on').waitFor();await page.keyboard.press('Escape');await page.locator('.jr-drawer.on').waitFor({state:'detached'});
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('新建任务');await page.locator('[data-command-id=submit]').click();await page.locator('.jr-sheet.on [data-sheet-close]').waitFor();await page.screenshot({path:join(shots,role+'-'+width+'-submit.png'),animations:'disabled'});await page.locator('[data-sheet-close]').click();await page.locator('.jr-sheet.on').waitFor({state:'detached'});
   await page.locator('.command-trigger').click();await page.locator('#control-command').fill('共享实验');await page.locator('[data-command-id^="project:"]').click();await page.locator('[data-nav=work][aria-current=page]').waitFor();
   await page.locator('.command-trigger').click();await page.locator('#control-command').fill(searchDataset);await page.locator('[data-command-id="dataset:'+machine+':'+searchDataset+'"]').click();await page.locator('[data-nav=datasets][aria-current=page]').waitFor();await page.locator('[data-dataset-current]').filter({hasText:searchDataset}).waitFor();await page.locator('[data-dataset-files]').waitFor({state:'visible'});await page.locator('[data-file-path="sample.bin"]').waitFor();assert.equal(await page.locator('[name=dataset-machine]').inputValue(),machine);
   assert.ok(await page.evaluate(()=>document.getAnimations().every(animation=>animation.playState!=='running')),'reduced motion disables animation');

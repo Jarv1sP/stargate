@@ -1,6 +1,7 @@
 import {discloseInfo,serverIdHTML,personalQuotaReadout,escapeUI as esc} from './workbench-ui.js';
 import {DemoClient} from './client.js';
 import {executionUI} from './execution-ui.js';
+import {jobsRoom} from './jobs-room.js';
 import {registerGpuTasksAdmin} from './admin-gpu-tasks.js';
 import {terminalUI} from './terminal-ui.js';
 import {resourcesUI,monitorSummary} from './resources-ui.js';
@@ -39,6 +40,7 @@ const renderOperationalMaintenance=operationalMaintenanceUI(store,toast,()=>rend
 const renderMaintenanceExperience=maintenanceExperienceUI(store,toast,{getPage:()=>page,refresh:()=>render(true)});
 const renderTransfers=transfersUI(store,toast);
 const renderResourceView=resourcesUI(store,{machines:MACHINES,getPage:()=>page,navigate:choosePage});
+const renderJobsRoom=jobsRoom(store,{toast,machines:MACHINES,getPage:()=>page});
 terminalUI(store,toast);
 const isAdmin=()=>store.principal?.role==='admin';
 const own=()=>store.users.find(u=>u.id===store.principal?.userId);
@@ -59,7 +61,7 @@ function render(preserve=false){
   if(logged)for(const node of document.querySelectorAll('[data-public-maintenance]')){node.textContent=store.data?.operationalMaintenance?.global?.reason||'';node.hidden=!node.textContent;}
   document.body.classList.toggle('not-admin',!admin);
   for(const el of document.querySelectorAll('[data-admin-only]'))el.hidden=!admin||el.hasAttribute('data-admin-entry')&&!hasAdminSections();
-  for(const el of document.querySelectorAll('[data-page]'))el.hidden=el.dataset.page!==page&&!(el.dataset.page==='work'&&page==='jobs');
+  for(const el of document.querySelectorAll('[data-page]'))el.hidden=el.dataset.page!==page;
   for(const el of document.querySelectorAll('[data-nav]')){el.classList.toggle('active',el.dataset.nav===page);el.setAttribute('aria-current',el.dataset.nav===page?'page':'false');}
   $('#current-account').innerHTML=logged?`<span class="current-account-name">${esc(store.principal.username)}</span><span class="current-account-role">${admin?'管理员':'普通用户'}</span>`:'尚未登录';
   $('#profile-name').textContent=logged?u?.name||store.principal.username:'未登录';$('#profile-role').textContent=admin?'管理员':'个人工作空间';
@@ -86,8 +88,8 @@ function render(preserve=false){
   }else $('#mode-note').textContent=[note,monitorNotice].filter(Boolean).join(' ');
   $('.demo-note').hidden=!note&&!monitorNotice;
   renderOperationalMaintenance();
-  renderTransfers(page==='transfers');renderResources();renderExecution();renderDatasets();renderCommunity(page==='community');renderAnnouncements();
-  $('#open-submit').hidden=page!=='jobs'||!logged||!store.production||store.data?.executionEnabled!==true;$('#open-submit').disabled=false;
+  renderTransfers(page==='transfers');renderResources();renderExecution();renderJobsRoom();renderDatasets();renderCommunity(page==='community');renderAnnouncements();
+  $('#open-submit').hidden=true;
   shell.update();
   adminConsole.update();
   renderMaintenanceExperience();

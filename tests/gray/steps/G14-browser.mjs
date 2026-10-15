@@ -40,10 +40,10 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
         }
         for(const width of [1440,390,320]){
           await page.setViewportSize({width,height:1000});
-          for(const [label,route,button] of [['resources','resources','[data-nav=resources]'],['projects','work','#projects-refresh'],['jobs','jobs','#my-job-table'],['datasets','datasets','#dataset-upload-form'],['community','community','[data-nav=community]']]){
+          for(const [label,route,button] of [['resources','resources','[data-nav=resources]'],['projects','work','#projects-refresh'],['jobs','jobs','#jobs-room .jr-search'],['datasets','datasets','#dataset-upload-form'],['community','community','[data-nav=community]']]){
             const title=role+'/'+width+'/'+label;
             try{
-              await page.evaluate(hash=>{location.hash='#'+hash;},route);await page.locator('#page-'+(route==='jobs'?'work':route)).waitFor({state:'visible'});
+              await page.evaluate(hash=>{location.hash='#'+hash;},route);await page.locator('#page-'+route).waitFor({state:'visible'});
               await page.locator(button).evaluate(element=>{for(let parent=element.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;});
               await page.locator(button).scrollIntoViewIfNeeded();await page.evaluate(()=>document.fonts.ready);
               const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),visible=await page.locator(button).isVisible();

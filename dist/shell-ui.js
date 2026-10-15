@@ -8,7 +8,7 @@ import {installWordmark} from './startup-ui.js';
 export function shellUI(store,{navigate,getPage,toast}){
   const q=selector=>document.querySelector(selector),account=q('#account-menu'),nav=q('#room-nav');
   const indicator=document.createElement('span');indicator.className='nav-indicator';indicator.setAttribute('aria-hidden','true');nav.prepend(indicator);
-  const control=controlUI(store,{navigate,toast,openSubmit:()=>q('#open-submit').click(),openJob:id=>document.dispatchEvent(new CustomEvent('gpuq-open-job',{detail:{id}}))});
+  const control=controlUI(store,{navigate,toast,openSubmit:()=>{navigate('jobs');q('#jobs-new')?.click();},openJob:id=>{navigate('jobs');document.dispatchEvent(new CustomEvent('sg-open-job',{detail:{id}}));}});
   const scrolls=new Map();let entrance,underline;
   function updateIndicator(){
     const selected=nav.querySelector('[aria-current=page]');indicator.hidden=!selected||matchMedia('(max-width:759px)').matches;if(indicator.hidden)return;
@@ -29,7 +29,7 @@ export function shellUI(store,{navigate,getPage,toast}){
     const before=indicator.getBoundingClientRect();entrance?.cancel();underline?.cancel();apply();scrollTo({top:scrolls.get(next)||0,behavior:'instant'});
     document.dispatchEvent(new CustomEvent('gpuq-route-entered',{detail:{previous,next}}));
     if(reducedMotion())return;
-    const target=q(`[data-page="${next==='jobs'?'work':CSS.escape(next)}"]`);if(target)entrance=target.animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'none'}],{duration:280,easing:'cubic-bezier(.2,.8,.2,1)'});
+    const target=q(`[data-page="${CSS.escape(next)}"]`);if(target)entrance=target.animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'none'}],{duration:280,easing:'cubic-bezier(.2,.8,.2,1)'});
     const after=indicator.getBoundingClientRect();if(before.width&&after.width&&!indicator.hidden)underline=indicator.animate([{transform:`translateX(${before.left-nav.getBoundingClientRect().left}px) scaleX(${before.width/after.width})`},{transform:indicator.style.transform}],{duration:500,easing:'cubic-bezier(.34,1.32,.5,1)'});
   }
   document.addEventListener('click',event=>{
