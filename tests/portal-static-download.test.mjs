@@ -12,9 +12,9 @@ const listen=async server=>{server.listen(0,'127.0.0.1');await once(server,'list
 const close=async server=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));};
 const settled=async predicate=>{for(let i=0;i<200&&!predicate();i++)await wait(10);assert.ok(predicate());};
 
-test('only the two public GET/HEAD client artifacts are static; authenticated reads and writes stay business',()=>{
+test('public GET/HEAD client downloads are static; authenticated reads and writes stay business',()=>{
   assert.equal(CLIENT_DOWNLOAD_IDLE_MS,120000);
-  for(const method of ['GET','HEAD'])for(const url of ['/gpuctl.mjs','/amaxctl.mjs','/gpuctl.mjs?download=1'])assert.equal(isClientDownload({method,url}),true);
+  for(const method of ['GET','HEAD'])for(const url of ['/gpuctl.mjs','/gpuctl.mjs?download=1'])assert.equal(isClientDownload({method,url}),true);
   for(const [method,url] of [['POST','/gpuctl.mjs'],['GET','/api/call'],['GET','/v1/files/example/get'],['GET','/machines.js'],['GET','/runtime.js'],['GET','/nested/gpuctl.mjs']])assert.equal(isClientDownload({method,url}),false);
 });
 
@@ -98,14 +98,14 @@ test('business RPC draining excludes public downloads and reports them separatel
   const downloading=new Promise(resolve=>downloadStarted=resolve),working=new Promise(resolve=>businessStarted=resolve);
   const old=http.createServer((req,res)=>{
     req.resume();res.write('pending');
-    if(req.url.startsWith('/amaxctl.mjs')){downloadEnd=()=>res.end('artifact');downloadStarted();}
+    if(req.url.startsWith('/gpuctl.mjs')){downloadEnd=()=>res.end('artifact');downloadStarted();}
     else{businessEnd=()=>res.end('confirmed');businessStarted();}
   }),oldURL=await listen(old),rollout=createRolloutServer({upstream:oldURL,startActive:()=>{activated++;return oldURL;}}),url=await listen(rollout.server);
   try{
-    const download=fetch(url+'/amaxctl.mjs?unlogged=value').then(res=>res.text());await downloading;
+    const download=fetch(url+'/gpuctl.mjs?unlogged=value').then(res=>res.text());await downloading;
     const business=fetch(url+'/api/call',{method:'POST',body:'one-key'}).then(res=>res.text());await working;
     const state=rollout.state();assert.equal(state.forwarding,2);assert.equal(state.businessForwarding,1);assert.equal(state.staticForwarding,1);
-    assert.equal(state.staticDownloads[0].path,'/amaxctl.mjs');assert.equal(JSON.stringify(state).includes('unlogged'),false);
+    assert.equal(state.staticDownloads[0].path,'/gpuctl.mjs');assert.equal(JSON.stringify(state).includes('unlogged'),false);
     rollout.hold();await assert.rejects(rollout.activate(),/not drained/);assert.equal(activated,0);
     businessEnd();await business;await settled(()=>rollout.state().businessForwarding===0);
     await rollout.activate();assert.equal(activated,1);assert.equal(rollout.state().staticForwarding,1);

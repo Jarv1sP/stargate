@@ -4,23 +4,23 @@ import {EventEmitter} from 'node:events';
 import {PassThrough,Writable} from 'node:stream';
 import {createCampusNativeAgent} from '../client-campus-native.mjs';
 
-const pin='c'.repeat(64),grant={protocol:'personal-file-campus-v1',chunkBytes:1048576,
+const pin='c'.repeat(64),grant={chunkBytes:1048576,
   ticket:'opaque-header-secret.opaque-nonce-secret',grantId:'01234567-1234-4234-8234-012345678901'};
 function fixture(reply){
   let calls=0,cleaned=0;
   const spawnProcess=()=>{
     const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();
     child.kill=()=>{queueMicrotask(()=>{child.emit('exit',0);child.emit('close',0);});return true;};
-    child.stdin=new Writable({write(bytes,_encoding,done){
-      calls++;const n=bytes.readUInt32BE(0),header=JSON.parse(bytes.subarray(4,4+n));
-      const value=Buffer.from(JSON.stringify({schema:1,seq:header.seq,ok:false,bodyBytes:0,code:'HTTP_REJECTED',status:409,writeMayHaveReachedPeer:true,...reply}));
+    child.stdin=new Writable({write(_bytes,_encoding,done){
+      calls++;
+      const value=Buffer.from(JSON.stringify({ok:false,bodyBytes:0,code:'HTTP_REJECTED',status:409,writeMayHaveReachedPeer:true,...reply}));
       const size=Buffer.alloc(4);size.writeUInt32BE(value.length);child.stdout.write(Buffer.concat([size,value]));done();
     }});return child;
   };
   return {spawnProcess,extract:async()=>({path:'/fixture/helper',cleanup:async()=>{cleaned++;}}),calls:()=>calls,cleaned:()=>cleaned};
 }
 
-test('HTTP rejection shows status and safe fields, preserves stopped/no-replay semantics',async()=>{
+test('HTTP rejection retains the first safe error across repeated requests without replay',async()=>{
   const f=fixture({reasonCode:'upload-rejected',error:'Upload state changed; check portal status and resume',ticket:grant.ticket,grant,headers:{Authorization:`Bearer ${grant.ticket}`}}),agent=createCampusNativeAgent(pin,f);
   try{
     await assert.rejects(agent.request({op:'put',grant,offset:0,final:true},Buffer.from('raw')),error=>{
@@ -31,7 +31,9 @@ test('HTTP rejection shows status and safe fields, preserves stopped/no-replay s
       for(const secret of [grant.ticket,grant.grantId,'Authorization'])assert.equal(error.message.includes(secret),false);
       return true;
     });
-    await assert.rejects(agent.request({op:'put',grant,offset:0,final:true},Buffer.from('raw')),/SESSION_STOPPED/);
+    await assert.rejects(agent.request({op:'put',grant,offset:0,final:true},Buffer.from('raw')),error=>{
+      assert.equal(error.code,'HTTP_REJECTED');assert.equal(error.status,409);assert.match(error.message,/HTTP 409; reasonCode=upload-rejected/);return true;
+    });
     assert.equal(f.calls(),1);
   }finally{await agent.destroy();}assert.equal(f.cleaned(),1);
 });

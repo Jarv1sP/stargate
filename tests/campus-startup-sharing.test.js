@@ -4,7 +4,7 @@ import {createSharedNativeExtractor} from '../client-campus-native.mjs';
 import {chooseCampusEndpoint,probeCampusEndpoint} from '../client-campus-endpoints.mjs';
 
 test('concurrent agents extract once and retain the executable until the last agent closes',async()=>{
-  let extracted=0,removed=0;const artifacts={schema:1};
+  let extracted=0,removed=0;const artifacts={};
   const extract=createSharedNativeExtractor(async value=>{assert.equal(value,artifacts);extracted++;return {path:'private-helper',cleanup:async()=>{removed++;}};});
   const [control,lan,primary]=await Promise.all([extract(artifacts),extract(artifacts),extract(artifacts)]);
   assert.equal(extracted,1);assert.equal(control.path,primary.path);

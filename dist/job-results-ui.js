@@ -1,5 +1,5 @@
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const id=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,projectID=/^[a-z][a-z0-9_-]{0,47}$/;
+const id=/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const resultReminder='请及时将结果下载到自己的电脑；平台不会自动备份或删除。';
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 export function ownResultJob(store,job){return store.production===true&&store.principal?.enabled!==false&&!!store.principal?.userId&&job?.source!=='native'&&typeof job.id==='string'&&typeof job.machine==='string'&&uuid.test(job.id)&&id.test(job.machine);}

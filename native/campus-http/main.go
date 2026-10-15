@@ -37,30 +37,18 @@ var uuidRE = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4
 var ticketRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 type fileIdentity struct {
-	Protocol int    `json:"protocol"`
-	Path     string `json:"path"`
-	Size     int64  `json:"size"`
+	Size int64 `json:"size"`
 }
 type grant struct {
-	Available bool         `json:"available"`
-	Protocol  string       `json:"protocol"`
-	Kind      string       `json:"kind"`
-	RouteID   string       `json:"routeId"`
-	Endpoint  string       `json:"endpoint"`
-	Pin       string       `json:"certificateSha256"`
-	Machine   string       `json:"machine"`
-	ID        string       `json:"grantId"`
-	Ticket    string       `json:"ticket"`
-	Expires   int64        `json:"expiresAt"`
-	IssuedAt  *int64       `json:"issuedAt,omitempty"`
-	TTL       *int64       `json:"ttl,omitempty"`
-	Chunk     int          `json:"chunkBytes"`
-	MaxChunk  int          `json:"maxChunkBytes,omitempty"`
-	File      fileIdentity `json:"file"`
+	Endpoint string       `json:"endpoint"`
+	Pin      string       `json:"certificateSha256"`
+	ID       string       `json:"grantId"`
+	Ticket   string       `json:"ticket"`
+	Chunk    int          `json:"chunkBytes"`
+	MaxChunk int          `json:"maxChunkBytes,omitempty"`
+	File     fileIdentity `json:"file"`
 }
 type frame struct {
-	Schema         int          `json:"schema"`
-	Seq            int64        `json:"seq"`
 	Op             string       `json:"op"`
 	Grant          grant        `json:"grant"`
 	Endpoint       string       `json:"endpoint,omitempty"`
@@ -76,8 +64,6 @@ type frame struct {
 func writing(op string) bool { return op == "put" }
 
 type reply struct {
-	Schema                  int             `json:"schema"`
-	Seq                     int64           `json:"seq"`
 	OK                      bool            `json:"ok"`
 	Code                    string          `json:"code,omitempty"`
 	Status                  int             `json:"status,omitempty"`
@@ -89,8 +75,6 @@ type reply struct {
 	Metadata                json.RawMessage `json:"metadata,omitempty"`
 	BodyBytes               int             `json:"bodyBytes"`
 	Interface               string          `json:"interface,omitempty"`
-	RouteIdentity           string          `json:"routeIdentity,omitempty"`
-	UID                     int             `json:"uid"`
 	WriteMayHaveReachedPeer bool            `json:"writeMayHaveReachedPeer,omitempty"`
 }
 type session struct {
@@ -125,23 +109,22 @@ func origin(value string) (*url.URL, error) {
 	return u, nil
 }
 func validate(f frame) error {
+	if f.BodyBytes < 0 || f.BodyBytes > personalChunkLimit {
+		return errors.New("INVALID_FRAME")
+	}
+	if f.Op == "control" {
+		return validateControl(f)
+	}
 	if f.DialEndpoint != "" {
 		u, e := origin(f.DialEndpoint)
 		if e != nil || net.ParseIP(u.Hostname()) == nil || net.ParseIP(u.Hostname()).To4() == nil || !net.ParseIP(u.Hostname()).IsPrivate() {
 			return errors.New("INVALID_DIAL_ENDPOINT")
 		}
 	}
-	if f.ProbeTimeoutMs != 0 && (f.Op != "probe" || f.ProbeTimeoutMs < 1 || f.ProbeTimeoutMs > 2500) {
+	if f.Op == "probe" && f.ProbeTimeoutMs != 0 && (f.ProbeTimeoutMs < 1 || f.ProbeTimeoutMs > 2500) {
 		return errors.New("INVALID_PROBE_TIMEOUT")
 	}
-
-	if f.BodyBytes < 0 || f.BodyBytes > personalChunkLimit || f.Offset < 0 || f.Offset > maxInteger {
-		return errors.New("INVALID_FRAME")
-	}
-	if f.Op == "control" {
-		return validateControl(f)
-	}
-	if f.Control != nil {
+	if f.Op != "probe" && (f.Offset < 0 || f.Offset > maxInteger) {
 		return errors.New("INVALID_FRAME")
 	}
 	if f.Op == "probe" {
@@ -152,14 +135,13 @@ func validate(f frame) error {
 		return e
 	}
 	g := f.Grant
-	now := time.Now().Unix()
-	if !hashRE.MatchString(g.Pin) || !ticketRE.MatchString(g.Ticket) || len(g.Ticket) < 20 || len(g.Ticket) > 4096 || !validGrantTime(g, now) {
+	if !hashRE.MatchString(g.Pin) || !ticketRE.MatchString(g.Ticket) || len(g.Ticket) < 20 || len(g.Ticket) > 4096 {
 		return errors.New("INVALID_GRANT")
 	}
 	if (f.Op != "get" && f.Op != "put") || !uuidRE.MatchString(g.ID) || (g.Chunk != chunkLimit && g.Chunk != personalChunkLimit) || (g.MaxChunk != 0 && g.MaxChunk != chunkLimit && g.MaxChunk != personalChunkLimit) || (g.Chunk == personalChunkLimit && g.MaxChunk != personalChunkLimit) || f.BodyBytes > g.Chunk {
 		return errors.New("INVALID_GRANT")
 	}
-	if f.Op == "put" && f.Final == nil || f.Op == "get" && (f.Final != nil || f.BodyBytes != 0 || g.File.Size < 0 || g.File.Size > maxInteger) {
+	if f.Op == "put" && f.Final == nil || f.Op == "get" && (f.BodyBytes != 0 || g.File.Size < 0 || g.File.Size > maxInteger) {
 		return errors.New("INVALID_FRAME")
 	}
 	_, e := origin(g.Endpoint)
@@ -267,9 +249,9 @@ func (s *session) request(f frame, body []byte) (out reply, raw []byte) {
 	if s.control != nil {
 		s.stopped = true
 		s.close()
-		return reply{Schema: 1, Seq: f.Seq, Code: "SESSION_IDENTITY_CHANGED", UID: processUID()}, nil
+		return reply{Code: "SESSION_IDENTITY_CHANGED"}, nil
 	}
-	out = reply{Schema: 1, Seq: f.Seq, UID: os.Geteuid()}
+	out = reply{}
 	started := false
 	fail := func(e error) (reply, []byte) {
 		s.stopped = true
@@ -392,7 +374,7 @@ func (s *session) request(f frame, body []byte) (out reply, raw []byte) {
 	if int64(len(payload)) > limit {
 		return fail(errors.New("RESPONSE_INVALID"))
 	}
-	if delay := admissionBusyDelay(res, payload); delay > 0 {
+	if delay := admissionBusyDelay(res); delay > 0 {
 		s.close()
 		<-writeDone
 		writeFinished = true
@@ -505,7 +487,7 @@ func run(r io.Reader, w io.Writer, s *session) error {
 			return nil
 		}
 		if e != nil {
-			writeReply(w, reply{Schema: 1, Seq: f.Seq, Code: "INVALID_FRAME", UID: os.Geteuid()}, nil)
+			writeReply(w, reply{Code: "INVALID_FRAME"}, nil)
 			return e
 		}
 		out, raw := s.request(f, body)
@@ -514,7 +496,6 @@ func run(r io.Reader, w io.Writer, s *session) error {
 		}
 	}
 }
-func processUID() int { return os.Geteuid() }
 func main() {
 	if len(os.Args) != 1 || os.Getuid() != os.Geteuid() {
 		os.Exit(2)

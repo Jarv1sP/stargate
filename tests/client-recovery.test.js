@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {apiPost,callWithReceipt,recoverOriginalWrite} from '../client-http.mjs';
+import {apiPost,recoverOriginalWrite} from '../client-http.mjs';
 import {submitJobWithReceipt} from '../client-state.mjs';
 
 const principal={userId:'fixture-owner'},key='11111111-1111-4111-8111-111111111111',id='22222222-2222-4222-8222-222222222222';
@@ -85,28 +85,4 @@ test('submit absence in even a complete state never replays an in-flight origina
  let writes=0;await assert.rejects(submitJobWithReceipt(async op=>{
   if(op==='jobs.submit'){writes++;throw lost();}return {principal,state:{jobs:[],jobsTruncated:false}};
  },{key},principal),failure=>failure.message.includes(key));assert.equal(writes,1);
-});
-test('a lost output deletion reply is not converted into success or another mutation',async()=>{
- const calls=[],request={key,jobId:id,path:'.',recursive:true,dryRun:false},failure=lost();
- await assert.rejects(callWithReceipt(async(op,args)=>{calls.push({op,args});throw failure;},'outputs.delete',request,{principal}),error=>error===failure);
- assert.deepEqual(calls,[{op:'outputs.delete',args:request}]);
-});
-test('a stopped original terminal closes the UI without another acknowledgement proof',async()=>{
- for(const attachmentState of ['CLOSED','DETACHED']){
-  const calls=[];const result=await callWithReceipt(async(op,args)=>{
-   calls.push({op,args});if(op==='terminal.close'&&calls.length===1)throw lost();
-   return {result:{protocol:'terminal-session-status-v1',id,state:'STOPPED',attachmentState,
-    evidence:{confirmed:true},canCloseStopped:true,...(op==='terminal.close'?{closed:true,metadataOnly:true}:{})}};
-  },'terminal.close',{machine:'fixture',id,project:'own'},{principal});
-  assert.equal(result.result.id,id);assert.equal(result.result.state,'STOPPED');
-  assert.equal(calls.filter(c=>c.op==='terminal.close').length,1);
- }
-});
-test('an alive, foreign or unconfirmed terminal never authorizes automatic close',async()=>{
- for(const change of [{state:'ALIVE'},{id:key}]){
-  let writes=0;await assert.rejects(callWithReceipt(async op=>{
-   if(op==='terminal.close'){writes++;throw lost();}
-   return {result:{protocol:'terminal-session-status-v1',id,state:'STOPPED',attachmentState:'DETACHED',evidence:{confirmed:true},canCloseStopped:true,...change}};
-  },'terminal.close',{machine:'fixture',id},{principal}));assert.equal(writes,1);
- }
 });

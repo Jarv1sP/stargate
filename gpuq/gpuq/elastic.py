@@ -80,24 +80,15 @@ def _resolve_batch_parameter(
     parameter_name: str,
     environ: Mapping[str, str],
 ) -> int:
+    if explicit is not None:
+        return _positive_integer(explicit, parameter_name)
     raw = environ.get(environment_name)
-    environment_value = (
-        None if raw is None else _environment_integer(raw, environment_name)
-    )
-    if explicit is None:
-        if environment_value is None:
-            raise ValueError(
-                f"{parameter_name} is unavailable; pass it explicitly or launch "
-                f"through a batch-aware gpuq job"
-            )
-        return environment_value
-    value = _positive_integer(explicit, parameter_name)
-    if environment_value is not None and environment_value != value:
+    if raw is None:
         raise ValueError(
-            f"{parameter_name} disagrees with {environment_name}: "
-            f"{value} != {environment_value}"
+            f"{parameter_name} is unavailable; pass it explicitly or launch "
+            f"through a batch-aware gpuq job"
         )
-    return value
+    return _environment_integer(raw, environment_name)
 
 
 def resolve_world_size(
@@ -105,30 +96,16 @@ def resolve_world_size(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> int:
-    """Resolve and cross-check torchrun and gpuq's actual worker count."""
+    """Use the explicit worker count, then torchrun or gpuq's count."""
 
-    values: dict[str, int] = {}
+    if world_size is not None:
+        return _positive_integer(world_size, "world_size")
     source = os.environ if environ is None else environ
     for name in _ACTUAL_WORLD_SIZE_ENV:
         raw = source.get(name)
         if raw is not None:
-            values[name] = _environment_integer(raw, name)
-    if world_size is not None:
-        values["explicit world_size"] = _positive_integer(
-            world_size,
-            "world_size",
-        )
-    if not values:
-        raise ValueError(
-            "world size is unavailable; pass world_size or launch through gpuq"
-        )
-    unique = set(values.values())
-    if len(unique) != 1:
-        rendered = ", ".join(
-            f"{name}={value}" for name, value in sorted(values.items())
-        )
-        raise ValueError(f"world-size sources disagree: {rendered}")
-    return next(iter(unique))
+            return _environment_integer(raw, name)
+    raise ValueError("world size is unavailable; pass world_size or launch through gpuq")
 
 
 @dataclass(frozen=True, slots=True)

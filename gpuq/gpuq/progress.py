@@ -1,4 +1,4 @@
-"""Strict, best-effort training progress reporting for gpuq jobs.
+"""Best-effort training progress reporting for gpuq jobs.
 
 Rank zero atomically publishes one latest snapshot in the attempt-specific
 ``$GPUQ_CONTROL_DIR``.  The scheduler may persist that snapshot, but progress
@@ -8,10 +8,11 @@ training process or any scheduler lifecycle state.
 
 from __future__ import annotations
 
+import json
+
 import logging
 import math
 import os
-import re
 import stat
 import threading
 import time
@@ -21,7 +22,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from .constants import ProgressSeverity
-from .util import atomic_write_json, json_dumps, reject_duplicate_json
+from .util import atomic_write_json, json_dumps
 
 
 PROGRESS_PROTOCOL_VERSION = 1
@@ -31,32 +32,7 @@ DEFAULT_REPORT_INTERVAL_SECONDS = 2.0
 DEFAULT_STALL_TIMEOUT_SECONDS: None = None
 MIN_STALL_TIMEOUT_SECONDS = 30.0
 MAX_STALL_TIMEOUT_SECONDS = 86_400.0
-MAX_PHASE_CHARS = 64
-MAX_MESSAGE_CHARS = 512
-MAX_METRICS = 32
-MAX_METRIC_NAME_CHARS = 64
-MAX_ID_CHARS = 256
 MAX_SEQUENCE = 2**63 - 1
-
-_METRIC_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:/-]{0,63}$")
-_PAYLOAD_FIELDS = frozenset(
-    {
-        "version",
-        "job_id",
-        "attempt_id",
-        "sequence",
-        "phase",
-        "epochs_completed",
-        "epochs_total",
-        "steps_completed",
-        "steps_total",
-        "metrics",
-        "eta_seconds",
-        "stall_timeout_seconds",
-        "severity",
-        "message",
-    }
-)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -83,14 +59,9 @@ def _finite_number(value: Any, field: str) -> float:
 
 
 
-def _single_line_text(value: Any, field: str, maximum: int) -> str:
-    if (
-        not isinstance(value, str)
-        or not 1 <= len(value) <= maximum
-        or value != value.strip()
-        or not value.isprintable()
-    ):
-        raise ProgressProtocolError(f"{field} is invalid")
+def _single_line_text(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ProgressProtocolError(f"{field} must be text")
     return value
 
 
@@ -114,18 +85,12 @@ def _counter_pair(
 
 
 def _metrics(value: Any) -> Mapping[str, float]:
-    if not isinstance(value, dict) or len(value) > MAX_METRICS:
-        raise ProgressProtocolError(
-            f"metrics must be an object with at most {MAX_METRICS} entries"
-        )
+    if not isinstance(value, dict):
+        raise ProgressProtocolError("metrics must be an object")
     result: dict[str, float] = {}
     for key, raw_metric in value.items():
-        if (
-            not isinstance(key, str)
-            or len(key) > MAX_METRIC_NAME_CHARS
-            or not _METRIC_NAME_RE.fullmatch(key)
-        ):
-            raise ProgressProtocolError("metric name is invalid")
+        if not isinstance(key, str):
+            raise ProgressProtocolError("metric names must be text")
         result[key] = _finite_number(raw_metric, f"metric {key}")
     return MappingProxyType(dict(sorted(result.items())))
 
@@ -134,7 +99,7 @@ def _optional_eta(value: Any) -> float | None:
     if value is None:
         return None
     result = _finite_number(value, "eta_seconds")
-    if result < 0 or result > 10 * 365 * 24 * 60 * 60:
+    if result < 0:
         raise ProgressProtocolError("eta_seconds is outside the supported range")
     return result
 
@@ -163,11 +128,7 @@ def _severity(value: Any) -> str:
 def _message(value: Any, severity: str) -> str | None:
     if value is None:
         return None
-    result = _single_line_text(value, "message", MAX_MESSAGE_CHARS)
-    if severity == ProgressSeverity.INFO.value:
-        raise ProgressProtocolError(
-            "message is only allowed for warning or error progress"
-        )
+    result = _single_line_text(value, "message")
     return result
 
 
@@ -213,36 +174,33 @@ class ProgressSnapshot:
 def validate_progress_payload(value: Any) -> ProgressSnapshot:
     """Validate and normalize one decoded progress-v1 object."""
 
-    if not isinstance(value, dict) or set(value) != _PAYLOAD_FIELDS:
-        raise ProgressProtocolError("progress fields do not match protocol v1")
-    version = value["version"]
-    if not _plain_int(version) or version != PROGRESS_PROTOCOL_VERSION:
-        raise ProgressProtocolError("unsupported progress protocol version")
-    sequence = value["sequence"]
+    if not isinstance(value, dict):
+        raise ProgressProtocolError("progress must be an object")
+    sequence = value.get("sequence")
     if not _plain_int(sequence) or not 1 <= sequence <= MAX_SEQUENCE:
         raise ProgressProtocolError("sequence must be a positive SQLite integer")
     epochs_completed, epochs_total = _counter_pair(
-        value["epochs_completed"], value["epochs_total"], prefix="epochs"
+        value.get("epochs_completed"), value.get("epochs_total"), prefix="epochs"
     )
     steps_completed, steps_total = _counter_pair(
-        value["steps_completed"], value["steps_total"], prefix="steps"
+        value.get("steps_completed"), value.get("steps_total"), prefix="steps"
     )
-    normalized_severity = _severity(value["severity"])
+    normalized_severity = _severity(value.get("severity"))
     snapshot = ProgressSnapshot(
         version=PROGRESS_PROTOCOL_VERSION,
-        job_id=_single_line_text(value["job_id"], "job_id", MAX_ID_CHARS),
-        attempt_id=_single_line_text(value["attempt_id"], "attempt_id", MAX_ID_CHARS),
+        job_id=_single_line_text(value.get("job_id"), "job_id"),
+        attempt_id=_single_line_text(value.get("attempt_id"), "attempt_id"),
         sequence=int(sequence),
-        phase=_single_line_text(value["phase"], "phase", MAX_PHASE_CHARS),
+        phase=_single_line_text(value.get("phase"), "phase"),
         epochs_completed=epochs_completed,
         epochs_total=epochs_total,
         steps_completed=steps_completed,
         steps_total=steps_total,
-        metrics=_metrics(value["metrics"]),
-        eta_seconds=_optional_eta(value["eta_seconds"]),
-        stall_timeout_seconds=_stall_timeout(value["stall_timeout_seconds"]),
+        metrics=_metrics(value.get("metrics")),
+        eta_seconds=_optional_eta(value.get("eta_seconds")),
+        stall_timeout_seconds=_stall_timeout(value.get("stall_timeout_seconds")),
         severity=normalized_severity,
-        message=_message(value["message"], normalized_severity),
+        message=_message(value.get("message"), normalized_severity),
     )
     encoded = (snapshot.canonical_json() + "\n").encode("utf-8")
     if len(encoded) > MAX_PROGRESS_FILE_BYTES:
@@ -259,14 +217,14 @@ def parse_progress_bytes(raw: bytes) -> ProgressSnapshot:
         raise ProgressProtocolError("progress file is empty or too large")
     try:
         decoded = raw.decode("utf-8", errors="strict")
-        value = reject_duplicate_json(decoded)
+        value = json.loads(decoded)
+        return validate_progress_payload(value)
     except (UnicodeError, ValueError, RecursionError):
-        raise ProgressProtocolError("progress file is not strict JSON") from None
-    return validate_progress_payload(value)
+        raise ProgressProtocolError("progress file is not usable JSON") from None
 
 
 def load_progress_file(path: str | os.PathLike[str]) -> ProgressSnapshot | None:
-    """Read one secure progress file; return ``None`` only when it is absent."""
+    """Read one secure snapshot; absent or malformed progress is optional."""
 
     progress_path = Path(path)
     if not progress_path.is_absolute():
@@ -302,7 +260,10 @@ def load_progress_file(path: str | os.PathLike[str]) -> ProgressSnapshot | None:
         raise ProgressProtocolError("cannot read progress file") from exc
     finally:
         os.close(descriptor)
-    return parse_progress_bytes(raw)
+    try:
+        return parse_progress_bytes(raw)
+    except ProgressProtocolError:
+        return None
 
 
 def progress_milestone(snapshot: ProgressSnapshot) -> int | None:
@@ -383,18 +344,11 @@ class ProgressReporter:
             directory = Path(control_dir)
             if not directory.is_absolute():
                 raise ProgressProtocolError("GPUQ_CONTROL_DIR must be absolute")
-            self._job_id = _single_line_text(job_id, "GPUQ_JOB_ID", MAX_ID_CHARS)
-            self._attempt_id = _single_line_text(attempt_id, "GPUQ_ATTEMPT_ID", MAX_ID_CHARS)
+            self._job_id = _single_line_text(job_id, "GPUQ_JOB_ID")
+            self._attempt_id = _single_line_text(attempt_id, "GPUQ_ATTEMPT_ID")
             self._path = directory / PROGRESS_FILE_NAME
             existing = load_progress_file(self._path)
             if existing is not None:
-                if (
-                    existing.job_id != self._job_id
-                    or existing.attempt_id != self._attempt_id
-                ):
-                    raise ProgressProtocolError(
-                        "existing progress file belongs to a different attempt"
-                    )
                 self._sequence = existing.sequence
             self._enabled = True
         except Exception as exc:

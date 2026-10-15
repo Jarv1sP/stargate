@@ -9,12 +9,11 @@ import {elasticFields,elasticFromForm,allocationSummary,placementFields,placemen
 import {taskDescription} from './task-metadata.js';
 import {installTaskLabelEditor,taskLabelEditorHTML} from './task-display-ui.js';
 import {createProjectManagement,projectSelectHTML} from './project-management-ui.js';
-import {workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,quotaLedgerHTML,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,jobCancelConfirmation,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
+import {escapeUI as escape,workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,quotaLedgerHTML,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
 import {trainingStorageMessage,trainingSelectionHTML} from './training-storage-ui.js';
 import {revealSheet,dismissSheet,sharedObject} from './motion-ui.js';
-import {taskNotesMarkup,createTaskNotesUI} from './task-notes-ui.js';
-import {maintenanceFor,heldDuringMaintenance,maintenanceTime,maintenanceInfoHTML,maintenanceClock} from './maintenance-state.js';
-const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+import {createTaskNotesUI} from './task-notes-ui.js';
+import {maintenanceFor,heldDuringMaintenance,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
 const terminal=new Set(['SUCCEEDED','FAILED','CANCELED']);
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export function trainingUnavailable(snapshot,hosts=[]){
@@ -59,7 +58,6 @@ export function projectStatusText(info){
   const git=info?.git;
   return git?[git.url,git.branch,git.commit].filter(Boolean).join(' · '):'工作区 /workspace；共享数据 /datasets；任务输出 /outputs。';
 }
-export const liveWorkspace=project=>!!project;
 export function trainingProject(project){
   if(!validProject(project?.project))throw Error('请选择项目工作区。');
   return {project:project.project,...(project.ownerId?{ownerId:project.ownerId}:{})};
@@ -186,26 +184,8 @@ export function executionUI(store,refresh,toast){
     const invalid=!!input.value&&!validProject(input.value);input.setAttribute('aria-invalid',String(invalid));error.hidden=!invalid;error.textContent=invalid?'小写字母开头，限字母、数字、_ 和 -，最多 48 位。':'';
     return validProject(input.value);
   }
-  function renderEnvironmentChoice(){
-    const choice=query('[name=environment-mode]');if(!choice)return;
-    choice.value='oci';
-    const machines=projectMachines(),known=machines.length>0&&machines.every(item=>directory.get(item.id)?.environmentModes?.length>0);
-    const availability=query('#project-create-availability');availability.hidden=!!creationMachine();
-    availability.textContent=!machines.length?'暂无服务器授权':directoryLoading?'正在确认…':directoryError||!known?'个人容器状态未知':'个人容器未开通';
-    query('#environment-mode-note').textContent='可在容器内安装系统软件；开发终端没有 GPU；容器内 root 不是服务器 root。';
-  }
   function notifyContext(){document.dispatchEvent(new CustomEvent('gpuq-workspace-context',{detail:{userId:actor,...context()}}));}
   const reduced=()=>matchMedia('(prefers-reduced-motion:reduce)').matches;
-  function fieldCaption(label){
-    if(label.querySelector(':scope>.field-caption'))return;
-    const control=label.querySelector(':scope>:is(input,select,textarea)');
-    if(!control)return;
-    const caption=document.createElement('span');caption.className='field-caption';
-    const text=document.createElement('span');
-    for(const node of [...label.childNodes])if(node.nodeType===Node.TEXT_NODE)text.append(node);
-    caption.append(text);const help=label.querySelector(':scope>.ui-info');if(help)caption.append(help);
-    if(control.matches('[type=checkbox]'))control.after(caption);else control.before(caption);
-  }
   function showSheet(dialog,options={}){if(dialog.open)return;dialog.showModal();if(dialog===submitDialog||dialog===settingsDialog){activateProjectActivity();}revealSheet(dialog,options);}
   function closeSettings(){if(!settingsSource)return;const source=settingsSource;settingsSource=null;source.append(...settingsDialog.querySelector('.sheet-scroll').children);source.open=false;settingsDialog.close();}
   function settings(source){closeSettings();settingsSource=source;settingsDialog.querySelector('h2').textContent=source.querySelector('summary').textContent;for(const control of source.querySelectorAll('input,select,textarea'))control.setAttribute('form','train-form');settingsDialog.querySelector('.sheet-scroll').append(...[...source.children].filter(child=>child.tagName!=='SUMMARY'));showSheet(settingsDialog,{drilldown:true});}
@@ -627,7 +607,7 @@ export function executionUI(store,refresh,toast){
       diagnostics.reset();
       submitDialog?.close();submitDialog?.remove();settingsDialog?.close();settingsDialog?.remove();submitDialog=null;settingsDialog=null;settingsSource=null;jobHTML='';lastJobs.clear();liveJobs.clear();focusedJob=null;historyState='';deepLinkHandled=false;
       submitReceipt=null;parsedTarget=null;acceptedDraft=false;managementSubmit=false;actor=store.principal.userId;machine='';focusMachine='';project='';catalog=[];directory.clear();directoryOwner='';directoryError='';catalogError='';epoch++;machineIdentity='';submitKey=crypto.randomUUID();operationBusy=false;projectBusy=false;
-      section.innerHTML=`<section class="workspace-context" aria-labelledby="workspace-context-title"><div class="workspace-context-heading"><div><div class="eyebrow">WORKSPACE</div><h2 id="workspace-context-title">选择服务器与项目</h2><span id="project-environment" class="project-environment" hidden></span></div><div class="file-actions"><button class="button" id="projects-refresh">刷新项目</button><button class="button quiet" id="project-network-check">网络诊断</button></div></div><div class="workspace-context-grid"><label>服务器<select name="workspace-machine" aria-describedby="workspace-mode-note"></select></label><label>项目<select name="workspace-project"><option value="">选择项目</option></select></label></div><p id="workspace-mode-note" class="muted"></p><p id="project-status" class="workspace-status" role="status" aria-live="polite"></p><pre id="project-network-result" class="file-result" hidden></pre><details id="project-create"><summary>新建项目</summary><form id="project-create-form"><label>项目名称<input name="new-project" pattern="[a-z][a-z0-9_-]{0,47}" maxlength="48" required placeholder="例如 vision-baseline" aria-describedby="project-name-error" spellcheck="false" autocomplete="off"><span id="project-name-error" class="form-error project-name-error" hidden></span></label><label>Git 仓库（可选）<input name="new-project-repo" type="text" placeholder="https://github.com/team/project.git" autocomplete="off"><small>创建时克隆到 /workspace；Git 凭据请在容器里配置。</small></label><fieldset class="project-environment-choice"><legend>个人容器</legend><select name="environment-mode" hidden aria-hidden="true" tabindex="-1"><option value="oci">个人容器</option></select></fieldset><p id="project-create-availability" class="project-create-availability" role="status" hidden></p><button type="submit" class="button">创建项目</button><p id="project-create-error" class="form-error" role="alert" hidden></p></form><p id="environment-mode-note" class="muted"></p></details></section>
+      section.innerHTML=`<section class="workspace-context" aria-labelledby="workspace-context-title"><div class="workspace-context-heading"><div><div class="eyebrow">WORKSPACE</div><h2 id="workspace-context-title">选择服务器与项目</h2><span id="project-environment" class="project-environment" hidden></span></div><div class="file-actions"><button class="button" id="projects-refresh">刷新项目</button><button class="button quiet" id="project-network-check">网络诊断</button></div></div><div class="workspace-context-grid"><label>服务器<select name="workspace-machine" aria-describedby="workspace-mode-note"></select></label><label>项目<select name="workspace-project"><option value="">选择项目</option></select></label></div><p id="workspace-mode-note" class="muted"></p><p id="project-status" class="workspace-status" role="status" aria-live="polite"></p><pre id="project-network-result" class="file-result" hidden></pre><details id="project-create"><summary>新建项目</summary><form id="project-create-form"><label>项目名称<input name="new-project" pattern="[a-z][a-z0-9_-]{0,47}" maxlength="48" required placeholder="例如 vision-baseline" aria-describedby="project-name-error" spellcheck="false" autocomplete="off"><span id="project-name-error" class="form-error project-name-error" hidden></span></label><label>Git 仓库（可选）<input name="new-project-repo" type="text" placeholder="https://github.com/team/project.git" autocomplete="off"><small>创建时克隆到 /workspace；Git 凭据请在容器里配置。</small></label><fieldset class="project-environment-choice"><legend>个人容器</legend><select name="environment-mode" hidden aria-hidden="true" tabindex="-1"><option value="oci">个人容器</option></select></fieldset><button type="submit" class="button">创建项目</button><p id="project-create-error" class="form-error" role="alert" hidden></p></form></details></section>
       <section class="personal-terminal" aria-labelledby="personal-terminal-title"><div class="terminal-heading"><h3 id="personal-terminal-title">个人开发终端</h3><span class="terminal-scope">日常开发 · 不占 GPU</span></div><p id="terminal-mode-note" class="muted"></p><div class="terminal-controls"><select name="terminal-machine" hidden aria-label="终端服务器"></select><button id="terminal-open" class="button primary">新建开发终端</button><button id="terminal-reconnect" class="button">重连开发会话</button></div></section>
       <details class="execution-panel" id="workspace-files"><summary>项目材料与训练结果 · 上传 / 下载</summary><select name="file-machine" hidden aria-label="文件服务器"></select><div class="file-location-grid"><label>文件区域<select name="file-area"><option value="code">工作区</option><option value="output">任务输出</option></select></label><label>目录或文件的相对路径<input name="file-path" value="." spellcheck="false"></label></div><div class="output-run-fields"><label>本项目任务<select name="file-run"></select></label><label>完整任务 ID<input name="file-run-id" spellcheck="false" placeholder="选择上面的任务或输入完整 UUID"></label></div><div class="file-actions"><button class="button" id="workspace-list">列目录</button><button class="button" id="workspace-download">下载文件</button><input type="file" name="files" multiple aria-label="选择上传文件"><button class="button" id="workspace-upload">上传</button></div><div id="workspace-output-files" class="job-result-files" hidden></div><button class="button danger" id="workspace-delete-outputs" type="button" hidden>删除全部输出</button><button class="button quiet" id="workspace-pull-command" type="button" hidden disabled>复制 CLI 命令</button><pre id="workspace-result" class="file-result" aria-live="polite">选择目录或文件。</pre></details>
       <details class="execution-panel"><summary>提交训练</summary><form id="train-form">

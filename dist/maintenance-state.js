@@ -1,6 +1,5 @@
 // Presentation and explicit recovery orchestration only. The Portal remains
 // responsible for maintenance changes.
-export const maintenanceConsequence='仅控制平台准入，不会自动停止任务、终端、节点服务或 SSH。确认诊断维修全部完成后，再明确恢复。';
 export function maintenanceInfoHTML(text,label='说明'){
   const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   return `<span class="maintenance-info"><button type="button" data-maintenance-info aria-expanded="false" aria-label="${escape(label)}">ⓘ</button><span class="maintenance-info-body" role="note">${escape(text)}</span></span>`;

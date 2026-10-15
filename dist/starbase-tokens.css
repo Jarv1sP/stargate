@@ -27,7 +27,7 @@
   --hatch:rgba(255,255,255,.17);
   --fill-mine:rgba(242,242,239,.16);--fill-other:rgba(242,242,239,.07);
   --primary:#F2F2EF;--primary-hover:#FFFFFF;--on-primary:#0A0B0D;--on-danger:#0A0B0D;
-  --term:#060607;--term-ink:#D8D9D4;
+
   --scrim:rgba(4,5,6,.62);
   --shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.04);
   --shadow-pop:0 12px 32px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.03);
@@ -38,30 +38,30 @@
   --gutter:48px;--content:1280px;
   --edge:max(var(--gutter),calc((100% - var(--content)) / 2));
   /* type scale — nine text sizes + four numeral sizes. Phone (.m) remaps five of them. */
-  --fs-display:56px;  /* Archivo 300 — project / server / dataset names at title size */
+    /* Archivo 300 — project / server / dataset names at title size */
   --fs-title:40px;    /* page title (CJK 500) */
-  --fs-h2:24px;       /* sheet, drawer and guide headings */
-  --fs-h3:20px;       /* section titles, dialog titles */
+         /* sheet, drawer and guide headings */
+         /* section titles, dialog titles */
   --fs-row:16px;      /* row titles (job, post, dataset), lead */
   --fs-body:14px;     /* body, buttons, inputs */
   --fs-meta:13px;     /* secondary lines, status words, tables, small buttons */
   --fs-small:12px;    /* labels, captions, legends — the smallest CJK size */
   --fs-micro:11px;    /* Geist Mono metadata only: ids, hashes, times, kbd */
-  --fs-num-xl:48px;--fs-num-l:40px;--fs-num-m:32px;--fs-num-s:28px; /* Archivo numerals */
+   /* Archivo numerals */
   /* control heights */
-  --h-sm:32px;--h-md:40px;--h-lg:48px;
+  --h-md:40px;
   /* motion — durations (no UI motion longer than 480ms) and curves (none overshoots) */
-  --t-press:90ms;     /* press scale, switch thumb */
+       /* press scale, switch thumb */
   --t-quick:140ms;    /* hover, colour, small text swaps */
-  --t-base:220ms;     /* state change, indicator, dialog, toast, readout tick */
-  --t-move:320ms;     /* drawer, dock reveal, row height, disclosure */
-  --t-level:480ms;    /* measured fills move to a new sample */
-  --t-ping:900ms;     /* one ring after a real new sample */
+       /* state change, indicator, dialog, toast, readout tick */
+       /* drawer, dock reveal, row height, disclosure */
+      /* measured fills move to a new sample */
+       /* one ring after a real new sample */
        /* delay: hold a confirmed result before it resolves */
-  --e-out:cubic-bezier(.2,.8,.2,1);   /* enter / settle */
-  --e-in:cubic-bezier(.4,0,1,1);      /* exit (use at ×0.7 duration) */
-  --e-std:cubic-bezier(.2,0,0,1);     /* in-place move / resize */
-  --e-level:cubic-bezier(.45,0,.55,1);/* measured value, symmetric */
+     /* enter / settle */
+        /* exit (use at ×0.7 duration) */
+       /* in-place move / resize */
+  /* measured value, symmetric */
   font-family:var(--sans);color:var(--ink);background:var(--bg);
   font-size:var(--fs-body);line-height:1.6;letter-spacing:.005em;
   -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
@@ -96,20 +96,19 @@
 
 /* ── 03 base helpers ───────────────────────────────────────────────────────────────── */
 :where(.sb) code,.mono{font-family:var(--mono);font-size:.92em;letter-spacing:0}
-.num{font-variant-numeric:tabular-nums}
 .muted{color:var(--ink-2)}
 .hatch{background-image:repeating-linear-gradient(135deg,var(--hatch) 0 1px,transparent 1px 6px)}
 .root{min-height:100vh;position:relative}
 .sb ::selection{background:rgba(242,242,239,.24)}
 .sb.light ::selection{background:rgba(11,12,14,.16)}
-/* keyboard focus: 2px ink ring, 2px off the control, instant, never on mouse click */
-.sb :focus-visible,.sb .is-focus{outline:2px solid var(--ink);outline-offset:2px}
-.sb .input:focus,.sb .input:focus-visible,.sb .input.is-focus{outline:none;border-color:var(--ink-2)}
+.sb :focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.sb .input:focus,.sb .input:focus-visible{outline:none;border-color:var(--ink-2)}
 .sb [tabindex="-1"]:focus{outline:none}
 /* skip link: the first Tab stop on every page */
 
 /* utilities — use these instead of var() inside inline style attributes (the canvas may drop them) */
-.ink-3{color:var(--ink-3)}.ink-4,.ghost{color:var(--ink-4)}
+.ink-3{color:var(--ink-3)}
+.ghost{color:var(--ink-4)}
 .disp{font-family:var(--display);font-stretch:112%;font-weight:300}
 .br{border-right:1px solid var(--line)}
 .legend .slot.mine{background:var(--ink)}.legend .slot.used{background:var(--ink-3)}
@@ -120,5 +119,4 @@
 /* no one-character last lines; short UI copy breaks at punctuation, never mid-word
    (long prose keeps normal CJK breaking so lines stay full) */
 :where(.sb) p{text-wrap:pretty}
-.lead,.notice,.job-desc,.dialog-b,.toast-m,.gnotice-m,.menu-i small{word-break:keep-all;overflow-wrap:anywhere;text-wrap:pretty}
-
+.notice,.job-desc{word-break:keep-all;overflow-wrap:anywhere;text-wrap:pretty}

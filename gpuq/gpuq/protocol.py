@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import os
 import socket
 import time
@@ -8,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .util import json_dumps, reject_duplicate_json
+from .util import json_dumps
 
 
 PROTOCOL_VERSION = 1
@@ -108,7 +110,7 @@ class Client:
         if not raw.endswith(b"\n"):
             raise ProtocolError("truncated daemon response")
         try:
-            response = reject_duplicate_json(raw[:-1].decode("utf-8", errors="strict"))
+            response = json.loads(raw[:-1].decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, ValueError) as exc:
             raise ProtocolError(f"invalid daemon response: {exc}") from exc
         # The daemon rejects a different SO_PEERCRED uid before reading any
@@ -116,12 +118,11 @@ class Client:
         # Surface it as a refusal, never as a result or a retry instruction.
         if (
             isinstance(response, dict)
-            and set(response) == {"request_id", "ok", "error"}
-            and response["request_id"] is None
-            and response["ok"] is False
-            and response["error"] == {
-                "code": "FORBIDDEN", "message": "peer uid is not allowed"
-            }
+            and "request_id" in response and response["request_id"] is None
+            and response.get("ok") is False
+            and isinstance(response.get("error"), dict)
+            and response["error"].get("code") == "FORBIDDEN"
+            and response["error"].get("message") == "peer uid is not allowed"
         ):
             raise ProtocolError(
                 "FORBIDDEN: peer uid is not allowed; run native GPUQ as its "

@@ -43,7 +43,7 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
   }
   if(request.cards>user.total)rejectSubmission('任务卡数超出跨机器用卡总额度。',409);
   if(request.machineSelection){
-    try{Object.assign(request,await selectMachine(service,user,request,priorityCapable,usage));}
+    try{Object.assign(request,await selectMachine(service,user,request,usage));}
     catch(error){error.code=error.status>=500?'TRAINING_ADMISSION_BUSY':'SUBMISSION_REJECTED';throw error;}
   }
   authorizedMachine(request.machine);

@@ -56,7 +56,7 @@ export async function projectCatalogCall(service,principal,user,operation,args,a
   const members=args.members.map(instance),keys=members.map(r=>r.machine+':'+r.project);if(new Set(keys).size!==keys.length)fail('项目实例不能重复。');
   const primary=args.primary==null?null:instance(args.primary);if(primary&&!keys.includes(primary.machine+':'+primary.project))fail('主实例必须在本组成员中。');
   for(const ref of members)authorize(ref.machine);check();
-  check();service.db.exec('BEGIN IMMEDIATE');
+  service.db.exec('BEGIN IMMEDIATE');
   try{
     service.db.prepare('INSERT INTO project_groups_v2(owner_id,id,name,revision,primary_machine,primary_project,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(owner_id,id) DO UPDATE SET name=excluded.name,revision=excluded.revision,primary_machine=excluded.primary_machine,primary_project=excluded.primary_project,updated_at=excluded.updated_at').run(user.id,args.id,text,view().revision+1,primary?.machine??null,primary?.project??null,new Date().toISOString());
     service.db.prepare('DELETE FROM project_group_members_v2 WHERE owner_id=? AND group_id=?').run(user.id,args.id);

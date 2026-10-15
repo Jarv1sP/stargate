@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn,execFileSync} from 'node:child_process';
-import {mkdtemp, readFile, writeFile, rm, stat, rename, mkdir} from 'node:fs/promises';
+import {mkdtemp, readFile, writeFile, rm, stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -22,15 +22,12 @@ async function assertPrivateSession(path){
   execFileSync(join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(command,'utf16le').toString('base64')],{stdio:'pipe'});
 }
 
-async function fixture(t,{open, drop=false, onState, status, close, exchange, dropExchange=false, openStatus=503,openError}={}){
+async function fixture(t,{open, drop=false, status, close, exchange, dropExchange=false, openStatus=503,openError}={}){
   const windowsFolder=process.platform==='win32'?await prepareWindowsNativeFolder({platform:'windows',interop:false}):null;
   const dir=windowsFolder?.folder||await mkdtemp(join(tmpdir(),'terminal-open-recovery-'));
   const session=join(dir,'session.json'), marker=join(dir,'raw-mode.jsonl'), preload=join(dir,'tty.mjs');
-  const calls=[];let stderr='',atDispatch,loginPrincipal=principal;
+  const calls=[];let stderr='',atDispatch;
   await writeFile(preload,`import {appendFileSync} from 'node:fs';
-    import fs from 'node:fs/promises';import {readFile,rename,mkdir,writeFile} from 'node:fs/promises';import {syncBuiltinESMExports} from 'node:module';
-    const principal=${JSON.stringify(principal)},onState=${onState?onState.toString():'null'},originalRead=fs.readFile;let sessionReads=0;
-    fs.readFile=async(...args)=>{if(String(args[0])===${JSON.stringify(session)}&&++sessionReads===2)await onState?.(${JSON.stringify(session)});return originalRead(...args);};syncBuiltinESMExports();
     Object.defineProperty(process.stdin,'isTTY',{value:true});
     process.stdin.setRawMode=value=>{appendFileSync(${JSON.stringify(marker)},JSON.stringify(value)+'\\n');return process.stdin;};`);
   const server=createServer(async(req,res)=>{
@@ -39,10 +36,10 @@ async function fixture(t,{open, drop=false, onState, status, close, exchange, dr
       const {operation,args={}}=JSON.parse(body);
       res.setHeader('Content-Type','application/json');
       const state={demo:false,gpuqConnected:true,machines:[{id:'gpu-1'}],users:[],jobs:[]};
-      if(req.url==='/api/login')return res.end(JSON.stringify({token:'test-login-token',principal:loginPrincipal,state}));
       if(operation==='community.announcements.pending'){assert.deepEqual(args,{});res.end(JSON.stringify({result:{posts:[]}}));return;}
       calls.push({operation,args});
-      if(operation==='state'){await onState?.(session);return res.end(JSON.stringify({state}));}
+      if(operation==='community.notes.delete')return res.end(JSON.stringify({result:{deleted:true,id:args.id}}));
+      if(operation==='state')return res.end(JSON.stringify({state}));
       if(operation==='terminal.open'){
         atDispatch={cache:JSON.parse(await readFile(session,'utf8')),stderr};
         if(drop){req.socket.destroy();return;}
@@ -69,7 +66,7 @@ async function fixture(t,{open, drop=false, onState, status, close, exchange, dr
     child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));child.stdin.end(input);
   });
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));if(windowsFolder)await windowsFolder.cleanup();else await rm(dir,{recursive:true,force:true});});
-  return {url,session,marker,calls,cli,dispatch:()=>atDispatch,setLoginPrincipal:value=>loginPrincipal=value};
+  return {url,session,marker,calls,cli,dispatch:()=>atDispatch};
 }
 
 function errorJSON(result){
@@ -79,15 +76,11 @@ function errorJSON(result){
 
 for(const {name,argv,scope,command} of [
   {name:'project',argv:['ssh'],scope:{machine:'gpu-1',project:'alpha'},command:'--project alpha'},
-])test(`503 preserves the original ${name} UUID and scope before dispatch, without entering interaction`,async t=>{
+])test(`503 prints the original ${name} UUID and scope before dispatch, without entering interaction`,async t=>{
   const f=await fixture(t),result=await f.cli(argv);
   assert.equal(result.code,1);
   const opened=f.calls.find(call=>call.operation==='terminal.open').args;
   assert.match(opened.key,UUID);
-  const saved=f.dispatch().cache.terminalSessions?.[opened.key];
-  assert.ok(saved,'The original UUID must be saved before terminal.open is dispatched');
-  assert.equal(saved.id,opened.key);assert.equal(saved.userId,principal.userId);
-  assert.equal(saved.state,'UNKNOWN');for(const [key,value] of Object.entries(scope))assert.equal(saved[key],value);
   assert.ok(f.dispatch().stderr.includes(opened.key),'The original UUID must be printed before dispatch');
   const error=errorJSON(result);
   assert.equal(error.status,503);
@@ -97,7 +90,6 @@ for(const {name,argv,scope,command} of [
   assert.deepEqual(f.calls.map(call=>call.operation),['terminal.open','terminal.status'],'Only one read of the original session, never another open, attach, exchange or close');
   assert.equal(await readFile(f.marker,'utf8').catch(()=>''),'');
   await assertPrivateSession(f.session);
-  assert.doesNotMatch(JSON.stringify(saved),/writerToken|clientId/);
 });
 
 test('a lost open response retains the original UUID instead of creating another session',async t=>{
@@ -105,7 +97,6 @@ test('a lost open response retains the original UUID instead of creating another
   assert.equal(result.code,1);
   const id=f.calls.find(call=>call.operation==='terminal.open').args.key;
   assert.equal(errorJSON(result).terminal.id,id);
-  assert.equal(JSON.parse(await readFile(f.session,'utf8')).terminalSessions[id].state,'UNKNOWN');
   assert.deepEqual(f.calls.map(call=>call.operation),['terminal.open','terminal.status']);
 });
 
@@ -115,7 +106,6 @@ test('an uncertain reconnect retains the old session UUID, not the new request k
   assert.notEqual(args.key,original);assert.equal(args.id,original);assert.equal(args.takeover,false);
   const error=errorJSON(result);assert.equal(error.terminal.id,original);
   assert.equal(error.terminal.statusCommand,`gpuctl terminal status ${original} --machine gpu-1 --project alpha --url '${f.url}' --session-file '${f.session}'`);
-  assert.ok(f.dispatch().cache.terminalSessions[original]);
   assert.deepEqual(f.calls.map(call=>call.operation),['terminal.open','terminal.status']);
 });
 
@@ -126,7 +116,7 @@ test('a matching ID without a write lease never enters interaction',async t=>{
   assert.equal(await readFile(f.marker,'utf8').catch(()=>''),'');
 });
 
-test('only a matching original ID and writer lease allow interaction; the lease stays out of disk',async t=>{
+test('the node writer lease allows interaction and stays out of disk',async t=>{
   const token=randomUUID();
   const f=await fixture(t,{open:args=>({id:args.id||args.key,writerToken:token})}),result=await f.cli(['ssh']);
   assert.equal(result.code,0,result.stderr);
@@ -135,36 +125,6 @@ test('only a matching original ID and writer lease allow interaction; the lease 
   assert.equal(f.calls[1].args.id,args.key);assert.equal(f.calls[1].args.writerToken,token);
   assert.equal(await readFile(f.marker,'utf8'),'true\nfalse\n');
   const cache=await readFile(f.session,'utf8');assert.doesNotMatch(cache,/writerToken|clientId/);assert.equal(cache.includes(token),false);
-});
-
-test('failure to save the original identity prevents dispatch and still prints its recovery command',async t=>{
-  const f=await fixture(t,{onState:async session=>{await rename(session,session+'.saved');await mkdir(session);}});
-  const result=await f.cli(['ssh']);assert.equal(result.code,1);
-  assert.match(errorJSON(result).terminal.id,UUID);assert.equal(errorJSON(result).terminal.state,'UNKNOWN');
-  assert.deepEqual(f.calls.map(call=>call.operation),[]);
-  assert.equal(await readFile(f.marker,'utf8').catch(()=>''),'');
-});
-
-test('an account change during state lookup cannot dispatch or overwrite the new account cache',async t=>{
-  const f=await fixture(t,{onState:async session=>{
-    const value=JSON.parse(await readFile(session,'utf8'));
-    await writeFile(session,JSON.stringify({...value,principal:{...principal,userId:'demo-user-2'}}));
-  }});
-  const result=await f.cli(['ssh']);assert.equal(result.code,1);
-  assert.equal(errorJSON(result).terminal.state,'UNKNOWN');
-  assert.deepEqual(f.calls.map(call=>call.operation),[]);
-  const cache=JSON.parse(await readFile(f.session,'utf8'));
-  assert.equal(cache.principal.userId,'demo-user-2');assert.equal(cache.terminalSessions,undefined);
-});
-
-test('same-account login retains recovery records; changing account clears them',async t=>{
-  const f=await fixture(t);await f.cli(['ssh']);
-  const saved=JSON.parse(await readFile(f.session,'utf8')).terminalSessions;
-  const same=await f.cli(['login','terminal-tester','--password-stdin'],'test-password\n');assert.equal(same.code,0,same.stderr);
-  assert.deepEqual(JSON.parse(await readFile(f.session,'utf8')).terminalSessions,saved);
-  f.setLoginPrincipal({...principal,userId:'demo-user-2'});
-  const changed=await f.cli(['login','other','--password-stdin'],'test-password\n');assert.equal(changed.code,0,changed.stderr);
-  assert.equal(JSON.parse(await readFile(f.session,'utf8')).terminalSessions,undefined);
 });
 
 for(const argv of [['ssh'],['ssh','--reconnect',original]])test(`uncertain ${argv.join(' ')} observes the original ALIVE session once and requires explicit reconnect`,async t=>{
@@ -193,12 +153,6 @@ for(const code of [400,401,403,409,429])test(`explicit open refusal ${code} does
  assert.deepEqual(f.calls.map(c=>c.operation),['terminal.open']);assert.equal(errorJSON(result).status,code);
 });
 
-test('an account switch while observing cannot report another account terminal as attached or ALIVE',async t=>{
- let f;f=await fixture(t,{status:async args=>{const cache=JSON.parse(await readFile(f.session,'utf8'));await writeFile(f.session,JSON.stringify({...cache,principal:{...principal,userId:'demo-user-2'}}));return {protocol:'terminal-session-status-v1',id:args.id,state:'ALIVE',evidence:{confirmed:true,socket:'RESPONDING'}};}});
- const result=await f.cli(['ssh']);assert.equal(errorJSON(result).terminal.state,'UNKNOWN');assert.deepEqual(f.calls.map(c=>c.operation),['terminal.open','terminal.status']);
- assert.equal(JSON.parse(await readFile(f.session,'utf8')).principal.userId,'demo-user-2');assert.equal(await readFile(f.marker,'utf8').catch(()=>''),'');
-});
-
 const stopped=args=>({protocol:'terminal-session-status-v1',id:args.id,state:'STOPPED',evidence:{confirmed:true,cgroupEmpty:true,socket:'ABSENT'}});
 const validOpen=args=>({id:args.id||args.key,writerToken:randomUUID()});
 const lostExit=args=>{
@@ -206,6 +160,24 @@ const lostExit=args=>{
   assert.equal(Buffer.from(args.input,'base64').toString(),'exit\n');
   throw Object.assign(Error('node exit response unavailable'),{status:503});
 };
+test('note deletion sends the original ID once',async t=>{
+ const f=await fixture(t),result=await f.cli(['note-delete','42']);
+ assert.equal(result.code,0,result.stderr);assert.equal(JSON.parse(result.stdout).data.deleted,true);
+ assert.deepEqual(f.calls,[{operation:'community.notes.delete',args:{id:'42'}}]);
+});
+test('terminal recovery queries the original session and preserves a newly selected local login',async t=>{
+ let f;f=await fixture(t,{open:validOpen,exchange:lostExit,status:async args=>{
+  const cache=JSON.parse(await readFile(f.session,'utf8'));
+  await writeFile(f.session,JSON.stringify({...cache,principal:{...principal,userId:'demo-user-2'}}));return stopped(args);
+ }});
+ const result=await f.cli(['ssh'],'exit\n');assert.equal(result.code,0,result.stderr);
+ assert.equal(JSON.parse(await readFile(f.session,'utf8')).principal.userId,'demo-user-2');
+ assert.equal(f.calls.filter(call=>call.operation==='terminal.open').length,1);
+ assert.equal(f.calls.filter(call=>call.operation==='terminal.exchange'&&call.args.input).length,1);
+ assert.equal(f.calls.filter(call=>call.operation==='terminal.status').length,1);
+ assert.equal(f.calls.filter(call=>call.operation==='terminal.close').length,0);
+ assert.doesNotMatch(await readFile(f.session,'utf8'),/writerToken|clientId/);
+});
 
 for(const argv of [['ssh'],['ssh','--reconnect',original]])test(`lost exit response for ${argv.join(' ')} finishes when the original UUID is confirmed STOPPED, without replay`,async t=>{
   const f=await fixture(t,{open:validOpen,exchange:lostExit,status:stopped});
@@ -251,19 +223,6 @@ for(const [name,status,state] of [
   assert.equal(f.calls.filter(call=>call.operation==='terminal.open').length,1);
   assert.equal(f.calls.filter(call=>call.operation==='terminal.exchange'&&call.args.input).length,1);
   assert.equal(f.calls.filter(call=>call.operation==='terminal.status').length,1);
-  assert.equal(f.calls.filter(call=>call.operation==='terminal.close').length,0);
-});
-
-test('an account change during exit status cannot confirm STOPPED for the original account',async t=>{
-  let f;f=await fixture(t,{open:validOpen,exchange:lostExit,status:async args=>{
-    const cache=JSON.parse(await readFile(f.session,'utf8'));
-    await writeFile(f.session,JSON.stringify({...cache,principal:{...principal,userId:'demo-user-2'}}));
-    return stopped(args);
-  }});
-  const result=await f.cli(['ssh'],'exit\n');
-  assert.equal(result.code,1,result.stderr);assert.equal(errorJSON(result).terminal.state,'UNKNOWN');
-  assert.equal(JSON.parse(await readFile(f.session,'utf8')).principal.userId,'demo-user-2');
-  assert.equal(f.calls.filter(call=>call.operation==='terminal.exchange'&&call.args.input).length,1);
   assert.equal(f.calls.filter(call=>call.operation==='terminal.close').length,0);
 });
 

@@ -73,7 +73,7 @@ export async function fileTicket(service,token,args){
       /ENOENT|No such file|FileNotFoundError/i.test(error.message??'')?'SOURCE_NOT_FOUND':
       ['NODE_RESPONSE_TIMEOUT','NODE_TRANSPORT_BUSY','NODE_CONNECTION_FAILED','JOB_RECORD_PURGED'].includes(error.code)?error.code:'NODE_REQUEST_REJECTED';
     console.warn(JSON.stringify({event:'file-ticket-rejected',reasonCode:reason}));
-    const current=service.principal(token);
+    service.principal(token);
     if(service.maintenanceFor(args.machine))denied('服务器正在维护，请稍后继续原操作。',503);
     throw error;
   }

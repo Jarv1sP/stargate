@@ -21,7 +21,7 @@ func TestControlWorkspacePullKeepsAuthenticatedReadScope(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(want)
 	})
-	out, raw := s.request(controlFrame(1, "/api/call", body), body)
+	out, raw := s.request(controlFrame("/api/call", body), body)
 	if !out.OK || out.Status != 200 || calls.Load() != 1 || !bytes.Equal(raw, want) {
 		t.Fatalf("workspace pull: code=%s status=%d calls=%d raw=%q", out.Code, out.Status, calls.Load(), raw)
 	}

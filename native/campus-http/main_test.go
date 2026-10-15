@@ -59,7 +59,7 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*session, grant, *httptest
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	sum := sha256.Sum256(leaf.Raw)
-	g := grant{Available: true, Protocol: "personal-file-campus-v1", Kind: "campus-direct", RouteID: "primary", Endpoint: "https://campus.invalid:" + strings.Split(server.Listener.Addr().String(), ":")[1], Pin: hex.EncodeToString(sum[:]), Machine: "fixture", ID: "01234567-1234-4234-8234-012345678901", Ticket: strings.Repeat("t", 32), Expires: time.Now().Unix() + 300, Chunk: chunkLimit, File: fileIdentity{Protocol: 2, Path: "source.bin"}}
+	g := grant{Endpoint: "https://campus.invalid:" + strings.Split(server.Listener.Addr().String(), ":")[1], Pin: hex.EncodeToString(sum[:]), ID: "01234567-1234-4234-8234-012345678901", Ticket: strings.Repeat("t", 32), Chunk: chunkLimit, File: fileIdentity{}}
 	s := &session{roots: pool, routeFn: func() (route, error) {
 		return route{Name: "fixture-kernel-interface", Index: 2, Gateway: "01020304", Addresses: "192.0.2.1/24"}, nil
 	}, dialFn: func(ctx context.Context, _ route, _ string, _ string) (net.Conn, error) {
@@ -68,8 +68,8 @@ func fixture(t *testing.T, handler http.HandlerFunc) (*session, grant, *httptest
 	t.Cleanup(s.close)
 	return s, g, server, connections
 }
-func put(g grant, seq int64, offset int64, body []byte, final bool) frame {
-	return frame{Schema: 1, Seq: seq, Op: "put", Grant: g, Offset: offset, Final: &final, BodyBytes: len(body)}
+func put(g grant, offset int64, body []byte, final bool) frame {
+	return frame{Op: "put", Grant: g, Offset: offset, Final: &final, BodyBytes: len(body)}
 }
 func TestRawBytesAndKeepalive(t *testing.T) {
 	var stored bytes.Buffer
@@ -94,7 +94,7 @@ func TestRawBytesAndKeepalive(t *testing.T) {
 		if i == 1 {
 			offset = int64(len(first))
 		}
-		r, raw := s.request(put(g, int64(i+1), offset, b, i == 1), b)
+		r, raw := s.request(put(g, offset, b, i == 1), b)
 		if !r.OK || len(raw) != 0 {
 			t.Fatalf("unexpected reply %+v", r)
 		}
@@ -118,8 +118,8 @@ func TestDownloadFixedIdentityAndRawBound(t *testing.T) {
 	})
 	g.File.Size = int64(len(all))
 	var downloaded []byte
-	for i, offset := range []int64{0, chunkLimit} {
-		r, b := s.request(frame{Schema: 1, Seq: int64(i + 1), Op: "get", Grant: g, Offset: offset}, nil)
+	for _, offset := range []int64{0, chunkLimit} {
+		r, b := s.request(frame{Op: "get", Grant: g, Offset: offset}, nil)
 		if !r.OK {
 			t.Fatalf("%+v", r)
 		}
@@ -142,12 +142,11 @@ func TestLostAckNeverReplaysOriginalWrite(t *testing.T) {
 		}
 		c.Close()
 	})
-	f := put(g, 1, 0, original, true)
+	f := put(g, 0, original, true)
 	r, _ := s.request(f, original)
 	if r.OK || !r.WriteMayHaveReachedPeer || requests != 1 || !bytes.Equal(stored, original) {
 		t.Fatal("lost ACK did not preserve unknown write")
 	}
-	f.Seq = 2
 	again, _ := s.request(f, original)
 	if again.Code != "SESSION_STOPPED" || requests != 1 || f.Grant.ID != g.ID {
 		t.Fatal("write replayed or identity replaced")
@@ -165,7 +164,7 @@ func TestTLSVerifiedBeforeTicketOrBody(t *testing.T) {
 			} else {
 				s.roots = x509.NewCertPool()
 			}
-			r, _ := s.request(put(g, 1, 0, []byte("secret"), true), []byte("secret"))
+			r, _ := s.request(put(g, 0, []byte("secret"), true), []byte("secret"))
 			if r.OK || calls != 0 || r.WriteMayHaveReachedPeer {
 				t.Fatal("unverified peer received request")
 			}
@@ -189,7 +188,7 @@ func TestCertificateRotationStopsBeforeNewTicket(t *testing.T) {
 		w.Header().Set("Connection", "close")
 		io.WriteString(w, `{"ok":true,"result":{}}`)
 	})
-	first, _ := s.request(put(g, 1, 0, nil, false), nil)
+	first, _ := s.request(put(g, 0, nil, false), nil)
 	if !first.OK {
 		t.Fatal(first.Code)
 	}
@@ -198,7 +197,7 @@ func TestCertificateRotationStopsBeforeNewTicket(t *testing.T) {
 	// httptest's TLS listener reads this config on the next handshake; the
 	// existing connection explicitly closed after its confirmed response.
 	server.TLS.Certificates = []tls.Certificate{next}
-	result, _ := s.request(put(g, 2, 0, []byte("next body"), true), []byte("next body"))
+	result, _ := s.request(put(g, 0, []byte("next body"), true), []byte("next body"))
 	if result.Code != "TLS_PIN_CHANGED" || calls != 1 || result.WriteMayHaveReachedPeer {
 		t.Fatal("changed certificate received bearer/body")
 	}
@@ -211,7 +210,7 @@ func TestBindDeniedNeverEscalatesOrFallsBack(t *testing.T) {
 		attempts++
 		return nil, errors.New("PHYSICAL_BIND_DENIED")
 	}
-	result, _ := s.request(put(g, 1, 0, nil, true), nil)
+	result, _ := s.request(put(g, 0, nil, true), nil)
 	if result.Code != "PHYSICAL_BIND_DENIED" || attempts != 1 || result.WriteMayHaveReachedPeer {
 		t.Fatal("bind denial bypassed")
 	}
@@ -230,7 +229,7 @@ func TestChangedDescriptorAndRedirectStop(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				io.WriteString(w, `{"ok":true,"result":{}}`)
 			})
-			r, _ := s.request(put(g, 1, 0, nil, false), nil)
+			r, _ := s.request(put(g, 0, nil, false), nil)
 			if change == "redirect" {
 				if r.Code != "HTTP_REJECTED" || calls != 1 {
 					t.Fatal("redirect followed")
@@ -246,7 +245,7 @@ func TestChangedDescriptorAndRedirectStop(t *testing.T) {
 			case "origin":
 				g.Endpoint = "https://other.invalid:18441"
 			}
-			r, _ = s.request(put(g, 2, 0, nil, true), nil)
+			r, _ = s.request(put(g, 0, nil, true), nil)
 			if r.Code != "GRANT_IDENTITY_CHANGED" || calls != 1 {
 				t.Fatal("descriptor change permitted bytes")
 			}
@@ -269,7 +268,7 @@ func TestBoundedResponsesAndInvalidMetadata(t *testing.T) {
 				}
 			})
 			g.File.Size = chunkLimit + 1
-			r, _ := s.request(frame{Schema: 1, Seq: 1, Op: "get", Grant: g}, nil)
+			r, _ := s.request(frame{Op: "get", Grant: g}, nil)
 			if r.OK {
 				t.Fatal("invalid response accepted")
 			}
@@ -311,5 +310,40 @@ func TestMainDefaultRoutesAreGenericAndAmbiguityRejects(t *testing.T) {
 	}
 	if _, e = defaultRoute(head + "damaged\n"); e == nil {
 		t.Fatal("damaged route accepted")
+	}
+}
+
+func TestTicketExpiryIsEnforcedByNode(t *testing.T) {
+	g := grant{Endpoint: "https://campus.invalid", Pin: strings.Repeat("a", 64), ID: "12345678-1234-4234-8234-123456789012", Ticket: strings.Repeat("t", 32), Chunk: chunkLimit}
+	f := put(g, 0, nil, true)
+	encoded, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		t.Fatal(err)
+	}
+	for _, expires := range []float64{1.5, float64(time.Now().Unix()) + 550.5} {
+		value["grant"].(map[string]any)["expiresAt"] = expires
+		value["grant"].(map[string]any)["issuedAt"] = -1.5
+		value["grant"].(map[string]any)["ttl"] = 600.5
+		encoded, err = json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire := &bytes.Buffer{}
+		binary.Write(wire, binary.BigEndian, uint32(len(encoded)))
+		wire.Write(encoded)
+		if _, _, err := readFrame(wire); err != nil {
+			t.Fatal("client refused node ticket timing:", err)
+		}
+	}
+	for _, change := range []func(*frame){func(f *frame) { f.Grant.Pin = "invalid" }, func(f *frame) { f.Grant.Chunk = 2 * chunkLimit }, func(f *frame) { f.BodyBytes = personalChunkLimit + 1 }, func(f *frame) { f.Grant.ID = "invalid" }} {
+		bad := f
+		change(&bad)
+		if validate(bad) == nil {
+			t.Fatal("TLS authentication or byte bound was relaxed")
+		}
 	}
 }

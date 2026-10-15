@@ -53,5 +53,18 @@ export async function prepareWindowsNativeFolder(runtime,{command=boundedLocalCo
   const folder=runtime.interop?(await command('/usr/bin/wslpath',['-u',value.path])).trim():value.path;
   if(runtime.interop&&(!folder.startsWith('/')||folder.includes('\n')||posix.basename(folder)!==`stargate-campus-${uuid}`))throw fail('WINDOWS_BOOTSTRAP_INVALID');
   const info=await stat(folder);if(!info.isDirectory()||info.isSymbolicLink())throw fail('WINDOWS_BOOTSTRAP_INVALID');
-  return {folder,arch:['x64','arm64'].includes(value.arch)?value.arch:runtime.arch,interop:runtime.interop,cleanup:async()=>{const current=await stat(folder);if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==info.dev||current.ino!==info.ino)throw fail('NATIVE_CLEANUP_UNCONFIRMED');await remove(folder,{recursive:true,force:true});}};
+  return {folder,arch:['x64','arm64'].includes(value.arch)?value.arch:runtime.arch,interop:runtime.interop,cleanup:async()=>{
+    const current=await stat(folder);if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==info.dev||current.ino!==info.ino)throw fail('NATIVE_CLEANUP_UNCONFIRMED');
+    if(runtime.interop){
+      await command(ps,['-NoLogo','-NoProfile','-NonInteractive','-Command',`$ErrorActionPreference='Stop';for($i=0;;$i++){try{[IO.Directory]::Delete('${value.path.replaceAll("'","''")}',$true);break}catch [IO.IOException],[UnauthorizedAccessException]{if($i -eq 5){throw};Start-Sleep -Milliseconds (50*($i+1))}}`]);
+      return;
+    }
+    for(let attempt=0;;attempt++){
+      try{await remove(folder,{recursive:true,force:true});return;}
+      catch(error){
+        if(attempt===5||!['EIO','EBUSY','EPERM','ENOTEMPTY'].includes(error.code))throw error;
+        await new Promise(resolve=>setTimeout(resolve,50*(attempt+1)));
+      }
+    }
+  }};
 }

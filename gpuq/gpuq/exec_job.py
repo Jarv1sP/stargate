@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import json
+
 import os
 import stat
 import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from .constants import SCHEMA_VERSION
-from .util import reject_duplicate_json
-from .hami import verify_launch_environment
 
 
 MAX_LAUNCH_SPEC_BYTES = 512 * 1024
@@ -31,7 +30,7 @@ def _load_spec(path: Path) -> dict[str, Any]:
         os.close(descriptor)
     if len(raw) > MAX_LAUNCH_SPEC_BYTES:
         raise RuntimeError("launch specification is too large")
-    value = reject_duplicate_json(raw.decode("utf-8", errors="strict"))
+    value = json.loads(raw.decode("utf-8", errors="strict"))
     if not isinstance(value, dict):
         raise RuntimeError("launch specification must be a JSON object")
     return value
@@ -41,10 +40,6 @@ def execute_launch_spec(path: str | os.PathLike[str]) -> None:
     """Replace this helper with the exact argv/environment from a safe file."""
 
     spec = _load_spec(Path(path))
-    if set(spec) != {"version", "argv", "cwd", "env"}:
-        raise RuntimeError("launch specification fields do not match protocol")
-    if spec["version"] != SCHEMA_VERSION or isinstance(spec["version"], bool):
-        raise RuntimeError("unsupported launch specification version")
     argv = spec["argv"]
     cwd = spec["cwd"]
     environment = spec["env"]
@@ -69,7 +64,6 @@ def execute_launch_spec(path: str | os.PathLike[str]) -> None:
     if not Path(executable).is_absolute():
         raise RuntimeError("launch executable must be absolute")
     os.chdir(cwd)
-    verify_launch_environment(environment)
     os.execve(executable, argv, environment)
 
 

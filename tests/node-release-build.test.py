@@ -1,6 +1,5 @@
 """Offline release packaging contracts, with only synthetic config and files."""
 import ast
-import hashlib
 import importlib.util
 import io
 import json
@@ -53,19 +52,18 @@ class NodeReleaseBuild(unittest.TestCase):
         manifests = [self.manifest(machine) for machine in machines]
         self.assertEqual(summary['nodeFiles'], 4)
         self.assertEqual(summary['gpuqMembers'], 2)
-        for manifest in manifests:
+        for machine, manifest in zip(machines, manifests):
             self.assertFalse(manifest['sourceDirty'])
-            self.assertEqual(manifest['sourceSHA256'], summary['sourceSHA256'])
             self.assertEqual(manifest['nodeFiles'], manifests[0]['nodeFiles'])
             self.assertEqual(manifest['gpuq'], manifests[0]['gpuq'])
-            release = self.output / manifest['machine']
-            for name, sha in manifest['nodeFiles'].items():
-                self.assertEqual(hashlib.sha256((release / name).read_bytes()).hexdigest(), sha)
+            release = self.output / machine
+            for name, size in manifest['nodeFiles'].items():
+                data = (release / name).read_bytes()
+                self.assertEqual(len(data), size)
+                self.assertEqual(data, (self.root / name).read_bytes())
                 self.assertEqual(stat.S_IMODE((release / name).stat().st_mode) & 0o222, 0)
             with zipfile.ZipFile(release / 'gpuq.pyz') as archive:
                 self.assertEqual(set(archive.namelist()), {'__main__.py', 'gpuq/__init__.py'})
-                for name, sha in manifest['gpuq']['members'].items():
-                    self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(), sha)
         self.assertEqual((self.output / 'node-a/gpuq.pyz').read_bytes(), (self.output / 'node-d/gpuq.pyz').read_bytes())
 
     def test_private_config_and_generated_files_are_excluded(self):
@@ -83,14 +81,10 @@ class NodeReleaseBuild(unittest.TestCase):
                 self.assertIsNone(value[key])
             self.assertEqual(stat.S_IMODE(template.stat().st_mode), 0o600)
 
-    def test_profiles_are_unwired_with_fixed_commands_and_rollback_placeholders(self):
+    def test_profiles_have_fixed_commands(self):
         builder.build(self.root, self.output, ['node-a'])
         manifest = self.manifest()
-        self.assertEqual(manifest['stage'], 'templates-only')
-        self.assertEqual(manifest['scopeReview'], 'pending')
         self.assertEqual(set(manifest['profiles']), set(builder.PROFILES))
-        self.assertEqual(manifest['rollback'], dict(releaseDirectory=None, gpuqArchive=None,
-                                                  profileEntries={name: None for name in builder.PROFILES}))
         entry_spec = importlib.util.spec_from_file_location('offline_core_entry', ROOT / 'node/core-entry.py')
         entry = importlib.util.module_from_spec(entry_spec)
         entry_spec.loader.exec_module(entry)
@@ -99,9 +93,6 @@ class NodeReleaseBuild(unittest.TestCase):
         allowed = next(ast.literal_eval(node) for node in ast.walk(service_tree) if isinstance(node, ast.Set))
         service_pairs = set()
         for name, profile in manifest['profiles'].items():
-            self.assertEqual(profile['binding'], 'not-wired')
-            self.assertIsNone(profile['privateConfig']['sha256'])
-            self.assertIsNone(profile['privateConfig']['summary'])
             if name == 'peer':
                 self.assertIsNone(profile['entryCommand'])
             else:

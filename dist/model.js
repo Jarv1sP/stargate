@@ -3,13 +3,6 @@ export const validUsername = value => typeof value==='string' && /^[a-z\u3400-\u
 import {MACHINES} from './machines.js';
 import {displayName} from './task-metadata.js';
 export {MACHINES};
-// Display names, approval notes and revision counters do not grant access.
-// Compare effective grants in a stable order; quota changes still invalidate
-// work admitted under an earlier authorization.
-export const authorizationPolicy = user => JSON.stringify(user ? {
-  id:user.id,username:user.username,enabled:user.enabled===true,role:user.role||'member',
-  total:user.total,limits:Object.entries(user.limits||{}).filter(([,cards])=>cards>0).sort(([a],[b])=>a.localeCompare(b)),
-} : null);
 const clone = value => JSON.parse(JSON.stringify(value));
 const demoLimits = allocations => Object.fromEntries(allocations.flatMap(([index,cards])=>{
   const machine=MACHINES[index];return machine?[[machine.id,Math.min(cards,machine.cards)]]:[];
@@ -49,18 +42,4 @@ export class DemoStore {
   }
   setEnabled(id,enabled){if(typeof enabled!=='boolean')throw Error('状态无效。');this.get(id);this.users.find(u=>u.id===id).enabled=enabled;return this.get(id);}
   setName(id,name){this.get(id);this.users.find(u=>u.id===id).name=displayName(name);return this.get(id);}
-  usage(id,machine){return this.jobs.filter(j=>j.userId===id&&(!machine||j.machine===machine)).reduce((n,j)=>n+j.cards,0);}
-  request(id,machine,cards){
-    const user=this.get(id);const host=MACHINES.find(m=>m.id===machine);
-    if(!user.enabled)throw Error('账号已暂停，不能申请新的 GPU。');
-    if(!host||!user.limits[machine])throw Error('这台机器未授权，请联系管理员。');
-    if(!Number.isInteger(cards)||cards<1)throw Error('申请卡数须为大于 0 的整数。');
-    if(cards>host.cards)throw Error('申请卡数超出单机容量。');
-    if(user.role!=='admin'&&cards+this.usage(id,machine)>user.limits[machine])throw Error(`超出这台机器的上限：已用 ${this.usage(id,machine)} 张，最多 ${user.limits[machine]} 张。`);
-    if(user.role!=='admin'&&cards+this.usage(id)>user.total)throw Error(`超出跨机器总上限：已用 ${this.usage(id)} 张，最多 ${user.total} 张。`);
-    const occupied=this.jobs.filter(j=>j.machine===machine).reduce((n,j)=>n+j.cards,0);
-    if(occupied+cards>host.cards)throw Error('模拟资源暂时不足；真实接入后交由 GPUQ 排队。');
-    const job={id:`DEMO-${String(++this.sequence).padStart(3,'0')}`,userId:id,machine,cards};this.jobs.push(job);return clone(job);
-  }
-  release(id,userId){const i=this.jobs.findIndex(j=>j.id===id);if(i<0)throw Error('找不到这个模拟任务。');this.jobs.splice(i,1);}
 }

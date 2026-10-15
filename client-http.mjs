@@ -13,7 +13,7 @@ const wait=(ms,signal)=>new Promise((resolve,reject)=>{
   const abort=()=>{clearTimeout(timer);signal.removeEventListener('abort',abort);reject(signal.reason);};
   const timer=setTimeout(done,ms);signal.addEventListener('abort',abort,{once:true});
 });
-export const uncertainWrite=failure=>failure?.receiptChecked!==true&&
+export const uncertainWrite=failure=>failure?.writeMayHaveReachedPeer!==false&&failure?.receiptChecked!==true&&
   (failure?.status===undefined||TRANSIENT.has(failure.status));
 
 /** One original request, then its original readback. Replay is possible only
@@ -81,23 +81,4 @@ export async function apiPost(base,path,body,{token,signal,fetchImpl=fetch,sleep
     if(!decoded)throw error(`${safe(operation)}：HTTP ${response.status}，API 未返回有效 JSON。请检查服务地址或网关；不能据此判定数据或操作失败。`,read?response.status:undefined);
     return data;
   }
-}
-
-// Terminal close may be recovered by reading the original session. Inputs are never replayed.
-export function callWithReceipt(call,operation,args,{principal}={}){
-  const fixed=structuredClone(args),quote=value=>"'"+String(value).replaceAll("'","'\"'\"'")+"'";
-  let query,classify,command,canReplay=false,key=fixed.key||fixed.operationId||fixed.uploadId||fixed.id||fixed.jobId;
-  if(operation==='terminal.close'){
-    const {clientId,writerToken,...scope}=fixed;
-    query=()=>call('terminal.status',scope);
-    canReplay=clientId===undefined&&writerToken===undefined;
-    classify=reply=>{
-      const row=reply.result;
-      if(row?.id!==fixed.id||row.state!=='STOPPED')return;
-      return {value:reply};
-    };
-    command=`gpuctl terminal status ${fixed.id} --machine ${quote(fixed.machine)}${fixed.project?' --project '+quote(fixed.project):''}${fixed.ownerId?' --owner USERNAME':''}`;
-  }else return call(operation,fixed);
-  return recoverOriginalWrite(()=>call(operation,fixed),{query,classify,canReplay,
-    unresolved:failure=>Object.assign(Error(`${failure.message}\n原编号：${key}。查询：${command}`),{status:failure.status,code:failure.code,key,statusCommand:command})});
 }

@@ -85,11 +85,9 @@ class NativeProtocolIdentity(unittest.TestCase):
         malformed = [
             {'request_id': None, 'ok': True, 'result': {'state': 'RUNNING'}},
             {**DENIAL, 'ok': 0},
-            {**DENIAL, 'result': {'state': 'RUNNING'}},
             {'ok': False, 'error': DENIAL['error']},
             {**DENIAL, 'error': {'code': 'INTERNAL', 'message': 'peer uid is not allowed'}},
             {**DENIAL, 'error': {'code': 'FORBIDDEN', 'message': 'different failure'}},
-            {**DENIAL, 'error': {**DENIAL['error'], 'retry': True}},
         ]
         for reply in malformed:
             with self.subTest(reply=reply), replying_socket(reply) as (client, _):

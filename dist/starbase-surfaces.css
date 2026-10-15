@@ -2,8 +2,6 @@
 .checks li{display:flex;justify-content:space-between;align-items:baseline;gap:20px;padding:12px 0;border-top:1px solid var(--line);font-size:var(--fs-meta)}
 .checks li:first-child{border-top:0}
 .checks .what small{display:block;font-size:var(--fs-small);color:var(--ink-3);margin-top:2px}
-.v-ok,.v-wait,.v-no,.v-unk{font-size:var(--fs-small);font-weight:600;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
-.v-ok{color:var(--run)}.v-wait{color:var(--prep)}
 .notice{display:flex;gap:14px;align-items:flex-start;padding:14px 18px;border-radius:10px;border:1px solid var(--line-2);background:var(--bg-1);font-size:var(--fs-meta);color:var(--ink-2);line-height:1.6}
 .notice b{color:var(--ink);font-weight:600}
 .notice .st{margin-top:2px}
@@ -20,13 +18,7 @@
 .table th:last-child,.table td:last-child{padding-right:0}
 .table .r{text-align:right}
 .table small{display:block;font-size:var(--fs-small);color:var(--ink-3);margin-top:3px}
-/* availability badge — "this deployment may not have it"; outlined, never a status colour */
-
-/* ── 14 command blocks — say where a command runs: 你的电脑 / 开发终端 / 数据终端 ───────── */
-/* server terminals keep the Carbon terminal surface in both themes (tokens re-scoped for everything inside) */
-@media (hover:hover){}
 /* placeholder token: replace before running; reads as a field, copies as plain text */
 /* copy fallback: the command text shows as selected (the prompt never does) */
 /* keyboard focus on the scrollable command: ring around the whole card, in the page's ink */
 /* wait gate between ordered steps */
-

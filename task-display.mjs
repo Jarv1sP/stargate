@@ -50,17 +50,18 @@ export async function taskDisplayCall(service,token,operation,args){
   if(lane.pending>=2)fail('同一任务的标签请求正在处理。',429);
   service.taskDisplayLanes.set(key,lane);lane.pending++;service.taskDisplayPending++;
   const run=lane.tail.then(async()=>{
-    check();
     if(setting)await service.enqueue(()=>{check();service.audit(principal.username,operation,args.machine,args.nodeJobId);});
     check();
     const request={userId:actor.id,hostAdmin:actor.role==='admin',nodeJobId:args.nodeJobId,...(job?{job:nativeJobSpec(job)}:{}),
       ...(setting?{name:args.name,description:args.description}:{})};
     let result;try{result=await service.bridge(args.machine,operation,request);}finally{check();}
-    if(!result||!nativeTaskPresentation(result.metadata))fail('任务标签暂不可用，请稍后读取同一任务。',502);
     // The bounded view bridges collector lag; the caller is already logged in.
-    if(service.taskDisplayViews.size>=256&&!service.taskDisplayViews.has(key))service.taskDisplayViews.delete(service.taskDisplayViews.keys().next().value);
-    if(result.binding?.name&&result.binding?.owner)service.taskDisplayViews.set(key,{metadata:result.metadata,binding:result.binding,observedAt:Date.now(),jobId:job?.id});
-    return {protocol:result.protocol,nodeJobId:result.nodeJobId,available:result.available,name:result.name,description:result.description,revision:result.revision};
+    if(nativeTaskPresentation(result?.metadata)){
+      if(service.taskDisplayViews.size>=256&&!service.taskDisplayViews.has(key))service.taskDisplayViews.delete(service.taskDisplayViews.keys().next().value);
+      service.taskDisplayViews.set(key,{metadata:result.metadata,observedAt:Date.now(),jobId:job?.id});
+    }
+    const name=result?.name??result?.metadata?.name,description=result?.description??result?.metadata?.description;
+    return {nodeJobId:args.nodeJobId,available:result?.available,name:typeof name==='string'?name:'',description:typeof description==='string'?description:''};
   });
   lane.tail=run.catch(()=>{});
   try{return await run;}finally{lane.pending--;service.taskDisplayPending--;if(!lane.pending)service.taskDisplayLanes.delete(key);}

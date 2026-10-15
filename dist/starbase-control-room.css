@@ -60,28 +60,14 @@
 @keyframes sb-r4-tick-up{0%{opacity:0;transform:translateY(3px)}100%{opacity:1;transform:none}}
 @keyframes sb-r4-tick-down{0%{opacity:0;transform:translateY(-3px)}100%{opacity:1;transform:none}}
 @keyframes sb-change-hairline{0%{opacity:0}25%{opacity:1}100%{opacity:0}}
-.sb :is(.cstrip,.live-pill,.mc) .unk,.sb :is(.cstrip,.live-pill,.mc) .stale,.sb :is(.cstrip,.live-pill,.mc) .hatch{animation:none!important;transition:none!important}
+.sb :is(.cstrip,.live-pill,.mc) .stale,.sb :is(.cstrip,.live-pill,.mc) .hatch{animation:none!important;transition:none!important}
 @media (prefers-reduced-transparency:reduce){.sb :is(.cstrip,.live-pill,.mc-head){background:var(--bg-1);backdrop-filter:none;-webkit-backdrop-filter:none}}
-@media (prefers-reduced-motion:reduce){
-}
 
 
 
 /* Layer ordering: the stable control layer sits below every covering sheet. */
 .sb .dialog:not(.spec){z-index:28}
 .sb .toast:not(.spec){z-index:30;bottom:88px}
-
-
-
-/* Phone control layers stack: primary actions, live pill, then the tab bar. */
-
-/* Closing layers remain mounted for the approved exit, and yield to the next action. */
-@media(prefers-reduced-motion:reduce){
-}
-
-/* R4 motion gate: ordinary controls react through colour only. */
-@media(prefers-reduced-motion:reduce){
-}
 
 /* R4 review: state grammar and a single focal readout. */
 .sb .cs-count-link{display:flex;align-items:center;gap:8px;min-height:22px;color:var(--ink-2);text-decoration:none;white-space:nowrap}

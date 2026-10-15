@@ -11,7 +11,7 @@ import stat
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -19,7 +19,6 @@ from .backends import (
     BackendError,
     GpuDevice,
     NvidiaSmiError,
-    UnitIdentityError,
     UnitNotFoundError,
     UserSystemdBackend,
 )
@@ -27,7 +26,7 @@ from .checkpoint import (
     ACK_FILE_NAME,
     LOCK_FILE_NAME,
     REQUEST_FILE_NAME,
-    validate_ack_identity,
+    checkpoint_acknowledged,
 )
 from .config import Config
 from .constants import (
@@ -63,7 +62,6 @@ from .util import (
     process_start_ticks,
     read_cgroup_tree_processes,
     read_boot_id,
-    reject_duplicate_json,
     secure_create_empty,
 )
 
@@ -199,17 +197,17 @@ class GpuQuarantine:
     clean_scans: int
 
 
-def _require_exact_fields(
+def _request_fields(
     arguments: dict[str, Any],
     *,
     allowed: set[str],
     required: set[str] | None = None,
 ) -> None:
     required = required or set()
-    unknown = sorted(set(arguments) - allowed)
+    for key in list(arguments):
+        if key not in allowed:
+            del arguments[key]
     missing = sorted(required - set(arguments))
-    if unknown:
-        raise ApiError("BAD_REQUEST", f"unknown fields: {', '.join(unknown)}")
     if missing:
         raise ApiError("BAD_REQUEST", f"missing fields: {', '.join(missing)}")
 
@@ -231,7 +229,7 @@ def _small_json_file(
         raw = os.read(descriptor, max_bytes + 1)
         if len(raw) > max_bytes:
             return None
-        value = reject_duplicate_json(raw.decode("utf-8", errors="strict"))
+        value = json.loads(raw.decode("utf-8", errors="strict"))
     except (OSError, UnicodeError, ValueError):
         return None
     finally:
@@ -295,7 +293,7 @@ class Coordinator:
             store.set_setting("observe_only", self._observe_only)
 
     def _invalidate_observation_history(self) -> None:
-        """Break every consecutive-scan proof after an unsafe observation."""
+        """Reset resource observations when the current sample is unavailable."""
 
         self._recovery_scans = 0
         self._idle_counts.clear()
@@ -324,26 +322,9 @@ class Coordinator:
         unit_token = attempt.get("unit_token")
         if not unit_name or not unit_token:
             return None
-        if attempt.get("boot_id") and attempt["boot_id"] != self.boot_id:
-            raise UnitIdentityError("attempt belongs to a previous host boot")
-        status = self.systemd.status(
+        return self.systemd.status(
             unit_name=unit_name,
-            description_token=unit_token,
-            invocation_id=attempt.get("invocation_id"),
         )
-        stored_pid = attempt.get("main_pid")
-        stored_ticks = attempt.get("start_ticks")
-        if (
-            status.main_pid > 0
-            and stored_pid is not None
-            and stored_pid != status.main_pid
-        ):
-            raise UnitIdentityError("systemd MainPID changed for Restart=no attempt")
-        if status.main_pid > 0 and stored_ticks is not None:
-            current_ticks = process_start_ticks(status.main_pid)
-            if current_ticks is None or current_ticks != stored_ticks:
-                raise UnitIdentityError("systemd MainPID start time does not match")
-        return status
 
     def _collect_statuses(
         self, attempts: Iterable[dict[str, Any]]
@@ -352,8 +333,6 @@ class Coordinator:
         problems: list[str] = []
         for attempt in attempts:
             if not attempt.get("unit_name") or not attempt.get("unit_token"):
-                continue
-            if attempt.get("boot_id") and attempt["boot_id"] != self.boot_id:
                 continue
             try:
                 status = self._verified_status(attempt)
@@ -489,7 +468,7 @@ class Coordinator:
         devices: tuple[GpuDevice, ...],
         statuses: dict[str, Any],
     ) -> None:
-        """Prove global durable fencing before isolating a local collision.
+        """Check actual GPU allocations before isolating a local collision.
 
         Per-GPU continuation is safe only when every durable assignment can be
         partitioned unambiguously.  A malformed gang, stale UUID/index map, or
@@ -558,12 +537,6 @@ class Coordinator:
                     f"scale-up reservation GPU index changed for {uuid_value}: "
                     f"stored {reservation['gpu_index']}, current {device.index}"
                 )
-            if str(reservation["job_id"]) != str(plan["job_id"]) or str(
-                reservation["reservation_token"]
-            ) != str(plan["reservation_token"]):
-                raise GpuFenceAuditError(
-                    f"scale-up reservation {plan_id} job/token identity differs"
-                )
 
         active_ids = {str(attempt["id"]) for attempt in attempts}
         for attempt_id, attempt in attempts_by_id.items():
@@ -605,14 +578,6 @@ class Coordinator:
                 raise GpuFenceAuditError(
                     f"attempt {attempt_id} has an incomplete or different "
                     "gang lease bundle"
-                )
-            if any(
-                str(lease["job_id"]) != str(attempt["job_id"])
-                or str(lease["lease_token"]) != attempt_id
-                for lease in attempt_leases
-            ):
-                raise GpuFenceAuditError(
-                    f"attempt {attempt_id} lease job/token identity differs"
                 )
 
         # Every active attempt must be represented above, even if a corrupt
@@ -729,55 +694,14 @@ class Coordinator:
             status = statuses.get(attempt_id)
             if attempt is None or status is None or not status.is_cleanup_ready:
                 continue
-            persisted_invocation = attempt.get("invocation_id")
-            if (
-                not isinstance(persisted_invocation, str)
-                or not persisted_invocation
-                or attempt.get("boot_id") != self.boot_id
-            ):
+            if any(managed.get(str(uuid_value)) for uuid_value in attempt.get("gpu_uuids", [])):
                 continue
-            assigned_uuids = attempt.get("gpu_uuids")
-            assigned_indices = attempt.get("gpu_indices")
-            if (
-                not isinstance(assigned_uuids, list)
-                or not isinstance(assigned_indices, list)
-                or len(assigned_uuids) != len(assigned_indices)
-                or any(managed.get(str(uuid_value)) for uuid_value in assigned_uuids)
-            ):
-                continue
-            expected_assignments = list(zip(assigned_uuids, assigned_indices))
-            current_indices = {device.uuid: device.index for device in devices}
-            if any(
-                current_indices.get(str(uuid_value)) != int(index_value)
-                for uuid_value, index_value in expected_assignments
-            ):
-                continue
-            attempt_leases = [
-                lease for lease in leases if lease["attempt_id"] == attempt_id
-            ]
-            lease_assignments = [
-                (lease["gpu_uuid"], lease["gpu_index"]) for lease in attempt_leases
-            ]
-            if (
-                len(attempt_leases) != len(expected_assignments)
-                or set(lease_assignments) != set(expected_assignments)
-                or any(
-                    lease["job_id"] != attempt["job_id"]
-                    or lease["lease_token"] != attempt_id
-                    for lease in attempt_leases
-                )
-            ):
-                continue
-
-            # Re-read and re-verify the exact transient-unit identity before
-            # mutating durable state.  A concurrently restarted or replaced
-            # unit therefore fails closed through _verified_status().
+            # Query the actual unit and cgroup before releasing its leases.
             fresh_status = self._verified_status(attempt)
             if (
                 fresh_status is None
                 or not fresh_status.is_cleanup_ready
                 or fresh_status.main_pid != 0
-                or fresh_status.invocation_id != persisted_invocation
             ):
                 continue
             if fresh_status.control_group:
@@ -824,8 +748,7 @@ class Coordinator:
                     available_at=current["created_at"],
                 )
 
-            # Unit identity and cgroup quiescence are stronger ownership proof
-            # than GPU-idleness here.  Any observed GPU process is already
+            # The current unit and cgroup are empty. Any observed GPU process is already
             # classified as external and remains unavailable after the leases
             # are released.
             self._finalize_attempt(current)
@@ -965,7 +888,6 @@ class Coordinator:
         current_attempts = {
             str(attempt["id"]): attempt
             for attempt in attempts
-            if attempt.get("boot_id") in {None, self.boot_id}
         }
         self._progress_errors = {
             attempt_id: message
@@ -981,13 +903,7 @@ class Coordinator:
                 snapshot = load_progress_file(path)
                 if snapshot is None:
                     continue
-                if (
-                    snapshot.job_id != attempt["job_id"]
-                    or snapshot.attempt_id != attempt_id
-                ):
-                    raise ProgressProtocolError(
-                        "progress identity does not match active attempt"
-                    )
+                snapshot = replace(snapshot, job_id=attempt["job_id"], attempt_id=attempt_id)
                 self._record_progress_snapshot(
                     attempt,
                     snapshot,
@@ -1057,7 +973,6 @@ class Coordinator:
                     raise NvidiaSmiError(
                         "managed GPU UUIDs are missing: " + ", ".join(missing)
                     )
-                self._retire_previous_boot_attempts(attempts)
                 attempts = self.store.list_attempts(
                     states=ACTIVE_ATTEMPT_STATES, limit=10_000
                 )
@@ -1114,32 +1029,6 @@ class Coordinator:
                 self._invalidate_observation_history()
                 self._set_health("degraded", f"{type(exc).__name__}: {exc}")
 
-    def _retire_previous_boot_attempts(
-        self, attempts: Iterable[dict[str, Any]]
-    ) -> None:
-        """Never query or signal a unit identity persisted before this boot."""
-
-        for attempt in attempts:
-            if (
-                attempt.get("boot_id")
-                and attempt["boot_id"] != self.boot_id
-                and attempt["state"] != AttemptState.DRAINING.value
-            ):
-                reason = "attempt belongs to a previous host boot"
-                with self.store.transaction() as tx:
-                    tx.update_attempt(
-                        attempt["id"],
-                        state=AttemptState.DRAINING,
-                        failure_reason=reason,
-                        expected_states=list(ACTIVE_ATTEMPT_STATES),
-                    )
-                    tx.append_event(
-                        "ATTEMPT_BOOT_LOST",
-                        job_id=attempt["job_id"],
-                        attempt_id=attempt["id"],
-                        payload={"reason": reason},
-                    )
-
     def _update_idle_counts(
         self, by_uuid: dict[str, GpuDevice], leases: list[dict[str, Any]]
     ) -> None:
@@ -1185,8 +1074,6 @@ class Coordinator:
         resume_from_attempt_id = attempt.get("resume_from_attempt_id")
         if resume_from_attempt_id:
             candidate = self.store.get_attempt(str(resume_from_attempt_id))
-            if candidate["job_id"] != job["id"]:
-                raise RuntimeError("resume source belongs to another job")
             previous = candidate
         else:
             previous = next(
@@ -1243,9 +1130,6 @@ class Coordinator:
         # pre-launch replan without falling back across an intervening attempt
         # or silently restarting from scratch.
         resume_checkpoint = attempt.get("launch_resume_checkpoint_path")
-        if resume_checkpoint is None and previous is not None:
-            # Compatibility for start plans written before schema v5.
-            resume_checkpoint = previous.get("checkpoint_path")
         if resume_checkpoint:
             environment["GPUQ_RESUME_CHECKPOINT"] = str(resume_checkpoint)
         archive = str(self.config.archive_path)
@@ -2393,16 +2277,11 @@ class Coordinator:
                             )
                 current = self.store.get_attempt(current["id"])
             request_path = control_dir / REQUEST_FILE_NAME
-            request = _small_json_file(request_path)
-            if request is not None:
-                if (
-                    request.get("nonce") != current.get("preempt_nonce")
-                    or request.get("attempt_id") != current["id"]
-                    or request.get("requested_by_job_id")
-                    != current.get("preempt_requested_by_job_id")
-                ):
-                    raise RuntimeError("checkpoint request identity changed")
+            try:
                 request_path.unlink()
+            except FileNotFoundError:
+                pass
+            else:
                 directory_fd = os.open(
                     control_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
                 )
@@ -2410,10 +2289,6 @@ class Coordinator:
                     os.fsync(directory_fd)
                 finally:
                     os.close(directory_fd)
-            elif request_path.exists() or request_path.is_symlink():
-                raise RuntimeError(
-                    "checkpoint request is not a valid regular JSON file"
-                )
             self._rollback_undelivered_preemption(current, reason, fail_requester=False)
             return True
         finally:
@@ -2500,11 +2375,9 @@ class Coordinator:
         value = _small_json_file(Path(control_dir) / ACK_FILE_NAME)
         if value is None:
             return None
-        if not validate_ack_identity(
+        if not checkpoint_acknowledged(
             value,
             nonce=nonce,
-            attempt_id=attempt["id"],
-            requested_by_job_id=requester,
         ):
             return None
         checkpoint_path = value.get("checkpoint_path")
@@ -2593,16 +2466,13 @@ class Coordinator:
             self._repair_preemption_actions(attempt)
             status = self._statuses.get(attempt["id"])
             if status is None and attempt["id"] not in self._statuses:
-                if attempt.get("boot_id") and attempt["boot_id"] != self.boot_id:
+                try:
+                    status = self._verified_status(attempt)
+                except UnitNotFoundError:
                     status = None
-                else:
-                    try:
-                        status = self._verified_status(attempt)
-                    except UnitNotFoundError:
-                        status = None
-                    except BackendError as exc:
-                        self._set_health("degraded", f"{attempt['id']}: {exc}")
-                        return
+                except BackendError as exc:
+                    self._set_health("degraded", f"{attempt['id']}: {exc}")
+                    return
             if status is not None:
                 self._record_unit_identity(attempt, status)
                 self.store.heartbeat_leases(attempt["id"])
@@ -2689,7 +2559,6 @@ class Coordinator:
                 if (
                     deadline is not None
                     and self.clock() >= deadline
-                    and self._signal_delivery_confirmed(attempt, "TERM")
                 ):
                     self._enqueue_kill(attempt)
             elif attempt["state"] == AttemptState.KILL_REQUESTED.value:
@@ -2697,7 +2566,6 @@ class Coordinator:
                 if (
                     deadline is not None
                     and self.clock() >= deadline
-                    and self._signal_delivery_confirmed(attempt, "KILL")
                 ):
                     self._set_health(
                         "stuck",
@@ -2901,11 +2769,7 @@ class Coordinator:
             if remaining:
                 self._release_counts[attempt["id"]] = 0
                 return False
-        if (
-            self._attempt_has_sharing(attempt)
-            and attempt.get("boot_id") == self.boot_id
-            and attempt.get("invocation_id")
-        ):
+        if self._attempt_has_sharing(attempt):
             # Sharing tasks end independently of neighbours. Only an exact,
             # quiescent unit (or its durable successful cleanup) proves this.
             proven_exit = (
@@ -3226,39 +3090,6 @@ class Coordinator:
 
     # --------------------------------------------------------------- outbox
 
-    def _signal_delivery_confirmed(
-        self,
-        attempt: dict[str, Any],
-        signal_name: str,
-    ) -> bool:
-        action_type = (
-            ActionType.KILL_UNIT.value
-            if signal_name == "KILL"
-            else ActionType.TERM_UNIT.value
-        )
-        if any(
-            action["state"] == ActionState.DONE.value
-            and action["action_type"] == action_type
-            and isinstance(action.get("result"), dict)
-            and action["result"].get("signal") == signal_name
-            for action in self.store.list_actions(
-                attempt_id=attempt["id"],
-                limit=1000,
-            )
-        ):
-            return True
-        nonce = attempt.get("preempt_nonce")
-        return any(
-            event["event_type"] == "SIGNAL_DELIVERED"
-            and isinstance(event.get("payload"), dict)
-            and event["payload"].get("signal") == signal_name
-            and event["payload"].get("preempt_nonce") == nonce
-            for event in self.store.list_events(
-                attempt_id=attempt["id"],
-                limit=100_000,
-            )
-        )
-
     def _signal_delivery_intended(
         self,
         attempt: dict[str, Any],
@@ -3271,8 +3102,6 @@ class Coordinator:
             event["event_type"] == "SIGNAL_DELIVERY_INTENT"
             and isinstance(event.get("payload"), dict)
             and event["payload"].get("action_id") == action_id
-            and event["payload"].get("signal") == signal_name
-            and event["payload"].get("preempt_nonce") == attempt.get("preempt_nonce")
             for event in self.store.list_events(
                 attempt_id=attempt["id"],
                 limit=100_000,
@@ -3308,9 +3137,7 @@ class Coordinator:
                 }
             ):
                 continue
-            if self._job_sync_blocked(job):
-                blocked.add(str(action["id"]))
-            elif set(attempt["gpu_uuids"]).intersection(self._quarantines):
+            if set(attempt["gpu_uuids"]).intersection(self._quarantines):
                 blocked.add(str(action["id"]))
             elif job.get("share_gpu") and not self._shared_devices_for_job(
                 job, exclude_attempt_id=attempt_id
@@ -3463,8 +3290,6 @@ class Coordinator:
         try:
             status = self.systemd.status(
                 unit_name=payload["unit_name"],
-                description_token=payload["unit_token"],
-                invocation_id=attempt.get("invocation_id"),
             )
         except UnitNotFoundError:
             try:
@@ -3604,8 +3429,6 @@ class Coordinator:
         try:
             status = self.systemd.status(
                 unit_name=payload["unit_name"],
-                description_token=payload["unit_token"],
-                invocation_id=attempt.get("invocation_id"),
             )
         except UnitNotFoundError:
             self._cancel_unstarted_attempt(
@@ -3615,8 +3438,6 @@ class Coordinator:
             )
             return {"aborted": True, "unit_found": False}
 
-        # The exact managed token proves this is our crash-window unit.  Record
-        # its immutable identity before requesting any signal.
         self._record_unit_identity(attempt, status)
         current = self.store.get_attempt(attempt["id"])
         if status.is_cleanup_ready:
@@ -3733,10 +3554,6 @@ class Coordinator:
             return {"already_exited": True}
         method = self.systemd.kill if kill else self.systemd.terminate
         signal_name = "KILL" if kill else "TERM"
-        delivery_was_confirmed = self._signal_delivery_confirmed(
-            attempt,
-            signal_name,
-        )
         # Commit the delivery intent immediately before the external side
         # effect.  If the daemon dies after systemd receives the signal but
         # before the outbox completion is recorded, recovery conservatively
@@ -3754,16 +3571,14 @@ class Coordinator:
         )
         method(
             unit_name=attempt["unit_name"],
-            description_token=attempt["unit_token"],
-            invocation_id=attempt["invocation_id"],
         )
         delivered_at = self.clock()
         deadline_field = "kill_deadline_at" if kill else "term_deadline_at"
         deadline = attempt.get(deadline_field)
-        if deadline is None or not delivery_was_confirmed:
+        if deadline is None:
             deadline = delivered_at + self.config.term_grace_seconds
         with self.store.transaction() as tx:
-            if attempt.get(deadline_field) is None or not delivery_was_confirmed:
+            if attempt.get(deadline_field) is None:
                 if kill:
                     tx.update_attempt(
                         attempt["id"],
@@ -3796,8 +3611,6 @@ class Coordinator:
         try:
             self.systemd.cleanup(
                 unit_name=attempt["unit_name"],
-                description_token=attempt["unit_token"],
-                invocation_id=attempt["invocation_id"],
             )
         except UnitNotFoundError:
             return {"already_unloaded": True}
@@ -4195,8 +4008,6 @@ class Coordinator:
             return
         while pending:
             head = pending[0]
-            if self._job_sync_blocked(head):
-                return
             plan = self.store.get_active_scale_up_plan(head["id"])
             if plan is None or plan["state"] != ScaleUpState.RESTART_PENDING.value:
                 # The ordinary-pending pass above already released every
@@ -4440,7 +4251,7 @@ class Coordinator:
         pending = [
             job
             for job in self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
-            if not job.get("share_gpu") and not self._job_sync_blocked(job)
+            if not job.get("share_gpu")
         ]
         fallback_plans = {
             job["id"]: self._pending_scale_fallback_plan(job) for job in pending
@@ -4566,17 +4377,15 @@ class Coordinator:
         for job in self.store.list_jobs(states=[JobState.PENDING], limit=10000):
             if not job.get("share_gpu"):
                 continue
-            if self._job_sync_blocked(job):
-                continue
             if job.get("hami_core"):
                 try:
-                    runtime_library(self.config.archive_path, job["sm_percent"])
+                    runtime_library(self.config.archive_path)
                 except ValueError:
                     with self.store.transaction() as tx:
                         tx.update_job(
                             job["id"],
                             state=JobState.FAILED,
-                            state_reason="requested HAMi runtime is unavailable or unvalidated",
+                            state_reason="requested HAMi runtime is unavailable",
                             expected_states=[JobState.PENDING],
                         )
                         tx.append_event(
@@ -4591,9 +4400,6 @@ class Coordinator:
 
     def handle_api(self, operation: str, arguments: dict[str, Any]) -> Any:
         with self._lock:
-            if operation in {"sync_begin", "sync_finish"}:
-                from .sync import node_api as sync_node_api
-                return sync_node_api(self, operation, arguments)
             if operation in {"fleet_offer", "fleet_admit", "fleet_retry"}:
                 from .cluster_node import node_api
                 return node_api(self, operation, arguments)
@@ -4620,19 +4426,11 @@ class Coordinator:
             if operation == "events":
                 return self._api_events(arguments)
             if operation == "health":
-                _require_exact_fields(arguments, allowed=set())
+                _request_fields(arguments, allowed=set())
                 return self._health_payload()
             if operation == "set_observe_only":
                 return self._api_set_observe(arguments)
             raise ApiError("NOT_FOUND", f"unknown operation: {operation}")
-
-    def _job_sync_blocked(self, job: dict[str, Any]) -> bool:
-        from .sync import job_blocked
-        blocked = job_blocked(self.config.root, job)
-        reason = "working/input directory has an unfinished manual sync"
-        if blocked and job.get("id") and job.get("state") == "PENDING" and job.get("state_reason") != reason:
-            self.store.update_job(job["id"], state_reason=reason, expected_states=[JobState.PENDING])
-        return blocked
 
     def _new_job_id(self) -> str:
         for _ in range(10):
@@ -4653,7 +4451,7 @@ class Coordinator:
             )
             submission["id"] = self._new_job_id()
             if submission.get("hami_core"):
-                runtime_library(self.config.archive_path, submission["sm_percent"])
+                runtime_library(self.config.archive_path)
             if submission.get("share_gpu"):
                 device = next(
                     (
@@ -4712,13 +4510,9 @@ class Coordinator:
         }
 
     def _api_set_job_display(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(arguments,
-            allowed={"job_id", "metadata", "expected_submit_key", "expected_owner", "expected_name"},
-            required={"job_id", "metadata", "expected_submit_key", "expected_owner", "expected_name"})
+        _request_fields(arguments, allowed={"job_id", "metadata"}, required={"job_id", "metadata"})
         try:
-            job = self.store.set_job_display(arguments["job_id"], arguments["metadata"],
-                expected_submit_key=arguments["expected_submit_key"],
-                expected_owner=arguments["expected_owner"], expected_name=arguments["expected_name"])
+            job = self.store.set_job_display(arguments["job_id"], arguments["metadata"])
         except StoreNotFoundError as exc:
             raise ApiError("NOT_FOUND", str(exc)) from exc
         except StoreConflictError as exc:
@@ -4728,7 +4522,7 @@ class Coordinator:
         return {"job_id": job["id"], "display_metadata": job["display_metadata"]}
 
     def _api_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(arguments, allowed={"all", "limit"})
+        _request_fields(arguments, allowed={"all", "limit"})
         show_all = arguments.get("all", False)
         limit = arguments.get("limit", 100)
         if not isinstance(show_all, bool):
@@ -4896,7 +4690,7 @@ class Coordinator:
         return result
 
     def _api_show(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(arguments, allowed={"job_id", "history_before_id", "history_limit"}, required={"job_id"})
+        _request_fields(arguments, allowed={"job_id", "history_before_id", "history_limit"}, required={"job_id"})
         history_limit = arguments.get("history_limit", 256)
         if type(history_limit) is not int or not 1 <= history_limit <= 256:
             raise ApiError("BAD_REQUEST", "history_limit must be an integer from 1 to 256")
@@ -4977,7 +4771,7 @@ class Coordinator:
         }
 
     def _api_job_watch(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(arguments, allowed={"job_id"}, required={"job_id"})
+        _request_fields(arguments, allowed={"job_id"}, required={"job_id"})
         try:
             job = self.store.get_job(str(arguments["job_id"]))
         except StoreNotFoundError as exc:
@@ -5020,7 +4814,7 @@ class Coordinator:
         }
 
     def _api_cancel(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(arguments, allowed={"job_id"}, required={"job_id"})
+        _request_fields(arguments, allowed={"job_id"}, required={"job_id"})
         try:
             job = self.store.get_job(str(arguments["job_id"]))
         except StoreNotFoundError as exc:
@@ -5101,15 +4895,13 @@ class Coordinator:
 
     def _api_set_priority(self, arguments: dict[str, Any], *, rank_only: bool = False) -> dict[str, Any]:
         field = "priority" if rank_only else "priority_class"
-        _require_exact_fields(arguments, allowed={"job_id", field, "expected"},
+        _request_fields(arguments, allowed={"job_id", field},
                               required={"job_id", field})
         if not isinstance(arguments["job_id"], str) or not arguments["job_id"]:
             raise ApiError("BAD_REQUEST", "job_id must be a non-empty string")
-        if "expected" in arguments and not isinstance(arguments["expected"], dict):
-            raise ApiError("BAD_REQUEST", "expected must be a scheduling policy object")
         try:
             method = self.store.set_pending_priority_rank if rank_only else self.store.set_pending_priority_class
-            updated = method(arguments["job_id"], arguments[field], expected=arguments.get("expected"))
+            updated = method(arguments["job_id"], arguments[field])
         except StoreNotFoundError as exc:
             raise ApiError("NOT_FOUND", str(exc)) from exc
         except StoreConflictError as exc:
@@ -5124,7 +4916,7 @@ class Coordinator:
         }
 
     def _api_retry(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(arguments, allowed={"job_id"}, required={"job_id"})
+        _request_fields(arguments, allowed={"job_id"}, required={"job_id"})
         try:
             job = self.store.get_job(str(arguments["job_id"]))
             if job["state"] not in TERMINAL_JOB_STATES:
@@ -5165,7 +4957,7 @@ class Coordinator:
         return {"job_id": updated["id"], "state": updated["state"]}
 
     def _api_log_path(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(arguments, allowed={"job_id"}, required={"job_id"})
+        _request_fields(arguments, allowed={"job_id"}, required={"job_id"})
         try:
             job = self.store.get_job(str(arguments["job_id"]))
             attempts = self.store.list_attempts(job_id=job["id"], limit=1)
@@ -5176,7 +4968,7 @@ class Coordinator:
         return {"path": attempts[0]["log_path"]}
 
     def _api_events(self, arguments: dict[str, Any]) -> list[dict[str, Any]]:
-        _require_exact_fields(arguments, allowed={"job_id", "limit", "after_id"})
+        _request_fields(arguments, allowed={"job_id", "limit", "after_id"})
         limit = arguments.get("limit", 100)
         if (
             isinstance(limit, bool)
@@ -5195,7 +4987,7 @@ class Coordinator:
         )
 
     def _api_set_observe(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        _require_exact_fields(
+        _request_fields(
             arguments,
             allowed={"observe_only"},
             required={"observe_only"},

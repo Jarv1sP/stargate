@@ -27,7 +27,7 @@ export function projectTerminalStorage(storage){
   const prefix='gpuq.project-terminals.v2:',uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const valid=value=>typeof value?.userId==='string'&&!!value.userId&&typeof value.machine==='string'&&!!value.machine&&value.machine!=='auto'&&(value.project==null||value.project===''||/^[a-z][a-z0-9_-]{0,47}$/.test(value.project));
   const key=value=>prefix+encodeURIComponent(JSON.stringify([value.userId,value.machine,value.ownerId||value.userId,value.project||'']));
-  function ids(name){try{const value=JSON.parse(storage?.getItem(name)||'null');return value?.protocol===1&&Array.isArray(value.ids)?[...new Set(value.ids.filter(id=>typeof id==='string'&&uuid.test(id)))]:[];}catch{return [];}}
+  function ids(name){try{const value=JSON.parse(storage?.getItem(name)||'null');return Array.isArray(value?.ids)?[...new Set(value.ids.filter(id=>typeof id==='string'&&uuid.test(id)))]:[];}catch{return [];}}
   return {
     list(userId){
       const records=[];if(typeof userId!=='string'||!userId)return records;
@@ -42,12 +42,12 @@ export function projectTerminalStorage(storage){
     },
     remember(value){
       if(!valid(value)||!uuid.test(value.id))return;
-      try{const name=key(value),saved=ids(name);if(!saved.includes(value.id))storage?.setItem(name,JSON.stringify({protocol:1,ids:[...saved,value.id]}));}catch{return false;}
+      try{const name=key(value),saved=ids(name);if(!saved.includes(value.id))storage?.setItem(name,JSON.stringify({ids:[...saved,value.id]}));}catch{return false;}
       return !!storage;
     },
     forget(value){
       if(!valid(value))return;
-      try{const name=key(value),saved=ids(name).filter(id=>id!==value.id);if(saved.length)storage?.setItem(name,JSON.stringify({protocol:1,ids:saved}));else storage?.removeItem(name);}catch{ /* A confirmed close is not undone by local storage failure. */ }
+      try{const name=key(value),saved=ids(name).filter(id=>id!==value.id);if(saved.length)storage?.setItem(name,JSON.stringify({ids:saved}));else storage?.removeItem(name);}catch{ /* A confirmed close is not undone by local storage failure. */ }
     }
   };
 }

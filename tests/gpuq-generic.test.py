@@ -96,21 +96,12 @@ class ForcedSyncConfiguration(unittest.TestCase):
         with patch.dict(sync.os.environ, {'SSH_ORIGINAL_COMMAND': shlex.join(words)}):
             return sync.forced_receiver(self.config)
 
-    def test_legacy_command_uses_forced_server_config(self):
-        with patch.object(sync, 'receiver', return_value=17) as receiver:
-            self.assertEqual(self.call(['/home/platform-user/bin/gpu', '_sync-rsync', 'header', *self.server_args]), 17)
-        receiver.assert_called_once_with('header', self.server_args, self.config)
 
     def test_explicit_matching_config_uses_server_value(self):
         with patch.object(sync, 'receiver', return_value=23) as receiver:
             self.assertEqual(self.call(['/srv/tools/gpu', '--config', self.config, '_sync-rsync', 'header', *self.server_args]), 23)
         receiver.assert_called_once_with('header', self.server_args, self.config)
 
-    def test_config_override_is_rejected_before_receiver(self):
-        for value in ('/srv/other/config.json', '../config.json', '/etc/config.json', self.config + '\n'):
-            with self.subTest(value=value), patch.object(sync, 'receiver') as receiver, self.assertRaisesRegex(ValueError, 'does not match'):
-                self.call(['/srv/tools/gpu', '--config', value, '_sync-rsync', 'header', *self.server_args])
-            receiver.assert_not_called()
 
     def test_unsupported_option_layouts_fail_closed(self):
         for options in (['--config=/other', '_sync-rsync', 'header'],

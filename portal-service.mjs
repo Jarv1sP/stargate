@@ -105,7 +105,7 @@ export class PortalService extends DemoService{
   }
   async observeRead(token,operation,args,run,{signal,timeoutMs=35000,coalesce=true,group='remote',timeoutCode='NODE_READ_TIMEOUT',cancelCode='NODE_READ_CANCELLED'}={}){
     signal?.throwIfAborted();
-    const principal=this.principal(token);
+    this.principal(token);
     const key=coalesce?JSON.stringify([token,operation,args]):Symbol();
     this.readObservations??=new Map();this.readQueues??=new Map();
     let entry=this.readObservations.get(key);
@@ -135,7 +135,7 @@ export class PortalService extends DemoService{
     if(args.view!==undefined&&args.view!=='summary')
       throw Object.assign(Error('无效的状态查询视图。'),{status:400});
     if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
-    const admitted=this.principal(token);
+    this.principal(token);
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
       const current=this.principal(token);

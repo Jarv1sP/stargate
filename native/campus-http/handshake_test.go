@@ -58,14 +58,14 @@ func TestHandshakeEOFCannotSendTicketOrPayload(t *testing.T) {
 		}()
 		return client, nil
 	}
-	result, raw := s.request(put(g, 1, 0, []byte("fixture-secret-payload"), true), []byte("fixture-secret-payload"))
+	result, raw := s.request(put(g, 0, []byte("fixture-secret-payload"), true), []byte("fixture-secret-payload"))
 	if result.Code != "HANDSHAKE_EOF" || result.OK || result.WriteMayHaveReachedPeer || len(raw) != 0 || requests != 0 {
 		t.Fatalf("%+v", result)
 	}
 	if strings.Contains(string(observed), g.Ticket) || strings.Contains(string(observed), "fixture-secret-payload") {
 		t.Fatal("TLS failure sent credentials or payload")
 	}
-	second, _ := s.request(put(g, 2, 0, []byte("fixture-secret-payload"), true), []byte("fixture-secret-payload"))
+	second, _ := s.request(put(g, 0, []byte("fixture-secret-payload"), true), []byte("fixture-secret-payload"))
 	if second.Code != "SESSION_STOPPED" {
 		t.Fatal("failed handshake was silently replayed")
 	}

@@ -114,7 +114,7 @@ def run_daemon(config_path: Path) -> int:
         lock = DaemonLock(config.root / "daemon.lock", config.allowed_uid).acquire()
 
         # Daemon startup never initializes or repairs the database implicitly.
-        store = Store(config.db_path).open_daemon(integrity_check=True)
+        store = Store(config.db_path).open()
         coordinator = Coordinator(
             config,
             store,

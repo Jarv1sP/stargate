@@ -4,13 +4,13 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {buildClient} from './build-client.mjs';
+import {buildCampusNative} from './build-campus-native.mjs';
 import {buildFrontendVendor} from './build-frontend-vendor.mjs';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 export async function testEntries(directory=resolve(root,'tests')){
   const files=(await readdir(directory)).sort();
   return {node:files.filter(file=>/\.test\.(js|mjs)$/.test(file)),
-    python:files.filter(file=>/\.test\.py$/.test(file)),
     ui:files.filter(file=>/-(ui-smoke|ui)\.mjs$/.test(file))};
 }
 
@@ -33,9 +33,9 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
       if(error.code!=='ENOENT')throw error;
       await copyFile(resolve(root,'tests/fixtures/machines.js'),inventory,constants.COPYFILE_EXCL);synthetic=true;
     }
-    // Build once using the actual source graph and fixed helpers, after a
+    // Build once using the actual source graph and current helpers, after a
     // public synthetic inventory is available. Never read private inventory.
-    await buildFrontendVendor();await buildClient();
+    await buildCampusNative();await buildFrontendVendor();await buildClient();
     const entries=await testEntries();
     if(mode!=='ui')results.node=await run(process.execPath,['--test','--test-reporter=tap','--test-concurrency=1',...entries.node.map(file=>'tests/'+file)]);
     if(mode==='all')results.python=await run(process.env.PYTHON||'python3',['scripts/test-python.py']);

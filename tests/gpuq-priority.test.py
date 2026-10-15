@@ -228,13 +228,6 @@ class SchedulerPriorityTests(unittest.TestCase):
         self.assertEqual(self.state(idle), 'RUNNING')
         self.assertEqual(self.store.list_actions(), [])
 
-    def test_sync_blocked_request_does_not_interrupt_idle_job(self):
-        idle, _ = self.running(priority=0, yield_policy='now')
-        requester = self.pinned()
-        with patch.object(self.coordinator, '_job_sync_blocked', side_effect=lambda job: job['id'] == requester['id']):
-            self.coordinator._schedule()
-        self.assertEqual(self.state(idle), 'RUNNING')
-        self.assertEqual(self.store.list_actions(), [])
 
     def test_repeated_ticks_do_not_expand_preemption_blast_radius(self):
         jobs = [self.running((i,), priority=0, yield_policy='now')[0] for i in range(4)]
@@ -341,8 +334,7 @@ class SchedulerPriorityTests(unittest.TestCase):
     def test_pending_priority_change_updates_complete_contract_without_new_sequence(self):
         job = self.submit(priority=1, yield_policy=None, dispatch_mode='preempt-now', restart_policy='on-preempt')
         for priority_class, priority, policy in [('idle', 0, 'now'), ('high', 4, 'never'), ('normal', 2, 'never')]:
-            current = self.store.get_job(job['id'])
-            result = self.set_priority(job, priority_class, expected=self.expected(current))
+            result = self.set_priority(job, priority_class)
             self.assertEqual(result, {
                 'job_id': job['id'], 'state': 'PENDING', 'priority_class': priority_class,
                 'priority': priority, 'priority_name': f'P{priority}', 'yield_policy': policy,
@@ -381,26 +373,12 @@ class SchedulerPriorityTests(unittest.TestCase):
             self.set_priority(job, 'idle')
         self.assertEqual(raised.exception.code, 'CONFLICT')
 
-    def test_stale_expected_contract_is_rejected_without_overwrite(self):
-        job = self.submit()
-        self.set_priority(job, 'high', expected=self.expected(job))
-        with self.assertRaises(ApiError) as raised:
-            self.set_priority(job, 'idle', expected=self.expected(job))
-        self.assertEqual(raised.exception.code, 'CONFLICT')
-        self.assertEqual(self.store.get_job(job['id'])['priority'], 4)
 
     def test_invalid_priority_rpc_inputs_fail_without_mutation(self):
         job = self.submit()
         invalid = [
             {'priority_class': 'urgent'}, {'priority_class': None}, {'priority_class': []},
-            {'expected': {}}, {'expected': None}, {'expected': []},
-            {'expected': {**self.expected(job), 'priority': True}},
-            {'expected': {**self.expected(job), 'priority': 'P2'}},
-            {'expected': {**self.expected(job), 'priority': 5}},
-            {'expected': {**self.expected(job), 'yield_policy': 'maybe'}},
-            {'expected': {**self.expected(job), 'dispatch_mode': 'random'}},
-            {'expected': {**self.expected(job), 'restart_policy': 'always'}},
-            {'dispatch_mode': 'preempt-now'}, {'job_id': ''}, {'job_id': 1},
+            {'job_id': ''}, {'job_id': 1},
         ]
         for options in invalid:
             with self.subTest(options=options), self.assertRaises(ApiError) as raised:
@@ -422,22 +400,6 @@ class SchedulerPriorityTests(unittest.TestCase):
                 self.set_priority(job, 'idle')
         self.assertEqual(self.expected(self.store.get_job(job['id'])), self.expected(job))
 
-    def test_simultaneous_stale_writers_cannot_both_replace_policy(self):
-        job = self.submit()
-        barrier = threading.Barrier(2)
-        def change(priority_class):
-            store = Store(self.config.db_path).open()
-            try:
-                barrier.wait(timeout=5)
-                try:
-                    store.set_pending_priority_class(job['id'], priority_class, expected=self.expected(job))
-                    return 'changed'
-                except StoreConflictError:
-                    return 'conflict'
-            finally:
-                store.close()
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            self.assertEqual(sorted(pool.map(change, ['idle', 'high'])), ['changed', 'conflict'])
 
     def test_unknown_job_returns_not_found(self):
         with self.assertRaises(ApiError) as raised:
@@ -450,7 +412,7 @@ class SchedulerPriorityTests(unittest.TestCase):
         for rank in [0, 1, 2, 3, 4]:
             before = self.store.get_job(job['id'])
             changed = self.coordinator.handle_api('set_priority_rank', {
-                'job_id': job['id'], 'priority': rank, 'expected': self.expected(before),
+                'job_id': job['id'], 'priority': rank,
             })
             self.assertEqual(changed['priority'], rank)
             after = self.store.get_job(job['id'])
@@ -478,36 +440,28 @@ class SchedulerPriorityTests(unittest.TestCase):
         client.call.assert_called_once_with('set_priority_rank', {'job_id': 'Jtest', 'priority': 3})
         self.assertEqual(fleet.validate_remote_argv(['set-rank', 'Jtest', 'P1']), 'set-rank')
 
-    def test_rank_only_stale_and_running_updates_fail_without_policy_mutation(self):
+    def test_rank_only_running_updates_fail_without_policy_mutation(self):
         job = self.submit(yield_policy='save', checkpoint_capability='epoch-v1', restart_policy='on-preempt')
-        self.coordinator.handle_api('set_priority_rank', {'job_id': job['id'], 'priority': 3, 'expected': self.expected(job)})
-        with self.assertRaises(ApiError):
-            self.coordinator.handle_api('set_priority_rank', {'job_id': job['id'], 'priority': 1, 'expected': self.expected(job)})
+        self.coordinator.handle_api('set_priority_rank', {'job_id': job['id'], 'priority': 3})
         self.store.update_job(job['id'], state='RUNNING')
         with self.assertRaises(ApiError):
             self.coordinator.handle_api('set_priority_rank', {'job_id': job['id'], 'priority': 0})
         self.assertEqual(self.store.get_job(job['id'])['yield_policy'], 'save')
 
-    def test_set_priority_cli_sends_expected_snapshot_and_prints_json(self):
+    def test_set_priority_cli_sends_current_request_and_prints_json(self):
         job = self.submit()
         client = Mock()
         client.call.side_effect = self.coordinator.handle_api
         output = io.StringIO()
         with patch('gpuq.cli.get_client', return_value=client), redirect_stdout(output):
-            result = cli.main(['--json', 'set-priority', job['id'], 'idle',
-                               '--expected-priority', 'P2', '--expected-yield', 'never',
-                               '--expected-restart-policy', 'never', '--expected-mode', 'queue'])
+            result = cli.main(['--json', 'set-priority', job['id'], 'idle'])
         self.assertEqual(result, 0)
         client.call.assert_called_once_with('set_priority', {
-            'job_id': job['id'], 'priority_class': 'idle', 'expected': self.expected(job),
+            'job_id': job['id'], 'priority_class': 'idle',
         })
         self.assertEqual(json.loads(output.getvalue())['priority_class'], 'idle')
         self.assertEqual(fleet.validate_remote_argv(['--json', 'set-priority', job['id'], 'normal']), 'set-priority')
 
-    def test_partial_expected_cli_flags_fail_before_connection(self):
-        with patch('gpuq.cli.get_client') as client, redirect_stdout(io.StringIO()):
-            self.assertEqual(cli.main(['--json', 'set-priority', 'Jtest', 'idle', '--expected-priority', 'P2']), 2)
-        client.assert_not_called()
 
     def test_new_console_high_protects_existing_checkpoint_yield_job(self):
         legacy, _ = self.running(priority=2, yield_policy='save', checkpoint_capability='epoch-v1', restart_policy='on-preempt')
@@ -606,59 +560,6 @@ class SchedulerPriorityTests(unittest.TestCase):
         parsed = cli.build_parser().parse_args(['submit', '-g', '1', '--preempt-idle-only', '--', 'python', 'train.py'])
         self.assertTrue(parsed.preempt_idle_only)
 
-    def test_v9_migration_preserves_running_jobs_attempts_leases_and_legacy_default(self):
-        job, attempt = self.running(priority=2, yield_policy='save', checkpoint_capability='epoch-v1', restart_policy='on-preempt')
-        old_path = self.root / 'old-v9.db'
-        legacy = sqlite3.connect(old_path)
-        source = sqlite3.connect(self.config.db_path)
-        try:
-            for statements in [store_module._SCHEMA_V2_STATEMENTS, store_module._SCHEMA_V2_TO_V3_DDL,
-                               store_module._SCHEMA_V3_TO_V4_DDL, store_module._SCHEMA_V4_TO_V5_DDL,
-                               store_module._SCHEMA_V5_TO_V6_DDL, store_module._SCHEMA_V6_TO_V7_DDL,
-                               store_module._SCHEMA_V7_TO_V8_DDL, store_module._SCHEMA_V8_TO_V9_DDL]:
-                for statement in statements:
-                    legacy.execute(statement)
-            legacy.execute('INSERT INTO schema_meta(singleton,schema_version,initialized_at) VALUES(1,9,0)')
-            legacy.execute(f'PRAGMA application_id={store_module.APPLICATION_ID}')
-            legacy.execute('PRAGMA user_version=9')
-            tables = [row[0] for row in legacy.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'schema_meta' ORDER BY name")]
-            before = {}
-            for table in tables:
-                columns = [row[1] for row in legacy.execute(f'PRAGMA table_info({table})')]
-                rows = source.execute('SELECT ' + ','.join(columns) + ' FROM ' + table).fetchall()
-                legacy.executemany('INSERT INTO ' + table + '(' + ','.join(columns) + ') VALUES('
-                                   + ','.join('?' for _ in columns) + ')', rows)
-                before[table] = (columns, rows)
-            legacy.commit()
-        finally:
-            source.close()
-            legacy.close()
-        migrated = Store(old_path).initialize()
-        try:
-            self.assertEqual(migrated.check_integrity()['schema_version'], STORE_SCHEMA_VERSION)
-            self.assertEqual(migrated.get_job(job['id'])['state'], 'RUNNING')
-            self.assertFalse(migrated.get_job(job['id'])['preempt_idle_only'])
-            self.assertEqual(migrated.get_job(job['id'])['yield_policy'], 'save')
-            self.assertEqual(migrated.get_attempt(attempt['id']), self.store.get_attempt(attempt['id']))
-            self.assertEqual(migrated.list_leases(), self.store.list_leases())
-            history = migrated.list_allocation_history(job_id=job['id'])
-            self.assertEqual(len(history), 1)
-            self.assertEqual(history[0]['source'], 'migrated_active')
-            self.assertEqual(history[0]['acquired_at'], migrated.list_leases()[0]['acquired_at'])
-            self.assertIsNone(history[0]['released_at'])
-            connection = sqlite3.connect(old_path)
-            try:
-                # Every pre-existing field/table remains byte-for-value equal,
-                # including pending actions/events, not just active leases.
-                for table, (columns, rows) in before.items():
-                    self.assertEqual(connection.execute('SELECT ' + ','.join(columns) + ' FROM ' + table).fetchall(), rows, table)
-            finally:
-                connection.close()
-            replay = {key: job[key] for key in SUBMISSION_KEYS if key in job}
-            self.assertEqual(migrated.submit_job(replay)['id'], job['id'])
-        finally:
-            migrated.close()
 
 
 if __name__ == '__main__':

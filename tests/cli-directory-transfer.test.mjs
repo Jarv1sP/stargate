@@ -7,7 +7,7 @@ import {randomUUID} from 'node:crypto';
 import {parseCLIOptions} from '../cli.mjs';
 import {uploadLocalFile,uploadLocalTree} from '../client-transfers.mjs';
 
-test('CLI accepts repo and directory targets and rejects removed version and host options',()=>{
+test('CLI accepts repository and directory targets and reports unsupported options',()=>{
  assert.equal(parseCLIOptions(['project','create','vision','--repo','https://example.test/repo.git']).options.repo,'https://example.test/repo.git');
  assert.equal(parseCLIOptions(['data','import','https://example.test/data','file.bin','--dataset','images']).options.dataset,'images');
  const sync=parseCLIOptions(['run','--sync','--sync-dir','src','--candidates','fixture-node']);assert.equal(sync.options.sync,true);assert.equal(sync.options['sync-dir'],'src');assert.equal(sync.options.candidates,'fixture-node');

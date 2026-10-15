@@ -32,6 +32,55 @@ test('GPU quota and administrator controls remain separate',async()=>{
    const r=await f.s.invoke(f.admin.token,'policy.full',{userId:f.member.id,policyVersion:1});assert.equal(r.result.total,30);assert.equal(r.result.role,'member');assert.equal(Object.keys(r.result.limits).length,4);
  }finally{await f.close();}
 });
+test('priority updates use the node state instead of refusing a stale portal cache',async()=>{
+ const f=await fixture();try{
+  await f.grant();const {result}=await f.submit();await f.settle();
+  const job=f.s.store.jobs.find(row=>row.id===result.id),spec=structuredClone(job.spec);
+  job.state='RUNNING';f.setState('PENDING');
+  const value=(await f.s.invoke(f.b.token,'jobs.priority',{jobId:job.id,priority:'P4',extra:'ignored'})).result;
+  assert.equal(value.state,'PENDING');assert.deepEqual(job.spec,spec);
+  const sent=f.calls.filter(call=>call.operation==='priority');assert.equal(sent.length,1);
+  assert.equal(sent[0].args.priority,'P4');assert.equal(sent[0].args.rankOnly,true);
+ }finally{await f.close();}
+});
+test('priority refusals return the node reason without changing the task',async()=>{
+ const f=await fixture();try{
+  await f.grant();const {result}=await f.submit();await f.settle();
+  const job=f.s.store.jobs.find(row=>row.id===result.id),before=structuredClone(job);
+  for(const status of [409,503]){
+   const error=Object.assign(Error('该任务当前不能调整优先级。'),{status,code:'PRIORITY_REJECTED'});
+   f.s.bridge=async()=>{throw error;};
+   await assert.rejects(f.s.invoke(f.a.token,'jobs.priority',{jobId:job.id,priority:'P4'}),value=>value===error);
+   assert.deepEqual(job,before);
+  }
+ }finally{await f.close();}
+});
+test('finished tasks stay unchanged after either a priority refusal or a late node reply',async()=>{
+ const f=await fixture();try{
+  await f.grant();const {result}=await f.submit();await f.settle();
+  const job=f.s.store.jobs.find(row=>row.id===result.id);
+  for(const state of ['SUCCEEDED','FAILED','CANCELED']){
+   job.state=state;job.finishedAt='2026-01-01T00:00:00.000Z';const before=structuredClone(job);
+   for(const error of [Object.assign(Error('任务已经结束。'),{status:409}),Object.assign(Error('bridge timed out'),{status:504,code:'EXECUTOR_TIMEOUT'})]){
+    f.s.bridge=async()=>{throw error;};
+    await assert.rejects(f.s.invoke(f.a.token,'jobs.priority',{jobId:job.id,priority:'P4'}),value=>value===error);
+    assert.deepEqual(job,before);
+   }
+   f.s.bridge=async()=>({state:'PENDING',schedulerPriority:4});
+   assert.equal((await f.s.invoke(f.a.token,'jobs.priority',{jobId:job.id,priority:'P4'})).result.state,state);
+   assert.deepEqual(job,before);
+  }
+ }finally{await f.close();}
+});
+test('only a lost priority response marks an active adjustment unknown',async()=>{
+ const f=await fixture();try{
+  await f.grant();const {result}=await f.submit();await f.settle();
+  const job=f.s.store.jobs.find(row=>row.id===result.id),error=Object.assign(Error('bridge timed out'),{status:504,code:'EXECUTOR_TIMEOUT'});
+  f.s.bridge=async()=>{throw error;};f.s.reconcile=async()=>{};
+  await assert.rejects(f.s.invoke(f.a.token,'jobs.priority',{jobId:job.id,priority:'P4'}),value=>value===error);
+  assert.equal(job.state,'RUNNING');assert.equal(job.priorityMutable,false);assert.match(job.error,/调整结果未知/);
+ }finally{await f.close();}
+});
 test('atomic concurrent reservations and idempotency do not exceed global or per-host quota',async()=>{
  const f=await fixture();try{
    await f.grant(2,{'gpu-1':1,'gpu-2':2});

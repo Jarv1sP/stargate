@@ -21,7 +21,7 @@ func TestHTTPRejectionDetailsAndNoReplay(t *testing.T) {
 				json.NewEncoder(w).Encode(map[string]any{"code": "upload-rejected", "error": "Upload state changed; check portal status and resume", "ticket": strings.Repeat("t", 32), "grant": map[string]any{"private": "never-return-this"}})
 			})
 			body := []byte("raw")
-			f := put(g, 1, 0, body, true)
+			f := put(g, 0, body, true)
 			out, raw := s.request(f, body)
 			if out.OK || out.Code != "HTTP_REJECTED" || out.Status != status || len(raw) != 0 {
 				t.Fatalf("unexpected safe rejection: %+v", out)

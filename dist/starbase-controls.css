@@ -4,8 +4,8 @@
 /* refresh-style icon buttons keep their label and icon while busy (the icon turns under .motion) */
 /* hover only on real pointers; :where() keeps primary / danger fills intact */
 @media (hover:hover){
-  .nav a:not(.on):hover,.segmented :is(a,button):not(.on):hover,.tabs :is(a,button):not(.on):hover,.top-right > a:hover,.top-link:hover{color:var(--ink)}
-  .who:hover,.sync:not([disabled]):hover{background-color:var(--bg-2);color:var(--ink)}
+.nav a:not(.on):hover{color:var(--ink)}
+.sync:not([disabled]):hover{background-color:var(--bg-2);color:var(--ink)}
 }
 .kbd{font-family:var(--mono);font-size:var(--fs-micro);line-height:1;padding:3px 5px;border:1px solid var(--line-3);border-radius:4px;color:var(--ink-3);letter-spacing:0}
 .field{display:flex;flex-direction:column;gap:8px;font-size:var(--fs-meta);color:var(--ink-2);min-width:0}
@@ -14,11 +14,5 @@ textarea.input{height:auto;min-height:80px;padding:10px 12px;line-height:1.55;re
 .input.mono{font-family:var(--mono);font-size:var(--fs-meta)}
 .input.invalid{border-color:var(--err)}
 select.input{appearance:none;background-image:none}
-/* stacked copy labels: idle and done share one cell so the width never jumps */
-
-/* ── 08 readouts — Tesla-style thin numerals; notes sit on one shared bottom line ─────── */
-/* quota picker (admin): horizontal segments = counts, never GPU positions */
-@media (hover:hover){}
 /* sample time / check time (flashes once under .motion when it really changes) and stale age */
 /* training self-report readouts (a modifier of .readouts) */
-

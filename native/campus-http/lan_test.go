@@ -31,13 +31,12 @@ func TestLANPreservesCanonicalTLSNamePinAndGrant(t *testing.T) {
 		}
 		return (&net.Dialer{}).DialContext(ctx, "tcp", server.Listener.Addr().String())
 	}
-	f := put(g, 1, 0, []byte("abc"), true)
+	f := put(g, 0, []byte("abc"), true)
 	f.DialEndpoint = "https://192.168.50.7:18445"
 	out, _ := s.request(f, []byte("abc"))
 	if !out.OK || requests != 1 {
 		t.Fatalf("LAN TLS failed %+v requests=%d", out, requests)
 	}
-	f.Seq = 2
 	f.DialEndpoint = "https://192.168.50.8:18445"
 	out, _ = s.request(f, []byte("abc"))
 	if out.OK || out.Code != "GRANT_IDENTITY_CHANGED" || requests != 1 {
@@ -48,7 +47,7 @@ func TestLANWrongPinSendsNoBearerOrFileBytes(t *testing.T) {
 	requests := 0
 	s, g, _, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) { requests++ })
 	g.Pin = strings.Repeat("0", 64)
-	f := put(g, 1, 0, []byte("secret-file"), true)
+	f := put(g, 0, []byte("secret-file"), true)
 	f.DialEndpoint = "https://192.168.50.7:18445"
 	out, _ := s.request(f, []byte("secret-file"))
 	if out.OK || out.Code != "TLS_PIN_CHANGED" || out.WriteMayHaveReachedPeer || requests != 0 {
@@ -69,30 +68,25 @@ func TestLANProbeDeadlineStopsHangingHairpinTLS(t *testing.T) {
 		}
 	}()
 	started := time.Now()
-	out, _ := s.request(frame{Schema: 1, Seq: 1, Op: "probe", Endpoint: g.Endpoint, Pin: g.Pin, DialEndpoint: "https://192.168.50.7:18445", ProbeTimeoutMs: 100}, nil)
+	out, _ := s.request(frame{Op: "probe", Endpoint: g.Endpoint, Pin: g.Pin, DialEndpoint: "https://192.168.50.7:18445", ProbeTimeoutMs: 100}, nil)
 	if out.OK || time.Since(started) > 500*time.Millisecond || out.WriteMayHaveReachedPeer {
 		t.Fatalf("bounded anonymous TLS probe failed %+v elapsed=%s", out, time.Since(started))
 	}
 }
-func TestLANDialAndProbeExtensionsRemainStrict(t *testing.T) {
+func TestLANDialAndProbeBounds(t *testing.T) {
 	s, g, _, _ := fixture(t, func(http.ResponseWriter, *http.Request) {})
 	for _, endpoint := range []string{"https://100.64.0.9", "https://127.0.0.1", "https://8.8.8.8", "http://192.168.50.7", "https://user@192.168.50.7", "https://192.168.50.7/path"} {
-		f := put(g, 1, 0, nil, true)
+		f := put(g, 0, nil, true)
 		f.DialEndpoint = endpoint
 		if validate(f) == nil {
 			t.Errorf("accepted unapproved LAN origin %s", endpoint)
 		}
 	}
 	for _, ms := range []int{-1, 2501} {
-		f := frame{Schema: 1, Seq: 1, Op: "probe", Endpoint: g.Endpoint, Pin: g.Pin, ProbeTimeoutMs: ms}
+		f := frame{Op: "probe", Endpoint: g.Endpoint, Pin: g.Pin, ProbeTimeoutMs: ms}
 		if validate(f) == nil {
 			t.Error("accepted unbounded probe")
 		}
-	}
-	f := put(g, 1, 0, nil, true)
-	f.ProbeTimeoutMs = 100
-	if validate(f) == nil {
-		t.Error("write received probe deadline")
 	}
 	s.dialFn = func(context.Context, route, string, string) (net.Conn, error) {
 		return nil, errors.New("PHYSICAL_CONNECT_FAILED")

@@ -27,9 +27,8 @@ COUNTERS = (
 def hami_library(config,sm_percent):
     """The configured native runtime and its GPU/RAM isolation capability."""
     directory=Path(config['gpuqArchive']).resolve(strict=True).parent/'hami'
-    manifest=json.loads((directory/'manifest.json').read_text())
-    if type(sm_percent) is not int or not 1<=sm_percent<=100 or sm_percent<100 and manifest.get('sm_supported') is not True:
-        raise ValueError('HAMi runtime/SM validation unavailable')
+    if type(sm_percent) is not int or not 1<=sm_percent<=100:
+        raise ValueError('GPU算力比例必须在1到100之间。')
     descriptor=os.open(directory/'libvgpu.so',os.O_RDONLY|os.O_NOFOLLOW)
     try:
         info=os.fstat(descriptor)

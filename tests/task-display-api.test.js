@@ -3,10 +3,9 @@ import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createHash,randomUUID} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
-const revision=metadata=>createHash('sha256').update(JSON.stringify({description:metadata.description,name:metadata.name,submitter:{name:metadata.submitter.name,username:metadata.submitter.username}})).digest('hex');
 const deferred=()=>{let resolve;return {promise:new Promise(r=>{resolve=r;}),resolve};};
 async function fixture(t){
   const dir=await mkdtemp(join(tmpdir(),'gpuq-display-edit-')),bootstrap=join(dir,'bootstrap'),status=join(dir,'status'),password='Display-Edit-Fixture-Only-2026!';
@@ -22,8 +21,7 @@ async function fixture(t){
     if(op==='tasks.display.set'){
       metadata={...metadata,name:args.name,description:args.description};
     }
-    return {protocol:'task-display-edit-v1',nodeJobId,available:true,name:metadata.name,description:metadata.description,revision:revision(metadata),metadata,
-      binding:{submitKey:id,owner:'alice',name:row.name}};
+    return {nodeJobId,available:true,name:metadata.name,description:metadata.description,metadata};
   });
   clearInterval(service.executionTimer);clearInterval(service.maintenanceTimer);clearInterval(service.transferTimer);clearInterval(service.storageArchiveTimer);
   t.after(async()=>{service.close();await rm(dir,{recursive:true,force:true});});
@@ -36,45 +34,59 @@ async function fixture(t){
 }
 test('normal member get/set preserve immutable job and share one queue/job projection',async t=>{
   const f=await fixture(t),original=structuredClone(f.job),before=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
-  assert.equal(before.available,true);assert.equal(before.name,'原显示');assert.equal(Object.hasOwn(before,'binding'),false);
-  const result=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'中文｜实验',description:'训练说明',revision:before.revision})).result;
+  assert.equal(before.available,true);assert.equal(before.name,'原显示');
+  const result=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'中文｜实验',description:'训练说明'})).result;
   assert.equal(result.name,'中文｜实验');assert.deepEqual(f.job,original);
   assert.deepEqual(f.calls[1].args,{userId:f.user.id,hostAdmin:false,nodeJobId:f.nodeJobId,job:f.job.spec,name:'中文｜实验',description:'训练说明'});
   const state=f.service.state(f.member.principal);assert.equal(state.jobs[0].name,result.name);assert.equal(state.jobs[0].description,result.description);
   assert.equal(state.gpuq.hosts[0].tasks[0].name,result.name);assert.equal(state.gpuq.hosts[0].tasks[0].description,result.description);
-  for(const hidden of ['binding','submitKey','immutable raw label'])assert.ok(!JSON.stringify(result).includes(hidden));
+  for(const hidden of ['submitKey','immutable raw label'])assert.ok(!JSON.stringify(result).includes(hidden));
 });
 
-
-
-test('two stale clients conflict and lost reply is read on the exact original id without replay',async t=>{
-  const f=await fixture(t),before=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
-  await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'第一客户端',description:'',revision:before.revision});
-  const current=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
+test('clients update task labels and query the original ID after a lost reply',async t=>{
+  const f=await fixture(t);await f.service.invoke(f.member.token,'tasks.display.get',f.context);
+  await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'第一客户端',description:''});
+  await f.service.invoke(f.member.token,'tasks.display.get',f.context);
   let lost=true;f.hook=(machine,op)=>{if(op==='tasks.display.set'&&lost){lost=false;throw Object.assign(Error('lost ACK'),{status:504});}};
-  const count=f.calls.length;await assert.rejects(f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'结果待确认',description:'',revision:current.revision}),e=>e.status===504);
+  const count=f.calls.length;await assert.rejects(f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'结果待确认',description:''}),e=>e.status===504);
   const checked=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
   assert.equal(checked.nodeJobId,f.nodeJobId);assert.equal(f.calls.slice(count).filter(c=>c.op==='tasks.display.set').length,1);
 });
-test('role/grant changes while waiting reject results and queued writes before dispatch',async t=>{
+test('login revocation rejects pending reads and queued writes before dispatch',async t=>{
   const f=await fixture(t),entered=deferred(),release=deferred();f.hook=async()=>{entered.resolve();await release.promise;};
   const first=f.service.invoke(f.member.token,'tasks.display.get',f.context);await entered.promise;
-  const second=f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'不得派发',description:'',revision:'a'.repeat(64)});
+  const second=f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'不得派发',description:''});
   const firstRejected=assert.rejects(first,e=>e.status===403),secondRejected=assert.rejects(second,e=>e.status===401);
   f.service.accounts.db.prepare("UPDATE accounts SET enabled=0 WHERE id=?").run(f.user.id);release.resolve();await firstRejected;await secondRejected;
   assert.equal(f.calls.length,1);assert.equal(f.service.taskDisplayViews.size,0);
 });
-test('new collector replaces bounded presentation while stale collector cannot authorize edits',async t=>{
-  const f=await fixture(t),before=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
-  await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'临时新显示',description:'',revision:before.revision});
+test('a newer collector replaces the cached task presentation',async t=>{
+  const f=await fixture(t);await f.service.invoke(f.member.token,'tasks.display.get',f.context);
+  await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'临时新显示',description:''});
   assert.equal(f.service.state(f.member.principal).jobs[0].name,'临时新显示');
   f.row.display_metadata={...f.metadata,name:'后续原生显示'};f.service.gpuq.hosts[0].gpuq.jobs=[f.row];f.service.gpuq.checkedAt=new Date(Date.now()+1).toISOString();
   const state=f.service.state(f.member.principal);assert.equal(state.gpuq.hosts[0].tasks[0].name,'后续原生显示');assert.equal(f.service.taskDisplayViews.size,0);
 });
 
-test('team members edit native-only and another account tasks without owner or revision gates',async t=>{
+test('team members edit native-only and peer tasks',async t=>{
  const f=await fixture(t);f.job.userId='demo-user-999';f.job.spec.userId='demo-user-999';f.user.limits={};
- const value=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'团队共享',description:'可编辑',revision:'ignored',owner:'ignored',spec:{bad:true}})).result;
- assert.equal(value.name,'团队共享');assert.equal(f.calls[0].args.revision,undefined);assert.equal(f.calls[0].args.owner,undefined);
+ const value=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'团队共享',description:'可编辑',extra:'ignored',owner:'ignored',spec:{bad:true}})).result;
+ assert.equal(value.name,'团队共享');assert.equal(f.calls[0].args.extra,undefined);assert.equal(f.calls[0].args.owner,undefined);
  f.service.store.jobs=[];assert.equal((await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result.name,'团队共享');
+});
+test('display edits remain visible until the next collector sample',async t=>{
+ const f=await fixture(t);
+ const value=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'即时标签',description:'共享显示说明'})).result;
+ assert.equal(value.name,'即时标签');assert.equal(f.service.state(f.member.principal).jobs[0].name,'即时标签');
+});
+
+test('partial task labels remain readable when display metadata is incomplete',async t=>{
+ const f=await fixture(t);
+ for(const value of [{nodeJobId:f.nodeJobId,available:true,name:'可用标签',description:'现有说明'},
+   {metadata:{name:'可用标签',description:'现有说明'}},null]){
+  f.service.bridge=async()=>value;
+  const result=(await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result;
+  assert.equal(result.nodeJobId,f.nodeJobId);assert.equal(result.name,value?'可用标签':'');
+  assert.equal(result.description,value?'现有说明':'');assert.equal(f.service.taskDisplayViews.size,0);
+ }
 });

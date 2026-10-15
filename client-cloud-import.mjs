@@ -6,8 +6,8 @@ function httpsURL(value){
   return parsed.href;
 }
 export async function runCloudImport({action,positionals,options,machine,call,stderr=process.stderr}){
-  const allowed=['machines','datasets','url','session-file','json','key','file-id','password-code','source-url','dataset','project','owner'];
-  if(Object.keys(options).some(k=>!allowed.includes(k))||options.datasets?.length)throw Error('导入参数无效。');
+  const allowed=['machines','url','session-file','json','key','file-id','password-code','source-url','dataset','project','owner'];
+  if(Object.keys(options).some(k=>!allowed.includes(k)))throw Error('导入参数无效。');
   if(options['source-url']!==undefined&&action!=='import-resume')throw Error('--source-url 仅用于 data import-resume ID，更新同一文件的过期链接。');
   if(action!=='import'&&['key','file-id','password-code'].some(k=>options[k]!==undefined))throw Error('新建导入参数不能用于查询、取消或继续。');
   if(action==='imports'){if(positionals.length!==2)throw Error('Usage: data imports');return (await call('cloud.import.list',{machine})).result;}

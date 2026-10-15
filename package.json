@@ -17,9 +17,8 @@
     "test:all": "node scripts/test-entry.mjs all",
     "start": "node portal-server.mjs",
     "cli": "node cli.mjs",
-    "precli": "npm run build:client",
-    "test:python": "python3 scripts/test-python.py",
-    "build:gpuq": "python3 scripts/build-gpuq.py"
+    "precli": "npm run build:native",
+    "test:python": "python3 scripts/test-python.py"
   },
   "dependencies": {
     "@grpc/grpc-js": "1.14.5",
