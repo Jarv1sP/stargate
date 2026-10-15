@@ -1,8 +1,8 @@
-import {approvedCampusEndpoints,chooseCampusEndpoint,campusConnectionFailure} from './client-campus-endpoints.mjs';
+import {approvedCampusEndpoints,finishCampusOperation} from './client-campus-endpoints.mjs';
 import {request as httpsRequest} from 'node:https';
-import {pinnedUploadAgent,probeDirectUploadRoute} from './client-direct-upload.mjs';
+import {pinnedUploadAgent} from './client-direct-upload.mjs';
 import {campusNativeTransportOptions} from './client-campus-native.mjs';
-import {CAMPUS_CONNECTION_HELP} from './dist/personal-upload.js';
+import {CAMPUS_CONNECTION_HELP,DATASET_DIRECT_HELP,campusRetryable,retryCampusRequest} from './dist/personal-upload.js';
 
 const CHUNK=1024**2,MAX_CHUNK=16*CHUNK;
 const HASH=/^[a-f0-9]{64}$/,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -29,6 +29,7 @@ export async function requestPersonalFileTicket(call,request,{sleep=ms=>new Prom
   throw last??Object.assign(Error('Campus file renewal window ended; keep the original operation identity'),{code:'CAMPUS_RENEWAL_EXHAUSTED'});
 }
 export function personalFileGrant(value,path,action){
+  if(!value?.endpoint)throw Object.assign(Error(value?.message||'节点校园入口暂不可用。'),{code:'CAMPUS_UNAVAILABLE'});
   if(!value
     ||!UUID.test(value.grantId||'')||!HASH.test(value.certificateSha256||'')
     ||![CHUNK,MAX_CHUNK].includes(value.chunkBytes)||value.chunkBytes===MAX_CHUNK&&value.maxChunkBytes!==MAX_CHUNK
@@ -79,7 +80,7 @@ export function personalFileRequest(grant,agent,action,args,{request=httpsReques
           }catch{finish(Object.assign(Error('直连暂未返回完整数据；原断点已保留，请续传原下载。'),{code:'CAMPUS_FILE_RECEIPT_INVALID'}));}
         });
       });
-      req.on('error',()=>finish(Object.assign(Error('Campus file connection failed; no file bytes were redirected through VPS or Tail'),{code:'CONNECTION_FAILED'})));
+      req.on('error',error=>finish(Object.assign(Error(error.message,{cause:error}),{code:error.code||'CONNECTION_FAILED'})));
       timer=setTimeout(()=>finish(Object.assign(Error('Campus file request timed out; keep the original operation identity'),{code:'TIMEOUT'})),timeoutMs);timer.unref?.();
       req.end(writing?args.bytes:undefined);
     }catch{finish(Error('Campus file request could not start; no fallback'));
@@ -87,8 +88,8 @@ export function personalFileRequest(grant,agent,action,args,{request=httpsReques
   });
 }
 
-export async function createPersonalFileTransport(call,{machine,context,path,action,identity={},initialGrant,agentFactory,send,platform=process.platform,nativeOptions={},probeEndpoint,now=()=>Date.now()/1000,monotonic=()=>performance.now()}={}){
-  const defaults=['linux','win32'].includes(platform)?campusNativeTransportOptions(nativeOptions):{agentFactory:pinnedUploadAgent,send:personalFileRequest};
+export async function createPersonalFileTransport(call,{machine,context,path,action,identity={},initialGrant,agentFactory,send,platform=process.platform,nativeOptions={},retry,now=()=>Date.now()/1000,monotonic=()=>performance.now()}={}){
+  const defaults=['linux','win32'].includes(platform)?campusNativeTransportOptions({admissionRetryBudgetMs:60000,...nativeOptions}):{agentFactory:pinnedUploadAgent,send:personalFileRequest};
   // Supplying a custom Agent keeps its existing request contract; callers can
   // still inject either or both hooks for isolated tests or an explicit client.
   send??=agentFactory?personalFileRequest:defaults.send;
@@ -109,8 +110,7 @@ export async function createPersonalFileTransport(call,{machine,context,path,act
   }
   const fixedSize=grant.file?.size;
   let endpoints=approvedCampusEndpoints(grant);
-  const probe=probeEndpoint??((value,endpoint,{signal}={})=>probeDirectUploadRoute({...value,dialEndpoint:endpoint.endpoint,probeTimeoutMs:4000},{signal}));
-  let selected=grant.routes?await chooseCampusEndpoint(grant,endpoints,{probe,parallel:!probeEndpoint&&['linux','win32'].includes(platform)}):endpoints[0];
+  let selected=endpoints[0];
   const makeAgent=()=>agentFactory(grant.certificateSha256,{dialEndpoint:selected.endpoint,serverName:new URL(grant.endpoint).hostname});
   let agent=makeAgent();
   const refresh=async()=>{
@@ -118,36 +118,37 @@ export async function createPersonalFileTransport(call,{machine,context,path,act
     if(action==='get'&&next.file.size!==fixedSize)fail('下载文件大小已改变，请重新下载；原文件和断点已保留。');
     const previous=grant,previousEndpoint=selected.endpoint;
     grant=next;endpoints=approvedCampusEndpoints(grant);grantDeadline=ticketStarted+Math.max(0,validity(grant))*1000;
-    selected=endpoints.find(row=>row.endpoint===selected.endpoint)??await chooseCampusEndpoint(grant,endpoints,{probe});
+    selected=endpoints.find(row=>row.endpoint===selected.endpoint)??endpoints[0];
     if(grant.endpoint!==previous.endpoint||grant.certificateSha256!==previous.certificateSha256||selected.endpoint!==previousEndpoint){await agent.destroy();agent=makeAgent();}
   };
   return {
     get chunkBytes(){return grant.chunkBytes;},
     async request(args){
       if(closed)fail('Campus file transport is closed');
-      if(remainingGrant()<=120){
-        await refresh();
-      }
-      const dispatch=()=>send(grant,agent,action,{...args,...(selected.endpoint!==grant.endpoint?{dialEndpoint:selected.endpoint}:{})});
-      const attempted=new Set();let firstError;
-      for(;;){
-        attempted.add(selected.endpoint);
-        try{return await dispatch();}
-        catch(error){
-          firstError??=error;
-          if(action==='put'&&error.writeMayHaveReachedPeer!==false)firstError=error;
-          if(!campusConnectionFailure(error))throw error;
-          const remaining=endpoints.filter(row=>!attempted.has(row.endpoint));
-          if(!remaining.length){
-            if(firstError.writeMayHaveReachedPeer===false)firstError.message+='\n'+CAMPUS_CONNECTION_HELP;
-            throw firstError;
+      let firstError;
+      try{return await retryCampusRequest(async()=>{
+        if(remainingGrant()<=120)await refresh();
+        const attempted=new Set();
+        for(;;){
+          attempted.add(selected.endpoint);
+          try{return await send(grant,agent,action,{...args,...(selected.endpoint!==grant.endpoint?{dialEndpoint:selected.endpoint}:{})});}
+          catch(error){
+            if(!campusRetryable(error))throw error;
+            firstError??=error;
+            const remaining=endpoints.filter(row=>!attempted.has(row.endpoint));
+            await finishCampusOperation(()=>agent.destroy());if(remaining.length)selected=remaining[0];agent=makeAgent();
+            if(action==='put'&&error.writeMayHaveReachedPeer!==false){
+              firstError.writeMayHaveReachedPeer=true;
+              let row;try{row=(await call('data.upload.status',{machine,...context,path,key:identity.uploadId})).result;}catch{firstError.receiptChecked=true;throw firstError;}
+              if(row?.offset===args.offset+args.bytes.length)return row;
+              if(!Number.isSafeInteger(row?.offset)||row.offset<args.offset||row.offset>args.offset+args.bytes.length){firstError.receiptChecked=true;throw firstError;}
+            }
+            if(!remaining.length)throw firstError;
           }
-          await agent.destroy();selected=await chooseCampusEndpoint(grant,remaining,{probe});agent=makeAgent();
-          if(action==='put'&&error.writeMayHaveReachedPeer!==false)throw error;
         }
-      }
+      },retry);}catch(error){if(campusRetryable(error))error.message+='\n'+(context?.area==='dataset'?DATASET_DIRECT_HELP:CAMPUS_CONNECTION_HELP);throw error;}
     },
-    async close(){closed=true;await agent.destroy();}
+    async close(){closed=true;await finishCampusOperation(()=>agent.destroy());}
   };
 }
 

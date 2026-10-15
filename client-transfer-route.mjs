@@ -2,19 +2,18 @@ import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {tcpCampusReachable} from './client-campus-endpoints.mjs';
+import {DATASET_DIRECT_HELP} from './dist/personal-upload.js';
 
-// This is operation state: a resumed transfer never chooses another lane.
-export async function selectTransferRoute({area,via,action,stateFile,getGrant,probe=tcpCampusReachable,notify=message=>process.stderr.write(message+'\n')}){
- if(stateFile&&(!via||via==='auto'))try{return JSON.parse(await readFile(stateFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+// Keep the selected lane with the original key, including a VPS continuation.
+export async function selectTransferRoute({area,via,stateFile,getGrant,probe=tcpCampusReachable}){
+ if(area==='dataset'&&via&& !['auto','direct'].includes(via))throw Error(DATASET_DIRECT_HELP);
+ const save=async lane=>{if(!stateFile)return;await mkdir(dirname(stateFile),{recursive:true,mode:0o700});const temporary=stateFile+'.'+randomUUID()+'.new';await writeFile(temporary,JSON.stringify({via:lane}),{mode:0o600});await rename(temporary,stateFile);};
+ if(stateFile&&(!via||via==='auto'))try{const saved=JSON.parse(await readFile(stateFile,'utf8'));if(area!=='dataset'||saved.via==='direct')return {...saved,save};}catch(error){if(error.code!=='ENOENT')throw error;}
  let grant;
- if(!via||via==='auto'){
-  via=action==='put'?'relay':'portal';
-  if(area==='dataset'){
-   grant=await getGrant();
-   if(await probe(grant))via='direct';else notify('校园网不可达，本次经 VPS 传输（较慢）。');
-  }
+ if(area==='dataset'){
+  grant=await getGrant();
+  if(!await probe(grant))throw Error(DATASET_DIRECT_HELP);
  }
- const selected={via};
- if(stateFile){await mkdir(dirname(stateFile),{recursive:true,mode:0o700});const temporary=stateFile+'.'+randomUUID()+'.new';await writeFile(temporary,JSON.stringify(selected),{mode:0o600});await rename(temporary,stateFile);}
- return {...selected,...(via==='direct'&&grant?{grant}:{})};
+ via=via&&via!=='auto'?via:'direct';await save(via);
+ return {via,save,...(grant?{grant}:{})};
 }

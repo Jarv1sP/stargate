@@ -19,7 +19,7 @@ function rejectionDetails(value,privateValues=[]){
 const failed=(code,status,writeMayHaveReachedPeer=false,details={})=>{
   const suffix=code==='HTTP_REJECTED'?[Number.isInteger(status)&&status>=100&&status<=599?`HTTP ${status}`:undefined,
     details.reasonCode&&`reasonCode=${details.reasonCode}`,details.nodeError&&`error=${details.nodeError}`].filter(Boolean).join('; '):'';
-  return Object.assign(Error(`Campus physical transport stopped (${code}${suffix?'; '+suffix:''}); keep the original operation identity; no VPS or Tail fallback`),{code,status,writeMayHaveReachedPeer,...details});
+  return Object.assign(Error(`连接中断（${code}${suffix?'; '+suffix:''}），原 key 和偏移已保留。`),{code,status,writeMayHaveReachedPeer,...details});
 };
 const writing=op=>['put','control'].includes(op);
 // Releasing an agent must not replace its operation result. Cached helpers

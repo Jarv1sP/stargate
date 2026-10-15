@@ -1,4 +1,4 @@
-import {Agent,request as httpsRequest} from 'node:https';
+import {Agent} from 'node:https';
 import {connect as tlsConnect} from 'node:tls';
 import {createHash,timingSafeEqual} from 'node:crypto';
 
@@ -40,25 +40,4 @@ export function pinnedUploadAgent(certificateSha256,{connect=tlsConnect,timeoutM
     return undefined;
   };
   return agent;
-}
-
-export async function probeDirectUploadRoute(route,{request=httpsRequest,timeoutMs=2500,agentFactory=pinnedUploadAgent,signal}={}){
-  const agent=agentFactory(route.certificateSha256,{timeoutMs:route.probeTimeoutMs??timeoutMs,dialEndpoint:route.dialEndpoint,serverName:new URL(route.endpoint).hostname,signal});
-  try{return await new Promise((resolve,reject)=>{
-    let req,timer,done=false;
-    const finish=(error,value)=>{if(done)return;done=true;clearTimeout(timer);if(error){req?.destroy();reject(error);}else resolve(value);};
-    try{
-      req=request(new URL('/capabilities',route.endpoint),{agent,signal,method:'GET',headers:{Accept:'application/json'}},res=>{
-        let size=0;const parts=[];
-        res.on('data',part=>{size+=part.length;if(size>4096){finish(probeError('Upload probe exceeds response limit','RESPONSE_TOO_LARGE'));res.destroy();}else parts.push(part);});
-        res.on('aborted',()=>finish(probeError('Upload probe interrupted','CONNECTION_FAILED')));res.on('error',()=>finish(probeError('Upload probe failed','CONNECTION_FAILED')));
-        res.on('end',()=>{
-          if(res.statusCode!==200)return finish(Object.assign(probeError('Upload probe rejected','HTTP_REJECTED'),Number.isInteger(res.statusCode)&&res.statusCode>=100&&res.statusCode<=599?{status:res.statusCode}:{}));
-          if(!/^application\/json(?:;|$)/i.test(res.headers['content-type']||''))return finish(probeError('Upload probe rejected','INVALID_RESPONSE'));
-          try{finish(null,JSON.parse(Buffer.concat(parts)));}catch{finish(probeError('Invalid upload probe','INVALID_RESPONSE'));}});
-      });
-      req.on('error',error=>finish(probeError('Upload probe connection failed',error.uploadProbeCode||connectionCode(error))));
-      timer=setTimeout(()=>finish(probeError('Upload probe timed out','TIMEOUT')),route.probeTimeoutMs??timeoutMs);timer.unref?.();req.end();
-    }catch{finish(probeError('Upload probe could not start','PROBE_FAILED'));}
-  });}finally{agent.destroy();}
 }

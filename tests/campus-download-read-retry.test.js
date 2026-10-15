@@ -11,7 +11,7 @@ for(const action of ['get','put'])test(`${action} renewal uses the new endpoint 
   const transport=await createPersonalFileTransport(async(op,args)=>{assert.equal(op,'files.direct-ticket');tickets.push(args);return {result:next};},{
     machine:'node-a',context:{project:'paper'},path:'result.bin',action,
     identity:action==='put'?{uploadId:'22222222-2222-4222-8222-222222222222',totalSize:size}:{},
-    now:()=>1700000000+elapsed/1000,monotonic:()=>elapsed,probeEndpoint:async()=>({}),
+    now:()=>1700000000+elapsed/1000,monotonic:()=>elapsed,
     agentFactory:pin=>{const agent={pin,closed:false,destroy:async()=>{agent.closed=true;},request:async(header,body)=>{
       frames.push({header,pin});return action==='get'?{value:{metadata:{size,offset:header.offset}},raw:Buffer.from('abc')}:{value:{result:{offset:header.offset+body.length}},raw:Buffer.alloc(0)};
     }};agents.push(agent);return agent;},send:campusNativePersonalFileRequest

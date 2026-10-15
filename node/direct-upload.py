@@ -16,8 +16,8 @@ class DirectUploads:
         self.folder=self.s.private_dir(self.d.root(node.CONFIG,'root')/'file-grants',create=True)
 
     def root(self,args):
-        if args.get('project'):return self.n.projects().store.dev_paths(args.get('ownerId',args['userId']),args['project'])['code']
         if args.get('jobId') or args.get('runId'):return self.n.projects().store.workspace_output('', '',jobid=args.get('jobId',args.get('runId')),create=False)
+        if args.get('project'):return self.n.projects().store.dev_paths(args.get('ownerId',args['userId']),args['project'])['code']
         return self.d.dataset_root(self.n.CONFIG,args['dataset'],create=args.get('action')=='put')
 
     def issue(self,args):
