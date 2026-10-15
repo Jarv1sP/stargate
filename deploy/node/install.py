@@ -168,10 +168,10 @@ class Installer:
         sync_directory(self.root)
 
     def stage(self, package):
+        mounts = self.config['dataMountPoints']
         for profile in self.config['profiles'].values():
             for field in ('root', 'workspacesRoot', 'datasetsRoot'):
-                self.directory(data_path(profile[field], profile['dataMountPoints']))
-        mounts = self.config['profiles']['7IM']['dataMountPoints']
+                self.directory(data_path(profile[field], mounts))
         self.directory(data_path(self.root, mounts))
         for field in ('root', 'log_dir', 'control_dir'):
             self.directory(data_path(self.config['gpuq'][field], mounts))
@@ -192,7 +192,8 @@ class Installer:
             for name, config in self.config['profiles'].items():
                 # Derived release bindings, not user data paths or resource values.
                 value = {**config, 'gpu': str(gpu), 'gpuqArchive': scheduler['archive_path'],
-                         'database': scheduler['db_path'], 'controlRoot': scheduler['control_dir']}
+                         'database': scheduler['db_path'], 'controlRoot': scheduler['control_dir'],
+                         'dataMountPoints': mounts}
                 atomic(staging / manifest['profiles'][name]['installedConfig'], encoded(value))
             if self.config.get('hamiLibrary'):
                 source = data_path(self.config['hamiLibrary'], mounts)
@@ -270,7 +271,7 @@ class Installer:
                     lines.append(line)
             lines.append('# BEGIN STARGATE')
             for entry in keys:
-                profile = entry.get('profile', '7IM')
+                profile = entry['profile']
                 env = ['/usr/bin/env', *[f'{k}={v}' for k, v in self.environment.items()]]
                 if entry.get('collector'):
                     command = [*env, 'STARGATE_CORE_PROFILE=' + profile, '/usr/bin/python3', '-I', '-B',
@@ -387,7 +388,7 @@ def main():
         parser.error('安装时需要节点包路径')
     os.umask(0o077)
     installer = Installer(json.loads(args.config.read_text()))
-    data_path(installer.root, installer.config['profiles']['7IM']['dataMountPoints'])
+    data_path(installer.root, installer.config['dataMountPoints'])
     installer.directory(installer.root)
     with (installer.root / '.install.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

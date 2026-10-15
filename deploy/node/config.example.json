@@ -1,6 +1,7 @@
 {
   "account": "nodeops",
   "releaseRoot": "/mnt/data/stargate/releases",
+  "dataMountPoints": ["/mnt/data"],
   "gpuCommand": "/home/nodeops/bin/gpu",
   "environment": {},
   "gpuq": {
@@ -19,7 +20,6 @@
       "root": "/mnt/data/stargate/state",
       "workspacesRoot": "/mnt/data/workspaces",
       "datasetsRoot": "/mnt/data/datasets",
-      "dataMountPoints": ["/mnt/data"],
       "jobMemoryGiBPerCard": 2,
       "memoryPool": null,
       "personalOci": {
@@ -32,7 +32,9 @@
       "cloudFiles": null
     }
   },
-  "authorizedKeys": [],
+  "authorizedKeys": [
+    {"publicKey": "ssh-ed25519 REPLACE_WITH_PUBLIC_KEY", "profile": "7IM"}
+  ],
   "services": [
     {"name": "stargate-storage-collect.service", "profile": "7IM", "seconds": 3600}
   ]

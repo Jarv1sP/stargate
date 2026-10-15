@@ -1,5 +1,6 @@
 """Local node installation/rollback with real files and simulated host commands."""
 import copy
+from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
@@ -102,9 +103,9 @@ class InstallationTests(unittest.TestCase):
             self.addCleanup(mock.stop)
         data = self.base / 'data'
         cfg = dict(machine='node-example', cards=1, root=str(data/'state'), workspacesRoot=str(data/'workspaces'),
-                   datasetsRoot=str(data/'datasets'), dataMountPoints=[str(data)], personalOci=dict(baseImage='fixture'),
+                   datasetsRoot=str(data/'datasets'), personalOci=dict(baseImage='fixture'),
                    jobMemoryGiBPerCard=3, directUpload=dict(token='local-fixture'), futureNodeField=1)
-        self.config = dict(account='nodeops', releaseRoot=str(data/'releases'),
+        self.config = dict(account='nodeops', releaseRoot=str(data/'releases'), dataMountPoints=[str(data)],
                            environment={'HTTPS_PROXY': 'http://proxy.example.invalid:1234', 'PATH': '/usr/bin:/bin'},
                            gpuq=dict(root=str(data/'scheduler'), db_path=str(data/'scheduler/state/gpuq.db'),
                                      log_dir=str(data/'scheduler/logs'), control_dir=str(data/'control'),
@@ -160,6 +161,7 @@ class InstallationTests(unittest.TestCase):
             cfg = json.loads(path.read_text())
             self.assertEqual(cfg['gpuqArchive'], str(self.selected()/'gpuq.pyz'))
             self.assertEqual(cfg['gpu'], str(self.selected()/'gpu'))
+            self.assertEqual(cfg['dataMountPoints'], self.config['dataMountPoints'])
             self.assertEqual(cfg['jobMemoryGiBPerCard'], 3)
             self.assertEqual(cfg['directUpload'], self.config['profiles'][name]['directUpload'])
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
@@ -177,6 +179,38 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(sum(args[-1] == '_init' for _, args in self.host.calls), 1)
         self.host.install(self.make_package('second'))
         self.assertEqual(sum(args[-1] == '_init' for _, args in self.host.calls), 1)
+
+    def test_cli_install_uses_top_level_mounts_and_explicit_profile_without_7im(self):
+        self.config['profiles'] = {'FGK': self.config['profiles']['FGK']}
+        for key in self.config['authorizedKeys']:
+            key['profile'] = 'FGK'
+        self.config['services'] = [dict(name='node-http.service', profile='FGK')]
+        private = self.base/'node-install.json'
+        private.write_text(json.dumps(self.config))
+        output = io.StringIO()
+        mask = os.umask(0o077)
+        try:
+            with patch.object(sys, 'argv', ['install.py', str(self.package), '--config', str(private)]), \
+                    patch.object(INSTALL, 'Installer', return_value=self.host), redirect_stdout(output):
+                INSTALL.main()
+        finally:
+            os.umask(mask)
+        self.assertEqual(json.loads(output.getvalue())['state'], 'INSTALLED')
+        profile = json.loads((self.selected()/'profiles/FGK/node-config.json').read_text())
+        self.assertEqual(profile['dataMountPoints'], self.config['dataMountPoints'])
+        self.assertFalse((self.selected()/'profiles/7IM/node-config.json').exists())
+        keys = (self.home/'.ssh/authorized_keys').read_text()
+        self.assertIn('--profile FGK', keys)
+        self.assertIn('STARGATE_CORE_PROFILE=FGK', keys)
+
+    def test_missing_key_profile_never_defaults_to_a_different_channel(self):
+        self.host.install(self.package)
+        first = self.selected()
+        del self.config['authorizedKeys'][0]['profile']
+        with self.assertRaises(KeyError):
+            self.host.install(self.make_package('missing-profile'))
+        self.assertEqual(self.selected(), first)
+        self.assert_running()
 
     def test_atomic_selection_and_rollback_preserve_old_pyz_lazy_import_job_and_database(self):
         self.host.install(self.package)
