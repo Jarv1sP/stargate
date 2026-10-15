@@ -51,7 +51,9 @@ export function normalizeJobSubmission(args,principal){
   const minVramGiB=args.minVramGiB??0;
   if(typeof minVramGiB!=='number'||!Number.isFinite(minVramGiB)||minVramGiB<0||minVramGiB>128)fail('最低显存参数无效。');
   const name=args.name||'train';
-  if(typeof name!=='string'||name.length>64||/[\x00-\x1f]/.test(name))fail('任务名称无效。');
+  if(typeof name!=='string')fail('任务名称无效。');
+  if(name.length>64)fail(`任务名称最多 64 个字符（当前 ${name.length} 个），请缩短 --name。`);
+  if(/[\x00-\x1f]/.test(name))fail('任务名称不能包含换行或控制字符。');
   const description=taskDescription(args.description);
   const request={machine:machineSelection?'auto':args.machine,cards:args.cards,minVramGiB,argv:[...args.argv],name,description,key:args.key,
     project,priority,priorityProvided:args.priority!==undefined,explicit,
