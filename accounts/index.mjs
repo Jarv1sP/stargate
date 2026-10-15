@@ -42,7 +42,7 @@ export class TeamAccounts{
     this.db.prepare('INSERT INTO accounts VALUES(?,?,?,?,?,?,?,?)').run(user.id,user.username,user.name,user.role||'member',Number(user.enabled),record.salt,record.hash,record.iterations||210000);
     return this.get(user.id);
   }
-  // One-time extraction preserves all existing platform-user IDs, passwords and sessions.
+  // One-time extraction preserves all existing AMAX IDs, passwords and sessions.
   // Once extracted, the business database no longer saves authentication data.
   importLegacy({users,credentials,sessions=[],invite,inviteCode}){
     if(this.db.prepare("SELECT 1 FROM account_metadata WHERE key='initialized'").get())return;

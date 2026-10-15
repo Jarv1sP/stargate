@@ -27,4 +27,4 @@ python3 -I -B tests/oci-reboot-smoke.py
 
 2026-10-15：本机 WSL 的独立 Docker 测试容器中，以非 root 用户运行 Podman 5.8.7，以上两轮恢复和六次重复启动全部通过。测试环境提供 `/dev/fuse`、`/dev/net/tun`、crun 和 slirp4netns，未使用 privileged 容器；线上节点尚未安装此修复。
 
-Podman 上游说明：[运行态目录](https://portal.example.invalid/en/latest/markdown/podman.1.html#tmpdir-path)、[启动标记检查](https://github.com/podman-container-tools/podman/blob/main/libpod/runtime_linux.go)。
+Podman 上游说明：[运行态目录](https://docs.podman.io/en/latest/markdown/podman.1.html#tmpdir-path)、[启动标记检查](https://github.com/podman-container-tools/podman/blob/main/libpod/runtime_linux.go)。
