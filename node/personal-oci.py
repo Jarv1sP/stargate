@@ -391,6 +391,9 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
     control, extra = ([], []) if terminal else module('training-control').prepare(
         config, spec, project['code'], project, os.environ)
     try:
+        fd=os.open(Path(config['root'])/'outputs',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        extra.append(fd)
+        mounts.append((fd,'/job-outputs',False))
         # Add helpers without hiding an image's own Conda/venv PATH. No host
         # environment forwarding: the immutable image supplies its base PATH.
         image_path='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'

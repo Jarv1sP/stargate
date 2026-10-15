@@ -55,7 +55,7 @@ class ProjectContract(unittest.TestCase):
         args=engine.arguments({'project':'demo','argv':['/bin/bash']},{'environmentMode':'oci','workspace':True},True,[],[(3,'/datasets',False)])
         self.assertIn(str(self.base/'dataset')+':/datasets:rw',args);self.assertFalse('--device' in args)
 
-    def test_run_project_keeps_workspace_writable_and_shared_between_tasks(self):
+    def test_run_project_keeps_workspace_writable_and_reads_prior_task_outputs(self):
         oci=f.module('personal-oci');store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config)
         store.create('alice','demo');dataset_fd=self.data.open_directory(Path(self.config['datasetsRoot']))
         self.addCleanup(os.close,dataset_fd);outputs=[]
@@ -70,6 +70,15 @@ class ProjectContract(unittest.TestCase):
                 args=engine.arguments(job,project,is_terminal,uuids,mounts,control)
                 self.assertIn(str(paths['code'])+':/workspace:rw',args)
                 self.assertIn(str(paths['output'])+':/outputs:rw',args)
+                self.assertIn(str(Path(self.config['root'])/'outputs')+':/job-outputs:rw',args)
+                mounted=next(fd for fd,target,_ in mounts if target=='/job-outputs')
+                for previous in outputs[:-1]:
+                    file=os.open(previous.name+'/result.txt',os.O_RDONLY,dir_fd=mounted)
+                    try:self.assertEqual(os.read(file,16),str(outputs.index(previous)).encode())
+                    finally:os.close(file)
+                    copied=os.open(previous.name+'/copied-from-next.txt',os.O_WRONLY|os.O_CREAT,0o600,dir_fd=mounted)
+                    try:os.write(copied,b'comparison')
+                    finally:os.close(copied)
                 self.assertIn(str(self.config['datasetsRoot'])+':/datasets:'+('rw' if is_terminal else 'ro'),args)
                 # Substitute only OCI transport; shared workspace/output bytes are real.
                 shared=paths['code']/'shared.txt'
@@ -82,6 +91,36 @@ class ProjectContract(unittest.TestCase):
                     [(dataset_fd,'/datasets')]),0)
         self.assertEqual(len(set(outputs)),3)
         self.assertEqual([(output/'result.txt').read_text() for output in outputs],['0','1','2'])
+
+    def test_many_outputs_use_one_mount_and_new_results_are_visible_without_restart(self):
+        import resource
+        oci=f.module('personal-oci');store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config)
+        store.create('alice','demo');self.config['personalOci']={'baseImage':'example.invalid/test:latest'}
+        spec={'id':self.key(),'userId':'alice','project':'demo','argv':['python','train.py']}
+        paths=store.runtime_paths(spec,spec['id'])
+        for _ in range(200):store.workspace_output('alice','demo',jobid=self.key())
+        source=store.workspace_output('alice','demo',jobid=self.key())/'map.osa';source.write_bytes(b'existing map')
+        inode=source.stat().st_ino
+        fds={name:self.data.open_directory(paths[name]) for name in ('code','home','output')}
+        for fd in fds.values():self.addCleanup(os.close,fd)
+        engine=oci.PersonalOCI(self.config,'alice')
+        def execute_workspace(job,args,env):
+            self.assertEqual(sum(arg.endswith(':/job-outputs:rw') for arg in args),1)
+            late=store.workspace_output('alice','demo',jobid=self.key())/'late.txt';late.write_bytes(b'new result')
+            root=Path(next(arg.removesuffix(':/job-outputs:rw') for arg in args if arg.endswith(':/job-outputs:rw')))
+            self.assertEqual((root/late.parent.name/'late.txt').read_bytes(),b'new result')
+            self.assertEqual((root/source.parent.name/'map.osa').read_bytes(),b'existing map')
+            shutil.copyfile(root/source.parent.name/'map.osa',root/late.parent.name/'copied-map.osa')
+            self.assertEqual((root/late.parent.name/'copied-map.osa').read_bytes(),b'existing map')
+            return 0
+        engine.execute_workspace=execute_workspace
+        soft,hard=resource.getrlimit(resource.RLIMIT_NOFILE)
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE,(min(soft,128),hard))
+            with patch.object(oci,'PersonalOCI',return_value=engine),patch('os.getuid',return_value=os.getuid() or 1000):
+                self.assertEqual(oci.run_project(self.config,spec,paths,True,[],fds['code'],fds,[]),0)
+        finally:resource.setrlimit(resource.RLIMIT_NOFILE,(soft,hard))
+        self.assertEqual(source.stat().st_ino,inode);self.assertEqual(source.read_bytes(),b'existing map')
 
     def test_only_assigned_cdi_device_is_used(self):
         engine=f.module('personal-oci').PersonalOCI.__new__(f.module('personal-oci').PersonalOCI);engine.owner='alice';engine._mount_sources={}
@@ -131,6 +170,41 @@ class ProjectContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'系统盘'):
             with engine.named_mounts([(fd,'/etc/hosts',True)],[]):self.fail('Non-CDI system path was mounted')
         self.assertEqual(engine._mount_sources,{})
+
+    def test_output_mount_keeps_data_directory_when_shared_path_is_replaced(self):
+        probe=subprocess.run(['unshare','--user','--map-root-user','--mount','true'],capture_output=True)
+        if probe.returncode:self.skipTest('Local user namespaces unavailable: '+probe.stderr.decode().strip())
+        source=self.base/'output';source.mkdir();(source/'marker').write_bytes(b'original output')
+        folder=self.base/'runtime';folder.mkdir(mode=0o700)
+        program='''
+import importlib.util,os,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('rootfs',sys.argv[1]);rootfs=importlib.util.module_from_spec(spec);spec.loader.exec_module(rootfs)
+source,folder=map(Path,sys.argv[2:]);kept=source.with_name('kept')
+namespace=os.readlink('/proc/self/ns/mnt');original_open=os.open
+def replace_after_open(path,*args,**kwargs):
+    fd=original_open(path,*args,**kwargs)
+    if os.fspath(path)==str(source):
+        source.rename(kept);source.symlink_to('/etc',target_is_directory=True)
+    return fd
+flags=['--volume',str(source)+':/outputs:rw']
+os.open=replace_after_open
+try:
+    with rootfs.output_mount(flags,folder) as mounted:
+        anchor=Path(mounted[1].removesuffix(':/outputs:rw'))
+        assert anchor!=source and (anchor/'marker').read_bytes()==b'original output'
+        (anchor/'copied').write_bytes(b'new output')
+        assert (kept/'copied').read_bytes()==b'new output'
+finally:os.open=original_open
+assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir())
+try:
+    with rootfs.output_mount(flags,folder):raise AssertionError('System symlink was mounted')
+except (NotADirectoryError,FileExistsError):pass
+assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir())
+'''
+        result=subprocess.run(['unshare','--user','--map-root-user','--mount','python3','-c',program,
+            str(ROOT/'node/workspace-rootfs.py'),str(source),str(folder)],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
 
     def test_gpu_interactive_terminal_accepts_assigned_cdi_and_rw_datasets(self):
         oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI)

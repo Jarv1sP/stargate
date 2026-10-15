@@ -2,7 +2,7 @@
 
 登录 → 创建或选择项目 → 上传代码和数据 → 提交训练 → 查看日志与结果。完整功能以[功能清单](https://github.com/Jarv1sP/stargate/blob/main/docs/FEATURES.md)为准。
 
-项目工作区在 SSD `/workspace`，共用数据集在 HDD `/datasets`，每个任务有独立的 `/outputs`。代码用 git 管理，训练直接使用当前工作区；网页与 CLI 共用账号、项目、任务和数据。
+项目工作区在 SSD `/workspace`，共用数据集在 HDD `/datasets`，每个任务写入独立的 `/outputs`；通过可读写 `/job-outputs/任务ID` 直接复用本机任务输出。代码用 git 管理，训练直接使用当前工作区；网页与 CLI 共用账号、项目、任务和数据。
 
 ## 首次使用 {#start}
 
@@ -137,6 +137,8 @@ gpuctl jobs
 ```
 
 直接使用当前代码和环境，无需关闭开发终端。`--` 后是程序参数；`--data`、`--output` 按自己的训练程序修改。`-g` 指定卡数，每个任务输出独立；写入共用 `/workspace` 时自行区分结果目录。
+
+同一容器的后续任务和开发终端可直接读写 `/job-outputs/前序任务ID/相对路径`，支持复制和修改文件，无需下载再上传。例如前序任务写入 `/outputs/maps/map.osa`，后续任务直接以 `/job-outputs/前序任务ID/maps/map.osa` 为输入，也可将它复制到自己的 `/outputs` 后处理；本轮结果默认写自己的 `/outputs`。
 
 需要一次申请 GPU 后连续调试：
 
@@ -307,6 +309,8 @@ gpuctl outputs delete --job JOB_ID
 ```
 
 `CURSOR` 使用上一页返回的 `nextCursor`，每页 1–1000 条，保持原任务和目录。输出在实际执行服务器，每个任务独立；失败或取消后已有文件也可下载，查看完成情况不是下载前置条件。
+
+新任务和新开发终端中的 `/job-outputs/任务ID/相对路径` 提供本机任务输出的可读写入口，沿用团队共享权限，包括失败或取消任务留下的文件；可直接读取、复制和修改，部署时原文件留在原处，不复制或迁移。后续新产生的任务目录也直接可见。部署前已运行的任务和终端保持原有挂载，不因升级重启。
 
 目录下载逐文件读取，中断重复原命令，保留 `*.gpuctl-directory.json`、`*.gpuctl-download.json` 和临时文件；沿原大小和偏移完成。下载期间源文件可能变化；首次不覆盖本机已有目标。`files rm` 删一个文件或目录（目录加 `--recursive`），`outputs delete` 删该任务输出目录，均进回收站。
 
