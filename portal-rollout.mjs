@@ -9,8 +9,9 @@ import {isClientDownload,watchClientDownload,CLIENT_DOWNLOAD_IDLE_MS} from './cl
 // A request already forwarded is never retried or replayed by this supervisor.
 export function createRolloutServer({upstream,startActive,queueTimeout=90000,maxPending=64,staticIdleTimeout=CLIENT_DOWNLOAD_IDLE_MS}){
   let phase='proxy',target=new URL(upstream),forwarding=0,businessForwarding=0,staticIdleTimeouts=0,activation;
-  const pending=new Set(),downloads=new Map();
+  const pending=new Set(),downloads=new Map(),inFlight=new Map();
   const state=()=>({phase,forwarding,businessForwarding,staticForwarding:downloads.size,staticIdleTimeouts,
+    inFlightByType:[...inFlight.values()].reduce((counts,{type})=>{counts[type]=(counts[type]||0)+1;return counts;},{}),
     staticDownloads:[...downloads.values()].map(({path,watch})=>({path,...watch.state()})),pending:pending.size});
   const forward=(req,res)=>{
     if(req.destroyed||res.destroyed)return;
@@ -18,11 +19,13 @@ export function createRolloutServer({upstream,startActive,queueTimeout=90000,max
     forwarding++;if(!staticDownload)businessForwarding++;
     const finish=()=>{
       if(ended)return;ended=true;forwarding--;
+      inFlight.delete(next);
       if(staticDownload){watch.close();downloads.delete(next);}else businessForwarding--;
     };
     const next=http.request({hostname:target.hostname,port:target.port||80,method:req.method,path:req.url,headers:req.headers,agent:false},reply=>{
       reply.once('end',finish);reply.once('close',finish);
       reply.on('error',()=>res.destroy());
+      if(reply.headers['content-type']?.startsWith('text/event-stream'))record.type='poll';
       if(res.destroyed)reply.resume();
       else{
         // Consume the original reply after the client leaves, including a
@@ -32,6 +35,25 @@ export function createRolloutServer({upstream,startActive,queueTimeout=90000,max
         res.writeHead(reply.statusCode,reply.headers);reply.pipe(res);
       }
     });
+    const record={type:staticDownload?'static':['GET','HEAD'].includes(req.method)?'read':'write'};
+    inFlight.set(next,record);
+    if(req.url.split('?')[0]==='/api/call'){
+      // Observe only a bounded prefix for handoff counts. Bytes still stream
+      // unchanged to Portal; this does not parse, authorize or replay a call.
+      let prefix='';
+      const classify=chunk=>{
+        prefix+=chunk.toString('utf8').slice(0,4096-prefix.length);
+        const operation=prefix.match(/"operation"\s*:\s*"([\w.-]+)"/)?.[1];
+        if(operation){
+          if(operation==='terminal.exchange')record.type='terminal';
+          else if(operation==='jobs.logs')record.type='logs';
+          else if(operation==='jobs.watch')record.type='poll';
+          else if(operation==='state'||/\.(?:get|list|status|quota|catalog|completion|diagnostics)$/.test(operation))record.type='read';
+        }
+        if(operation||prefix.length>=4096){prefix='';req.removeListener('data',classify);}
+      };
+      req.on('data',classify);
+    }
     if(staticDownload){
       watch=watchClientDownload(res,{idleTimeout:staticIdleTimeout,onIdle:()=>{staticIdleTimeouts++;next.destroy();}});
       downloads.set(next,{path:req.url.split('?')[0],watch});

@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 HOLD_SECONDS = 15
+DRAIN_SECONDS = 30
 
 
 class DockerSocket(http.client.HTTPConnection):
@@ -26,6 +27,7 @@ class DockerBackend:
         self.root=Path(directory);self.resources=resources;self.stopping_after_failure=False
         self.manifest=json.loads((self.root/'manifest.json').read_text())
         self.old=None;self.new=None;self.holds=[];self.active_hold=None;self.stop_requests=set()
+        self.drain_result=None
 
     def check(self, name):
         if not self.stopping_after_failure:self.resources.checkpoint(name)
@@ -103,6 +105,10 @@ class DockerBackend:
     def create_stopped(self, limit):
         command=['node','portal-rollout.mjs','http://127.0.0.1:9',uuid.uuid4().hex]
         name='amax-console-staged-'+self.manifest['revision'][:12]
+        leftovers=self.command(['docker','ps','-aq','--filter','name=^/'+name+'$']).decode().split()
+        for identity in leftovers:
+            if self.running(identity):raise RuntimeError('same-release staged Portal is still running')
+            self.command(['docker','rm',identity])
         body=copy.deepcopy(self.old['Config']);body['Image']=self.manifest['tag'];body['Hostname']='';body['Cmd']=command
         body['Labels']['org.opencontainers.image.revision']=self.manifest['revision']
         environment=dict(item.split('=',1) for item in self.old['Config']['Env'])
@@ -126,6 +132,10 @@ class DockerBackend:
         value=self.inspect(self.new)
         if value['State']['Running']:raise RuntimeError('candidate unexpectedly running')
         return self.new
+
+    def cleanup_staged(self):
+        if self.new and not self.running(self.new) and self.inspect(self.new)['Name']!='/amax-console':
+            self.command(['docker','rm',self.new])
 
     def hold_command(self, hold, item):
         with socket.socket(socket.AF_UNIX) as conn:
@@ -152,16 +162,16 @@ class DockerBackend:
         except BaseException:
             process.terminate();process.wait(timeout=3)
             control.unlink(missing_ok=True);control.parent.rmdir();raise
-        hold={'socket':control,'state':state,'process':process,'deadline':time.monotonic()+HOLD_SECONDS,'released':False};self.holds.append(hold);self.active_hold=hold
+        hold={'socket':control,'state':state,'process':process,'deadline':time.monotonic()+DRAIN_SECONDS+HOLD_SECONDS,'released':False};self.holds.append(hold);self.active_hold=hold
         handler=copy.deepcopy(self.original_handler);handler.pop('dynamic_upstreams',None)
         handler['upstreams']=[{'dial':'127.0.0.1:'+str(value['port'])}]
         handler['transport']={**handler.get('transport',{}),'protocol':'http','keep_alive':{'enabled':False}}
         self.caddy('PATCH','/config'+self.caddy_path,json.dumps(handler).encode())
         return hold
 
-    def control(self, identity, action):
+    def control(self, identity, action, timeout=None):
         pid=self.inspect(identity)['State']['Pid'];path='/proc/'+str(pid)+'/root/tmp/portal-rollout-control.sock'
-        timeout=15 if action=='activate' else 3
+        timeout=timeout or (15 if action=='activate' else 3)
         conn=http.client.HTTPConnection('localhost',timeout=timeout)
         conn.sock=socket.socket(socket.AF_UNIX);conn.sock.settimeout(timeout);conn.sock.connect(path)
         try:
@@ -175,18 +185,29 @@ class DockerBackend:
         if time.monotonic()>=hold['deadline']:raise RuntimeError('short hold expired')
 
     def drain(self, identity, hold):
-        deadline=min(hold['deadline'],time.monotonic()+6)
+        started=time.monotonic();deadline=started+DRAIN_SECONDS;state={}
         while self.running(identity):
-            self.budget(hold);state=self.control(identity,'state')
-            if state.get('businessForwarding',state.get('forwarding',0))==0 and state.get('pending',0)==0:return
-            if time.monotonic()>=deadline:raise RuntimeError('in-flight business request did not drain; do not kill it')
-            time.sleep(.1)
+            self.check('drain-wait')
+            state=self.control(identity,'state',timeout=min(3,max(.1,deadline-time.monotonic())))
+            counts=state.get('inFlightByType',{'unclassifiedBusiness':state.get('businessForwarding',state.get('forwarding',0)),
+                                               'static':state.get('staticForwarding',0)})
+            waiting=sum(count for kind,count in counts.items() if kind not in ('terminal','logs','poll','static'))
+            if waiting==0 or time.monotonic()>=deadline:break
+            time.sleep(min(.1,max(0,deadline-time.monotonic())))
+        else:counts={};waiting=0
+        self.drain_result={'waitSeconds':round(time.monotonic()-started,3),'remaining':sum(counts.values()),
+                           'byType':counts,'queued':state.get('pending',0),'timedOut':waiting>0}
+        (self.root/'drain.json').write_text(json.dumps(self.drain_result)+'\n')
+        print('Portal handoff '+json.dumps(self.drain_result),flush=True)
+        # New requests remain in the external hold relay. Only the old owner's
+        # in-flight requests end here; clients recover their original key.
+        self.stop_budget(hold)
 
     def stop(self, identity, hold):
         if not self.running(identity):return
         if identity not in self.stop_requests:
             self.stop_requests.add(identity)
-            self.command(['docker','stop','--time','10',identity])
+            self.command(['docker','stop','--time','1',identity])
         while self.running(identity):self.budget(hold);time.sleep(.1)
 
     def start(self, identity, hold):

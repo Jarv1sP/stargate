@@ -82,7 +82,9 @@ def switch(backend, resources, prepare_nodes=lambda: None):
                 backend.healthy(old,hold)
             if hold:backend.release(hold,old)
         raise
-    finally:resources.close()
+    finally:
+        try:backend.cleanup_staged()
+        finally:resources.close()
 
 
 def main(run, revision):
@@ -105,7 +107,7 @@ def main(run, revision):
             path=run/name
             if path.exists():readings.extend(json.loads(line)['available'] for line in path.read_text().splitlines())
         result={'status':status,'revision':revision,'seconds':round(time.monotonic()-started,3),
-                'minimumAvailableBytes':min(readings) if readings else None}
+                'minimumAvailableBytes':min(readings) if readings else None,'drain':backend.drain_result}
         (run/'result.json').write_text(json.dumps(result)+'\n')
         print(json.dumps(result),flush=True)
 
