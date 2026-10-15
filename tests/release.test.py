@@ -1,12 +1,13 @@
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
-import subprocess
+import tarfile
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 SOURCE=Path(__file__).resolve().parents[1]/'deploy/release'
 sys.path.insert(0,str(SOURCE))
@@ -105,26 +106,42 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('stop-new',backend.calls)
 
     def test_node_changes_fail_before_any_portal_action(self):
-        (self.root/'deployed-sha').write_text('previous\n')
-        with patch.object(deploy.subprocess,'run',return_value=Mock(returncode=1)):
-            with self.assertRaisesRegex(RuntimeError,'节点有改动，需要安装'):
-                deploy.require_portal_only(self.root,self.root/'repository','next')
+        (self.root/'release.json').write_text(json.dumps({'nodesChanged': True}))
+        with self.assertRaisesRegex(RuntimeError, '节点有改动，需要安装'):
+            deploy.require_portal_only(self.root)
 
-    def test_unchanged_nodes_allow_portal_update(self):
-        (self.root/'deployed-sha').write_text('previous\n')
-        with patch.object(deploy.subprocess,'run',return_value=Mock(returncode=0)):
-            deploy.require_portal_only(self.root,self.root/'repository','next')
+    def test_unchanged_nodes_allow_portal_update_without_git(self):
+        (self.root/'release.json').write_text(json.dumps({'nodesChanged': False}))
+        deploy.require_portal_only(self.root)
 
-    def test_deployment_key_rejects_shell_commands_without_fetch_or_docker(self):
-        with patch.dict(os.environ,{'SSH_ORIGINAL_COMMAND':'echo forbidden'}),patch.object(entry.subprocess,'run') as run:
-            with self.assertRaises(PermissionError):entry.main(self.root)
+    def test_deployment_key_rejects_shell_commands_without_docker(self):
+        with patch.dict(os.environ, {'SSH_ORIGINAL_COMMAND': 'echo forbidden'}), patch.object(entry.subprocess, 'run') as run:
+            with self.assertRaises(PermissionError): entry.main(self.root)
         run.assert_not_called()
 
-    def test_commit_outside_main_is_rejected_before_checkout_or_image_load(self):
-        failure=subprocess.CalledProcessError(1,['git','merge-base'])
-        with patch.dict(os.environ,{'SSH_ORIGINAL_COMMAND':'a'*40}),patch.object(entry.subprocess,'run',side_effect=[Mock(),failure]) as run,patch.object(entry.subprocess,'Popen') as spawn:
-            with self.assertRaises(subprocess.CalledProcessError):entry.main(self.root)
-        self.assertEqual(run.call_count,2);spawn.assert_not_called()
+    def archive(self, name, data=b'release', kind=tarfile.REGTYPE):
+        stream=io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as archive:
+            member=tarfile.TarInfo(name);member.type=kind
+            if kind == tarfile.REGTYPE: member.size=len(data)
+            else: member.linkname='/outside'
+            archive.addfile(member, io.BytesIO(data) if kind == tarfile.REGTYPE else None)
+        stream.seek(0)
+        return stream
+
+    def test_offline_stream_preserves_supplied_release_files(self):
+        entry.receive(self.archive('./release/deploy.py', b'approved source'), self.root)
+        self.assertEqual((self.root/'release/deploy.py').read_bytes(), b'approved source')
+
+    def test_archive_cannot_write_outside_release_directory(self):
+        for name in ('../outside', '/outside'):
+            with self.subTest(name=name), self.assertRaisesRegex(PermissionError, 'inside its directory'):
+                entry.receive(self.archive(name), self.root)
+
+    def test_archive_cannot_install_symlinks_or_hardlinks(self):
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+            with self.subTest(kind=kind), self.assertRaisesRegex(PermissionError, 'files and directories'):
+                entry.receive(self.archive('link', kind=kind), self.root)
 
     def test_memory_limit_and_concurrent_portals_block_start(self):
         guard=ResourceGuard(self.root/'limits.jsonl',lambda:{'at':1,'available':950*MIB,'swap':0})

@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 sys.path.insert(0,str(Path(__file__).resolve().parent))
@@ -11,12 +10,9 @@ from docker_backend import DockerBackend
 from resource_guard import MAX_CONTAINER, ResourceGuard
 
 
-def require_portal_only(root, repo, revision):
-    previous=(root/'deployed-sha').read_text().strip()
-    diff=subprocess.run(['git','-C',str(repo),'diff','--quiet',previous,revision,'--','node/','gpuq/'])
-    if diff.returncode==1:
+def require_portal_only(run):
+    if json.loads((run/'release.json').read_text())['nodesChanged']:
         raise RuntimeError('节点有改动，需要安装；deploy/node/install.py 自动接线尚未启用')
-    if diff.returncode:raise RuntimeError('Cannot read the deployed node change range')
 
 
 def switch(backend, resources):
@@ -56,8 +52,8 @@ def switch(backend, resources):
 
 def main(run, revision):
     os.umask(0o077)
-    root=run.parent.parent;repo=root/'repository'
-    require_portal_only(root,repo,revision)
+    root=run.parent.parent
+    require_portal_only(run)
     manifest={'revision':revision,'tag':'stargate:auto-'+revision,'rollback':'stargate:previous'}
     (run/'manifest.json').write_text(json.dumps(manifest))
     resource_log=run/'memory.jsonl'

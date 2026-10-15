@@ -27,6 +27,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -35,6 +36,45 @@ jobs:
         with:
           go-version: '1.27.1'
           cache: false
+      - name: Prepare deployment and node change range
+        id: release
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_INITIAL_SHA: ${{ vars.DEPLOY_INITIAL_SHA }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const {execFileSync} = require('node:child_process');
+            let previous;
+            for await (const page of github.paginate.iterator(github.rest.repos.listDeployments, {
+              ...context.repo, environment: 'production', per_page: 100
+            })) {
+              for (const deployment of page.data) {
+                if (!deployment.payload?.stargate) continue;
+                const {data} = await github.rest.repos.listDeploymentStatuses({
+                  ...context.repo, deployment_id: deployment.id, per_page: 1
+                });
+                if (data[0]?.state === 'success') { previous = deployment.sha; break; }
+              }
+              if (previous) break;
+            }
+            previous ||= process.env.DEPLOY_INITIAL_SHA;
+            if (!previous) throw new Error('Set DEPLOY_INITIAL_SHA to the existing live revision once');
+            const revision = process.env.STARGATE_RELEASE_REVISION;
+            const changed = execFileSync('git', ['diff', '--name-only', previous, revision, '--', 'node/', 'gpuq/'], {encoding: 'utf8'});
+            fs.mkdirSync('bundle', {recursive: true});
+            fs.writeFileSync('bundle/release.json', JSON.stringify({revision, previous, nodesChanged: Boolean(changed.trim())}));
+            core.setOutput('nodes', Boolean(changed.trim()));
+            const {data: deployment} = await github.rest.repos.createDeployment({
+              ...context.repo, ref: revision, environment: 'production', auto_merge: false,
+              required_contexts: [], payload: {stargate: true},
+              description: 'Deploy the main commit accepted by gray'
+            });
+            core.setOutput('id', deployment.id);
+            await github.rest.repos.createDeploymentStatus({
+              ...context.repo, deployment_id: deployment.id, state: 'in_progress',
+              log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
       - run: npm ci
       - run: npm run build:release
       - name: Build Portal and CLI
@@ -42,6 +82,23 @@ jobs:
           docker build -f deploy/Dockerfile
           --build-arg STARGATE_RELEASE_REVISION="$STARGATE_RELEASE_REVISION"
           -t "stargate:auto-$STARGATE_RELEASE_REVISION" .
+      - name: Build changed node packages
+        if: steps.release.outputs.nodes == 'true'
+        env:
+          DEPLOY_MACHINES: ${{ vars.DEPLOY_MACHINES }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, subprocess
+          machines = os.environ['DEPLOY_MACHINES'].split()
+          if not machines:
+              raise SystemExit('Set DEPLOY_MACHINES to the private node inventory')
+          subprocess.run(['python3', 'scripts/build-node-release.py', '--output', 'bundle/nodes',
+                          *[part for machine in machines for part in ('--machine', machine)]], check=True)
+          PYTHON
+      - name: Prepare one offline stream
+        run: |
+          cp -R deploy/release bundle/release
+          docker save "stargate:auto-$STARGATE_RELEASE_REVISION" | gzip > bundle/image.tar.gz
       - name: Release through restricted SSH command
         shell: bash
         env:
@@ -56,7 +113,20 @@ jobs:
           trap 'rm -f "$deploy_key" "$deploy_hosts"' EXIT
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$deploy_key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$deploy_hosts"
-          docker save "stargate:auto-$STARGATE_RELEASE_REVISION" | gzip | \
+          tar -C bundle -cf - . | \
             ssh -T -i "$deploy_key" -o IdentitiesOnly=yes \
               -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$deploy_hosts" \
               -o ConnectTimeout=10 "root@$DEPLOY_HOST" "$STARGATE_RELEASE_REVISION"
+      - name: Record exact deployed commit
+        if: always() && steps.release.outputs.id != ''
+        uses: actions/github-script@v7
+        env:
+          RELEASE_STATUS: ${{ job.status }}
+          DEPLOYMENT_ID: ${{ steps.release.outputs.id }}
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              ...context.repo, deployment_id: Number(process.env.DEPLOYMENT_ID),
+              state: process.env.RELEASE_STATUS === 'success' ? 'success' : 'failure',
+              log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });

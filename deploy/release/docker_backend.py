@@ -233,4 +233,3 @@ class DockerBackend:
         temporary.write_text(self.old['Config']['Cmd'][3])
         os.chown(temporary,owner.st_uid,owner.st_gid);os.chmod(temporary,0o600);os.replace(temporary,marker)
         self.command(['docker','start',self.old['Id']])
-
