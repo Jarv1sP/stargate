@@ -54,6 +54,7 @@ cp "$TRUSTED/deploy/gray-local/base.Dockerfile" "$run/base-context/Dockerfile"
 build_image -t "stargate-gray/base:$stamp" "$run/base-context" > "$run/build-base.log" 2>&1
 docker save -o "$run/node-context/python.tar" "stargate-gray/base:$stamp"
 cp -a "$run/node-release/gray-node-1" "$run/node-context/release"
+cp "$run/src/deploy/node/install.py" "$run/node-context/node-install.py"
 cp "$TRUSTED"/deploy/gray-local/node-setup.sh "$TRUSTED"/deploy/gray-local/fake-nvidia-smi.py "$TRUSTED"/deploy/gray-local/gray-node-setup.service "$run/node-context/"
 cp "$run/machines.js" "$run/src/dist/machines.js"
 build_image --build-arg STARGATE_RELEASE_REVISION="$commit" -f "$run/src/deploy/Dockerfile" -t "$GRAY_PORTAL_IMAGE" "$run/src" > "$run/build-portal.log" 2>&1

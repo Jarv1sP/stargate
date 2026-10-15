@@ -14,6 +14,7 @@ RUN ln -sf python3.10 /usr/bin/python3 && python3 --version && dnf --version
 COPY python.tar /opt/gray-python.tar
 RUN skopeo copy docker-archive:/opt/gray-python.tar oci-archive:/opt/gray-python.oci.tar:gray-python && rm /opt/gray-python.tar
 COPY release/ /opt/gray-release/
+COPY node-install.py /opt/node-install.py
 COPY gpus.json /etc/gray-sim/gpus.json
 COPY node-setup.sh /usr/local/sbin/gray-node-setup
 COPY fake-nvidia-smi.py /opt/gray-sim/nvidia-smi

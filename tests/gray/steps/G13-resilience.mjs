@@ -39,7 +39,7 @@ export default {features:[],id:'G13',title:'门户、桥与调度器故障恢复
     if(job){
       const result=await waitJob(ctx,member,job.id,['RUNNING',...terminalStates]);
       ctx.check('恢复可查询原编号',result.id===job.id&&!!result.nodeJobId,result);
-      const count=await stackExec(ctx.stack,'gray-node-1','python3','-c','import sqlite3,sys; db=sqlite3.connect("file:/srv/gpuq/state/gpuq.db?mode=ro",uri=True);print(db.execute("SELECT count(*) FROM jobs WHERE submit_key=?",(sys.argv[1],)).fetchone()[0])',job.id);
+      const count=await stackExec(ctx.stack,'gray-node-1','python3','-c','import json,sqlite3,sys; path=json.load(open("/etc/gpuq-console/node-install.json"))["gpuq"]["db_path"]; db=sqlite3.connect("file:"+path+"?mode=ro",uri=True);print(db.execute("SELECT count(*) FROM jobs WHERE submit_key=?",(sys.argv[1],)).fetchone()[0])',job.id);
       ctx.check('节点原提交只创建一次',count.stdout.trim()==='1');
       await call(ctx,member,'jobs.cancel',{jobId:job.id});await waitJob(ctx,member,job.id,terminalStates);
     }
