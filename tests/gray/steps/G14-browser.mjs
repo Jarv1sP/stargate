@@ -49,6 +49,28 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
               const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),visible=await page.locator(button).isVisible();
               await page.screenshot({path:join(screens,role+'-'+width+'-'+label+'.png'),fullPage:true,animations:'disabled'});
               checks.push([title,async()=>{ctx.check(title+' 无横向滚动',!overflow);ctx.check(title+' 主要入口可见',visible);}]);
+              if(label==='resources'){
+                await page.locator('[data-resource-metric=utilization]').click();
+                const metricSelected=await page.locator('[data-resource-metric=utilization]').getAttribute('aria-pressed')==='true';
+                const bays=page.locator('.resource-chassis-bays [data-resource-card]'),targets=await bays.evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return {width:r.width,height:r.height};}));
+                await bays.first().click();await page.locator('#resource-sheet[open]').waitFor();
+                const picker=page.locator('[data-resource-gpu-picker]'),last=await picker.locator('option').last().getAttribute('value');await picker.selectOption(last);
+                const selected=await page.locator('#resource-sheet [data-resource-gpu]').getAttribute('data-resource-gpu'),drawerOverflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);
+                await page.screenshot({path:join(screens,role+'-'+width+'-resource-gpu.png'),animations:'disabled'});
+                await page.keyboard.press('Escape');await page.locator('#resource-sheet').waitFor({state:'hidden'});
+                const focusReturned=await bays.first().evaluate(node=>node===document.activeElement);
+                const other=page.locator('.resource-mini [data-resource-select]').first();let switched=true;
+                if(await other.count()){
+                  const id=await other.getAttribute('data-resource-select');await other.click();
+                  switched=await page.locator('.resource-portrait').getAttribute('data-resource-machine')===id;
+                  await page.screenshot({path:join(screens,role+'-'+width+'-resource-switched.png'),fullPage:true,animations:'disabled'});
+                }
+                await page.locator('[data-resource-metric=memory]').click();
+                checks.push([title+'/compute',async()=>{
+                  ctx.check('算力指标可以切换',metricSelected);ctx.check('每个卡槽触控区域至少44px',targets.length>0&&targets.every(r=>r.width>=44&&r.height>=44),targets);
+                  ctx.check('GPU详情可切换到最后一张卡',selected===last);ctx.check('GPU抽屉无横向页面滚动',!drawerOverflow);ctx.check('关闭GPU抽屉返回原卡槽',focusReturned);ctx.check('其他服务器可切换为主角',switched);
+                }]);
+              }
             }catch(error){checks.push([title,async()=>{throw error;}]);}
           }
           await page.locator('#account-menu-toggle').click();await page.locator('[data-shell-action=quota]').click();await page.locator('#quota-ledger').waitFor();
