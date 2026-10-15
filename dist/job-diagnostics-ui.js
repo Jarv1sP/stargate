@@ -37,7 +37,7 @@ export function completionHTML(value){
 }
 
 export function createJobDiagnostics(store,getDialog,toast,options={}){
-  let generation=0,diagnosticsRequest=0,jobId=null,bundle=null,bundleIdentity=null,displayIdentity=null,view='logs',installed=false,readingLogs=false,loadedLogs=false,lastLog=null;
+  let generation=0,diagnosticsRequest=0,jobId=null,bundle=null,bundleIdentity=null,displayIdentity=null,view='logs',installed=false,readingLogs=false,loadedLogs=false,lastLog=null,clock=null;
   const principal=()=>store.principal?`${store.principal.userId}:${store.principal.role}:${store.authGeneration}`:null;
   const element=selector=>getDialog()?.querySelector(selector);
   let recoveryRequest=0,recoveryController=null,observation=null,completion=null,resourcesReleased=false,recoveryBusy=false,recoveryError='';
@@ -72,9 +72,16 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
   function markViewed(){
     if(getDialog()?.open&&displayIdentity===principal()&&['overview','logs','diagnostics'].includes(view))document.dispatchEvent(new CustomEvent('gpuq-attention-viewed',{detail:{userId:store.principal?.userId,kind:'job',id:jobId}}));
   }
-  function reset(){lastLog=null;clearRecovery();generation++;diagnosticsRequest++;if(options.drawer)document.dispatchEvent(new Event('gpuq-job-drawer-close'));jobId=null;bundle=null;bundleIdentity=null;displayIdentity=null;view='logs';const dialog=getDialog();if(dialog){dialog.close();element('#job-main-log').textContent='';element('#job-diagnostic-view').innerHTML='';element('#job-view-status').textContent='';element('#job-diagnostic-download').disabled=true;if(options.drawer){for(const key of ['overview','output','notes'])element('#job-'+key+'-view').replaceChildren();element('#job-log-title').textContent='训练详情';}}}
+  function reset(){clearInterval(clock);clock=null;lastLog=null;clearRecovery();generation++;diagnosticsRequest++;if(options.drawer)document.dispatchEvent(new Event('gpuq-job-drawer-close'));jobId=null;bundle=null;bundleIdentity=null;displayIdentity=null;view='logs';const dialog=getDialog();if(dialog){dialog.close();element('#job-main-log').textContent='';element('#job-diagnostic-view').innerHTML='';element('#job-view-status').textContent='';element('#job-diagnostic-download').disabled=true;if(options.drawer){for(const key of ['overview','output','notes'])element('#job-'+key+'-view').replaceChildren();for(const slot of dialog.querySelectorAll('[data-task-live-dashboard],[data-task-live-actions]'))slot.replaceChildren();element('#job-log-title').textContent='训练详情';}}}
+  function sync(){
+    if(displayIdentity!==null&&displayIdentity!==principal()){reset();return;}
+    const dialog=getDialog();if(!options.drawer||!dialog?.open||!jobId)return;
+    const job=store.jobs.find(item=>item.id===jobId);if(!job){reset();return;}
+    const header=options.header?.(job)||esc(job.name||'训练详情');if(element('#job-log-title').innerHTML!==header)element('#job-log-title').innerHTML=header;
+    options.onSync?.(job,dialog);
+  }
   function switchView(next){
-    view=next;options.onView?.(next);element('#job-main-log').hidden=next!=='logs';element('#job-diagnostic-view').hidden=next!=='diagnostics';element('#job-log-view').setAttribute('aria-pressed',String(next==='logs'));element('#job-diagnostic-open').setAttribute('aria-pressed',String(next==='diagnostics'));
+    view=next;options.onView?.(next);element('#job-main-log').hidden=next!=='logs';element('#job-diagnostic-view').hidden=next!=='diagnostics';element('#job-log-refresh').hidden=next!=='logs';element('#job-log-view').setAttribute('aria-pressed',String(next==='logs'));element('#job-diagnostic-open').setAttribute('aria-pressed',String(next==='diagnostics'));
     if(options.drawer){for(const key of ['overview','output','notes'])element('#job-'+key+'-view').hidden=next!==key;for(const button of getDialog().querySelectorAll('[data-job-tab]')){const selected=button.dataset.jobTab===next;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;}if(next==='output')options.output?.(jobId,element('#job-output-view'));if(next==='notes')options.notes?.(jobId,element('#job-notes-view'));}
     markViewed();
   }
@@ -101,6 +108,7 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
     if(installed)return;installed=true;const dialog=getDialog(),pre=element('pre');pre.id='job-main-log';
     if(!document.querySelector('#job-diagnostic-styles')){const style=document.createElement('link');style.id='job-diagnostic-styles';style.rel='stylesheet';style.href=new URL('./job-diagnostics.css',import.meta.url).href;document.head.append(style);}
     const tools=document.createElement('div');tools.className='diagnostic-tools';tools.innerHTML='<button class="button" id="job-log-view" aria-pressed="true">主日志</button><button class="button" id="job-diagnostic-open" aria-pressed="false">诊断包 / 历史分配</button><button class="button" id="job-diagnostic-download" disabled>下载诊断 JSON</button><p id="job-view-status" role="status" aria-live="polite"></p>';
+    const refresh=document.createElement('button');refresh.id='job-log-refresh';refresh.type='button';refresh.className='button quiet';refresh.textContent='刷新日志';refresh.addEventListener('click',()=>{loadedLogs=false;loadMainLog();});tools.append(refresh);
     pre.before(tools);const body=document.createElement('section');body.id='job-diagnostic-view';body.hidden=true;pre.after(body);
     if(options.drawer){
       dialog.classList.add('work-sheet','job-sheet');dialog.querySelector('.modal-head').classList.add('sheet-header','glass');tools.classList.add('job-tabs','glass');tools.setAttribute('role','tablist');tools.setAttribute('aria-label','任务详情分区');
@@ -108,8 +116,12 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
       for(const [id,key,panel] of [['job-overview-tab','overview','job-overview-view'],['job-log-view','logs','job-main-log'],['job-diagnostic-open','diagnostics','job-diagnostic-view']]){const button=element('#'+id);button.dataset.jobTab=key;button.setAttribute('role','tab');button.setAttribute('aria-controls',panel);}
       for(const [key,label] of [['output','输出'],['notes','留言']]){const button=document.createElement('button');button.type='button';button.className='button quiet';button.textContent=label;button.dataset.jobTab=key;button.setAttribute('role','tab');button.setAttribute('aria-controls','job-'+key+'-view');tools.insertBefore(button,element('#job-diagnostic-download'));button.addEventListener('click',()=>switchView(key));}
       overview.addEventListener('click',()=>{switchView('overview');loadMainLog();});
-      const content=document.createElement('div');content.className='sheet-scroll';for(const key of ['overview','output','notes']){const panel=document.createElement('section');panel.id='job-'+key+'-view';panel.hidden=true;panel.setAttribute('role','tabpanel');content.append(panel);}content.append(pre,body);dialog.append(content);
-      const footer=document.createElement('div');footer.className='sheet-footer glass';footer.append(element('#job-view-status'),element('#job-diagnostic-download'));dialog.append(footer);
+      const content=document.createElement('div');content.className='sheet-scroll';
+      if(options.onSync){const dashboard=document.createElement('section');dashboard.dataset.taskLiveDashboard='';content.append(dashboard);}
+      for(const key of ['overview','output','notes']){const panel=document.createElement('section');panel.id='job-'+key+'-view';panel.hidden=true;panel.setAttribute('role','tabpanel');content.append(panel);}content.append(pre,body);
+      if(options.onSync){const actions=document.createElement('section');actions.dataset.taskLiveActions='';content.append(actions);}
+      dialog.append(content);
+      const footer=document.createElement('div');footer.className='sheet-footer glass';footer.append(element('#job-view-status'),refresh,element('#job-diagnostic-download'));dialog.append(footer);
       tools.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const buttons=[...tools.querySelectorAll('[data-job-tab]')],index=buttons.indexOf(document.activeElement);const target=buttons[event.key==='Home'?0:event.key==='End'?buttons.length-1:(index+(event.key==='ArrowRight'?1:-1)+buttons.length)%buttons.length];target.focus();target.click();});
       dialog.addEventListener('click',event=>{const action=event.target.closest('[data-job-observe],[data-job-completion-check],[data-job-release-resources]');if(action&&!action.disabled){readRecovery(action.hasAttribute('data-job-observe')?'jobs.watch':action.hasAttribute('data-job-completion-check')?'jobs.completion':'jobs.reconcile-resources');return;}const id=event.target.closest('[data-copy-job]')?.dataset.copyJob;if(id)navigator.clipboard.writeText(id).then(()=>toast('完整任务 ID 已复制。'),()=>toast('复制失败；请手动复制完整 ID。'));});
       if(options.dismiss)dialog.addEventListener('cancel',event=>{event.preventDefault();options.dismiss(dialog);});
@@ -120,7 +132,7 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
       if(!bundle||principal()!==bundleIdentity)return;
       const url=URL.createObjectURL(new Blob([JSON.stringify(bundle,null,2)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download='gpuq-diagnostics-'+jobId+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
     });
-    dialog.addEventListener('close',()=>{if(dialog.open)return;clearRecovery();generation++;diagnosticsRequest++;bundle=null;bundleIdentity=null;displayIdentity=null;jobId=null;pre.textContent='';body.innerHTML='';element('#job-diagnostic-download').disabled=true;if(options.drawer){document.dispatchEvent(new Event('gpuq-job-drawer-close'));for(const key of ['overview','output','notes'])element('#job-'+key+'-view').replaceChildren();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);}});
+    dialog.addEventListener('close',()=>{if(dialog.open)return;clearInterval(clock);clock=null;clearRecovery();generation++;diagnosticsRequest++;bundle=null;bundleIdentity=null;displayIdentity=null;jobId=null;pre.textContent='';body.innerHTML='';element('#job-diagnostic-download').disabled=true;if(options.drawer){document.dispatchEvent(new Event('gpuq-job-drawer-close'));for(const key of ['overview','output','notes'])element('#job-'+key+'-view').replaceChildren();for(const slot of dialog.querySelectorAll('[data-task-live-dashboard],[data-task-live-actions]'))slot.replaceChildren();const url=new URL(location.href);url.searchParams.delete('job');history.replaceState(null,'',url);}});
   }
   async function openLogs(id,next='logs',origin=null){
     install();clearRecovery();readingLogs=false;loadedLogs=false;const identity=principal(),request=++generation;diagnosticsRequest++;displayIdentity=identity;jobId=id;bundle=null;bundleIdentity=null;element('#job-diagnostic-download').disabled=true;element('#job-diagnostic-view').innerHTML='';
@@ -128,10 +140,11 @@ export function createJobDiagnostics(store,getDialog,toast,options={}){
     if(options.drawer){if(!job)throw Error('任务暂未出现在当前账号的状态中，请刷新核对。');element('#job-log-title').innerHTML=options.header?.(job)||esc(job.name||'训练详情');element('#job-overview-view').innerHTML=options.overview?.(job)||'';if(recoveryJob()){const recovery=document.createElement('section');recovery.id='job-recovery';recovery.className='job-recovery';element('#job-overview-view').prepend(recovery);observation=job.nativeObservation||null;renderRecovery();}const url=new URL(location.href);url.searchParams.set('job',id);history.replaceState(null,'',url);}
     switchView(options.drawer?next:'logs');element('#job-main-log').textContent=lastLog?.id===id&&lastLog.identity===identity?lastLog.text:'正在读取主日志…';element('#job-view-status').textContent='正在读取日志…';
     const dialog=getDialog();if(!dialog.open)dialog.showModal();
+    sync();clearInterval(clock);if(options.onTick)clock=setInterval(()=>{if(!dialog.open||document.hidden||displayIdentity!==principal())return;const job=store.jobs.find(item=>item.id===jobId);if(job)options.onTick(job,dialog);},1000);
     markViewed();
     if(recoveryJob())readRecovery('jobs.watch');
     if(options.drawer){if(options.reveal)options.reveal(dialog,job,origin);else {const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;dialog.animate(reduce?[{opacity:0},{opacity:1}]:[{transform:'translateX(100%)'},{transform:'none'}],{duration:reduce?0:320,easing:'cubic-bezier(.4,0,.2,1)'});}if(next==='diagnostics')loadDiagnostics();}
     if(!options.drawer||['logs','overview'].includes(next))await loadMainLog();
   }
-  return {install,openLogs,reset,sync(){if(displayIdentity!==null&&displayIdentity!==principal())reset();}};
+  return {install,openLogs,reset,sync};
 }

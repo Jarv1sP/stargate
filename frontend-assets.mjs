@@ -6,7 +6,7 @@ export const STARBASE_ASSETS = Object.fromEntries([
   'fonts.css', 'starbase.css', 'shell.css', 'workbench.css', 'terminal.css', 'resources.css', 'apple-touch-icon.png', 'members.css', 'copy-help.css',
   'resource-orbits.js', 'shell-ui.js', 'control-ui.js', 'attention-state.js', 'workbench-ui.js', 'training-storage-ui.js', 'motion-ui.js', 'copy-help-ui.js', 'startup-ui.js', 'sky-ui.js', 'portal-shell.css', 'navigation.js', 'toast-ui.js',
   'favicon.svg', 'favicon.ico', 'mask-icon.svg',
-  'task-display-ui.js',
+  'task-display-ui.js', 'task-room-ui.js',
   'job-results-ui.js', 'time-format.js', 'trash-ui.js', 'file-transfer-ui.js',
   'maintenance-state.js', 'maintenance-experience.js', 'maintenance-experience.css',
   'admin-ui.js', 'admin.css', 'admin-members-ui.js', 'admin-gpu-tasks.js', 'admin-gpu-tasks.css', 'admin-maintenance-ui.js', 'host-diagnostics-ui.js',

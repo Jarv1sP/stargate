@@ -70,6 +70,16 @@ test('log window exposes diagnostics and JSON download without altering job stat
   assert.ok(f.viewed.length>=2);assert.ok(f.viewed.every(row=>row.kind==='job'&&row.userId==='owner'&&row.id===JOB),'view notifications carry the current account and displayed task');
 });
 
+test('refresh logs reads the existing task again and keeps unknown failures separate from its lifecycle',async t=>{
+  const f=domFixture(t);await f.control.openLogs(JOB);
+  f.store.call=async(op,args)=>{f.calls.push({op,args});return {text:'new log lines'};};
+  await f.nodes.get('#job-log-refresh').fire('click');
+  assert.equal(f.pre.textContent,'new log lines');assert.equal(f.calls.at(-1).args.jobId,JOB);
+  f.store.call=async()=>{throw Error('temporarily offline');};
+  await f.nodes.get('#job-log-refresh').fire('click');
+  assert.equal(f.pre.textContent,'new log lines');assert.match(f.nodes.get('#job-view-status').textContent,/temporarily offline/);
+});
+
 test('late responses cannot leak across logout, role change or another job',async t=>{
   const f=domFixture(t);let resolve;
   f.store.call=()=>new Promise(r=>resolve=r);const pending=f.control.openLogs(JOB);

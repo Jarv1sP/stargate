@@ -11,10 +11,10 @@ const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{
 try{
  for(const role of ['member','admin'])for(const width of [1440,390,320]){
   const owner='member-a',peer='member-b',machine='fixture-node-a',jobId='11111111-1111-4111-8111-111111111111';
-  let cloudConnected=false,campusReachable=true,probes=0,searchDataset='images';const calls=[],errors=[],requests=[],files=new Map(),uploads=new Map(),grants=new Map(),trash=[];let datasets=[{dataset:'images',name:'images',size:3,ownerId:peer,ownerName:'成员乙',uploadedBy:'成员乙',modifiedAt:1700000000}];
+  let cloudConnected=false,campusReachable=true,probes=0,searchDataset='images',logText='fixture log\n';const taskNotes=[];const calls=[],errors=[],requests=[],files=new Map(),uploads=new Map(),grants=new Map(),trash=[];let datasets=[{dataset:'images',name:'images',size:3,ownerId:peer,ownerName:'成员乙',uploadedBy:'成员乙',modifiedAt:1700000000}];
   const users=[{id:owner,username:'alice',name:'成员甲',role,enabled:true,approvedAt:'2026-10-14T11:00:00.000Z',total:4,limits:{[machine]:4}},{id:peer,username:'bob',name:'成员乙',role:'member',enabled:true,total:4,limits:{[machine]:4}}];
   const projects=[{project:'vision',ownerId:peer,ownerName:'成员乙',displayName:'共享实验',environmentMode:'oci',lifecycle:{state:'ACTIVE'},git:{url:'https://example.test/team/repo.git',branch:'main',commit:'abc123'}}];
-  const state={machines:[{id:machine,name:'示例服务器',cards:4,model:'Fixture GPU'}],users,jobs:[{id:jobId,nodeJobId:'J111111111111',machine,userId:peer,ownerId:peer,username:'bob',name:'团队训练',project:'vision',cards:1,state:'RUNNING',priority:'normal',assignedIndices:[0],createdAt:'2026-10-14T11:00:00.000Z',argv:['python','train.py']}],executionEnabled:true,execution:{},gpuq:{stale:false,connected:true,checkedAt:'2026-10-14T11:00:00.000Z',hosts:[{id:machine,reachable:true,checkedAt:'2026-10-14T11:00:00.000Z',gpus:Array.from({length:4},(_,index)=>({index,model:'Fixture GPU',utilization:index?0:80,memoryUsedMiB:index?0:1024,memoryTotalMiB:8192,temperatureC:40,processes:[],processesAvailable:true})),disks:[{mountPoint:'/fixture-data',totalBytes:1000,usedBytes:100,availableBytes:900}],tasks:[],gpuq:{connected:true,health:'ok',observeOnly:false,schedulableIndices:[0,1,2,3]}}]},operationalMaintenance:{global:null,machines:{}},announcements:{pending:[]},transfers:{}};
+  const state={machines:[{id:machine,name:'示例服务器',cards:4,model:'Fixture GPU'}],users,jobs:[{id:jobId,nodeJobId:'J111111111111',machine,userId:peer,ownerId:peer,username:'bob',name:'团队训练',project:'vision',cards:1,state:'RUNNING',priority:'normal',notifications:{configured:true,enabled:false},assignedIndices:[0],latestAttempt:{startedAt:1791975540},createdAt:'2026-10-14T11:00:00.000Z',argv:['python','train.py']}],executionEnabled:true,execution:{},gpuq:{stale:false,connected:true,checkedAt:'2026-10-14T11:00:00.000Z',hosts:[{id:machine,reachable:true,checkedAt:'2026-10-14T11:00:00.000Z',gpus:Array.from({length:4},(_,index)=>({index,model:'Fixture GPU',utilization:index?0:80,memoryUsedMiB:index?0:1024,memoryTotalMiB:8192,temperatureC:40,processes:[],processesAvailable:true})),disks:[{mountPoint:'/fixture-data',totalBytes:1000,usedBytes:100,availableBytes:900}],tasks:[],gpuq:{connected:true,health:'ok',observeOnly:false,schedulableIndices:[0,1,2,3]}}]},operationalMaintenance:{global:null,machines:{}},announcements:{pending:[]},transfers:{}};
   const principal={userId:owner,username:'alice',role,enabled:true},resource=args=>JSON.stringify([args.machine,args.area,args.dataset||args.project,args.ownerId,args.path]);
   files.set(JSON.stringify([machine,'dataset','images',undefined,'sample.bin']),Buffer.from('abc'));
   async function rpc(op,args){
@@ -49,11 +49,17 @@ try{
    if(op==='transfers.list')return {transfers:[],nextCursor:null};
    if(op==='community.posts.list')return {posts:[],nextCursor:null};
    if(op==='community.chat.list')return {messages:[],nextCursor:null};
-   if(op==='community.notes.list')return {notes:[],nextCursor:null};
+   if(op==='community.notes.list')return {notes:taskNotes,nextCursor:null};
+   if(op==='community.notes.create'){const note={...args,id:randomUUID(),author:{name:'成员甲'},createdAt:'2026-10-14T11:00:00.000Z',canEdit:true,canDelete:true};taskNotes.push(note);return note;}
    if(op==='invites.list')return {invites:[]};
    if(op==='maintenance.set'){if(args.scope==='all')state.operationalMaintenance.global=args.enabled?{reason:args.reason,since:'2026-10-14T11:00:00.000Z'}:null;return state.operationalMaintenance;}
    if(op==='jobs.watch')return {state:'RUNNING',nativeObservation:{state:'RUNNING'}};
-   if(op==='jobs.logs')return {text:'fixture log\n'};
+   if(op==='jobs.logs')return {text:logText};
+   if(op==='jobs.submit'){const job={...args,id:randomUUID(),userId:owner,ownerId:args.ownerId||owner,username:'alice',state:'QUEUED',priority:args.priority||'normal',createdAt:'2026-10-14T11:00:00.000Z'};state.jobs.push(job);return job;}
+   if(op==='jobs.priority'){const job=state.jobs.find(row=>row.id===args.jobId);assert.equal(job.state,'QUEUED');job.priority=args.priority;job.schedulerPriority=3;return job;}
+   if(op==='jobs.cancel'){state.jobs.find(row=>row.id===args.jobId).cancelRequested=true;return {cancelRequested:true};}
+   if(op==='notifications.job'){state.jobs.find(row=>row.id===args.jobId).notifications.enabled=args.enabled;return {enabled:args.enabled};}
+   if(op==='tasks.display.get')return {name:state.jobs[0].name,description:'Fixture description'};
    if(op==='jobs.diagnostics')return {state:'RUNNING'};
    throw Error('Unexpected RPC '+op);
   }
@@ -71,7 +77,20 @@ try{
     const path=resolve(root,'.'+url.pathname);if(!path.startsWith(root+'/'))throw Error('Outside static root');return route.fulfill({contentType:extname(path)==='.js'?'text/javascript':extname(path)==='.css'?'text/css':extname(path)==='.woff2'?'font/woff2':'application/octet-stream',body:await readFile(path)});
    }catch(error){errors.push(error.stack);console.error(error.stack);await route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:error.message})});}
   });
-  await page.goto(origin);await page.locator('[data-nav=resources][aria-current=page]').waitFor();await page.locator('[data-nav=work]').click();await page.locator('[name=workspace-project] option[data-owner-id="member-b"]').waitFor({state:'attached'}).catch(async error=>{console.error(JSON.stringify({errors,calls,requests,body:(await page.locator('body').innerText()).slice(0,500)}));throw error;});
+  await page.goto(origin);await page.locator('[data-nav=resources][aria-current=page]').waitFor();
+  await page.locator('[data-nav=jobs]').click();await page.locator('[data-task-scope=mine][aria-pressed=true]').waitFor();
+  assert.equal(await page.locator('[data-workbench-job]').count(),0);assert.equal(await page.locator('[data-empty-illustration=falcon9]').count(),1);
+  await page.locator('#open-submit').click();await page.locator('#work-submit[open]').waitFor();
+  assert.equal(await page.locator('#work-submit [name=machine]').isVisible(),true,'a fresh task page can choose a server');
+  await page.locator('#work-submit [name=machine]').selectOption(machine);
+  const taskProject=page.locator('[name=training-project] option[data-owner-id="member-b"]');await taskProject.waitFor({state:'attached'});
+  await page.locator('[name=training-project]').selectOption(await taskProject.getAttribute('value'));
+  await page.locator('#work-submit [name=name]').fill('我的新任务');await page.locator('#work-submit [name=command]').fill('python train.py');
+  await page.locator('#train-form [type=submit]').click();await page.locator('#submission-receipt').filter({hasText:'已提交'}).waitFor({state:'attached'});
+  assert.equal(calls.filter(row=>row.op==='jobs.submit').length,1);const submission=calls.find(row=>row.op==='jobs.submit').args;
+  assert.equal(submission.machine,machine);assert.equal(submission.project,'vision');assert.equal(submission.ownerId,peer);assert.deepEqual(submission.argv,['/bin/bash','-c','python train.py']);
+  await page.locator('#close-submit').click();await page.locator('#work-submit').waitFor({state:'hidden'});
+  await page.locator('[data-nav=work]').click();await page.locator('[name=workspace-project] option[data-owner-id="member-b"]').waitFor({state:'attached'}).catch(async error=>{console.error(JSON.stringify({errors,calls,requests,body:(await page.locator('body').innerText()).slice(0,500)}));throw error;});
   await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · '+machine});
   await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   assert.match(await page.locator('#project-status-detail').textContent(),/abc123/);assert.equal(await page.locator('#project-publish').count(),0);assert.equal(await page.locator('[name=release]').count(),0);
@@ -79,7 +98,34 @@ try{
   assert.equal(calls.find(row=>row.op==='projects.create').args.repo,'https://example.test/team/new.git');await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · '+machine});await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-work.png'),fullPage:true});
   await page.locator('#project-network-check').click();await page.locator('#project-network-result').filter({hasText:'https'}).waitFor();
-  await page.locator('[data-nav=jobs]').click();await page.locator('[data-job-output="'+jobId+'"]').first().click();await page.locator('[data-result-delete="sample.bin"]').waitFor();
+  await page.locator('[data-nav=jobs]').click();
+  assert.equal(await page.locator('#my-job-table [data-job-detail="'+jobId+'"]').count(),0,'mine is a filter, not an operation permission');
+  await page.locator('[data-task-scope=project]').click();await page.locator('#my-job-table [data-job-detail="'+jobId+'"]').waitFor();
+  await page.locator('[name=task-search]').fill('不存在的任务');await page.locator('[data-task-empty=filtered]').waitFor();
+  await page.locator('[name=task-search]').fill('团队训练');await page.locator('#my-job-table [data-job-detail="'+jobId+'"]').waitFor();
+  await page.locator('[data-task-scope=all]').click();await page.locator('[name=task-search]').fill('');
+  await page.screenshot({path:join(shots,role+'-'+width+'-jobs.png'),fullPage:true,animations:'disabled'});
+  await page.locator('#my-job-table [data-job-detail="'+jobId+'"]').click();const drawer=page.locator('.job-log-dialog[open]');await drawer.waitFor();
+  assert.equal(await drawer.locator('[data-task-metric=gpu]').innerText(),'80%');assert.equal(await drawer.locator('[data-task-metric=vram]').innerText(),'1.0 / 8.0 GiB');
+  assert.equal(await drawer.locator('.wb-trajectory li').count(),5);assert.equal(await drawer.locator('[data-job-priority]').count(),0,'running priority is read only');
+  await drawer.locator('[data-task-label-editor]>summary').click();await drawer.locator('[data-task-label-read]').click();await drawer.locator('[name=task-label-name]').fill('未保存的任务名称');
+  state.jobs[0].state='QUEUED';await page.evaluate(()=>document.querySelector('#refresh-state').click());await drawer.locator('[data-job-priority]').waitFor();
+  assert.equal(await drawer.locator('[name=task-label-name]').inputValue(),'未保存的任务名称','polling preserves label drafts');
+  await drawer.locator('[data-job-priority]').selectOption('P3');await drawer.locator('[data-job-priority-save]').click();await page.waitForFunction(()=>document.querySelector('[data-job-priority]')?.dataset.originalPriority==='P3');
+  assert.equal(calls.filter(row=>row.op==='jobs.priority').length,1);assert.equal(calls.find(row=>row.op==='jobs.priority').args.jobId,jobId);
+  state.jobs[0].state='RUNNING';await page.evaluate(()=>document.querySelector('#refresh-state').click());await drawer.locator('[data-job-priority]').waitFor({state:'detached'});
+  await drawer.locator('[data-job-notify]').click();await drawer.locator('[data-job-notify]').filter({hasText:'关闭'}).waitFor();
+  await drawer.locator('[data-job-tab=logs]').click();await drawer.locator('#job-main-log').filter({hasText:'fixture log'}).waitFor();logText='fresh fixture log\n';await drawer.locator('#job-log-refresh').click();await drawer.locator('#job-main-log').filter({hasText:'fresh fixture log'}).waitFor();
+  assert.equal(await drawer.locator('[data-task-dashboard]').isVisible(),true,'dashboard stays available on every tab');
+  await drawer.locator('[data-job-tab=diagnostics]').click();await drawer.locator('#job-diagnostic-view').filter({hasText:'调度状态'}).waitFor();
+  await drawer.locator('[data-job-tab=notes]').click();await drawer.locator('#drawer-task-note-body').fill('共享任务留言');await drawer.locator('#drawer-task-note-form [type=submit]').click();await drawer.locator('#drawer-task-notes-list').filter({hasText:'共享任务留言'}).waitFor();assert.equal(taskNotes[0].jobId,jobId);
+  await drawer.locator('[data-job-cancel]').click();await drawer.locator('[data-job-cancel]').filter({hasText:'正在取消'}).waitFor();assert.equal(state.jobs[0].state,'RUNNING','cancel waits for server confirmation');
+  state.jobs[0].cancelRequested=false;state.jobs[0].state='SUCCEEDED';state.jobs[0].latestAttempt.finishedAt=1791975600;
+  await page.evaluate(()=>document.querySelector('#refresh-state').click());await drawer.locator('[data-task-completion]').waitFor();
+  assert.equal(await drawer.locator('[data-task-metric=gpu]').innerText(),'未知','ended allocation is not live usage');
+  await page.screenshot({path:join(shots,role+'-'+width+'-job-detail.png'),fullPage:true,animations:'disabled'});
+  await drawer.locator('[data-job-tab=output]').click();await page.locator('[data-result-delete="sample.bin"]').waitFor();
+  assert.match(await drawer.locator('[data-task-output-hint]').innerText(),new RegExp('/job-outputs/'+jobId));
   assert.equal(await page.locator('#workspace-upload').isVisible(),false);assert.equal(await page.locator('[name=files]').isVisible(),false);
   await page.screenshot({path:join(shots,role+'-'+width+'-outputs.png'),fullPage:true,animations:'disabled'});
   await page.locator('[data-result-path="sample.bin"]').click();const outputDownloaded=page.waitForEvent('download');await page.locator('#workspace-download').click();const outputDownload=await outputDownloaded;assert.deepEqual(await readFile(await outputDownload.path()),Buffer.from('abc'));

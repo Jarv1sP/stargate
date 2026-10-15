@@ -135,6 +135,8 @@ gpuctl terminal close SESSION_ID
 
 ### 当前工作区与 GPU 交互终端
 
+网页「任务」页用「我的 / 本项目 / 全部」切换范围，按名称、编号、项目或成员搜索；「本项目」可选择团队项目，同名项目按所在服务器和容器区分。筛选只改变列表，登录成员仍可操作全部团队任务。「新建任务」表单内可直接选择服务器和项目，保留自动选机、自定义调度、弹性和共享显卡选项。
+
 ```sh local
 gpuctl run -g 1 --name baseline --description "验证新数据集" -- python train.py --data /datasets/images --output /outputs
 gpuctl jobs
@@ -309,6 +311,8 @@ gpuctl reconcile-resources JOB_ID --json
 ```
 
 `watch` 默认每 5 秒查询，`--interval 1` 可调整；Ctrl+C 不取消任务。日志和诊断用于排查 CPU、内存、OOM 和 worker；`completion` 查完成情况，`reconcile-resources` 收尾已结束任务的资源，不重跑训练。进度需要代码接入 `gpuq.progress.ProgressReporter`；未上报不填假进度，上报 100% 也不等于进程已结束。
+
+点击任务名称打开详情，查看本次分配显卡的利用率、显存、T+ 运行计时和提交 / 排队 / 启动 / 运行 / 结束五个阶段。缺采集显示未知；任务结束后不把显卡的新用量当成本任务用量。日志可刷新，输出页提示 `/job-outputs/任务ID/`；诊断、留言、通知、显示名称与描述、服务器观察和资源收尾入口均在详情内。只有排队中的任务可修改优先级；取消后等待服务器确认结束。
 
 ### 浏览、下载与删除输出
 
