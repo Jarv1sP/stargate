@@ -7,7 +7,6 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {prepareWindowsNativeFolder} from '../client-campus-native-runtime.mjs';
 
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const principal={userId:'demo-user-1',username:'terminal-tester',role:'member'};
@@ -23,8 +22,7 @@ async function assertPrivateSession(path){
 }
 
 async function fixture(t,{open, drop=false, status, close, exchange, dropExchange=false, openStatus=503,openError}={}){
-  const windowsFolder=process.platform==='win32'?await prepareWindowsNativeFolder({platform:'windows',interop:false}):null;
-  const dir=windowsFolder?.folder||await mkdtemp(join(tmpdir(),'terminal-open-recovery-'));
+  const dir=await mkdtemp(join(tmpdir(),'terminal-open-recovery-'));
   const session=join(dir,'session.json'), marker=join(dir,'raw-mode.jsonl'), preload=join(dir,'tty.mjs');
   const calls=[];let stderr='',atDispatch;
   await writeFile(preload,`import {appendFileSync} from 'node:fs';
@@ -65,7 +63,7 @@ async function fixture(t,{open, drop=false, status, close, exchange, dropExchang
     child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);
     child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));child.stdin.end(input);
   });
-  t.after(async()=>{await new Promise(resolve=>server.close(resolve));if(windowsFolder)await windowsFolder.cleanup();else await rm(dir,{recursive:true,force:true});});
+  t.after(async()=>{await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});});
   return {url,session,marker,calls,cli,dispatch:()=>atDispatch};
 }
 
