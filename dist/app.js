@@ -53,7 +53,7 @@ const placeToast=toastPosition($('#toast'));
 function toast(message){clearTimeout(toastTimer);const target=$('#toast'),shown=target.classList.contains('visible');target.textContent=message;target.classList.add('visible');placeToast();if(!shown)target.animate([{opacity:0},{opacity:1}],{duration:reducedMotion()?150:220,easing:'cubic-bezier(.4,0,.2,1)'});toastTimer=setTimeout(()=>target.classList.remove('visible'),3500);}
 function report(error){toast(error.message);if(error.status===401){store.principal=null;store.data=null;MACHINES.length=0;capacity=0;draft=null;render();openLogin();}}
 function confirm(title,message,action){const stamp=members.capture();if(!members.current(stamp))return;$('#confirm-title').textContent=title;$('#confirm-message').textContent=message;confirmAction=()=>members.current(stamp)?action():undefined;$('#confirm-dialog').showModal();fadeDialog($('#confirm-dialog'));}
-function openLogin(){$('#login-form').reset();$('#login-error').textContent='';if(!$('#login-dialog').open)$('#login-dialog').showModal();}
+function openLogin(){if(globalThis.GPUQ_CENTRAL_IDENTITY){location.assign('/auth/login');return;}$('#login-form').reset();$('#login-error').textContent='';if(!$('#login-dialog').open)$('#login-dialog').showModal();}
 function choosePage(route){route=membersRoute(route);const next=pageForRoute(route);if(!next)return;const hash=next==='admin'?adminHashForRoute(route):hashForPage(next),sameSection=next!=='admin'||adminConsole.currentSection()===adminSectionForRoute(route);if(next===page&&sameSection){if(!store.principal)pendingRoute=hash;history.replaceState(null,'',hash);if(next==='admin')adminConsole.update();return;}if(dirty()){history.replaceState(null,'',page==='admin'?'#admin/'+adminConsole.currentSection():hashForPage(page));toast('请先保存或撤销授权草稿。');return;}if(!store.principal)pendingRoute=hash;shell.route(next,()=>{page=next;history.replaceState(null,'',hash);render();});}
 function defaultPage(){const route=membersRoute(pendingRoute||(maintenanceActive(store.data?.operationalMaintenance)||own()?.total?'work':'resources'));page=pageForRoute(route)||'work';pendingRoute=null;selected=null;draft=null;filter=pendingUsers().length?'pending':'all';history.replaceState(null,'',page==='admin'?adminHashForRoute(route):hashForPage(page));}
 function render(preserve=false){
@@ -118,13 +118,14 @@ function renderUsers(){
   const list=$('#user-list'),focused=document.activeElement,scrollTop=list.scrollTop;
   const focusedUser=list.contains(focused)?focused.closest('[data-user]')?.dataset.user:null;
   $('#filter-pending').textContent=`待处理 ${pendingUsers().length}`;$('#filter-all').textContent=`全部账号 ${store.users.length}`;
+  if(globalThis.GPUQ_CENTRAL_IDENTITY)for(const button of document.querySelectorAll('[data-action="invites"]'))button.textContent='统一账号中心';
   $('#filter-pending').setAttribute('aria-pressed',String(filter==='pending'));$('#filter-all').setAttribute('aria-pressed',String(filter==='all'));
   list.innerHTML=filteredUsers().map(u=>`<button class="user-row ${u.id===selected?'selected':''}" data-user="${esc(u.id)}" aria-pressed="${u.id===selected}"><span class="avatar">${esc(u.name.slice(0,1))}</span><span class="user-details"><span class="user-name" title="${esc(u.name)}">${esc(u.name)}</span><span class="user-meta">${label(u)}${personalQuotaReadout(u).exempt?' · 免个人额度':u.total?' · '+u.total+' 张':''}</span></span><span class="user-chevron">›</span></button>`).join('')||'<div class="empty">暂无待处理账号。</div>';
   list.scrollTop=scrollTop;
   if(focusedUser)for(const row of list.querySelectorAll('[data-user]'))if(row.dataset.user===focusedUser){row.focus({preventScroll:true});break;}
 }
 function renderEditor(){
-  if(!draft){$('#editor').innerHTML='<div class="editor-empty"><h2>审批都处理好了</h2><p class="muted">切到“全部账号”可调整已有授权。</p><button class="button" data-action="invites">查看注册码</button></div>';return;}
+  if(!draft){$('#editor').innerHTML=`<div class="editor-empty"><h2>审批都处理好了</h2><p class="muted">切到“全部账号”可调整已有授权。</p><button class="button" data-action="invites">${globalThis.GPUQ_CENTRAL_IDENTITY?'统一账号中心':'查看注册码'}</button></div>`;return;}
   const u=store.get(selected),self=u.id===store.principal.userId,admin=u.role==='admin';
   const permissionsHelp=copyHelp('服务器额度','勾选服务器分配用卡额度，所有成员都能查看和操作团队项目与数据。新账号会自动出现在待处理，额度为 0，批准后才能提交训练。','/guide/start');
   const totalHelp=copyHelp('合计额度','排队也占用额度，所有服务器同时受这个上限限制。有额度仍可能需要等空卡。','/guide/queue');
@@ -140,7 +141,12 @@ function renderEditor(){
       <div class="total-limit"><div class="copy-caption"><label for="member-total"><strong>合计额度</strong></label>${totalHelp}</div><span><input id="member-total" class="quota-input" type="number" min="0" max="${capacity}" data-quota="total" value="${draft.total}"> / ${capacity} 张</span></div>
       <div class="member-draft-note copy-caption" hidden><span>刷新会丢弃修改。</span>${copyHelp('授权草稿','自动更新会保留正在填写的草稿。关闭或刷新页面会丢弃未保存的修改。','/guide/start')}</div>`}
       <details class="account-settings"><summary>账号权限与状态</summary><div class="copy-caption"><span>管理权限</span>${accountHelp()}</div><div class="account-actions"><button class="button" data-action="role" ${self?'disabled title="不能修改当前账号"':''}>${admin?'改为普通用户':'设为管理员'}</button><button class="button" data-action="enabled" ${self?'disabled title="不能暂停当前账号"':''}>${u.enabled?'暂停账号':'恢复账号'}</button><span class="member-action-help copy-caption"><button class="button danger" data-action="delete" ${self?'disabled':''} title="${self?'不能删除当前账号':'删除账号'}">删除账号</button>${deleteHelp}</span></div></details>
-    </div>`;updateDirty();
+    </div>`;
+  if(globalThis.GPUQ_CENTRAL_IDENTITY){
+    $('#editor [data-action="reset-password"]').textContent='统一账号中心';
+    $('#editor .account-settings').innerHTML='<summary>账号权限与状态</summary><p class="muted">账号、密码与角色在统一门户管理，计算额度在这里调整。</p>';
+  }
+  updateDirty();
 }
 function updateDirty(){
   members?.updateCreate();
@@ -169,11 +175,14 @@ document.addEventListener('click',async event=>{
     const target=$('[name=workspace-machine]');if(target){target.value=id;target.dispatchEvent(new Event('change',{bubbles:true}));}return;
   }
   const action=b.dataset.action||b.id;
+  if(globalThis.GPUQ_CENTRAL_IDENTITY&&['invites','rotate-invite','disable-invite','reset-password','role','enabled','delete'].includes(action)){
+    location.assign(new URL('/account',globalThis.GPUQ_CENTRAL_IDENTITY.portal).href);return;
+  }
   try{switch(action){
     case 'filter-pending':case 'filter-all':await guardedChange(()=>{filter=action==='filter-pending'?'pending':'all';selected=null;render();});break;
     case 'refresh-state':await refresh();toast('已更新');break;
-    case 'switch-account':if(store.principal)await store.logout();pendingRoute=null;selected=null;draft=null;inviteCode=null;render();openLogin();break;
-    case 'open-register':$('#login-dialog').close();$('#register-form').reset();$('#register-error').textContent='';$('#register-dialog').showModal();break;
+    case 'switch-account':if(store.principal)await store.logout();pendingRoute=null;selected=null;draft=null;inviteCode=null;render();if(globalThis.GPUQ_CENTRAL_IDENTITY)location.assign('/auth/login?prompt=login');else openLogin();break;
+    case 'open-register':if(globalThis.GPUQ_CENTRAL_IDENTITY){location.assign('/auth/register');break;}$('#login-dialog').close();$('#register-form').reset();$('#register-error').textContent='';$('#register-dialog').showModal();break;
     case 'back-to-login':$('#register-dialog').close();openLogin();break;
     case 'invites':$('#invites-error').textContent='';if(await loadInvites())$('#invites-dialog').showModal();break;
     case 'copy-invite':try{await navigator.clipboard.writeText(inviteCode);toast('注册码已复制');}catch{$('#current-invite').select();toast('请复制选中的注册码');}break;
@@ -192,7 +201,7 @@ document.addEventListener('click',async event=>{
 document.addEventListener('change',event=>{const id=event.target.dataset.machine;if(!members.active()||!members.owns(event.target)||!id||!draft)return;if(event.target.checked){draft.limits[id]=1;if(!draft.total)draft.total=1;}else{delete draft.limits[id];draft.total=Math.min(draft.total,Object.values(draft.limits).reduce((a,b)=>a+b,0));}renderEditor();$(`[data-machine="${id}"]`).focus();});
 document.addEventListener('input',event=>{const key=event.target.dataset.quota;if(!members.active()||!members.owns(event.target)||!key||!draft)return;const value=event.target.value===''?NaN:Number(event.target.value);if(key==='total')draft.total=value;else draft.limits[key]=value;updateDirty();});
 $('#password-form').addEventListener('submit',async event=>{event.preventDefault();const stamp=members.capture();if(!members.current(stamp))return;const b=event.submitter;b.disabled=true;try{const self=selected===store.principal.userId;await store.reset(selected,new FormData(event.target).get('password'));if(!members.current(stamp))return;event.target.reset();$('#password-dialog').close();toast('密码已重置，旧登录已失效');if(self){await store.logout().catch(()=>{});render();openLogin();}}catch(e){if(members.current(stamp))$('#password-error').textContent=e.message;}finally{b.disabled=false;}});
-$('#edit-profile').addEventListener('click',()=>{$('#profile-form [name=profile-name]').value=own()?.name||store.principal.username;$('#profile-error').textContent='';$('#profile-dialog').showModal();});
+$('#edit-profile').addEventListener('click',()=>{if(globalThis.GPUQ_CENTRAL_IDENTITY){location.assign(new URL('/account',globalThis.GPUQ_CENTRAL_IDENTITY.portal).href);return;}$('#profile-form [name=profile-name]').value=own()?.name||store.principal.username;$('#profile-error').textContent='';$('#profile-dialog').showModal();});
 $('#profile-form').addEventListener('submit',async event=>{event.preventDefault();const b=event.submitter;b.disabled=true;try{await store.call('profile.update',{name:new FormData(event.target).get('profile-name')});$('#profile-dialog').close();render(true);toast('姓名已保存；新任务记录提交时姓名。');}catch(e){$('#profile-error').textContent=e.message;}finally{b.disabled=false;}});
 $('#login-form').addEventListener('submit',async event=>{event.preventDefault();const b=event.submitter,data=new FormData(event.target);b.disabled=true;try{await store.login(data.get('username'),data.get('password'));await loadInventory();event.target.reset();$('#login-dialog').close();defaultPage();render();shell.syncStatus('ready',Date.now());}catch(e){$('#login-error').textContent=e.message;}finally{b.disabled=false;}});
 $('#register-form').addEventListener('submit',async event=>{event.preventDefault();const b=event.submitter,data=new FormData(event.target);b.disabled=true;$('#register-error').textContent='';try{if(data.get('password')!==data.get('confirm'))throw Error('两次密码不一致。');await store.register(data.get('username'),data.get('password'),data.get('invite'),data.get('signup-name')||undefined);await store.login(data.get('username'),data.get('password'));await loadInventory();event.target.reset();$('#register-dialog').close();defaultPage();render();toast('注册成功，等待管理员分配额度');}catch(e){$('#register-error').textContent=e.message;}finally{b.disabled=false;}});

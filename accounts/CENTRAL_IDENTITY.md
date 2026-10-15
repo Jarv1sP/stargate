@@ -1,0 +1,35 @@
+# 独立身份服务接入
+
+部署切换前仍使用已存在的公共账号库。设置 `TEAM_IDENTITY_CONFIG` 后，注册、密码、账号状态和应用资格由独立身份服务管理；计算平台不向 mission 或媒体平台取账号数据。
+
+## 运行配置
+
+`TEAM_IDENTITY_CONFIG` 指向容器内只读的私有 JSON 文件，不能提交 Git。未指定时，在现有账号卷查找 `amax-identity.json`，便于 main 自动发布直接启用已备好的配置；文件存在但错误时启动失败，不静默回退：
+
+```json
+{
+  "projectionDatabase": "/accounts/identity.sqlite",
+  "issuer": "https://identity.example.test/application/o/amax/",
+  "clientId": "compute-web",
+  "clientSecret": "REPLACE",
+  "origin": "https://compute.example.test",
+  "portalOrigin": "https://www.example.test",
+  "identityUrl": "https://identity.example.test",
+  "bridgeKey": "REPLACE"
+}
+```
+
+`TEAM_ACCOUNTS_DATABASE` 改为身份服务发布的无密码 SQLite 视图。视图保留业务用户 ID、姓名、AMAX 角色、账号状态和应用资格；每 15 秒刷新，超过 60 秒未更新时登录请求返回暂不可用。密码、邀请码及其修改入口不属于该文件。运行时错误不会退回旧认证。
+
+网页使用独立 OIDC 客户端与 PKCE；会话 cookie 为仅限本域的 `__Host-amax_session`。旧父域 cookie 不再被接收。会话绑定应用和密码/注销版本；停用、撤权和密码变更会阻止继续使用。退出当前网页只撤销本网站会话；统一门户可退出全部三个网站会话。
+
+CLI 的交互密码通过独立身份服务的窄接口验证（由原生 LDAP 执行），获得 AMAX 专用会话。桥接密钥仅允许这个登录操作，不是身份目录管理令牌。客户端不保存明文密码。注册与账号维护入口转到统一门户，计算额度、节点权限和业务资源仍在计算平台维护。
+
+## 迁移和发布
+
+1. 先在隔离环境验证旧密码导入、邀请码注册、OIDC、CLI，以及停用/撤权/密码修改；不拿生产成员当测试数据。
+2. 保存公共账号库及两个业务库的一致性备份。迁移时暂停账号写入，在 VPS 内一次性将原密码哈希和稳定用户 ID 导入独立身份服务；不下载生产密码库到开发机。
+3. 创建独立的无密码视图，完成身份服务、反向代理和私有配置后，由 main 的自动发布切换应用。禁止把视图直接覆盖到仍有旧认证进程写入的账号库。
+4. 用实际主域检查 HTTPS、客户端回调、注册/登录和业务归属，核对运行镜像对应合并后的 main。切换后原账号库只作受限迁移备份，不再接受业务写入。
+
+新增校验属于仓库规范的“登录”边界；没有增加任务、文件或成员间协作限制。生产发布继续遵守仓库现有灰测与自动部署流程。

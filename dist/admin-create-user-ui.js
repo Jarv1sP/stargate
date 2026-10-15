@@ -4,6 +4,11 @@ import {copyHelp} from './copy-help-ui.js';
 // never the password, before submitting a non-idempotent account request.
 export function mountCreateUser(store,root,ctx,{active,canCreate,onCreated,toast}){
   const button=root.querySelector('[data-member-create]'),key='stargate.create-user.v1:'+ctx.principal.userId;
+  if(globalThis.GPUQ_CENTRAL_IDENTITY){
+    button.textContent='统一账号中心';
+    button.addEventListener('click',()=>location.assign(new URL('/account',globalThis.GPUQ_CENTRAL_IDENTITY.portal).href),{signal:ctx.signal});
+    return {render(){button.disabled=false;},dispose(){}};
+  }
   const dialog=document.createElement('dialog');dialog.id='create-user-dialog';dialog.className='modal member-dialog compact';dialog.setAttribute('aria-labelledby','create-user-title');root.append(dialog);
   dialog.innerHTML=`<form id="create-user-form"><div class="modal-head"><div class="copy-caption"><h2 id="create-user-title">新建账号</h2>${copyHelp('新账号权限','新账号是普通成员，额度为 0。批准授权后才能使用服务器。')}</div><button type="button" class="icon-button" data-create-user-close aria-label="关闭">×</button></div><label class="field">用户名<input name="username" required minlength="2" maxlength="24" autocomplete="off" autocapitalize="none" spellcheck="false"></label><label class="field">姓名<input name="name" maxlength="32" autocomplete="off"></label><label class="field">初始密码<input name="password" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><p class="form-error" role="alert" data-create-user-error></p><p role="status" data-create-user-state></p><div class="modal-actions"><button type="button" class="button" data-create-user-close>关闭</button><button type="button" class="button" data-create-user-query hidden>重新查询</button><button type="submit" class="button primary">创建账号</button></div></form>`;
   const form=dialog.querySelector('form'),status=dialog.querySelector('[data-create-user-state]'),error=dialog.querySelector('[data-create-user-error]'),query=dialog.querySelector('[data-create-user-query]');
