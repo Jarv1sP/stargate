@@ -30,7 +30,7 @@ const bridge=async(machine,operation,args)=>{
 try{
  const reserved=createServer();await new Promise(resolve=>reserved.listen(0,'127.0.0.1',resolve));const port=reserved.address().port;await new Promise(resolve=>reserved.close(resolve));const origin='http://127.0.0.1:'+port;
  const created=await createPortalServer({database:join(temporary,'portal.sqlite'),bootstrap,origin,secure:false,statusPath,bridge,fileLanEndpoints:'{}',directUploadOrigins:'[]'});server=created.server;const service=created.service;clearInterval(service.executionTimer);
- const limits=Object.fromEntries(MACHINES.map(m=>[m.id,m.cards]));Object.assign(service.store.users[0],{name:'管理员乙',limits,total:30,approvedAt:new Date().toISOString()});service.store.users.push({id:'fixture-member',username:'member',name:'成员甲',role:'member',enabled:true,total:8,limits,approvedAt:new Date().toISOString()});service.credentials.set('member',await credential(password,600000));service.save();
+ const limits=Object.fromEntries(MACHINES.map(m=>[m.id,m.cards]));Object.assign(service.store.users[0],{name:'管理员乙',limits,total:30,approvedAt:new Date().toISOString()});service.store.users.push({id:'fixture-member',username:'member',name:'成员甲',role:'member',enabled:true,total:8,limits,approvedAt:new Date().toISOString()});service.accounts.insert(service.store.users.at(-1),await credential(password,600000));service.accounts.rename('builtin-admin','管理员乙');service.refreshAccounts();service.save();
  await new Promise(resolve=>server.listen(port,'127.0.0.1',resolve));timer=setInterval(()=>refresh().catch(()=>{}),2000);
  browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
  for(const role of ['member','admin'])for(const width of [1440,390,320]){
