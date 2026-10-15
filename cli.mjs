@@ -16,7 +16,7 @@ import {readCLIState,submitJobWithReceipt} from './client-state.mjs';
 import {defaultPlatformControlTransport,finishPlatformControlTransport} from './client-windows-control.mjs';
 import {downloadResultFile} from './client-result-download.mjs';
 import {directoryDownloadStatus} from './client-directory-download.mjs';
-import { readFile as readFile2, mkdir as mkdir4, writeFile as writeFile2, chmod, unlink as unlink3, open as open4, lstat as lstat5, rename as rename3 } from "node:fs/promises";
+import { readFile as readFile2, mkdir as mkdir4, writeFile as writeFile2, chmod, unlink as unlink3, lstat as lstat5 } from "node:fs/promises";
 import { dirname as dirname2, join as join5, basename as basename2 } from "node:path";
 import { randomUUID as randomUUID7 } from "node:crypto";
 import { homedir } from "node:os";
@@ -46,7 +46,7 @@ gpuctl pull-status LOCAL_DIRECTORY
 失败保留原编号和偏移，用原 --key 续传；不会自动换路。
 
 gpuctl ssh [--reconnect SESSION_ID] [--takeover]
-gpuctl run -g 1 -- python train.py --data /datasets/images --output /outputs
+gpuctl run -g 1 [--rank P0..P4] -- python train.py --data /datasets/images --output /outputs （P4 最优先，P0 最低）
 gpuctl run --sync [--sync-dir LOCAL_DIR] -g 1 -- python train.py
 --sync 与 AUTO 同用时，只在本次上传的工作区服务器运行。
 gpuctl run --machine auto [--candidates SERVER,SERVER] -g 1 -- python train.py
@@ -55,7 +55,7 @@ gpuctl run --gpu 0 -g 1 --memory-limit-gib 60 -- python train.py
 工作区 /workspace，数据集 /datasets；任务输出 /outputs。
 未选项目使用默认 OCI 容器。Ctrl+] 只断开终端；exit 结束，GPU 终端结束后释放卡。
 gpuctl logs JOB / watch JOB / diagnostics JOB / cancel JOB
-gpuctl priority JOB P0|P1|P2|P3|P4 / completion JOB / reconcile-resources JOB
+gpuctl priority JOB P0|P1|P2|P3|P4 （P4 最优先，P0 最低） / completion JOB / reconcile-resources JOB
 gpuctl note TEXT --job JOB / notes / notify JOB on|off|status
 gpuctl files rm PATH --job JOB [--recursive] / outputs delete --job JOB
 
@@ -105,34 +105,6 @@ var terminalErrorMetadata = (error2) => ({
   ...typeof error2.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error2.code) ? { code: error2.code } : {}
 });
 var terminalMetadata = (value, key = "") => typeof value === "string" ? maintenanceVisible(value, ["description", "body"].includes(key)) : Array.isArray(value) ? value.map((item) => terminalMetadata(item, key)) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([name, item]) => [maintenanceVisible(name), terminalMetadata(item, name)])) : value;
-async function saveClientSession(path, value) {
-  const before = await lstat5(path, { bigint: true });
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) throw Error("Unsafe upload session cache");
-  const pending = path + ".upload-pending-" + randomUUID7(), file = await open4(pending, "wx", 384);
-  try {
-    await file.writeFile(JSON.stringify(value));
-    await file.sync();
-    await file.close();
-    const current = await lstat5(path, { bigint: true });
-    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n || current.dev !== before.dev || current.ino !== before.ino) throw Error("Upload session cache changed; no request was dispatched");
-    await rename3(pending, path);
-    let directory;
-    try {
-      directory = await open4(dirname2(path), "r");
-      await directory.sync();
-    } catch (error2) {
-      if (process.platform !== "win32" || !["EPERM", "EISDIR", "EINVAL"].includes(error2.code)) throw error2;
-    } finally {
-      await directory?.close();
-    }
-  } finally {
-    await file.close().catch(() => {
-    });
-    await unlink3(pending).catch((error2) => {
-      if (error2.code !== "ENOENT") throw error2;
-    });
-  }
-}
 var args = process.argv.slice(2);
 var options;
 var positionals;
@@ -147,7 +119,7 @@ var CLI_OPTIONS = new Map([
   ['machine','machines']
 ]);
 function parseCLIOptions(argv) {
-  const options2 = { machines: [], datasets: [] }, positionals2 = [];
+  const options2 = { machines: [] }, positionals2 = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--") return { options: options2, positionals: positionals2, training: argv.slice(i + 1) };
     const item = argv[i] === "-g" ? "--cards" : argv[i] === "--on" ? "--machine" : argv[i];
@@ -212,7 +184,7 @@ async function main() {
   if(ownerUsername!==undefined&&!['project','files','outputs','pull','push','upload','upload-status','push-status','run','ssh','shell','data','terminal','jobs','queue'].includes(positionals[0]))fail9('--owner 用于项目、文件、数据、终端或任务命令。');
   delete options.owner;
   if (positionals[0] === "pull-status") {
-    if (positionals.length !== 2 || training.length || options.machines.length || options.datasets.length || Object.keys(options).some(k => !["machines","datasets","json","url","session-file"].includes(k))) fail9("Usage: gpuctl pull-status LOCAL_DIRECTORY [--json]");
+    if (positionals.length !== 2 || training.length || options.machines.length || Object.keys(options).some(k => !["machines","json","url","session-file"].includes(k))) fail9("Usage: gpuctl pull-status LOCAL_DIRECTORY [--json]");
     const result=await directoryDownloadStatus(positionals[1]);
     if(options.json)console.log(maintenanceJSON({ok:true,data:result}));else console.log(JSON.stringify(result,null,2));
     return;
@@ -315,7 +287,7 @@ async function main() {
     mode = { demo: login.state.demo, gpuqConnected: login.state.gpuqConnected === true };
     await mkdir4(dirname2(sessionFile), { recursive: true, mode: 448 });
     const previous = session?.principal?.userId === login.principal.userId ? session : null;
-    await writeFile2(sessionFile, JSON.stringify({ url: base.origin, token: login.token, principal: login.principal, ...previous?.machine ? { machine: previous.machine } : {}, ...previous?.projectsByMachine ? { projectsByMachine: previous.projectsByMachine } : {}, ...previous?.terminalSessions ? { terminalSessions: previous.terminalSessions } : {} }), { mode: 384 });
+    await writeFile2(sessionFile, JSON.stringify({ url: base.origin, token: login.token, principal: login.principal, ...previous?.machine ? { machine: previous.machine } : {}, ...previous?.projectsByMachine ? { projectsByMachine: previous.projectsByMachine } : {} }), { mode: 384 });
     await chmod(sessionFile, 384);
     result = { loggedIn: true, principal: login.principal };
   } else {
@@ -370,10 +342,9 @@ async function main() {
       return user.id;
     };
         if (command === "transfer") {
-      const action = positionals[1], common2 = ["machines", "datasets", "url", "session-file", "json", "key"], specific = { upload: ["name", "via"], download: ["via"], copy: ["from", "to", "name", "timeout", "detach"], list: ["cursor", "limit"], status: [], watch: ["interval"], cancel: [], resume: [] }[action];
-      if (!specific || training.length || options.datasets.length || Object.keys(options).some((k) => !common2.includes(k) && !specific.includes(k))) fail9("Usage: transfer upload|download|copy|list|status|watch|cancel|resume");
-      const progress = (phase, v) => process.stderr.write(phase === "ROUTE" ? v.kind === "campus-direct" ? "传输路径：直连上传节点（文件不经平台中转）\n" : v.kind === "tail-upload" ? "传输路径：Tail 备用上传（不改变默认路由；中继可能影响速度）\n" : `传输路径：VPS 中转${v.explicit ? "（已明确选择）" : "（小文件通道）"}
-` : `${phase} · ${v.transferId || v.uploadId || v.key || v.path || ""}${v.bytes !== void 0 ? " · " + v.bytes + " / " + (v.totalBytes ?? "?") + " bytes" : ""}
+      const action = positionals[1], common2 = ["machines", "url", "session-file", "json", "key"], specific = { upload: ["name", "via"], download: ["via"], copy: ["from", "to", "name", "timeout", "detach"], list: ["cursor", "limit"], status: [], watch: ["interval"], cancel: [], resume: [] }[action];
+      if (!specific || training.length || Object.keys(options).some((k) => !common2.includes(k) && !specific.includes(k))) fail9("Usage: transfer upload|download|copy|list|status|watch|cancel|resume");
+      const progress = (phase, v) => process.stderr.write(`${phase} · ${v.transferId || v.uploadId || v.key || v.path || ""}${v.bytes !== void 0 ? " · " + v.bytes + " / " + (v.totalBytes ?? "?") + " bytes" : ""}
 `);
       if (action === "upload") {
         if (positionals.length !== 3) fail9("Usage: transfer upload LOCAL_DIR --name DATASET");
@@ -414,19 +385,19 @@ async function main() {
     } else if (command === "community") {
       result = await runCommunityCommand({ positionals, options, training, call });
     } else if (command === "queue") {
-      if (positionals.length !== 1 || training.length || options.datasets.length || options.machines.length > 1 || Object.keys(options).some((k) => !["machines", "datasets", "url", "session-file", "json"].includes(k))) fail9("Usage: queue [--machine SERVER]");
+      if (positionals.length !== 1 || training.length || options.machines.length > 1 || Object.keys(options).some((k) => !["machines", "url", "session-file", "json"].includes(k))) fail9("Usage: queue [--machine SERVER]");
       const selected = options.machines.length ? machineName(options.machines[0]) : null;
       if (selected && !state.machines.some((m) => m.id === selected)) fail9("这台机器未授权或不存在");
       result = { stale: state.gpuq?.stale !== false, hosts: (state.gpuq?.hosts || []).filter((h) => !selected || h.id === selected).map((h) => ({ machine: h.id, reachable: h.reachable, checkedAt: state.gpuq.checkedAt, tasks: (h.tasks||[]).filter(task=>!targetOwnerId||(task.ownerId||task.userId||task.owner?.id)===targetOwnerId) })) };
     } else if (command === "task-label") {
-      const action = positionals[1], setting = action === "set", allowed = ["machines", "datasets", "url", "session-file", "json", ...setting ? ["name", "description"] : []];
-      if (!["get", "set"].includes(action) || positionals.length !== 4 || training.length || options.machines.length || options.datasets.length || Object.keys(options).some((k) => !allowed.includes(k))) fail9("Usage: task-label get|set SERVER NODE_JOB_ID [--name TEXT --description TEXT]");
+      const action = positionals[1], setting = action === "set", allowed = ["machines", "url", "session-file", "json", ...setting ? ["name", "description"] : []];
+      if (!["get", "set"].includes(action) || positionals.length !== 4 || training.length || options.machines.length || Object.keys(options).some((k) => !allowed.includes(k))) fail9("Usage: task-label get|set SERVER NODE_JOB_ID [--name TEXT --description TEXT]");
       const machine = machineName(positionals[2]), nodeJobId = positionals[3];
       if (!state.machines.some((m) => m.id === machine) || !/^J[a-f0-9]{12}$/.test(nodeJobId)) fail9("Use an authorized server and the complete original native job ID.");
       if (setting && (typeof options.name !== "string" || typeof options.description !== "string")) fail9("Supply --name and --description.");
       result = (await call("tasks.display." + action, { machine, nodeJobId, ...setting ? { name: options.name, description: taskDescription(options.description) } : {} })).result;
     } else if (command === "profile") {
-      if (positionals.length !== 1 || training.length || options.datasets.length || options.machines.length || Object.keys(options).some((k) => !["machines", "datasets", "url", "session-file", "json", "display-name"].includes(k))) fail9("Usage: profile [--display-name NAME]");
+      if (positionals.length !== 1 || training.length || options.machines.length || Object.keys(options).some((k) => !["machines", "url", "session-file", "json", "display-name"].includes(k))) fail9("Usage: profile [--display-name NAME]");
       if (options["display-name"]) {
         result = (await call("profile.update", { name: displayName(options["display-name"]) })).result;
       } else result = state.users.find((u) => u.id === session.principal.userId);
@@ -438,8 +409,8 @@ async function main() {
     } else if (command === "maintenance") {
       const action = positionals[1];
       if (["status", "on", "off"].includes(action)) {
-        const allowed = ["machines", "datasets", "url", "session-file", "json", ...action === "status" ? [] : ["reason"]];
-        if (training.length || options.machines.length || options.datasets.length || Object.keys(options).some((k) => !allowed.includes(k)) || positionals.length !== (action === "status" ? 2 : 3)) fail9("Usage: maintenance status | maintenance on all|SERVER --reason TEXT | maintenance off all|SERVER");
+        const allowed = ["machines", "url", "session-file", "json", ...action === "status" ? [] : ["reason"]];
+        if (training.length || options.machines.length || Object.keys(options).some((k) => !allowed.includes(k)) || positionals.length !== (action === "status" ? 2 : 3)) fail9("Usage: maintenance status | maintenance on all|SERVER --reason TEXT | maintenance off all|SERVER");
         if (action === "status") result = (await call("maintenance.status")).result;
         else {
           if (session.principal.role !== "admin") fail9("仅管理员可设置或解除维护状态。");
@@ -469,8 +440,8 @@ async function main() {
         if(action==='create'||action==='use'){session.projectsByMachine={...session.projectsByMachine,[machine]:project};await saveSession();result={...result,machine,selectedProject:project};}
       }else fail9('Usage: project create|list|use|status|label|group|catalog|archive|unarchive|delete|quota|trash');
     } else if (command === "terminal" && ["status", "close"].includes(positionals[1])) {
-      const allowed = ["machines", "datasets", "url", "session-file", "json", "project"];
-      if (positionals.length !== 3 || training.length || options.datasets.length || Object.keys(options).some((k) => !allowed.includes(k))) fail9("Usage: terminal status|close SESSION [--machine SERVER] [--project NAME]");
+      const allowed = ["machines", "url", "session-file", "json", "project"];
+      if (positionals.length !== 3 || training.length || Object.keys(options).some((k) => !allowed.includes(k))) fail9("Usage: terminal status|close SESSION [--machine SERVER] [--project NAME]");
       const id2 = positionals[2], machine = defaultMachine();
       if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id2)) fail9("Terminal requires the complete original session UUID");
       const context = projectArgs(machine);
@@ -509,11 +480,7 @@ async function main() {
 ${terminal.state==='REJECTED'?`终端未创建：${terminal.reason||error2.message}`:terminal.state==='ALIVE'?`原终端仍在运行，尚未附着。重连原会话：${reconnectCommand}`:terminal.state==='STOPPED'?'原终端已结束，未新建会话。':terminal.state==='NOT_FOUND'?`原终端未创建，可以直接新建：${terminal.newCommand}`:`终端状态未确认，未重开或重放输入。只读查询原会话：${statusCommand}`}`), { terminal, status: terminal.state==='REJECTED'?400:error2.status, code: terminal.state==='REJECTED'?'TERMINAL_OPEN_REJECTED':error2.code });
       const observeOriginal=async()=>{
         try{
-          const latest=JSON.parse(await readFile2(sessionFile,'utf8'));
-          if(latest.url!==base.origin||latest.token!==session.token||latest.principal?.userId!==session.principal?.userId)return;
           const observed=(await call('terminal.status',{machine,id:id2,...context},AbortSignal.timeout(10000))).result;
-          const current=JSON.parse(await readFile2(sessionFile,'utf8'));
-          if(current.url!==latest.url||current.token!==latest.token||current.principal?.userId!==latest.principal?.userId)return;
           if(['ALIVE','STOPPED'].includes(observed.state)){terminal.state=observed.state;if(typeof observed.writerLeaseExpired==='boolean')terminal.writerLeaseExpired=observed.writerLeaseExpired;}
           if(observed.state==='NOT_FOUND'&&observed.canCreate===true){terminal.state='NOT_FOUND';terminal.newCommand=commandText(['gpuctl','ssh','--machine',machine,...scope,'--url',base.origin,'--session-file',sessionFile]);}
           if(observed.state==='REJECTED'&&observed.created===false&&typeof observed.reason==='string'){terminal.state='REJECTED';terminal.reason=observed.reason;}
@@ -522,12 +489,6 @@ ${terminal.state==='REJECTED'?`终端未创建：${terminal.reason||error2.messa
       await new Promise((resolve5, reject) => process.stderr.write("Terminal: " + maintenanceJSON(terminal) + "\n", (error2) => error2 ? reject(error2) : resolve5()));
       let opened,openDispatched=false,openResponded=false;
       try {
-        const latest = JSON.parse(await readFile2(sessionFile, "utf8"));
-        if (latest.url !== base.origin || latest.token !== session.token || latest.principal?.userId !== session.principal?.userId)
-          fail9("登录缓存已改变，未打开终端；请核对当前账号。");
-        const next = { ...latest, terminalSessions: { ...latest.terminalSessions, [id2]: { ...terminal, userId: session.principal.userId } } };
-        await saveClientSession(sessionFile, next);
-        session = next;
         openDispatched=true;
         opened = (await call("terminal.open", { machine, key, clientId, mode: openMode, ...options.reconnect ? { id: id2, takeover: options.takeover === true } : {}, ...context })).result;
         openResponded=true;
@@ -649,14 +610,14 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       if (options.key || training.length) fail9("priority does not accept a submission key or command argv");
       result = (await call("jobs.priority", { jobId: positionals[1], priority: positionals[2] })).result;
     } else if (command === "reconcile-resources") {
-      if (positionals.length !== 2 || training.length || options.machines.length || options.datasets.length || Object.keys(options).some((k) => !["machines", "datasets", "json", "url", "session-file"].includes(k))) fail9("Usage: reconcile-resources JOB [--json]; no paths, machine or execution options");
+      if (positionals.length !== 2 || training.length || options.machines.length || Object.keys(options).some((k) => !["machines", "json", "url", "session-file"].includes(k))) fail9("Usage: reconcile-resources JOB [--json]; no paths, machine or execution options");
       result = (await call("jobs.reconcile-resources", { jobId: positionals[1] })).result;
     } else if (command === "completion") {
-      if (positionals.length !== 2 || training.length || options.machines.length || options.datasets.length || Object.keys(options).some((k) => !["machines", "datasets", "json", "url", "session-file"].includes(k))) fail9("Usage: completion JOB [--json]; no paths, machine or execution options");
+      if (positionals.length !== 2 || training.length || options.machines.length || Object.keys(options).some((k) => !["machines", "json", "url", "session-file"].includes(k))) fail9("Usage: completion JOB [--json]; no paths, machine or execution options");
       result = (await call("jobs.completion", { jobId: positionals[1] })).result;
       if (result.completed !== true) process.exitCode = 2;
     } else if (command === "diagnostics") {
-      if (positionals.length !== 2 || training.length || options.machines.length || options.datasets.length || Object.keys(options).some((k) => !["machines", "datasets", "json", "url", "session-file"].includes(k))) fail9("Usage: diagnostics JOB [--json]; no paths, machine or execution options");
+      if (positionals.length !== 2 || training.length || options.machines.length || Object.keys(options).some((k) => !["machines", "json", "url", "session-file"].includes(k))) fail9("Usage: diagnostics JOB [--json]; no paths, machine or execution options");
       result = (await call("jobs.diagnostics", { jobId: positionals[1] })).result;
     } else if (command === "watch" && positionals.length === 2) {
       const controller = new AbortController(), stop = () => controller.abort();
@@ -679,11 +640,10 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
 `);
       result = (await call("community.notes.create", { body: positionals[1], key, ...options.job ? { jobId: options.job } : {} })).result;
     } else if (command === "note-delete" && positionals.length === 2) {
-      const { note } = (await call("community.notes.get", { id: positionals[1] })).result;
-      result = (await call("community.notes.delete", { id: note.id })).result;
+      result = (await call("community.notes.delete", { id: positionals[1] })).result;
     } else if (["logs", "cancel"].includes(command) && positionals.length === 2) result = (await call(command === "logs" ? "jobs.logs" : "jobs.cancel", { jobId: positionals[1] })).result;
     else if(outputDelete){
-      const key=options.key||randomUUID7();if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key))fail9('Use the original --key UUID');
+      const key=options.key||randomUUID7();
       if(!options.json)process.stderr.write('删除编号：'+key+'；重试沿用 --key '+key+'\n');
       try{result=(await call('outputs.delete',{key,jobId:options.job,path:command==='files'?positionals[2]:'.',recursive:command==='outputs'||options.recursive===true,dryRun:options['dry-run']===true})).result;}
       catch(error){error.message+='\n原删除编号：'+key+'；重试沿用 --key '+key;throw error;}
@@ -824,7 +784,7 @@ ${n.body}
   }
   if (command === "jobs") {
     console.log(result.length ? [...result].slice(-50).reverse().map((j) => `${j.id}  ${j.state}${j.preempted ? "（让位中断，不会自动重跑）" : ""}
-  ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}
+  ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${Number.isInteger(j.schedulerPriority) ? 'P'+j.schedulerPriority : ["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}
   ${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}`).join("\n") : "暂无任务。");
     if (result.length > 50) console.log("显示最近 50 条；完整记录：gpuctl jobs --json");
     return;
@@ -853,6 +813,5 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.a
 }
 export {
   parseCLIOptions,
-  saveClientSession,
   uploadCodeFiles
 };

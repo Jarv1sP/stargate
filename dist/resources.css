@@ -7,7 +7,7 @@
 .sb:has(#page-resources:not([hidden])) .demo-note{margin:0;padding:0;border:0;background:none;border-radius:0;font-size:12px;line-height:18px}
 .sb .resource-head-telemetry{font:12px/1.8 var(--sans);color:var(--ink-3);text-align:right}
 .sb .resource-head-telemetry #monitor-status{margin:0;font:11px/1.8 var(--mono);color:var(--ink-3)}
-.sb #page-resources .section-kicker,.sb #page-resources .resource-explainer{display:none}
+.sb #page-resources .section-kicker{display:none}
 .sb .resource-fleet{padding:24px 32px 22px;margin-top:12px;scroll-margin-top:84px;container:resource-fleet / inline-size}
 .sb .resource-hardware-caption{display:flex;justify-content:space-between;gap:16px;margin-bottom:16px;color:var(--ink-3);font-size:12px;align-items:center}
 .sb .resource-hardware-caption>span{display:flex;align-items:center;gap:8px}
@@ -44,7 +44,6 @@
 .sb .resource-tower-bar.free{border-color:var(--line-2)}
 .sb .resource-tower-bar.unknown{background:repeating-linear-gradient(135deg,var(--hatch) 0 1px,transparent 1px 7px)}
 .sb .resource-tower-bar.unknown :is(.resource-fill,.resource-previous,.resource-delta,.resource-sample-edge){display:none}
-.sb .resource-tower-bar.locked{background:#252830;border-color:#353943}
 .sb .resource-chassis-bays{position:absolute;left:7.04%;right:7.04%;top:14.15%;height:55.15%;gap:10px}
 .sb .resource-chassis-bays .resource-tower{height:100%;width:100%;padding:0 3px;border:0;background:none;min-height:44px;min-width:44px}
 .sb .resource-chassis-bays .resource-tower:disabled{opacity:1;cursor:default}
@@ -78,7 +77,7 @@
 .sb .resource-legend{display:flex;justify-content:flex-end;gap:12px 18px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);padding:14px 0 0 190px;margin-top:12px;color:var(--ink-3);font-size:12px}
 .sb .resource-legend>span{display:flex;align-items:center;gap:6px}
 .sb .resource-legend i{display:block;width:8px;height:12px;border:1px solid var(--line-3)}
-.sb .resource-legend .mine{background:var(--ink)}.sb .resource-legend .used{background:#717780}.sb .resource-legend .locked{background:#252830}
+.sb .resource-legend .mine{background:var(--ink)}.sb .resource-legend .used{background:#717780}
 .sb .resource-legend .unknown{background:repeating-linear-gradient(135deg,var(--hatch) 0 1px,transparent 1px 4px)}
 .sb .resource-legend .previous{height:1px;width:16px;border:0;background:var(--ink-2)}
 .sb .resource-info{display:inline-block;position:relative;vertical-align:middle;flex:none;border:0;margin:0;padding:0}

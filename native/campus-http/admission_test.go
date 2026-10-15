@@ -16,15 +16,13 @@ import (
 
 const busyReceipt = `{"ok":false,"code":"BUSY","reasonCode":"LISTENER_BUSY","retryAfter":2}`
 
-func TestHTTP429NeedsNoReceiptFields(t *testing.T) {
-	for _, body := range []string{`{}`, `{"futureField":true}`, `not JSON`} {
-		response := &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {"2"}}}
-		if got := admissionBusyDelay(response, []byte(body)); got != 2000 {
-			t.Fatalf("delay %d", got)
-		}
+func TestHTTP429UsesRetryAfter(t *testing.T) {
+	response := &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": {"2"}}}
+	if got := admissionBusyDelay(response); got != 2000 {
+		t.Fatalf("delay %d", got)
 	}
-	response := &http.Response{StatusCode: 503}
-	if admissionBusyDelay(response, nil) != 0 {
+	response = &http.Response{StatusCode: 503}
+	if admissionBusyDelay(response) != 0 {
 		t.Fatal("unknown writes must not be replayed")
 	}
 }
@@ -52,22 +50,21 @@ func TestAdmissionBusyKeepsProbePushPullAndDatasetIdentity(t *testing.T) {
 				io.WriteString(w, `{"ok":true,"result":{"offset":3}}`)
 			})
 			body := []byte("raw")
-			f := put(g, 1, 0, body, true)
+			f := put(g, 0, body, true)
 			if op == "probe" {
 				body = nil
-				f = frame{Schema: 1, Seq: 1, Op: op, Endpoint: g.Endpoint, Pin: g.Pin, ProbeTimeoutMs: 1000}
+				f = frame{Op: op, Endpoint: g.Endpoint, Pin: g.Pin, ProbeTimeoutMs: 1000}
 			}
 			if op == "get" {
 				body = nil
 				g.File.Size = 3
-				f = frame{Schema: 1, Seq: 1, Op: op, Grant: g}
+				f = frame{Op: op, Grant: g}
 			}
 			first, raw := s.request(f, body)
 			if first.OK || !first.AdmissionRejected || first.RetryAfterMs != 2000 || first.WriteMayHaveReachedPeer || s.stopped || len(raw) != 0 {
 				t.Fatalf("not resumable: %+v", first)
 			}
 			fixed := s.fixed
-			f.Seq++
 			second, _ := s.request(f, body)
 			if !second.OK || calls.Load() != 2 || connections.Load() != 2 || s.fixed != fixed {
 				t.Fatalf("scope changed or refused resume: %+v", second)
@@ -116,13 +113,13 @@ func TestAdmissionImmediatelyAfterTLSBeforeLargeBody(t *testing.T) {
 	g.Chunk = personalChunkLimit
 	g.MaxChunk = personalChunkLimit
 	body := bytes.Repeat([]byte{0x5a}, personalChunkLimit)
-	f := put(g, 1, 0, body, true)
+	f := put(g, 0, body, true)
 	first, _ := s.request(f, body)
 	<-done
 	if !first.AdmissionRejected || first.RetryAfterMs != 2000 || first.WriteMayHaveReachedPeer || s.stopped {
 		t.Fatalf("early BUSY was lost: %+v", first)
 	}
-	f.Seq++
+
 	second, _ := s.request(f, body)
 	if !second.OK || accepted.Load() != 1 {
 		t.Fatalf("duplicate or failed write: %+v", second)

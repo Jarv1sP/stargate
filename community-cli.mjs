@@ -27,7 +27,7 @@ export async function showCLIAnnouncements(call,pending,write=message=>process.s
     }catch(error){write('未读公告读取失败，请运行 gpuctl community announcements：'+visible(error.message)+'\n');}
   }
 }
-const common=['url','session-file','json','machines','datasets'];
+const common=['url','session-file','json','machines'];
 const fail=message=>{throw Error(message);};
 const visible=value=>String(value??'').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,c=>c==='\n'?c:'\\u{'+c.codePointAt(0).toString(16).padStart(4,'0')+'}');
 export const communityJSON=value=>JSON.stringify(value).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,c=>c.split('').map(unit=>'\\u'+unit.charCodeAt(0).toString(16).padStart(4,'0')).join(''));
@@ -45,7 +45,7 @@ async function body(options,max){
 // No service credentials, direct fetch, shell, or automatic second submission.
 export async function runCommunityCommand({positionals,options={},training=[],call,onKey=key=>process.stderr.write(`Submission key: ${key}; reuse --key with unchanged content within 30 days after an uncertain response.\n`)}){
   if(positionals[0]!=='community'||training.length)fail(communityHelp);
-  if(options.machines?.length||options.datasets?.length)fail('Community commands do not take a machine or dataset.');
+  if(options.machines?.length)fail('Community commands do not take a machine.');
   const command=positionals[1]||'posts',tail=positionals.slice(2);
   const spec={announcements:{n:0,opts:[]},ack:{n:1,opts:['revision']},posts:{n:0,opts:['kind','status','cursor','limit']},show:{n:1,opts:[]},post:{n:0,opts:['kind','title','body','body-file','pin','key','announcement-type',...appearanceOptions]},edit:{n:1,opts:['title','body','body-file','status',...appearanceOptions]},pin:{n:2,opts:[]},comment:{n:1,opts:['body','body-file','key']},comments:{n:1,opts:['cursor','limit']},chat:{n:0,opts:['body','body-file','key','cursor','limit']}}[command];
   if(!spec||tail.length!==spec.n||Object.keys(options).some(key=>![...common,...spec.opts].includes(key)))fail(communityHelp);

@@ -43,7 +43,6 @@ export class DemoService{
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
     const principal=this.principal(token);let result;
     const admin=()=>{if(principal.role!=='admin'){const e=Error('此操作需要管理员权限。');e.status=403;throw e;}};
-    const subject=()=>{if(principal.role==='admin')return args.userId;if(args.userId&&args.userId!==principal.userId){const e=Error('不能操作其他用户。');e.status=403;throw e;}return principal.userId;};
     switch(operation){
       case 'state':break;
       case 'logout':this.revokeSession(token);return {result:{loggedOut:true}};
@@ -53,8 +52,6 @@ export class DemoService{
       case 'users.enabled':{admin();const user=this.store.get(args.userId);if(user.role==='admin'&&!args.enabled&&!this.store.users.some(u=>u.id!==user.id&&u.enabled&&u.role==='admin'))throw Error('不能暂停最后一名可登录管理员。');if(args.userId===principal.userId&&!args.enabled)throw Error('不能暂停当前登录账号。');result=this.store.setEnabled(args.userId,args.enabled);if(!args.enabled)this.invalidate(result.username);break;}
       case 'users.role':{admin();const user=this.store.get(args.userId);if(user.role==='admin'&&args.role!=='admin'&&!this.store.users.some(u=>u.id!==user.id&&u.enabled&&u.role==='admin'))throw Error('不能降级最后一名可登录管理员。');if(args.userId===principal.userId)throw Error('请使用其他管理员账号修改自己的角色。');result=this.store.setRole(args.userId,args.role);this.invalidate(result.username);break;}
       case 'policy.save':admin();result=this.store.save(args.userId,args);break;
-      case 'request':result=this.store.request(subject(),args.machine,args.cards);break;
-      case 'release':this.store.release(args.jobId,subject());result={released:true};break;
       default:throw Error('未知操作。');
     }
     return {result,state:this.state(principal)};

@@ -47,3 +47,13 @@ test('unknown or implausible clocks are unconfirmed; small future skew does not 
   const job=fixture();job.schedulerCheckedAt=new Date(now+5000).toISOString();
   assert.equal(publicJob(job).progressObservation.ageSeconds,0);assert.equal(publicJob(job).progress.stale,false);
 });
+
+test('additional scalar metrics do not hide the training progress snapshot',()=>{
+ const metrics=Object.fromEntries(Array.from({length:40},(_,index)=>['model/block/'+index,index/10]));
+ metrics['validation metric with a longer display name than the old arbitrary field cap']=0.7;
+ metrics.futureAnnotation={notAScalar:true};
+ const value=normalizeProgress({...raw,extraField:true,snapshot:{...raw.snapshot,metrics,extraField:true}});
+ assert.equal(value.reported,true);assert.equal(value.snapshot.stepsCompleted,0);assert.equal(value.snapshot.stepsTotal,2000);
+ assert.equal(Object.keys(value.snapshot.metrics).length,41);assert.equal(value.snapshot.metrics['validation metric with a longer display name than the old arbitrary field cap'],0.7);
+ assert.equal('futureAnnotation' in value.snapshot.metrics,false);assert.match(progressText(value),/0\/2000/);
+});

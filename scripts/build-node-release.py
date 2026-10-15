@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Build offline common-source node packages. Does not install or bind profiles."""
 import argparse
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -17,16 +16,12 @@ SERVICES = {'7IM': '--storage-collect', 'R6t': '--container-usage-refresh', 'FGK
 PYTHON = ['/usr/bin/python3', '-I', '-B']
 
 
-def digest(data):
-    return hashlib.sha256(data).hexdigest()
-
-
 def encoded(value):
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + '\n').encode()
 
 
 def sources(root):
-    """Only tracked Python and the two retained helpers; never private files."""
+    """Only tracked Python/JavaScript and the two retained helpers; never private files."""
     names = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z', '--', 'node', 'gpuq']).decode().split('\0')
     result = {}
     for name in sorted(filter(None, names)):
@@ -43,7 +38,7 @@ def sources(root):
 
 
 def gpuq_archive(payload):
-    """Same deterministic zip format as scripts/build-gpuq.py; source only."""
+    """Package tracked GPUQ sources as a deterministic zipapp."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name, (data, _) in sorted(payload.items()):
@@ -65,13 +60,10 @@ def config_template(machine):
 
 
 
-def profile_manifest(name, template):
+def profile_manifest(name):
     return dict(
         configTemplate=f'profiles/{name}/node-config.template.json',
         installedConfig=f'profiles/{name}/node-config.json',
-        templateSHA256=digest(template),
-        privateConfig=dict(status='not-filled', sha256=None, summary=None),
-        binding='not-wired',
         entryCommand=None if name == 'peer' else [*PYTHON, '{release}/node/core-entry.py', '--profile', name],
         serviceCommands=[] if name not in SERVICES else [
             [*PYTHON, '{release}/node/core-service.py', '--profile', name, SERVICES[name]]])
@@ -101,11 +93,8 @@ def build(root, output, machines):
         result=subprocess.run(['node',str(root/'scripts/build-cloud-files-node.mjs')],cwd=root,capture_output=True,check=True)
         payload['node/cloud-files-worker.mjs']=(result.stdout,False)
     pyz = gpuq_archive(payload)
-    node = {name: digest(data) for name, (data, _) in payload.items() if name.startswith('node/')}
-    with zipfile.ZipFile(io.BytesIO(pyz)) as archive:
-        members = {name: digest(archive.read(name)) for name in archive.namelist()}
-    common = dict(nodeFiles=node, gpuq=dict(path='gpuq.pyz', sha256=digest(pyz), members=members))
-    source_hash = digest(encoded(dict(nodeFiles=node, gpuqMembers=members)))
+    node = {name: len(data) for name, (data, _) in payload.items() if name.startswith('node/')}
+    common = dict(nodeFiles=node, gpuq=dict(path='gpuq.pyz', bytes=len(pyz)))
     for machine in machines:
         release = output / machine
         for name, (data, executable) in payload.items():
@@ -113,19 +102,16 @@ def build(root, output, machines):
                 write(release / name, data, 0o555 if executable else 0o444)
         write(release / 'gpuq.pyz', pyz, 0o444)
         profiles = {}
+        template = encoded(config_template(machine))
         for name in PROFILES:
-            template = encoded(config_template(machine))
-            profiles[name] = profile_manifest(name, template)
+            profiles[name] = profile_manifest(name)
             write(release / profiles[name]['configTemplate'], template, 0o600)
-        manifest = dict(protocol='lean-node-release-v1', machine=machine,
-                        sourceRevision=revision, sourceDirty=bool(dirty), sourceSHA256=source_hash,
-                        stage='templates-only', scopeReview='pending', profiles=profiles, **common,
-                        rollback=dict(releaseDirectory=None, gpuqArchive=None,
-                                      profileEntries={name: None for name in PROFILES}))
+        manifest = dict(sourceRevision=revision, sourceDirty=bool(dirty),
+                        profiles=profiles, **common)
         write(release / 'manifest.json', encoded(manifest), 0o644)
-    return dict(output=str(output), machines=machines, sourceSHA256=source_hash,
-                sourceRevision=revision, nodeFiles=len(node), gpuqMembers=len(members),
-                gpuqSHA256=digest(pyz), scopeReview='pending')
+    return dict(output=str(output), machines=machines,
+                sourceRevision=revision, nodeFiles=len(node), gpuqMembers=sum(name.startswith('gpuq/') for name in payload),
+                gpuqBytes=len(pyz))
 
 
 def main():

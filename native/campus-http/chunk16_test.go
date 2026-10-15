@@ -31,17 +31,17 @@ func TestNegotiatedPersonal16MiBActualTLS(t *testing.T) {
 	g.Chunk = personalChunkLimit
 	g.MaxChunk = personalChunkLimit
 	g.File.Size = int64(len(data))
-	out, raw := s.request(put(g, 1, 0, data, true), data)
+	out, raw := s.request(put(g, 0, data, true), data)
 	if !out.OK || len(raw) != 0 {
 		t.Fatalf("PUT %+v", out)
 	}
-	out, raw = s.request(put(g, 2, 0, data, true), data)
+	out, raw = s.request(put(g, 0, data, true), data)
 	if !out.OK || len(raw) != 0 {
 		t.Fatalf("second PUT %+v", out)
 	}
 	read := &session{roots: s.roots, routeFn: s.routeFn, dialFn: s.dialFn}
 	t.Cleanup(read.close)
-	out, raw = read.request(frame{Schema: 1, Seq: 1, Op: "get", Grant: g}, nil)
+	out, raw = read.request(frame{Op: "get", Grant: g}, nil)
 	if !out.OK || !bytes.Equal(raw, data) {
 		t.Fatalf("GET %+v bytes=%d", out, len(raw))
 	}
@@ -55,24 +55,24 @@ func TestPersonalNegotiationBoundsBeforeAnyDial(t *testing.T) {
 	for _, bound := range []int{0, chunkLimit + 1, 32 * chunkLimit} {
 		g.Chunk = bound
 		g.MaxChunk = personalChunkLimit
-		if validate(put(g, 1, 0, nil, false)) == nil {
+		if validate(put(g, 0, nil, false)) == nil {
 			t.Fatalf("accepted chunk %d", bound)
 		}
 	}
 	g.Chunk = chunkLimit
 	g.MaxChunk = 0
-	if validate(put(g, 1, 0, make([]byte, chunkLimit+1), false)) == nil {
+	if validate(put(g, 0, make([]byte, chunkLimit+1), false)) == nil {
 		t.Fatal("old grant accepted oversize")
 	}
 	g.Chunk = personalChunkLimit
 	g.MaxChunk = personalChunkLimit
-	f := put(g, 1, 0, nil, false)
+	f := put(g, 0, nil, false)
 	f.BodyBytes = personalChunkLimit + 1
 	if validate(f) == nil {
 		t.Fatal("oversize accepted")
 	}
 	g.MaxChunk = 0
-	if validate(put(g, 1, 0, nil, false)) == nil {
+	if validate(put(g, 0, nil, false)) == nil {
 		t.Fatal("16MiB without negotiated maximum accepted")
 	}
 	if connections.Load() != 0 {

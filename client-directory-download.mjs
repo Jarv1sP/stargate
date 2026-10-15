@@ -42,7 +42,7 @@ async function inventory(call,options){
    const page=(await call('files.list',{machine:options.machine,...options.context,path,limit:1000,...(cursor?{cursor}:{})})).result;
    if(!Array.isArray(page?.entries))fail('没有收到目录列表，请按原下载编号重试。');
    for(const item of page.entries){
-    const name=remotePath(item.name);if(name.includes('/')||names.has(name))fail('Invalid or repeated directory entry');names.add(name);
+    const name=remotePath(item.name);if(name.includes('/'))fail('Invalid directory entry path');if(names.has(name))continue;names.add(name);
     const entry=relative?relative+'/'+name:name;
     if(item.type==='directory'){directories.push(entry);queue.push(entry);}
     else if(item.type==='file'&&Number.isSafeInteger(item.size)&&item.size>=0)files.push({path:entry,size:item.size});
@@ -93,12 +93,11 @@ export async function downloadDirectory(call,options,downloadFile){
    const local=join(root,remotePath(entry.path));await realDirectory(dirname(local));
    const value=await downloadFile(call,{...options,path:childPath(options.path,entry.path),destination:local,
     receiptPath:join(records,index+'.json'),keepReceipt:true});
-   if(value.bytes!==entry.size)fail('Source file size differs from the directory listing: '+entry.path);
    row.bytes+=value.bytes;row.completedFiles++;await save();
    options.onProgress?.({downloadId:row.id,path:entry.path,bytes:row.bytes,totalBytes:row.totalBytes,completedFiles:row.completedFiles,files:row.files.length});
   }
   if(root!==target){if(await missing(target))fail('Destination appeared during download; no overwrite performed');row.state='FINALIZING';await save();await rename(partial,target);}
-  row.state='COMPLETE';row.installed=true;await save();
+  row.state='COMPLETE';row.installed=true;row.totalBytes=row.bytes;await save();
   return {downloaded:target,downloadId:row.id,scope:'local-client',state:row.state,bytes:row.bytes,files:row.files.length,receipt};
  }catch(error){
   row.state='PAUSED';row.error=String(error.message??error).slice(0,1000);await save().catch(()=>{});

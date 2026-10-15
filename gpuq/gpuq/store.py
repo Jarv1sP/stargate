@@ -2,8 +2,8 @@
 
 The database is intentionally not created by :class:`Store` construction or by
 the first CRUD operation.  ``initialize_database`` (or ``Store.initialize``)
-is the only creation path; normal daemon startup uses ``Store.open`` and fails
-closed when the file, schema, or integrity checks are not valid.
+is the only creation path; normal daemon startup uses ``Store.open`` without replaying old migrations
+or comparing stored schema metadata.
 
 All values interpolated into SQL identifiers come from private, fixed
 whitelists.  Application values are always bound parameters.
@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -49,23 +50,13 @@ from .progress import (
     progress_milestone,
     validate_progress_payload,
 )
-from .util import reject_duplicate_json
 from .sharing import validate_sharing
 from .hami import validate_hami_request
 from .policy import priority_class_contract, validate_yield_policy
 
 
-APPLICATION_ID = 0x47505131  # ASCII-ish "GPQ1"; protects against a wrong DB.
+APPLICATION_ID = 0x47505131  # SQLite metadata for operator diagnostics.
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
-_SCHEMA_VERSION_V2 = 2
-_SCHEMA_VERSION_V3 = 3
-_SCHEMA_VERSION_V4 = 4
-_SCHEMA_VERSION_V5 = 5
-_SCHEMA_VERSION_V6 = 6
-_SCHEMA_VERSION_V7 = 7
-_SCHEMA_VERSION_V8 = 8
-_SCHEMA_VERSION_V9 = 9
-_SCHEMA_VERSION_V10 = 10
 _SQLITE_SIGNED_INT_MAX = 2**63 - 1
 _MAX_CLAIM_ACTION_EXCLUSIONS = 1000
 _UNSET = object()
@@ -80,26 +71,6 @@ _RESTART_POLICIES = frozenset(item.value for item in RestartPolicy)
 _SCALE_UP_STATES = frozenset(item.value for item in ScaleUpState)
 _PLACEMENTS = frozenset({"any", "pinned"})
 
-_REQUIRED_TABLES_V2_TO_V4 = frozenset(
-    {"schema_meta", "settings", "jobs", "attempts", "leases", "actions", "events"}
-)
-_REQUIRED_TABLES_V5 = frozenset(
-    {
-        "schema_meta",
-        "settings",
-        "jobs",
-        "attempts",
-        "leases",
-        "actions",
-        "events",
-        "scale_up_plans",
-        "scale_up_reservations",
-    }
-)
-_REQUIRED_TABLES_V6_TO_V10 = frozenset({*_REQUIRED_TABLES_V5, "attempt_progress"})
-_REQUIRED_TABLES = frozenset({*_REQUIRED_TABLES_V6_TO_V10, "gpu_allocation_history"})
-
-
 class StoreError(RuntimeError):
     """Base class for durable-store failures."""
 
@@ -110,10 +81,6 @@ class StoreNotInitializedError(StoreError):
 
 class StoreCorruptError(StoreError):
     """SQLite could not read the database or its integrity check failed."""
-
-
-class StoreSchemaError(StoreError):
-    """The database belongs to gpuq but has an unsupported schema."""
 
 
 class StoreConflictError(StoreError):
@@ -127,7 +94,6 @@ class StoreNotFoundError(StoreError):
 # Short aliases are convenient for callers and retain descriptive public names.
 NotInitializedError = StoreNotInitializedError
 CorruptDatabaseError = StoreCorruptError
-SchemaVersionError = StoreSchemaError
 ConflictError = StoreConflictError
 NotFoundError = StoreNotFoundError
 
@@ -186,7 +152,6 @@ def _submission_digest(
     argv_json: str,
     cwd: str,
     env_json: str,
-    include_batch_fields: bool = True,
     share_gpu: bool = False,
     vram_mb: int | None = None,
     hami_core: bool = False,
@@ -209,21 +174,20 @@ def _submission_digest(
         str(int(elastic_gpu_count)),
         str(int(auto_scale_up)),
     ]
-    if include_batch_fields:
-        parts.extend(
+    parts.extend(
+        (
             (
-                (
-                    ""
-                    if target_global_batch_size is None
-                    else str(target_global_batch_size)
-                ),
-                (
-                    ""
-                    if per_device_micro_batch_size is None
-                    else str(per_device_micro_batch_size)
-                ),
-            )
+                ""
+                if target_global_batch_size is None
+                else str(target_global_batch_size)
+            ),
+            (
+                ""
+                if per_device_micro_batch_size is None
+                else str(per_device_micro_batch_size)
+            ),
         )
+    )
     parts.extend(
         (
             placement,
@@ -352,28 +316,18 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
-# Schema v3 deliberately starts from the exact v2 DDL and applies the same
-# additive migration used for an existing production database.  This keeps a
-# freshly initialized database and a migrated database byte-for-byte
-# equivalent at the sqlite_schema level, so the strict schema signature check
-# remains useful after migration.
-_SCHEMA_V2_STATEMENTS = (
-    """
-    CREATE TABLE schema_meta (
+_SCHEMA_STATEMENTS = (
+    """CREATE TABLE schema_meta (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         schema_version INTEGER NOT NULL,
         initialized_at REAL NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE settings (
+    )""",
+    """CREATE TABLE settings (
         key TEXT PRIMARY KEY,
         value_json TEXT NOT NULL,
         updated_at REAL NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE jobs (
+    )""",
+    """CREATE TABLE jobs (
         id TEXT PRIMARY KEY,
         sequence INTEGER NOT NULL UNIQUE CHECK (sequence > 0),
         submit_key TEXT NOT NULL UNIQUE,
@@ -427,10 +381,68 @@ _SCHEMA_V2_STATEMENTS = (
         updated_at REAL NOT NULL,
         started_at REAL,
         finished_at REAL
-    )
-    """,
-    """
-    CREATE TRIGGER jobs_requested_gpus_insert_validate
+    , min_gpu_count INTEGER NOT NULL DEFAULT 1
+        CHECK (min_gpu_count > 0 AND min_gpu_count <= gpu_count), elastic_gpu_count INTEGER NOT NULL DEFAULT 0
+        CHECK (
+            elastic_gpu_count IN (0, 1)
+            AND (
+                elastic_gpu_count = 1
+                OR min_gpu_count = gpu_count
+            )
+            AND (
+                elastic_gpu_count = 0
+                OR placement = 'any'
+            )
+        ), target_global_batch_size INTEGER DEFAULT NULL
+        CHECK (
+            target_global_batch_size IS NULL
+            OR (
+                typeof(target_global_batch_size) = 'integer'
+                AND target_global_batch_size > 0
+            )
+        ), per_device_micro_batch_size INTEGER DEFAULT NULL
+        CHECK (
+            (
+                target_global_batch_size IS NULL
+                AND per_device_micro_batch_size IS NULL
+            )
+            OR (
+                typeof(target_global_batch_size) = 'integer'
+                AND target_global_batch_size > 0
+                AND typeof(per_device_micro_batch_size) = 'integer'
+                AND per_device_micro_batch_size > 0
+                AND placement = 'any'
+                AND elastic_gpu_count = 1
+            )
+        ), auto_scale_up INTEGER NOT NULL DEFAULT 0
+        CHECK (
+            auto_scale_up IN (0, 1)
+            AND (
+                auto_scale_up = 0
+                OR (
+                    elastic_gpu_count = 1
+                    AND placement = 'any'
+                    AND checkpoint_capability = 'epoch-v1'
+                    AND restart_policy = 'on-preempt'
+                    AND target_global_batch_size IS NOT NULL
+                    AND per_device_micro_batch_size IS NOT NULL
+                    AND min_gpu_count < gpu_count
+                )
+            )
+        ), share_gpu INTEGER NOT NULL DEFAULT 0 CHECK (share_gpu IN (0,1)), vram_mb INTEGER CHECK (
+        (share_gpu=0 AND vram_mb IS NULL) OR
+        (share_gpu=1 AND vram_mb IS NOT NULL AND vram_mb BETWEEN 1 AND 2147483647
+         AND placement='pinned' AND gpu_count=1 AND min_gpu_count=1
+         AND elastic_gpu_count=0 AND auto_scale_up=0 AND dispatch_mode='queue')), hami_core INTEGER NOT NULL DEFAULT 0 CHECK (hami_core IN (0,1)), sm_percent INTEGER CHECK (
+        (hami_core=0 AND sm_percent IS NULL) OR
+        (hami_core=1 AND share_gpu=1 AND sm_percent IS NOT NULL AND sm_percent BETWEEN 1 AND 100)), yield_policy TEXT NOT NULL DEFAULT 'legacy'
+    CHECK (yield_policy IN ('legacy','never','now','save')
+       AND (yield_policy<>'save' OR checkpoint_capability='epoch-v1')
+       AND (yield_policy NOT IN ('now','save') OR share_gpu=0)), preempt_idle_only INTEGER NOT NULL DEFAULT 0
+    CHECK (preempt_idle_only IN (0,1)), preempt_opt_in_only INTEGER NOT NULL DEFAULT 0
+    CHECK (preempt_opt_in_only IN (0,1)), display_json TEXT NOT NULL DEFAULT '{}'
+    CHECK (json_valid(display_json) AND json_type(display_json)='object'))""",
+    """CREATE TRIGGER jobs_requested_gpus_insert_validate
     BEFORE INSERT ON jobs
     BEGIN
         SELECT RAISE(ABORT, 'invalid requested GPU UUID')
@@ -449,10 +461,8 @@ _SCHEMA_V2_STATEMENTS = (
             GROUP BY value
             HAVING count(*) > 1
         );
-    END
-    """,
-    """
-    CREATE TRIGGER jobs_requested_gpus_update_validate
+    END""",
+    """CREATE TRIGGER jobs_requested_gpus_update_validate
     BEFORE UPDATE OF placement, requested_gpu_uuids_json, gpu_count ON jobs
     BEGIN
         SELECT RAISE(ABORT, 'invalid requested GPU UUID')
@@ -471,18 +481,14 @@ _SCHEMA_V2_STATEMENTS = (
             GROUP BY value
             HAVING count(*) > 1
         );
-    END
-    """,
-    """
-    CREATE INDEX jobs_schedule_idx
+    END""",
+    """CREATE INDEX jobs_schedule_idx
     ON jobs(state, priority DESC, sequence)
     """,
-    """
-    CREATE INDEX jobs_owner_idx
+    """CREATE INDEX jobs_owner_idx
     ON jobs(owner, created_at DESC)
     """,
-    """
-    CREATE TABLE attempts (
+    """CREATE TABLE attempts (
         id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
         ordinal INTEGER NOT NULL CHECK (ordinal > 0),
@@ -518,45 +524,37 @@ _SCHEMA_V2_STATEMENTS = (
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL,
         started_at REAL,
-        finished_at REAL,
+        finished_at REAL, launch_resume_checkpoint_path TEXT DEFAULT NULL
+        CHECK (
+            launch_resume_checkpoint_path IS NULL
+            OR (
+                length(launch_resume_checkpoint_path) BETWEEN 1 AND 16384
+                AND substr(launch_resume_checkpoint_path, 1, 1) = '/'
+                AND instr(launch_resume_checkpoint_path, char(0)) = 0
+                AND instr(launch_resume_checkpoint_path, char(10)) = 0
+                AND instr(launch_resume_checkpoint_path, char(13)) = 0
+            )
+        ), resume_from_attempt_id TEXT DEFAULT NULL
+        REFERENCES attempts(id)
+        CHECK (
+            (resume_from_attempt_id IS NULL)
+            = (launch_resume_checkpoint_path IS NULL)
+        ),
         UNIQUE(job_id, ordinal),
         UNIQUE(id, job_id),
         UNIQUE(unit_token)
-    )
-    """,
-    """
-    CREATE UNIQUE INDEX attempts_one_active_per_job_idx
+    )""",
+    """CREATE UNIQUE INDEX attempts_one_active_per_job_idx
     ON attempts(job_id)
     WHERE state IN (
         'PLANNED','STARTING','RUNNING','SAVE_REQUESTED','SAVE_WITHDRAWING',
         'CHECKPOINT_ACKED','TERM_REQUESTED','KILL_REQUESTED','DRAINING'
     )
     """,
-    """
-    CREATE INDEX attempts_job_idx
+    """CREATE INDEX attempts_job_idx
     ON attempts(job_id, ordinal DESC)
     """,
-    """
-    CREATE TABLE leases (
-        gpu_uuid TEXT PRIMARY KEY,
-        gpu_index INTEGER NOT NULL UNIQUE CHECK (gpu_index >= 0),
-        job_id TEXT NOT NULL,
-        attempt_id TEXT NOT NULL,
-        acquired_at REAL NOT NULL,
-        heartbeat_at REAL NOT NULL,
-        lease_token TEXT NOT NULL,
-        FOREIGN KEY(attempt_id, job_id)
-            REFERENCES attempts(id, job_id) ON DELETE CASCADE
-    )
-    """,
-    """
-    CREATE INDEX leases_job_idx ON leases(job_id)
-    """,
-    """
-    CREATE INDEX leases_attempt_idx ON leases(attempt_id)
-    """,
-    """
-    CREATE TABLE actions (
+    """CREATE TABLE actions (
         id TEXT PRIMARY KEY,
         dedupe_key TEXT NOT NULL UNIQUE,
         action_digest TEXT NOT NULL,
@@ -583,14 +581,11 @@ _SCHEMA_V2_STATEMENTS = (
         finished_at REAL,
         FOREIGN KEY(attempt_id, job_id)
             REFERENCES attempts(id, job_id) ON DELETE CASCADE
-    )
-    """,
-    """
-    CREATE INDEX actions_outbox_idx
+    )""",
+    """CREATE INDEX actions_outbox_idx
     ON actions(state, available_at, claim_until, created_at, id)
     """,
-    """
-    CREATE TABLE events (
+    """CREATE TABLE events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
         attempt_id TEXT,
@@ -599,68 +594,10 @@ _SCHEMA_V2_STATEMENTS = (
         created_at REAL NOT NULL,
         FOREIGN KEY(attempt_id, job_id)
             REFERENCES attempts(id, job_id) ON DELETE CASCADE
-    )
+    )""",
+    """CREATE INDEX events_job_idx ON events(job_id, id)
     """,
-    """
-    CREATE INDEX events_job_idx ON events(job_id, id)
-    """,
-)
-
-_SCHEMA_V2_TO_V3_DDL = (
-    """
-    ALTER TABLE jobs
-    ADD COLUMN min_gpu_count INTEGER NOT NULL DEFAULT 1
-        CHECK (min_gpu_count > 0 AND min_gpu_count <= gpu_count)
-    """,
-    """
-    ALTER TABLE jobs
-    ADD COLUMN elastic_gpu_count INTEGER NOT NULL DEFAULT 0
-        CHECK (
-            elastic_gpu_count IN (0, 1)
-            AND (
-                elastic_gpu_count = 1
-                OR min_gpu_count = gpu_count
-            )
-            AND (
-                elastic_gpu_count = 0
-                OR placement = 'any'
-            )
-        )
-    """,
-)
-
-_SCHEMA_V3_TO_V4_DDL = (
-    """
-    ALTER TABLE jobs
-    ADD COLUMN target_global_batch_size INTEGER DEFAULT NULL
-        CHECK (
-            target_global_batch_size IS NULL
-            OR (
-                typeof(target_global_batch_size) = 'integer'
-                AND target_global_batch_size > 0
-            )
-        )
-    """,
-    """
-    ALTER TABLE jobs
-    ADD COLUMN per_device_micro_batch_size INTEGER DEFAULT NULL
-        CHECK (
-            (
-                target_global_batch_size IS NULL
-                AND per_device_micro_batch_size IS NULL
-            )
-            OR (
-                typeof(target_global_batch_size) = 'integer'
-                AND target_global_batch_size > 0
-                AND typeof(per_device_micro_batch_size) = 'integer'
-                AND per_device_micro_batch_size > 0
-                AND placement = 'any'
-                AND elastic_gpu_count = 1
-            )
-        )
-    """,
-    """
-    CREATE TRIGGER jobs_batch_contract_insert_validate
+    """CREATE TRIGGER jobs_batch_contract_insert_validate
     BEFORE INSERT ON jobs
     BEGIN
         SELECT RAISE(ABORT, 'batch contract has no compatible GPU count')
@@ -682,10 +619,8 @@ _SCHEMA_V3_TO_V4_DDL = (
                     / NEW.per_device_micro_batch_size
                 ) % value = 0
           );
-    END
-    """,
-    """
-    CREATE TRIGGER jobs_batch_contract_update_validate
+    END""",
+    """CREATE TRIGGER jobs_batch_contract_update_validate
     BEFORE UPDATE OF
         target_global_batch_size, per_device_micro_batch_size,
         min_gpu_count, gpu_count, elastic_gpu_count, placement
@@ -710,33 +645,8 @@ _SCHEMA_V3_TO_V4_DDL = (
                     / NEW.per_device_micro_batch_size
                 ) % value = 0
           );
-    END
-    """,
-)
-
-
-_SCHEMA_V4_TO_V5_DDL = (
-    """
-    ALTER TABLE jobs
-    ADD COLUMN auto_scale_up INTEGER NOT NULL DEFAULT 0
-        CHECK (
-            auto_scale_up IN (0, 1)
-            AND (
-                auto_scale_up = 0
-                OR (
-                    elastic_gpu_count = 1
-                    AND placement = 'any'
-                    AND checkpoint_capability = 'epoch-v1'
-                    AND restart_policy = 'on-preempt'
-                    AND target_global_batch_size IS NOT NULL
-                    AND per_device_micro_batch_size IS NOT NULL
-                    AND min_gpu_count < gpu_count
-                )
-            )
-        )
-    """,
-    """
-    CREATE TRIGGER jobs_auto_scale_up_insert_validate
+    END""",
+    """CREATE TRIGGER jobs_auto_scale_up_insert_validate
     BEFORE INSERT ON jobs
     BEGIN
         SELECT RAISE(ABORT, 'auto scale-up requires two compatible GPU counts')
@@ -758,10 +668,8 @@ _SCHEMA_V4_TO_V5_DDL = (
                     / NEW.per_device_micro_batch_size
                 ) % value = 0
           ) < 2;
-    END
-    """,
-    """
-    CREATE TRIGGER jobs_auto_scale_up_update_validate
+    END""",
+    """CREATE TRIGGER jobs_auto_scale_up_update_validate
     BEFORE UPDATE OF
         auto_scale_up, checkpoint_capability, restart_policy,
         target_global_batch_size, per_device_micro_batch_size,
@@ -787,33 +695,8 @@ _SCHEMA_V4_TO_V5_DDL = (
                     / NEW.per_device_micro_batch_size
                 ) % value = 0
           ) < 2;
-    END
-    """,
-    """
-    ALTER TABLE attempts
-    ADD COLUMN launch_resume_checkpoint_path TEXT DEFAULT NULL
-        CHECK (
-            launch_resume_checkpoint_path IS NULL
-            OR (
-                length(launch_resume_checkpoint_path) BETWEEN 1 AND 16384
-                AND substr(launch_resume_checkpoint_path, 1, 1) = '/'
-                AND instr(launch_resume_checkpoint_path, char(0)) = 0
-                AND instr(launch_resume_checkpoint_path, char(10)) = 0
-                AND instr(launch_resume_checkpoint_path, char(13)) = 0
-            )
-        )
-    """,
-    """
-    ALTER TABLE attempts
-    ADD COLUMN resume_from_attempt_id TEXT DEFAULT NULL
-        REFERENCES attempts(id)
-        CHECK (
-            (resume_from_attempt_id IS NULL)
-            = (launch_resume_checkpoint_path IS NULL)
-        )
-    """,
-    """
-    CREATE TABLE scale_up_plans (
+    END""",
+    """CREATE TABLE scale_up_plans (
         id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
         source_attempt_id TEXT NOT NULL,
@@ -866,30 +749,25 @@ _SCHEMA_V4_TO_V5_DDL = (
         UNIQUE(id, job_id),
         FOREIGN KEY(source_attempt_id, job_id)
             REFERENCES attempts(id, job_id) ON DELETE CASCADE
-    )
-    """,
-    """
-    CREATE UNIQUE INDEX scale_up_plans_one_active_per_job_idx
+    )""",
+    """CREATE UNIQUE INDEX scale_up_plans_one_active_per_job_idx
     ON scale_up_plans(job_id)
     WHERE state IN (
         'SAVE_REQUESTED','CHECKPOINT_ACKED','TERM_REQUESTED',
         'RESTART_PENDING','RESTART_PLANNED'
     )
     """,
-    """
-    CREATE UNIQUE INDEX scale_up_plans_one_active_per_source_idx
+    """CREATE UNIQUE INDEX scale_up_plans_one_active_per_source_idx
     ON scale_up_plans(source_attempt_id)
     WHERE state IN (
         'SAVE_REQUESTED','CHECKPOINT_ACKED','TERM_REQUESTED',
         'RESTART_PENDING','RESTART_PLANNED'
     )
     """,
-    """
-    CREATE INDEX scale_up_plans_job_idx
+    """CREATE INDEX scale_up_plans_job_idx
     ON scale_up_plans(job_id, created_at DESC)
     """,
-    """
-    CREATE TRIGGER scale_up_plans_target_insert_validate
+    """CREATE TRIGGER scale_up_plans_target_insert_validate
     BEFORE INSERT ON scale_up_plans
     BEGIN
         SELECT RAISE(ABORT, 'invalid scale-up target GPU UUID')
@@ -915,20 +793,16 @@ _SCHEMA_V4_TO_V5_DDL = (
             SELECT value FROM json_each(NEW.target_gpu_indices_json)
             GROUP BY value HAVING count(*) > 1
         );
-    END
-    """,
-    """
-    CREATE TRIGGER scale_up_plans_identity_immutable
+    END""",
+    """CREATE TRIGGER scale_up_plans_identity_immutable
     BEFORE UPDATE OF
         job_id, source_attempt_id, nonce, from_gpu_count, target_gpu_count,
         target_gpu_uuids_json, target_gpu_indices_json, reservation_token
     ON scale_up_plans
     BEGIN
         SELECT RAISE(ABORT, 'scale-up plan identity is immutable');
-    END
-    """,
-    """
-    CREATE TRIGGER scale_up_plans_successor_validate
+    END""",
+    """CREATE TRIGGER scale_up_plans_successor_validate
     BEFORE UPDATE OF successor_attempt_id ON scale_up_plans
     WHEN NEW.successor_attempt_id IS NOT NULL
     BEGIN
@@ -938,10 +812,8 @@ _SCHEMA_V4_TO_V5_DDL = (
             WHERE id = NEW.successor_attempt_id
               AND job_id = NEW.job_id
         );
-    END
-    """,
-    """
-    CREATE TABLE scale_up_reservations (
+    END""",
+    """CREATE TABLE scale_up_reservations (
         gpu_uuid TEXT PRIMARY KEY
             CHECK (length(gpu_uuid) BETWEEN 1 AND 256),
         gpu_index INTEGER NOT NULL UNIQUE CHECK (gpu_index >= 0),
@@ -952,18 +824,14 @@ _SCHEMA_V4_TO_V5_DDL = (
         updated_at REAL NOT NULL,
         FOREIGN KEY(plan_id, job_id)
             REFERENCES scale_up_plans(id, job_id) ON DELETE CASCADE
-    )
-    """,
-    """
-    CREATE INDEX scale_up_reservations_plan_idx
+    )""",
+    """CREATE INDEX scale_up_reservations_plan_idx
     ON scale_up_reservations(plan_id, gpu_index)
     """,
-    """
-    CREATE INDEX scale_up_reservations_job_idx
+    """CREATE INDEX scale_up_reservations_job_idx
     ON scale_up_reservations(job_id, gpu_index)
     """,
-    """
-    CREATE TRIGGER scale_up_reservations_insert_validate
+    """CREATE TRIGGER scale_up_reservations_insert_validate
     BEFORE INSERT ON scale_up_reservations
     BEGIN
         SELECT RAISE(ABORT, 'scale-up reservation does not match plan')
@@ -983,23 +851,15 @@ _SCHEMA_V4_TO_V5_DDL = (
                   'RESTART_PENDING','RESTART_PLANNED'
               )
         );
-    END
-    """,
-    """
-    CREATE TRIGGER scale_up_reservations_identity_immutable
+    END""",
+    """CREATE TRIGGER scale_up_reservations_identity_immutable
     BEFORE UPDATE OF
         gpu_uuid, gpu_index, plan_id, job_id, reservation_token
     ON scale_up_reservations
     BEGIN
         SELECT RAISE(ABORT, 'scale-up reservation identity is immutable');
-    END
-    """,
-)
-
-
-_SCHEMA_V5_TO_V6_DDL = (
-    """
-    CREATE TABLE attempt_progress (
+    END""",
+    """CREATE TABLE attempt_progress (
         attempt_id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL,
         protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
@@ -1054,22 +914,17 @@ _SCHEMA_V5_TO_V6_DDL = (
              AND last_problem_notified_at IS NOT NULL
              AND last_problem_severity IS NOT NULL)
         )
-    )
-    """,
-    """
-    CREATE INDEX attempt_progress_job_idx
+    )""",
+    """CREATE INDEX attempt_progress_job_idx
     ON attempt_progress(job_id, updated_at DESC)
     """,
-    """
-    CREATE TRIGGER attempt_progress_identity_immutable
+    """CREATE TRIGGER attempt_progress_identity_immutable
     BEFORE UPDATE OF attempt_id, job_id, protocol_version, created_at
     ON attempt_progress
     BEGIN
         SELECT RAISE(ABORT, 'attempt progress identity is immutable');
-    END
-    """,
-    """
-    CREATE TRIGGER attempt_progress_snapshot_monotonic
+    END""",
+    """CREATE TRIGGER attempt_progress_snapshot_monotonic
     BEFORE UPDATE OF
         sequence, snapshot_json, heartbeat_at, advanced_at,
         stall_timeout_seconds
@@ -1081,81 +936,7 @@ _SCHEMA_V5_TO_V6_DDL = (
         WHERE NEW.heartbeat_at < OLD.heartbeat_at
            OR NEW.advanced_at < OLD.advanced_at
            OR NEW.updated_at < OLD.updated_at;
-    END
-    """,
-)
-
-
-def _schema_signature(
-    connection: sqlite3.Connection,
-) -> tuple[tuple[str, str, str, str], ...]:
-    """Return a normalized signature for every application schema object."""
-
-    rows = connection.execute(
-        """
-        SELECT type, name, tbl_name, sql
-        FROM sqlite_master
-        WHERE name NOT LIKE 'sqlite_%'
-        ORDER BY type, name
-        """
-    ).fetchall()
-    return tuple(
-        (
-            str(row[0]),
-            str(row[1]),
-            str(row[2]),
-            " ".join(str(row[3]).split()),
-        )
-        for row in rows
-    )
-
-
-def _build_expected_schema_signature(
-    migration_ddl: Sequence[str] = (),
-) -> tuple[tuple[str, str, str, str], ...]:
-    connection = sqlite3.connect(":memory:", isolation_level=None)
-    try:
-        for statement in _SCHEMA_V2_STATEMENTS:
-            connection.execute(statement)
-        for statement in migration_ddl:
-            connection.execute(statement)
-        return _schema_signature(connection)
-    finally:
-        connection.close()
-
-
-_EXPECTED_SCHEMA_SIGNATURE_V2 = _build_expected_schema_signature()
-_EXPECTED_SCHEMA_SIGNATURE_V3 = _build_expected_schema_signature(_SCHEMA_V2_TO_V3_DDL)
-_EXPECTED_SCHEMA_SIGNATURE_V4 = _build_expected_schema_signature(
-    (*_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL)
-)
-_EXPECTED_SCHEMA_SIGNATURE_V5 = _build_expected_schema_signature(
-    (
-        *_SCHEMA_V2_TO_V3_DDL,
-        *_SCHEMA_V3_TO_V4_DDL,
-        *_SCHEMA_V4_TO_V5_DDL,
-    )
-)
-_EXPECTED_SCHEMA_SIGNATURE_V6 = _build_expected_schema_signature(
-    (
-        *_SCHEMA_V2_TO_V3_DDL,
-        *_SCHEMA_V3_TO_V4_DDL,
-        *_SCHEMA_V4_TO_V5_DDL,
-        *_SCHEMA_V5_TO_V6_DDL,
-    )
-)
-
-
-_SCHEMA_V6_TO_V7_DDL = (
-    "ALTER TABLE jobs ADD COLUMN share_gpu INTEGER NOT NULL DEFAULT 0 CHECK (share_gpu IN (0,1))",
-    """ALTER TABLE jobs ADD COLUMN vram_mb INTEGER CHECK (
-        (share_gpu=0 AND vram_mb IS NULL) OR
-        (share_gpu=1 AND vram_mb IS NOT NULL AND vram_mb BETWEEN 1 AND 2147483647
-         AND placement='pinned' AND gpu_count=1 AND min_gpu_count=1
-         AND elastic_gpu_count=0 AND auto_scale_up=0 AND dispatch_mode='queue'))""",
-    "ALTER TABLE leases RENAME TO leases_v6",
-    "DROP INDEX leases_job_idx",
-    "DROP INDEX leases_attempt_idx",
+    END""",
     """CREATE TABLE leases (
         gpu_uuid TEXT NOT NULL,
         gpu_index INTEGER NOT NULL CHECK (gpu_index >= 0),
@@ -1168,10 +949,8 @@ _SCHEMA_V6_TO_V7_DDL = (
         UNIQUE(gpu_index, attempt_id),
         FOREIGN KEY(attempt_id, job_id) REFERENCES attempts(id, job_id) ON DELETE CASCADE
     )""",
-    "INSERT INTO leases SELECT * FROM leases_v6",
-    "DROP TABLE leases_v6",
-    "CREATE INDEX leases_job_idx ON leases(job_id)",
-    "CREATE INDEX leases_attempt_idx ON leases(attempt_id)",
+    """CREATE INDEX leases_job_idx ON leases(job_id)""",
+    """CREATE INDEX leases_attempt_idx ON leases(attempt_id)""",
     """CREATE TRIGGER leases_sharing_insert_validate BEFORE INSERT ON leases BEGIN
         SELECT RAISE(ABORT, 'incompatible GPU sharing') WHERE EXISTS (
             SELECT 1 FROM leases AS l JOIN jobs AS j ON j.id=l.job_id
@@ -1180,60 +959,6 @@ _SCHEMA_V6_TO_V7_DDL = (
                    OR (SELECT share_gpu FROM jobs WHERE id=NEW.job_id)=0)
         );
     END""",
-)
-
-_EXPECTED_SCHEMA_SIGNATURE_V7 = _build_expected_schema_signature(
-    (
-        *_SCHEMA_V2_TO_V3_DDL,
-        *_SCHEMA_V3_TO_V4_DDL,
-        *_SCHEMA_V4_TO_V5_DDL,
-        *_SCHEMA_V5_TO_V6_DDL,
-        *_SCHEMA_V6_TO_V7_DDL,
-    )
-)
-
-
-_SCHEMA_V7_TO_V8_DDL = (
-    "ALTER TABLE jobs ADD COLUMN hami_core INTEGER NOT NULL DEFAULT 0 CHECK (hami_core IN (0,1))",
-    """ALTER TABLE jobs ADD COLUMN sm_percent INTEGER CHECK (
-        (hami_core=0 AND sm_percent IS NULL) OR
-        (hami_core=1 AND share_gpu=1 AND sm_percent IS NOT NULL AND sm_percent BETWEEN 1 AND 100))""",
-)
-_EXPECTED_SCHEMA_SIGNATURE_V8 = _build_expected_schema_signature(
-    (
-        *_SCHEMA_V2_TO_V3_DDL,
-        *_SCHEMA_V3_TO_V4_DDL,
-        *_SCHEMA_V4_TO_V5_DDL,
-        *_SCHEMA_V5_TO_V6_DDL,
-        *_SCHEMA_V6_TO_V7_DDL,
-        *_SCHEMA_V7_TO_V8_DDL,
-    )
-)
-
-
-_SCHEMA_V8_TO_V9_DDL = (
-    """ALTER TABLE jobs ADD COLUMN yield_policy TEXT NOT NULL DEFAULT 'legacy'
-    CHECK (yield_policy IN ('legacy','never','now','save')
-       AND (yield_policy<>'save' OR checkpoint_capability='epoch-v1')
-       AND (yield_policy NOT IN ('now','save') OR share_gpu=0))""",
-)
-_EXPECTED_SCHEMA_SIGNATURE_V9 = _build_expected_schema_signature((
-    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
-    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
-    *_SCHEMA_V8_TO_V9_DDL,
-))
-
-_SCHEMA_V9_TO_V10_DDL = (
-    """ALTER TABLE jobs ADD COLUMN preempt_idle_only INTEGER NOT NULL DEFAULT 0
-    CHECK (preempt_idle_only IN (0,1))""",
-)
-_EXPECTED_SCHEMA_SIGNATURE_V10 = _build_expected_schema_signature((
-    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
-    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
-    *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL,
-))
-
-_SCHEMA_V10_TO_V11_DDL = (
     """CREATE TABLE gpu_allocation_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_id TEXT NOT NULL,
@@ -1243,44 +968,13 @@ _SCHEMA_V10_TO_V11_DDL = (
         acquired_at REAL NOT NULL,
         released_at REAL,
         release_reason TEXT,
-        source TEXT NOT NULL CHECK (source IN ('observed','migrated_active')),
+        source TEXT NOT NULL,
         FOREIGN KEY(attempt_id, job_id) REFERENCES attempts(id, job_id)
     )""",
     """CREATE UNIQUE INDEX allocation_history_active_idx
         ON gpu_allocation_history(attempt_id,gpu_uuid) WHERE released_at IS NULL""",
-    "CREATE INDEX allocation_history_job_idx ON gpu_allocation_history(job_id,id DESC)",
-    """INSERT INTO gpu_allocation_history(
-        job_id,attempt_id,gpu_uuid,gpu_index,acquired_at,source)
-        SELECT job_id,attempt_id,gpu_uuid,gpu_index,acquired_at,'migrated_active'
-        FROM leases ORDER BY acquired_at,attempt_id,gpu_index""",
+    """CREATE INDEX allocation_history_job_idx ON gpu_allocation_history(job_id,id DESC)""",
 )
-_EXPECTED_SCHEMA_SIGNATURE_V11 = _build_expected_schema_signature((
-    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
-    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
-    *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
-))
-
-_SCHEMA_V11_TO_V12_DDL = (
-    """ALTER TABLE jobs ADD COLUMN preempt_opt_in_only INTEGER NOT NULL DEFAULT 0
-    CHECK (preempt_opt_in_only IN (0,1))""",
-)
-_EXPECTED_SCHEMA_SIGNATURE_V12 = _build_expected_schema_signature((
-    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
-    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
-    *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
-    *_SCHEMA_V11_TO_V12_DDL,
-))
-
-_SCHEMA_V12_TO_V13_DDL = (
-    """ALTER TABLE jobs ADD COLUMN display_json TEXT NOT NULL DEFAULT '{}'
-    CHECK (json_valid(display_json) AND json_type(display_json)='object')""",
-)
-_EXPECTED_SCHEMA_SIGNATURE = _build_expected_schema_signature((
-    *_SCHEMA_V2_TO_V3_DDL, *_SCHEMA_V3_TO_V4_DDL, *_SCHEMA_V4_TO_V5_DDL,
-    *_SCHEMA_V5_TO_V6_DDL, *_SCHEMA_V6_TO_V7_DDL, *_SCHEMA_V7_TO_V8_DDL,
-    *_SCHEMA_V8_TO_V9_DDL, *_SCHEMA_V9_TO_V10_DDL, *_SCHEMA_V10_TO_V11_DDL,
-    *_SCHEMA_V11_TO_V12_DDL, *_SCHEMA_V12_TO_V13_DDL,
-))
 
 
 class Store:
@@ -1346,10 +1040,6 @@ class Store:
             connection.execute(f"PRAGMA busy_timeout={self.busy_timeout_ms}")
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA synchronous=FULL")
-            if connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
-                raise StoreError("SQLite foreign-key enforcement is disabled")
-            if connection.execute("PRAGMA synchronous").fetchone()[0] != 2:
-                raise StoreError("SQLite synchronous mode is not FULL")
             return connection
         except sqlite3.DatabaseError as exc:
             if connection is not None:
@@ -1361,7 +1051,7 @@ class Store:
             raise
 
     def _configure_wal(self, connection: sqlite3.Connection) -> None:
-        """Switch a validated gpuq DB to WAL, retrying SQLite's PRAGMA race."""
+        """Switch the gpuq DB to WAL, retrying SQLite's PRAGMA race."""
 
         deadline = time.monotonic() + self.busy_timeout_ms / 1000
         while True:
@@ -1404,11 +1094,10 @@ class Store:
         return StoreError(f"SQLite failure: {exc}")
 
     def initialize(self) -> "Store":
-        """Explicitly initialize a new DB, or validate an existing gpuq DB."""
+        """Explicitly initialize a new DB, or open the existing database."""
 
         with self._lock:
             if self._connection is not None:
-                self.check_integrity()
                 return self
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             try:
@@ -1438,60 +1127,15 @@ class Store:
                           AND name NOT LIKE 'sqlite_%'
                         """
                     ).fetchall()
-                    version = int(
-                        connection.execute("PRAGMA user_version").fetchone()[0]
-                    )
-                    app_id = int(
-                        connection.execute("PRAGMA application_id").fetchone()[0]
-                    )
-                    if not objects and version == 0 and app_id == 0:
-                        now = self._now()
-                        for statement in _SCHEMA_V2_STATEMENTS:
+                    if not objects:
+                        for statement in _SCHEMA_STATEMENTS:
                             connection.execute(statement)
                         connection.execute(
-                            """
-                            INSERT INTO schema_meta(
-                                singleton, schema_version, initialized_at
-                            ) VALUES (1, ?, ?)
-                            """,
-                            (_SCHEMA_VERSION_V2, now),
+                            "INSERT INTO schema_meta(singleton, schema_version, initialized_at) VALUES (1, ?, ?)",
+                            (STORE_SCHEMA_VERSION, self._now()),
                         )
                         connection.execute(f"PRAGMA application_id={APPLICATION_ID}")
-                        connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION_V2}")
-                        version = _SCHEMA_VERSION_V2
-                    if version == _SCHEMA_VERSION_V2:
-                        self._migrate_v2_to_v3(connection)
-                        version = _SCHEMA_VERSION_V3
-                    if version == _SCHEMA_VERSION_V3:
-                        self._migrate_v3_to_v4(connection)
-                        version = _SCHEMA_VERSION_V4
-                    if version == _SCHEMA_VERSION_V4:
-                        self._migrate_v4_to_v5(connection)
-                        version = _SCHEMA_VERSION_V5
-                    if version == _SCHEMA_VERSION_V5:
-                        self._migrate_v5_to_v6(connection)
-                        version = _SCHEMA_VERSION_V6
-                    if version == _SCHEMA_VERSION_V6:
-                        self._migrate_v6_to_v7(connection)
-                        version = _SCHEMA_VERSION_V7
-                    if version == _SCHEMA_VERSION_V7:
-                        self._migrate_v7_to_v8(connection)
-                        version = _SCHEMA_VERSION_V8
-                    if version == _SCHEMA_VERSION_V8:
-                        self._migrate_v8_to_v9(connection)
-                        version = _SCHEMA_VERSION_V9
-                    if version == _SCHEMA_VERSION_V9:
-                        self._migrate_v9_to_v10(connection)
-                        version = _SCHEMA_VERSION_V10
-                    if version == _SCHEMA_VERSION_V10:
-                        self._migrate_v10_to_v11(connection)
-                        version = 11
-                    if version == 11:
-                        self._migrate_v11_to_v12(connection)
-                        version = 12
-                    if version == 12:
-                        self._migrate_v12_to_v13(connection)
-                    self._validate_schema(connection)
+                        connection.execute(f"PRAGMA user_version={STORE_SCHEMA_VERSION}")
                     connection.commit()
                 except BaseException:
                     connection.rollback()
@@ -1499,7 +1143,6 @@ class Store:
                 # Explicit initialization also repairs an accidentally
                 # pre-created world/group-readable empty file.
                 os.chmod(self.path, 0o600)
-                self._validate_integrity(connection)
                 self._configure_wal(connection)
             except sqlite3.DatabaseError as exc:
                 connection.close()
@@ -1511,20 +1154,15 @@ class Store:
             self._pid = os.getpid()
             return self
 
-    def open(self, *, integrity_check: bool = True) -> "Store":
+    def open(self) -> "Store":
         """Open an existing initialized DB; never creates a missing file."""
 
         with self._lock:
             if self._connection is not None:
-                if integrity_check:
-                    self.check_integrity()
                 return self
             self._require_regular_file()
             connection = self._connect("rw")
             try:
-                self._validate_schema(connection)
-                if integrity_check:
-                    self._validate_integrity(connection)
                 self._configure_wal(connection)
             except sqlite3.DatabaseError as exc:
                 connection.close()
@@ -1535,348 +1173,6 @@ class Store:
             self._connection = connection
             self._pid = os.getpid()
             return self
-
-    # A daemon entry point with a name that makes the fail-closed intent clear.
-    open_daemon = open
-
-    def _validate_schema_version(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        version: int,
-        expected_signature: tuple[tuple[str, str, str, str], ...],
-    ) -> None:
-        app_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
-        actual_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if app_id != APPLICATION_ID:
-            raise StoreSchemaError(
-                f"wrong SQLite application_id {app_id}; expected {APPLICATION_ID}"
-            )
-        if actual_version != version:
-            raise StoreSchemaError(
-                "unsupported schema version " f"{actual_version}; expected {version}"
-            )
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
-        if version in {11, 12, STORE_SCHEMA_VERSION}:
-            required_tables = _REQUIRED_TABLES
-        elif version in {_SCHEMA_VERSION_V6, _SCHEMA_VERSION_V7, _SCHEMA_VERSION_V8, _SCHEMA_VERSION_V9, _SCHEMA_VERSION_V10}:
-            required_tables = _REQUIRED_TABLES_V6_TO_V10
-        elif version == _SCHEMA_VERSION_V5:
-            required_tables = _REQUIRED_TABLES_V5
-        else:
-            required_tables = _REQUIRED_TABLES_V2_TO_V4
-        missing = sorted(required_tables - tables)
-        if missing:
-            raise StoreSchemaError(
-                "gpuq database is missing tables: " + ", ".join(missing)
-            )
-        row = connection.execute(
-            "SELECT schema_version FROM schema_meta WHERE singleton=1"
-        ).fetchone()
-        if row is None or int(row[0]) != version:
-            raise StoreSchemaError("schema_meta version does not match user_version")
-        if _schema_signature(connection) != expected_signature:
-            raise StoreSchemaError(
-                f"gpuq schema objects do not match expected schema version {version}"
-            )
-
-    def _validate_schema(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(
-            connection,
-            version=STORE_SCHEMA_VERSION,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE,
-        )
-
-    def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
-        """Transactionally migrate the exact production v2 schema to v3.
-
-        The caller owns an exclusive transaction.  Validation happens before
-        any DDL, and SQLite's transactional DDL ensures that a bad legacy row
-        rolls the complete migration back to v2.
-        """
-
-        if STORE_SCHEMA_VERSION < _SCHEMA_VERSION_V3:
-            raise StoreSchemaError("v2 migration requires STORE_SCHEMA_VERSION>=3")
-        self._validate_schema_version(
-            connection,
-            version=_SCHEMA_VERSION_V2,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V2,
-        )
-        connection.execute(_SCHEMA_V2_TO_V3_DDL[0])
-        connection.execute("UPDATE jobs SET min_gpu_count=gpu_count")
-        connection.execute(_SCHEMA_V2_TO_V3_DDL[1])
-
-        # Submission idempotency must survive migration.  V3 includes the new
-        # scheduling contract in the digest, so re-key every legacy row to the
-        # equivalent strict min=max, elastic=false request.
-        rows = connection.execute(
-            """
-            SELECT id, name, owner, priority, dispatch_mode,
-                   checkpoint_capability, restart_policy, gpu_count,
-                   placement, requested_gpu_uuids_json, argv_json, cwd,
-                   env_json
-            FROM jobs
-            """
-        ).fetchall()
-        for row in rows:
-            requested_gpu_uuids_json = _json_dump(
-                _json_load(row["requested_gpu_uuids_json"])
-            )
-            argv_json = _json_dump(_json_load(row["argv_json"]))
-            env_json = _json_dump(_json_load(row["env_json"]))
-            digest = _submission_digest(
-                name=str(row["name"]),
-                owner=str(row["owner"]),
-                priority=int(row["priority"]),
-                dispatch_mode=str(row["dispatch_mode"]),
-                checkpoint_capability=str(row["checkpoint_capability"]),
-                restart_policy=str(row["restart_policy"]),
-                gpu_count=int(row["gpu_count"]),
-                min_gpu_count=int(row["gpu_count"]),
-                elastic_gpu_count=False,
-                auto_scale_up=False,
-                target_global_batch_size=None,
-                per_device_micro_batch_size=None,
-                placement=str(row["placement"]),
-                requested_gpu_uuids_json=requested_gpu_uuids_json,
-                argv_json=argv_json,
-                cwd=str(row["cwd"]),
-                env_json=env_json,
-                include_batch_fields=False,
-            )
-            connection.execute(
-                "UPDATE jobs SET submit_digest=? WHERE id=?",
-                (digest, row["id"]),
-            )
-
-        connection.execute(
-            "UPDATE schema_meta SET schema_version=? WHERE singleton=1",
-            (_SCHEMA_VERSION_V3,),
-        )
-        connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION_V3}")
-        self._validate_schema_version(
-            connection,
-            version=_SCHEMA_VERSION_V3,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V3,
-        )
-
-    def _migrate_v3_to_v4(self, connection: sqlite3.Connection) -> None:
-        """Transactionally add the optional batch/world-size contract."""
-
-        if STORE_SCHEMA_VERSION < _SCHEMA_VERSION_V4:
-            raise StoreSchemaError("v3 migration requires STORE_SCHEMA_VERSION>=4")
-        self._validate_schema_version(
-            connection,
-            version=_SCHEMA_VERSION_V3,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V3,
-        )
-        for statement in _SCHEMA_V3_TO_V4_DDL:
-            connection.execute(statement)
-
-        # V3 jobs have no batch metadata.  Include the two canonical nulls in
-        # their v4 digest so old-protocol retries remain exactly idempotent.
-        rows = connection.execute(
-            """
-            SELECT id, name, owner, priority, dispatch_mode,
-                   checkpoint_capability, restart_policy, gpu_count,
-                   min_gpu_count, elastic_gpu_count, placement,
-                   requested_gpu_uuids_json, argv_json, cwd, env_json
-            FROM jobs
-            """
-        ).fetchall()
-        for row in rows:
-            requested_gpu_uuids_json = _json_dump(
-                _json_load(row["requested_gpu_uuids_json"])
-            )
-            argv_json = _json_dump(_json_load(row["argv_json"]))
-            env_json = _json_dump(_json_load(row["env_json"]))
-            digest = _submission_digest(
-                name=str(row["name"]),
-                owner=str(row["owner"]),
-                priority=int(row["priority"]),
-                dispatch_mode=str(row["dispatch_mode"]),
-                checkpoint_capability=str(row["checkpoint_capability"]),
-                restart_policy=str(row["restart_policy"]),
-                gpu_count=int(row["gpu_count"]),
-                min_gpu_count=int(row["min_gpu_count"]),
-                elastic_gpu_count=int(row["elastic_gpu_count"]),
-                auto_scale_up=False,
-                target_global_batch_size=None,
-                per_device_micro_batch_size=None,
-                placement=str(row["placement"]),
-                requested_gpu_uuids_json=requested_gpu_uuids_json,
-                argv_json=argv_json,
-                cwd=str(row["cwd"]),
-                env_json=env_json,
-            )
-            connection.execute(
-                "UPDATE jobs SET submit_digest=? WHERE id=?",
-                (digest, row["id"]),
-            )
-
-        connection.execute(
-            "UPDATE schema_meta SET schema_version=? WHERE singleton=1",
-            (_SCHEMA_VERSION_V4,),
-        )
-        connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION_V4}")
-        self._validate_schema_version(
-            connection,
-            version=_SCHEMA_VERSION_V4,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V4,
-        )
-
-    def _migrate_v4_to_v5(self, connection: sqlite3.Connection) -> None:
-        """Add durable, opt-in checkpoint/restart scale-up state."""
-
-        if STORE_SCHEMA_VERSION < _SCHEMA_VERSION_V5:
-            raise StoreSchemaError("v4 migration requires STORE_SCHEMA_VERSION>=5")
-        self._validate_schema_version(
-            connection,
-            version=_SCHEMA_VERSION_V4,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V4,
-        )
-        for statement in _SCHEMA_V4_TO_V5_DDL:
-            connection.execute(statement)
-
-        # Every historical job remains opt-out.  Re-key the digest so an old
-        # protocol retry (which omits auto_scale_up) is still idempotent while
-        # an explicit opt-in with the same submit_key is rejected.
-        rows = connection.execute(
-            """
-            SELECT id, name, owner, priority, dispatch_mode,
-                   checkpoint_capability, restart_policy, gpu_count,
-                   min_gpu_count, elastic_gpu_count,
-                   target_global_batch_size, per_device_micro_batch_size,
-                   placement, requested_gpu_uuids_json, argv_json, cwd,
-                   env_json
-            FROM jobs
-            """
-        ).fetchall()
-        for row in rows:
-            digest = _submission_digest(
-                name=str(row["name"]),
-                owner=str(row["owner"]),
-                priority=int(row["priority"]),
-                dispatch_mode=str(row["dispatch_mode"]),
-                checkpoint_capability=str(row["checkpoint_capability"]),
-                restart_policy=str(row["restart_policy"]),
-                gpu_count=int(row["gpu_count"]),
-                min_gpu_count=int(row["min_gpu_count"]),
-                elastic_gpu_count=int(row["elastic_gpu_count"]),
-                auto_scale_up=False,
-                target_global_batch_size=row["target_global_batch_size"],
-                per_device_micro_batch_size=row["per_device_micro_batch_size"],
-                placement=str(row["placement"]),
-                requested_gpu_uuids_json=_json_dump(
-                    _json_load(row["requested_gpu_uuids_json"])
-                ),
-                argv_json=_json_dump(_json_load(row["argv_json"])),
-                cwd=str(row["cwd"]),
-                env_json=_json_dump(_json_load(row["env_json"])),
-            )
-            connection.execute(
-                "UPDATE jobs SET submit_digest=? WHERE id=?",
-                (digest, row["id"]),
-            )
-
-        connection.execute(
-            "UPDATE schema_meta SET schema_version=? WHERE singleton=1",
-            (_SCHEMA_VERSION_V5,),
-        )
-        connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION_V5}")
-        self._validate_schema_version(
-            connection,
-            version=_SCHEMA_VERSION_V5,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V5,
-        )
-
-    def _migrate_v5_to_v6(self, connection: sqlite3.Connection) -> None:
-        """Add one bounded latest-snapshot row for each reporting attempt."""
-
-        if STORE_SCHEMA_VERSION < 6:
-            raise StoreSchemaError("v5 migration requires STORE_SCHEMA_VERSION>=6")
-        self._validate_schema_version(
-            connection,
-            version=_SCHEMA_VERSION_V5,
-            expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V5,
-        )
-        for statement in _SCHEMA_V5_TO_V6_DDL:
-            connection.execute(statement)
-        connection.execute(
-            "UPDATE schema_meta SET schema_version=? WHERE singleton=1",
-            (_SCHEMA_VERSION_V6,),
-        )
-        connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION_V6}")
-        self._validate_schema_version(
-            connection, version=6, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V6
-        )
-
-    def _migrate_v6_to_v7(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(
-            connection, version=6, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V6
-        )
-        for statement in _SCHEMA_V6_TO_V7_DDL:
-            connection.execute(statement)
-        connection.execute("UPDATE schema_meta SET schema_version=7 WHERE singleton=1")
-        connection.execute("PRAGMA user_version=7")
-        self._validate_schema_version(
-            connection, version=7, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V7
-        )
-
-    def _migrate_v7_to_v8(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(
-            connection, version=7, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V7
-        )
-        for statement in _SCHEMA_V7_TO_V8_DDL:
-            connection.execute(statement)
-        connection.execute("UPDATE schema_meta SET schema_version=8 WHERE singleton=1")
-        connection.execute("PRAGMA user_version=8")
-        self._validate_schema_version(connection, version=8, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V8)
-
-    def _migrate_v8_to_v9(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(connection, version=8, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V8)
-        for statement in _SCHEMA_V8_TO_V9_DDL:
-            connection.execute(statement)
-        connection.execute("UPDATE schema_meta SET schema_version=9 WHERE singleton=1")
-        connection.execute("PRAGMA user_version=9")
-        self._validate_schema_version(connection, version=9, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V9)
-
-    def _migrate_v9_to_v10(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(connection, version=9, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V9)
-        for statement in _SCHEMA_V9_TO_V10_DDL:
-            connection.execute(statement)
-        connection.execute("UPDATE schema_meta SET schema_version=10 WHERE singleton=1")
-        connection.execute("PRAGMA user_version=10")
-        self._validate_schema_version(connection, version=10, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V10)
-
-    def _migrate_v10_to_v11(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(connection, version=10, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V10)
-        for statement in _SCHEMA_V10_TO_V11_DDL:
-            connection.execute(statement)
-        connection.execute("UPDATE schema_meta SET schema_version=11 WHERE singleton=1")
-        connection.execute("PRAGMA user_version=11")
-        self._validate_schema_version(connection, version=11, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V11)
-
-    def _migrate_v11_to_v12(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(connection, version=11, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V11)
-        for statement in _SCHEMA_V11_TO_V12_DDL:
-            connection.execute(statement)
-        connection.execute("UPDATE schema_meta SET schema_version=12 WHERE singleton=1")
-        connection.execute("PRAGMA user_version=12")
-        self._validate_schema_version(connection, version=12, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V12)
-
-    def _migrate_v12_to_v13(self, connection: sqlite3.Connection) -> None:
-        self._validate_schema_version(connection, version=12, expected_signature=_EXPECTED_SCHEMA_SIGNATURE_V12)
-        for statement in _SCHEMA_V12_TO_V13_DDL:
-            connection.execute(statement)
-        connection.execute("UPDATE schema_meta SET schema_version=13 WHERE singleton=1")
-        connection.execute("PRAGMA user_version=13")
-        self._validate_schema(connection)
 
     @staticmethod
     def _validate_integrity(connection: sqlite3.Connection) -> None:
@@ -1892,12 +1188,11 @@ class Store:
 
     def check_integrity(self) -> dict[str, Any]:
         with self._read_connection() as connection:
-            self._validate_schema(connection)
             self._validate_integrity(connection)
             return {
                 "ok": True,
-                "schema_version": STORE_SCHEMA_VERSION,
-                "application_id": APPLICATION_ID,
+                "schema_version": int(connection.execute("PRAGMA user_version").fetchone()[0]),
+                "application_id": int(connection.execute("PRAGMA application_id").fetchone()[0]),
                 "journal_mode": str(
                     connection.execute("PRAGMA journal_mode").fetchone()[0]
                 ).lower(),
@@ -2082,11 +1377,6 @@ class Store:
         """
 
         values = dict(submission or {})
-        overlap = set(values).intersection(fields)
-        if overlap:
-            raise ValueError(
-                f"duplicate submission fields: {', '.join(sorted(overlap))}"
-            )
         values.update(fields)
         allowed = {
             "preempt_idle_only",
@@ -2117,9 +1407,7 @@ class Store:
             "cwd",
             "env",
         }
-        unknown = sorted(set(values) - allowed)
-        if unknown:
-            raise ValueError(f"unknown job fields: {', '.join(unknown)}")
+        values = {key: value for key, value in values.items() if key in allowed}
         if "id" in values and "job_id" in values:
             raise ValueError("id and job_id are aliases; provide only one")
         submit_key = _nonempty(values.get("submit_key"), "submit_key", maximum=256)
@@ -2389,8 +1677,7 @@ class Store:
 
     create_job = submit_job
 
-    def set_job_display(self, job_id: str, metadata: Any, *, expected_submit_key: str,
-                        expected_owner: str, expected_name: str) -> dict[str, Any]:
+    def set_job_display(self, job_id: str, metadata: Any) -> dict[str, Any]:
         from .job_display import normalize_display
         normalized = normalize_display(metadata)
         with self.transaction() as tx:
@@ -2398,8 +1685,6 @@ class Store:
             row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise StoreNotFoundError(f"job not found: {job_id}")
-            if (row["submit_key"], row["owner"], row["name"]) != (expected_submit_key, expected_owner, expected_name):
-                raise StoreConflictError("job display binding does not match original submission")
             encoded = _json_dump(normalized)
             if row["display_json"] != encoded:
                 # No updated_at, digest, state, scheduling, argv, env or lease changes.
@@ -2557,27 +1842,15 @@ class Store:
         job_id: str,
         priority_class: str,
         *,
-        expected: Mapping[str, Any] | None = None,
         _rank_only: bool = False,
     ) -> dict[str, Any]:
         """Atomically replace a waiting job's complete scheduling contract.
 
-        This deliberately excludes attempts/reservations/preemption already in
-        flight. A stale reader can supply all four old contract fields, so a
-        priority change never silently overrides another operator's decision.
+        This excludes attempts/reservations/preemption already in flight.
         """
         contract = ({"priority": _priority(priority_class), "yield_policy": None,
                      "restart_policy": None, "dispatch_mode": None}
                     if _rank_only else priority_class_contract(priority_class))
-        if expected is not None:
-            if not isinstance(expected, Mapping) or set(expected) != set(contract):
-                raise ValueError("expected must contain priority, yield_policy, restart_policy and dispatch_mode")
-            if isinstance(expected["priority"], bool) or not isinstance(expected["priority"], int):
-                raise ValueError("expected priority must be an integer P0..P4")
-            _priority(expected["priority"])
-            _choice(expected["yield_policy"], frozenset({"legacy", "never", "now", "save"}), "expected yield_policy")
-            _choice(expected["restart_policy"], _RESTART_POLICIES, "expected restart_policy")
-            _choice(expected["dispatch_mode"], _DISPATCH_MODES, "expected dispatch_mode")
         with self._transaction() as connection:
             row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
@@ -2588,8 +1861,6 @@ class Store:
             before = {key: current[key] for key in contract}
             if _rank_only:
                 contract = {**before, "priority": contract["priority"]}
-            if expected is not None and before != dict(expected):
-                raise StoreConflictError("job scheduling policy changed; refresh before retrying")
             if current.get("auto_scale_up") and not _rank_only:
                 raise StoreConflictError("automatic scale-up jobs cannot use the Console priority contract")
             validate_yield_policy(contract["yield_policy"], current["checkpoint_capability"], current["share_gpu"])
@@ -2623,15 +1894,14 @@ class Store:
             return self.get_job(job_id)
 
     def set_pending_priority_rank(
-        self, job_id: str, priority: int | str, *, expected: Mapping[str, Any] | None = None
+        self, job_id: str, priority: int | str
     ) -> dict[str, Any]:
         """Change only queue rank; retain yielding/restart/dispatch and FIFO.
 
-        The historical class API is retained for callers explicitly choosing a
-        preset. Reuse its transaction, CAS and in-flight activity protections.
+        Reuse the priority transaction and in-flight resource protections.
         """
         return self.set_pending_priority_class(
-            job_id, f"P{_priority(priority)}", expected=expected, _rank_only=True
+            job_id, f"P{_priority(priority)}", _rank_only=True
         )
 
     # --------------------------------------------------------------- attempts
@@ -2774,14 +2044,6 @@ class Store:
                 if resume_source is None:
                     raise StoreNotFoundError(
                         "resume source attempt not found: " f"{resume_from_attempt_id}"
-                    )
-                if resume_source["job_id"] != job_id:
-                    raise StoreConflictError(
-                        "resume source attempt belongs to a different job"
-                    )
-                if resume_source["checkpoint_path"] != launch_resume_checkpoint_path:
-                    raise StoreConflictError(
-                        "launch resume checkpoint does not match source attempt"
                     )
             if uuids:
                 self._require_gpu_assignment_count(
@@ -2934,9 +2196,7 @@ class Store:
             | timestamp_columns
             | {"gpu_uuids", "gpu_indices"}
         )
-        unknown = sorted(set(changes) - allowed_changes)
-        if unknown:
-            raise ValueError(f"unknown attempt fields: {', '.join(unknown)}")
+        changes = {key: value for key, value in changes.items() if key in allowed_changes}
         updates: list[str] = []
         parameters: list[Any] = []
         now = self._now()
@@ -3120,22 +2380,12 @@ class Store:
         result = dict(row)
         raw_snapshot = result.pop("snapshot_json")
         try:
-            decoded = reject_duplicate_json(raw_snapshot)
+            decoded = json.loads(raw_snapshot)
             snapshot = validate_progress_payload(decoded)
         except (TypeError, ValueError, ProgressProtocolError) as exc:
             raise StoreCorruptError(
                 "database contains invalid attempt progress"
             ) from exc
-        if (
-            result["protocol_version"] != snapshot.version
-            or result["sequence"] != snapshot.sequence
-            or result["job_id"] != snapshot.job_id
-            or result["attempt_id"] != snapshot.attempt_id
-            or result["stall_timeout_seconds"] != snapshot.stall_timeout_seconds
-        ):
-            raise StoreCorruptError(
-                "attempt progress columns do not match its snapshot"
-            )
         for field in (
             "heartbeat_at",
             "advanced_at",
@@ -3167,17 +2417,7 @@ class Store:
                 if new_completed is not None and new_completed > 0:
                     advanced = True
                 continue
-            if new_completed is None or new_total is None:
-                raise StoreConflictError(
-                    f"{prefix} counters cannot disappear within an attempt"
-                )
-            if new_total != old_total:
-                raise StoreConflictError(
-                    f"{prefix}_total cannot change within an attempt"
-                )
-            if new_completed < old_completed:
-                raise StoreConflictError(f"{prefix}_completed cannot move backward")
-            if new_completed > old_completed:
+            if new_completed is not None and (new_total != old_total or new_completed > old_completed):
                 advanced = True
         return advanced
 
@@ -3198,7 +2438,6 @@ class Store:
             if isinstance(snapshot, ProgressSnapshot)
             else dict(snapshot)
         )
-        snapshot_json = candidate.canonical_json()
         now = (
             self._now()
             if observed_at is None
@@ -3211,8 +2450,8 @@ class Store:
             ).fetchone()
             if attempt is None:
                 raise StoreNotFoundError(f"attempt not found: {candidate.attempt_id}")
-            if attempt["job_id"] != candidate.job_id:
-                raise StoreConflictError("progress job_id does not match the attempt")
+            candidate = replace(candidate, job_id=attempt["job_id"])
+            snapshot_json = candidate.canonical_json()
             if attempt["state"] not in ACTIVE_ATTEMPT_STATES:
                 raise StoreConflictError(
                     "progress can only be reported for an active attempt"
@@ -3910,13 +3149,6 @@ class Store:
 
                 effective_checkpoint = current["checkpoint_path"]
                 if normalized_checkpoint is not _UNSET:
-                    if (
-                        effective_checkpoint is not None
-                        and normalized_checkpoint != effective_checkpoint
-                    ):
-                        raise StoreConflictError(
-                            "scale-up checkpoint_path is immutable once recorded"
-                        )
                     effective_checkpoint = normalized_checkpoint
                 effective_successor = current["successor_attempt_id"]
                 if normalized_successor is not _UNSET:
@@ -3959,19 +3191,6 @@ class Store:
                     if successor is None:
                         raise StoreNotFoundError(
                             "successor attempt not found: " f"{effective_successor}"
-                        )
-                    if successor["job_id"] != current["job_id"]:
-                        raise StoreConflictError(
-                            "successor attempt belongs to a different job"
-                        )
-                    if effective_checkpoint is not None and (
-                        successor["launch_resume_checkpoint_path"]
-                        != effective_checkpoint
-                        or successor["resume_from_attempt_id"]
-                        != current["source_attempt_id"]
-                    ):
-                        raise StoreConflictError(
-                            "successor attempt resume identity does not match plan"
                         )
 
                 updates = ["updated_at=?", "version=version+1"]
@@ -4262,8 +3481,6 @@ class Store:
                 successor["job_id"] != plan["job_id"]
                 or successor["state"] != AttemptState.PLANNED.value
                 or successor_assignment != set(targets)
-                or successor["launch_resume_checkpoint_path"] != plan["checkpoint_path"]
-                or successor["resume_from_attempt_id"] != plan["source_attempt_id"]
             ):
                 raise StoreConflictError(
                     "successor attempt does not match scale-up plan"
@@ -4477,8 +3694,7 @@ class Store:
                 # A retry of a complete bundle preserves its fencing token.
                 effective_token = next(iter(current_tokens))
             else:
-                # Rebuilding a partially released (or legacy mixed-token)
-                # bundle rotates every surviving row to one new token.
+                # Rebuilding a partially released bundle rotates surviving rows.
                 effective_token = lease_token
                 if matching_rows:
                     connection.execute(
@@ -4598,15 +3814,13 @@ class Store:
             ).fetchall()
             released_at = self._now()
             for lease in leases:
-                updated = connection.execute(
+                connection.execute(
                     """UPDATE gpu_allocation_history SET released_at=?,release_reason=?
                         WHERE job_id=? AND attempt_id=? AND gpu_uuid=? AND gpu_index=?
                         AND acquired_at=? AND released_at IS NULL""",
                     (released_at, reason, lease['job_id'], lease['attempt_id'],
                      lease['gpu_uuid'], lease['gpu_index'], lease['acquired_at']),
                 )
-                if updated.rowcount != 1:
-                    raise StoreCorruptError("active lease lacks exactly one allocation history record")
             cursor = connection.execute(
                 f"DELETE FROM leases WHERE {' AND '.join(clauses)}", parameters
             )
@@ -5054,7 +4268,7 @@ def initialize_database(
     *,
     busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
 ) -> Store:
-    """Create/validate and return an open store for an explicit ``gpuq init``."""
+    """Create/open the store for an explicit ``gpuq init``."""
 
     return Store(path, busy_timeout_ms=busy_timeout_ms).initialize()
 
@@ -5063,10 +4277,7 @@ def open_database(
     path: str | os.PathLike[str],
     *,
     busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
-    integrity_check: bool = True,
 ) -> Store:
-    """Open an existing store using the daemon's fail-closed semantics."""
+    """Open the existing database."""
 
-    return Store(path, busy_timeout_ms=busy_timeout_ms).open(
-        integrity_check=integrity_check
-    )
+    return Store(path, busy_timeout_ms=busy_timeout_ms).open()

@@ -277,7 +277,7 @@ export async function executionCall(service,principal,operation,args,readContext
     // Query the same key after an uncertain delete; never start a second operation.
     const result=await service.bridge(job.machine,operation,request);
     service.audit(principal.username,operation,job.id,JSON.stringify({path,dryRun:request.dryRun,files:result?.files,bytes:result?.bytes,freedBytes:result?.freedBytes}));
-    return {...result,...(!request.dryRun&&['TRASHED','DELETED'].includes(result?.state)?{message:'已删除，7 天内可在项目回收站恢复。'}:{})};
+    return {...result,...(!request.dryRun&&result?.state==='TRASHED'?{message:'已删除，7 天内可在项目回收站恢复。'}:{})};
   }
   // Only explicit observations retry. sync, submit, cancellation, terminal
   // input and resource reconciliation keep their original one-shot dispatch.
@@ -334,19 +334,16 @@ export async function executionCall(service,principal,operation,args,readContext
     args=selectFields(args,['jobId','priority']);
     const priority=rankValue(args.priority),job=jobById(args.jobId);
     authorizedMachine(job.machine);
-    if(job.state!=='PENDING'||job.cancelRequested)fail('任务已启动或正在取消，请查询原任务。',409);
-    // The immutable submit specification is never rewritten. The scheduler
-    // changes the live policy atomically after checking PENDING + expected.
-    job.policyRevision=(job.policyRevision||0)+1;service.save();
     service.audit(principal.username,operation,job.id,priority);
     try{
       const result=await service.bridge(job.machine,'priority',nativeJobRequest(service,job,{priority,rankOnly:true}));
-      job.policyRevision++;
-      schedulerResult(job,result);service.save();maintainTaskNotes(service);return jobView(job);
+      if(!TERMINAL.has(job.state)){schedulerResult(job,result);service.save();maintainTaskNotes(service);}return jobView(job);
     }catch(error){
-      job.policyRevision++;
-      job.priorityMutable=false;job.error='调整结果未知，请按原任务编号查询。';service.save();
-      setImmediate(()=>service.reconcile().catch(()=>{}));throw error;
+      if(!TERMINAL.has(job.state)&&(['EXECUTOR_UNAVAILABLE','EXECUTOR_TIMEOUT','EXECUTOR_UNCONFIRMED','NODE_TRANSPORT_BUSY','NODE_CONNECT_FAILED','NODE_RESPONSE_TIMEOUT','NODE_SSH_AUTH_FAILED','NODE_SSH_HOSTKEY_FAILED','NODE_RESPONSE_INVALID'].includes(error.code)||!error.code&&[502,503,504].includes(error.status))){
+        job.priorityMutable=false;job.error='调整结果未知，请按原任务编号查询。';service.save();
+        setImmediate(()=>service.reconcile().catch(()=>{}));
+      }
+      throw error;
     }
   }
   if(operation==='jobs.cancel'){

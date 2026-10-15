@@ -4,7 +4,7 @@ import {personalCardQuotaExempt} from './job-submission.mjs';
 const fail=(message,status=409)=>{throw Object.assign(Error(message),{status});};
 // Admission only: every operation here is read-only. A chosen target is stored
 // with the job before project/data workers may start. Queuing never reselects it.
-export async function selectMachine(service,user,request,priorityCapable,usage){
+export async function selectMachine(service,user,request,usage){
   const check=()=>{if(service.closing||!service.store.get(user.id).enabled)fail('请重新登录。',403);};
   await service.refreshGPUQ();check();
   if(service.gpuq?.stale!==false)fail('服务器状态暂未读到，请保留原提交编号稍后重试。',503);
@@ -22,7 +22,7 @@ export async function selectMachine(service,user,request,priorityCapable,usage){
     return true;
   });
   if(!eligible.length)fail('没有已授权、健康且满足卡数、显存和调度能力的候选服务器。');
-  const outcomes=await Promise.allSettled(eligible.map(async m=>{
+  const choices=eligible.map(m=>{
     const host=hosts.find(h=>h.id===m.id),queue=host.gpuq.jobs||[];
     const waiting=queue.filter(j=>['PENDING','STARTING'].includes(j.state)).length;
     // The scheduler's free pool excludes leases, reservations, quarantine and
@@ -41,9 +41,7 @@ export async function selectMachine(service,user,request,priorityCapable,usage){
       usage(service.store.jobs,user.id)+request.cards<=user.total&&usage(service.store.jobs,user.id,m.id)+request.cards<=user.limits[m.id];
     const freeEnough=freeCards-pendingCards>=minimum;
     return {machine:m.id,waiting:waiting+notObserved.length,quotaReady,freeEnough};
-  }));check();
-  const choices=outcomes.filter(result=>result.status==='fulfilled').map(result=>result.value).filter(Boolean);
-  if(!choices.length&&outcomes.some(result=>result.status==='rejected'))fail('候选服务器正在读取项目，请保留原提交键等待重试。',503);
+  });
   choices.sort((a,b)=>Number(b.quotaReady)-Number(a.quotaReady)||Number(b.freeEnough)-Number(a.freeEnough)||
     a.waiting-b.waiting||a.machine.localeCompare(b.machine));
   const chosen=choices[0];

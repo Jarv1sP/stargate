@@ -27,10 +27,7 @@
 .st-err{color:var(--err)}.st-err .g{width:7px;height:7px;border-radius:1px;transform:rotate(45deg);background:var(--err)}
 .st-unk{color:var(--ink-2)}.st-unk .g{width:9px;height:9px;border-radius:2px;border:1px solid var(--ink-3);background-image:repeating-linear-gradient(135deg,var(--ink-3) 0 1px,transparent 1px 3px)}
 .st-done{color:var(--ink-2)}.st-done .g{background:var(--ink-2)}
-.st-stop{color:var(--ink-3)}.st-stop .g{width:8px;height:8px;border-radius:1px;border:1.5px solid var(--ink-3)}
-/* dashed = in transition toward the solid shape */
-          /* 正在让位 */
-.st-busy{color:var(--ink-2)}.st-busy .g{border:1.5px dashed var(--ink-2)}            /* 提交中 · 正在连接 · 正在生成 */
+.st-stop{color:var(--ink-3)}.st-stop .g{width:8px;height:8px;border-radius:1px;border:1.5px solid var(--ink-3)}            /* 提交中 · 正在连接 · 正在生成 */
 .st-cancel,.st-stop.pending{color:var(--ink-2)}
 .st-cancel .g,.st-stop.pending .g{width:8px;height:8px;border-radius:1px;border:1.5px dashed var(--ink-2)} /* 取消中 */
 .st small{font-weight:400;color:var(--ink-3);font-size:var(--fs-small)}
@@ -51,15 +48,8 @@
 .tl .fill{position:absolute;top:4px;left:13px;height:1px;max-width:calc(100% - 17px);background:var(--ink-2)}
 .tl .done::before{background:var(--ink-3)}
 .tl .done .d{background:var(--ink-3);border-color:var(--ink-3)}
-.tl .cur .d{width:11px;height:11px;top:-1px;left:-1px}
-.tl .cur.run .d{background:var(--run);border-color:var(--run);box-shadow:0 0 0 4px var(--run-bg)}
-.tl .cur.run .fill{background:var(--run)}
-.tl .cur.queue .d{border:1.5px solid var(--queue);background:var(--bg);box-shadow:0 0 0 4px var(--queue-bg)}
-.tl .cur.queue::before{background-image:repeating-linear-gradient(90deg,var(--queue) 0 3px,transparent 3px 7px);background-color:transparent}
 .tl .k{display:block;font-size:var(--fs-small);color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5}
 .tl .v{display:block;font-family:var(--mono);font-size:var(--fs-micro);color:var(--ink-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:0}
-.tl .cur .k{color:var(--ink);font-weight:600}
-.tl .cur.run .v{color:var(--run)}.tl .cur.queue .v{color:var(--queue)}
 /* vertical variant (phone) */
 /* compact trajectory (phone) */
 .tl.compact{margin-top:16px}
@@ -80,4 +70,3 @@
 .job-note{font-size:var(--fs-meta);color:var(--ink-2);margin-top:12px;display:flex;gap:10px;align-items:baseline}
 /* live transfer route: source ── fill ··· > destination. Dots flow (under .motion) only
    while bytes grew between the last two checks; the arrowhead keeps direction static. */
-

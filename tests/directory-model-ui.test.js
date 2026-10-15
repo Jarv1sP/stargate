@@ -4,6 +4,7 @@ import {projectStatusText,trainingTarget,projectDiskQuotaHTML} from '../dist/exe
 import {datasetRows} from '../dist/datasets-ui.js';
 import {trashReference,trashLabel} from '../dist/trash-ui.js';
 import {uploadPersonalFile} from '../dist/personal-upload.js';
+import {resourceServerView,resourceCards} from '../dist/resources-ui.js';
 
 test('ordinary dataset rows show uploader and actions without versions or preparation',()=>{
  const html=datasetRows([{dataset:'images',name:'images',size:12,ownerName:'成员乙',modifiedAt:1700000000}]);
@@ -36,4 +37,11 @@ test('new uploads of equal length reuse no content identity and resume keeps the
  uploads.set('resume-key',{key:'resume-key',totalSize:4,state:'UPLOADING',offset:2,bytes:[97,97]});
  await send(Buffer.from('aaaa'),'resume-key');const chunks=calls.filter(([op,args])=>op==='data.upload.chunk'&&args.key==='resume-key');assert.equal(chunks.length,1);assert.equal(chunks[0][1].offset,2);assert.deepEqual(uploads.get('resume-key').bytes,[97,97,97,97]);
  assert.ok(calls.every(([,args])=>args.area==='dataset'&&args.dataset==='images'&&args.path==='data.bin'&&args.key));
+});
+
+test('zero GPU quota does not hide shared server readings or the workspace entry',()=>{
+ const machine={id:'node-a',cards:1,model:'Example GPU'},gpu={index:0,model:'Example GPU',utilization:80,memoryUsedMiB:1024,memoryTotalMiB:8192,temperatureC:45,processesAvailable:true,processes:[]};
+ const options={limits:{},production:true,snapshot:{stale:false,hosts:[{id:'node-a',reachable:true,checkedAt:'2026-10-14T11:00:00Z',gpus:[gpu],gpuq:{connected:true,health:'ok'}}]}};
+ const view=resourceServerView(machine,options);assert.equal(view.quota,0);assert.equal(view.observed,true);assert.equal(view.fresh,true);assert.deepEqual(view.gpus,[gpu]);
+ const html=resourceCards({machines:[machine],...options});assert.match(html,/data-use-machine="node-a"/);assert.match(html,/80%/);assert.doesNotMatch(html,/resource-tower[^>]*disabled/);
 });

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile,writeFile,rm,mkdir,lstat,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
@@ -12,7 +11,6 @@ import {downloadFile} from '../client-file-download.mjs';
 import {directoryDownloadReceipt,directoryDownloadStatus} from '../client-directory-download.mjs';
 const {downloadResultFile}=await import(process.env.DIRECTORY_DOWNLOAD_SOURCE??'../client-result-download.mjs');
 
-const sha=value=>createHash('sha256').update(value).digest('hex');
 async function fixture(t,{count=3,pageSize=1000}={}){
  const root=await mkdtemp(join(tmpdir(),'e2e-directory-188-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const files=new Map(Array.from({length:count},(_,i)=>['render/'+String(i).padStart(4,'0')+'.bin',Buffer.from('frame-'+i)]));
@@ -33,16 +31,14 @@ async function fixture(t,{count=3,pageSize=1000}={}){
    for(const [path,bytes] of files)if(path.startsWith(prefix)&&!path.slice(prefix.length).includes('/'))entries.push({name:path.slice(prefix.length),type:'file',size:bytes.length});
    entries.sort((a,b)=>a.name.localeCompare(b.name));
    const start=Number(args.cursor??0),selected=entries.slice(start,start+pageSize),more=start+selected.length<entries.length;
-   return {result:{protocol:1,path:args.path,entries:selected,total:entries.length,hasMore:more,nextCursor:more?String(start+selected.length):null,listingSha256:sha(JSON.stringify(entries))}};
+   return {result:{protocol:1,path:args.path,entries:selected,total:entries.length,hasMore:more,nextCursor:more?String(start+selected.length):null}};
   }
-  assert.ok(['files.get','files.result.get'].includes(op));
+  assert.equal(op,'files.get');
   if(directories.has(args.path))throw Object.assign(Error('Only unlinked regular files allowed'),{status:400});
   if(failure)failure(args);
   const bytes=files.get(args.path);assert.ok(bytes,`existing file ${args.path}`);
-  const fingerprint=sha(args.path+'\0'+bytes);
-  if(args.fingerprint&&args.fingerprint!==fingerprint)throw Object.assign(Error('Download source changed'),{status:409});
   const chunk=bytes.subarray(args.offset,args.offset+3);
-  return {result:{protocol:2,path:args.path,fingerprint,size:bytes.length,offset:args.offset,data:chunk.toString('base64'),eof:args.offset+chunk.length===bytes.length}};
+  return {result:{protocol:2,path:args.path,size:bytes.length,offset:args.offset,data:chunk.toString('base64'),eof:args.offset+chunk.length===bytes.length}};
  };
  const download=extra=>downloadResultFile(call,{...options,...extra},{directDownload:downloadFile});
  return {root,files,directories,calls,ids,call,options,download,fail:fn=>{failure=fn;},deny:()=>{denied=true;}};
@@ -64,6 +60,21 @@ test('directory interruption retains the UUID and exact partial offset for the o
  const mark=f.calls.length;const value=await f.download();assert.equal(value.downloadId,before.downloadId);
  const resumed=f.calls.slice(mark).find(row=>row.op==='files.get'&&row.path==='render/0000.bin');assert.equal(resumed.offset,3);
  assert.equal((await directoryDownloadStatus(f.options.destination)).state,'COMPLETE');
+});
+test('directory download accepts the actual file size when the earlier listing is stale',async t=>{
+ const f=await fixture(t);let changed=false;
+ const call=async(op,args)=>{if(op==='files.get'&&args.path==='render/0000.bin'&&!changed){changed=true;f.files.set(args.path,Buffer.from('updated after listing'));}return f.call(op,args);};
+ const value=await downloadResultFile(call,f.options,{directDownload:downloadFile});
+ assert.equal(value.state,'COMPLETE');assert.equal(value.bytes,[...f.files.values()].reduce((n,b)=>n+b.length,0));
+ assert.equal((await directoryDownloadStatus(f.options.destination)).totalBytes,value.bytes);
+ for(const [path,bytes] of f.files)assert.deepEqual(await readFile(join(f.options.destination,path.slice('render/'.length))),bytes);
+});
+test('overlapping directory pages do not refuse or download the same child twice',async t=>{
+ const f=await fixture(t,{pageSize:2});let first;
+ const call=async(op,args)=>{const reply=await f.call(op,args);if(op==='files.list'&&args.path==='render'){if(args.cursor&&first)reply.result.entries.unshift(first);else first=reply.result.entries.find(row=>row.type==='file');}return reply;};
+ const value=await downloadResultFile(call,f.options,{directDownload:downloadFile});
+ assert.equal(value.files,f.files.size);assert.equal(value.state,'COMPLETE');
+ assert.equal(f.calls.filter(row=>row.op==='files.get'&&row.path==='render/0000.bin'&&row.offset===0).length,1);
 });
 test('directory metadata receipts never collide with a same-named remote payload',async t=>{
  const f=await fixture(t);f.files.set('render/0000.bin.gpuctl-download.json',Buffer.from('payload, not metadata'));
@@ -104,7 +115,7 @@ test('an unrelated existing destination is preserved',async t=>{
  await assert.rejects(f.download(),/Destination exists without a matching download receipt/);assert.equal((await readFile(join(f.options.destination,'keep.txt'))).toString(),'keep');
 });
 test('source symlinks and path escapes are rejected after issuing a queryable UUID',async t=>{
- const f=await fixture(t),call=async(op,args)=>op==='files.list'?{result:{protocol:1,path:args.path,entries:[{name:'../outside',type:'unsupported',size:1}],total:1,hasMore:false,listingSha256:sha('bad')}}:f.call(op,args);
+ const f=await fixture(t),call=async(op,args)=>op==='files.list'?{result:{protocol:1,path:args.path,entries:[{name:'../outside',type:'unsupported',size:1}],total:1,hasMore:false}}:f.call(op,args);
  await assert.rejects(downloadResultFile(call,f.options,{directDownload:downloadFile}),/Unsafe directory download path/);
  assert.equal((await directoryDownloadStatus(f.options.destination)).state,'PAUSED');
 });

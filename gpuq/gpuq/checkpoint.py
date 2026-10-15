@@ -12,6 +12,8 @@ be interrupted in the middle of an optimizer step by this module.
 
 from __future__ import annotations
 
+import json
+
 import fcntl
 import math
 import os
@@ -23,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .constants import CHECKPOINT_EXIT_CODE, SCHEMA_VERSION
-from .util import atomic_write_json, json_dumps, reject_duplicate_json
+from .util import atomic_write_json, json_dumps
 
 
 CONTROL_DIR_ENV = "GPUQ_CONTROL_DIR"
@@ -65,12 +67,6 @@ class CheckpointRequest:
     requested_by_job_id: str
     created_at: float
     expires_at: float | None
-
-    @property
-    def identity(self) -> tuple[str, str]:
-        """Fields that uniquely bind an acknowledgement to this request."""
-
-        return (self.nonce, self.attempt_id)
 
 
 def resume_checkpoint_path() -> str | None:
@@ -137,7 +133,7 @@ def _read_json_object(path: Path) -> dict[str, Any] | None:
         if len(raw) > _MAX_CONTROL_FILE_BYTES:
             return None
         decoded = raw.decode("utf-8")
-        value = reject_duplicate_json(decoded)
+        value = json.loads(decoded)
     except (OSError, UnicodeError, ValueError):
         return None
     finally:
@@ -168,15 +164,12 @@ def _load_request(
     value = _read_json_object(directory / REQUEST_FILE_NAME)
     if value is None:
         return None
-    version = value.get("version")
     nonce = _nonempty_string(value.get("nonce"))
     attempt_id = _nonempty_string(value.get("attempt_id"))
     requested_by_job_id = _nonempty_string(value.get("requested_by_job_id"))
     created_at = _timestamp(value.get("created_at"))
     if (
-        isinstance(version, bool)
-        or version != SCHEMA_VERSION
-        or nonce is None
+        nonce is None
         or attempt_id is None
         or requested_by_job_id is None
         or created_at is None
@@ -229,40 +222,19 @@ def read_checkpoint_request(
 
 def _matching_ack(directory: Path, request: CheckpointRequest) -> bool:
     value = _read_json_object(directory / ACK_FILE_NAME)
-    return validate_ack_identity(
+    return checkpoint_acknowledged(
         value,
         nonce=request.nonce,
-        attempt_id=request.attempt_id,
-        requested_by_job_id=request.requested_by_job_id,
     )
 
 
 
 
-def validate_ack_identity(
-    value: dict[str, Any] | None,
-    *,
-    nonce: str,
-    attempt_id: str,
-    requested_by_job_id: str,
-) -> bool:
-    """Validate protocol fields that prove a durable checkpoint ACK."""
+def checkpoint_acknowledged(value: dict[str, Any] | None, *, nonce: str) -> bool:
+    """The save callback completed for this original checkpoint request."""
 
-    if value is None:
-        return False
-    version = value.get("version")
-    acknowledged_at = _timestamp(value.get("acknowledged_at"))
-    exit_code = value.get("exit_code")
-    return (
-        not isinstance(version, bool)
-        and version == SCHEMA_VERSION
-        and value.get("nonce") == nonce
-        and value.get("attempt_id") == attempt_id
-        and value.get("requested_by_job_id") == requested_by_job_id
-        and acknowledged_at is not None
-        and not isinstance(exit_code, bool)
-        and exit_code == CHECKPOINT_EXIT_CODE
-    )
+    return bool(value is not None and value.get("nonce") == nonce
+                and value.get("exit_code") == CHECKPOINT_EXIT_CODE)
 
 
 def _acknowledgement(
@@ -279,12 +251,7 @@ def _acknowledgement(
         raise TypeError("save_fn must return a dict or None")
     if any(not isinstance(key, str) for key in metadata):
         raise TypeError("save_fn metadata keys must be strings")
-    conflicts = sorted(_ACK_RESERVED_FIELDS.intersection(metadata))
-    if conflicts:
-        raise ValueError(
-            "save_fn metadata cannot replace protocol fields: "
-            + ", ".join(conflicts)
-        )
+    metadata = {key: value for key, value in metadata.items() if key not in _ACK_RESERVED_FIELDS}
     checkpoint_path = metadata.get("checkpoint_path")
     if checkpoint_path is not None and (
         not isinstance(checkpoint_path, str)
@@ -398,23 +365,10 @@ def _checkpoint_at_epoch_end_locked(
                 acknowledged_at = float(now)
                 if not math.isfinite(acknowledged_at):
                     raise ValueError("clock must return a finite number")
-                current = _load_request(
-                    directory,
-                    expected_nonce=expected_nonce,
-                    current_time=acknowledged_at,
-                )
-                acknowledged = (
-                    current is not None and current.identity == request.identity
-                )
-                if acknowledged:
-                    payload = _acknowledgement(
-                        request,
-                        save_metadata,
-                        acknowledged_at=acknowledged_at,
-                    )
-                    atomic_write_json(
-                        directory / ACK_FILE_NAME, payload, mode=0o600
-                    )
+                # checkpoint.lock is held throughout saving; withdrawal uses the same lock.
+                payload = _acknowledgement(request, save_metadata, acknowledged_at=acknowledged_at)
+                atomic_write_json(directory / ACK_FILE_NAME, payload, mode=0o600)
+                acknowledged = True
             else:
                 acknowledged = False
             if acknowledged and request is not None:
@@ -443,37 +397,16 @@ def _checkpoint_at_epoch_end_locked(
             raise SystemExit(CHECKPOINT_EXIT_CODE)
         return False
 
-    # Rank zero is the sole authority for the decision.  Framework collective
-    # communication carries it to peers; peers never derive a generation from
-    # or depend on independently readable shared files.
+    # Framework collective communication carries rank zero's save outcome to peers.
     observed = broadcast_decision(decision if rank == 0 else None)
     observed_error: BaseException | None = None
     if (
         not isinstance(observed, dict)
-        or observed.get("version") != SCHEMA_VERSION
-        or isinstance(observed.get("version"), bool)
-        or _nonempty_string(observed.get("decision_nonce")) is None
         or observed.get("status") not in {"noop", "ack", "error"}
     ):
         observed_error = CheckpointPeerError(
             "rank zero did not broadcast a valid checkpoint decision"
         )
-    elif rank == 0 and observed != decision:
-        observed_error = CheckpointPeerError(
-            "broadcast did not return rank zero's exact decision"
-        )
-    elif observed["status"] == "ack":
-        if any(
-            _nonempty_string(observed.get(field)) is None
-            for field in (
-                "nonce",
-                "attempt_id",
-                "requested_by_job_id",
-            )
-        ):
-            observed_error = CheckpointPeerError(
-                "rank zero broadcast an invalid checkpoint ACK identity"
-            )
     elif observed["status"] == "error" and rank != 0:
         observed_error = CheckpointPeerError(
             "rank zero checkpoint failed: "

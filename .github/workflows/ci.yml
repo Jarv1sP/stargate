@@ -23,8 +23,8 @@ jobs:
       - run: npm run test:python
       - run: npx playwright install --with-deps chromium
       - run: npm run test:ui
-      - run: python3 scripts/build-gpuq.py
-      - run: python3 build/gpuq.pyz --help
+      - run: python3 -I -B scripts/build-node-release.py --output /tmp/node-release-review --machine node-a --machine node-b --machine node-c --machine node-d
+      - run: python3 /tmp/node-release-review/node-a/gpuq.pyz --help
       - run: python3 -m compileall -q node gpuq scripts
       - run: git diff --check
   windows-client:

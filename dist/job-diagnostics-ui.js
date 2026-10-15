@@ -22,7 +22,6 @@ export function diagnosticsHTML(bundle){
     <h3>Worker / Ray 日志尾部</h3><p class="muted">最多 32 个白名单文件，每个最多 64 KiB；只呈现有限尾部，不保证覆盖所有错误。</p>${logs.map(item=>`<details class="diagnostic-log"><summary>${esc(item.source)}${item.truncated?' · 已截断':''}</summary><pre>${esc(item.text)}</pre></details>`).join('')||'<p class="muted">暂无受管理 worker 日志；旧任务或自定义临时目录可能没有留存。</p>'}`;
 }
 
-const terminalStates=new Set(['SUCCEEDED','FAILED','CANCELED']);
 const observedStates={PENDING:'排队中',STARTING:'启动中',RUNNING:'运行中',PREEMPTING:'让位中',SUCCEEDED:'成功',FAILED:'失败',CANCELED:'已取消',LOST:'失联'};
 export function nativeObservationHTML(observation){
   if(observation?.state==='WAITING')

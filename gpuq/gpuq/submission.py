@@ -119,10 +119,7 @@ def validate_submission(
         or max_request_bytes < 1
     ):
         raise ValueError("max_request_bytes must be a positive integer")
-    unknown = sorted(set(raw) - SUBMISSION_KEYS)
     missing = sorted(SUBMISSION_KEYS - OPTIONAL_SUBMISSION_KEYS - set(raw))
-    if unknown:
-        raise ValueError(f"unknown submission fields: {', '.join(unknown)}")
     if missing:
         raise ValueError(f"missing submission fields: {', '.join(missing)}")
     try:

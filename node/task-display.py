@@ -4,9 +4,7 @@ def normalize(value):
     return {'name':str(value.get('name') or ''),'description':str(value.get('description') or ''),
             'submitter':{'name':str(actor.get('name') or ''),'username':str(actor.get('username') or '')}}
 def apply(node,native,metadata):
-    # These flags are mandatory in the unchanged native coordinator; use its fresh values.
-    return node.gpu('set-display',native['id'],'--expected-submit-key='+native['submit_key'],
-        '--expected-owner='+native['owner'],'--expected-name='+native['name'],
+    return node.gpu('set-display',native['id'],
         '--name='+metadata['name'],'--description='+metadata['description'],
         '--submitter-name='+metadata['submitter']['name'],'--username='+metadata['submitter']['username'])
 def edit(node,operation,args):

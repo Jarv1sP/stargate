@@ -664,14 +664,12 @@ def _watch_signature(result: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _normalize_watch_result(result: Any, job_id: str) -> dict[str, Any]:
+def _normalize_watch_result(result: Any) -> dict[str, Any]:
     if not isinstance(result, Mapping):
         raise _WatchPayloadError("daemon returned an invalid job_watch result")
     job = result.get("job")
     if not isinstance(job, Mapping):
         raise _WatchPayloadError("job_watch result omitted a valid job")
-    if job.get("id") != job_id:
-        raise _WatchPayloadError("job_watch result identified a different job")
     state = job.get("state")
     if not isinstance(state, str) or not state:
         raise _WatchPayloadError("job_watch result omitted a valid job state")
@@ -694,34 +692,6 @@ def _normalize_watch_result(result: Any, job_id: str) -> dict[str, Any]:
         "progress": dict(progress) if isinstance(progress, Mapping) else None,
         "latest_event_id": latest_event_id,
     }
-
-
-def _normalize_show_fallback(result: Any, job_id: str) -> dict[str, Any]:
-    if not isinstance(result, Mapping):
-        raise _WatchPayloadError("daemon returned an invalid show result")
-    job = result.get("job")
-    if not isinstance(job, Mapping) or job.get("id") != job_id:
-        raise _WatchPayloadError("show result omitted the requested job")
-    attempts = result.get("attempts")
-    latest_attempt: Mapping[str, Any] | None = None
-    if isinstance(attempts, list):
-        latest_attempt = next(
-            (item for item in attempts if isinstance(item, Mapping)), None
-        )
-    return _normalize_watch_result(
-        {
-            "job": job,
-            "latest_attempt": latest_attempt,
-            "progress": None,
-            "latest_event_id": None,
-        },
-        job_id,
-    )
-
-
-def _job_watch_is_unsupported(error: ProtocolError) -> bool:
-    message = str(error).casefold()
-    return "unknown operation" in message and "job_watch" in message
 
 
 def _watch_error_is_permanent(error: ProtocolError) -> bool:
@@ -767,7 +737,6 @@ def watch_job(
     sleeper = sleeper or time.sleep
     clock = clock or time.time
     tty = _stream_isatty(output_stream) if is_tty is None else is_tty
-    fallback_to_show = False
     consecutive_errors = 0
     last_signature: tuple[Any, ...] | None = None
     tty_line_active = False
@@ -793,28 +762,12 @@ def watch_job(
     try:
         while True:
             try:
-                if fallback_to_show:
-                    raw = client.call("show", {"job_id": job_id})
-                    result = _normalize_show_fallback(raw, job_id)
-                else:
-                    try:
-                        raw = client.call("job_watch", {"job_id": job_id})
-                    except ProtocolError as exc:
-                        if not _job_watch_is_unsupported(exc):
-                            raise
-                        finish_tty_line()
-                        print(
-                            "gpu watch: daemon does not support job_watch; "
-                            "falling back to state-only show (structured progress "
-                            "is unavailable until the daemon is upgraded).",
-                            file=error_stream,
-                            flush=True,
-                        )
-                        fallback_to_show = True
-                        continue
-                    result = _normalize_watch_result(raw, job_id)
-            except _WatchPayloadError:
-                raise
+                raw = client.call("job_watch", {"job_id": job_id})
+                result = _normalize_watch_result(raw)
+            except _WatchPayloadError as exc:
+                print(f"gpu watch: node status is unknown ({exc}); query again with the same job number", file=error_stream, flush=True)
+                sleeper(poll_interval)
+                continue
             except ProtocolError as exc:
                 if _watch_error_is_permanent(exc):
                     raise
@@ -1206,8 +1159,7 @@ def cmd_retry(args: argparse.Namespace) -> int:
 
 def cmd_set_display(args: argparse.Namespace) -> int:
     result = get_client(args).call("set_job_display", {
-        "job_id": args.job_id, "expected_submit_key": args.expected_submit_key,
-        "expected_owner": args.expected_owner, "expected_name": args.expected_name,
+        "job_id": args.job_id,
         "metadata": {"name": args.name, "description": args.description,
                      "submitter": {"name": args.submitter_name, "username": args.username}},
     })
@@ -1218,16 +1170,6 @@ def cmd_set_display(args: argparse.Namespace) -> int:
 def cmd_set_priority(args: argparse.Namespace) -> int:
     rank_only = getattr(args, "rank_only", False)
     arguments: dict[str, Any] = {"job_id": args.job_id, "priority" if rank_only else "priority_class": args.priority_class}
-    expected = {
-        "priority": args.expected_priority,
-        "yield_policy": args.expected_yield,
-        "restart_policy": args.expected_restart_policy,
-        "dispatch_mode": args.expected_mode,
-    }
-    if any(value is not None for value in expected.values()):
-        if any(value is None for value in expected.values()):
-            raise ValueError("supply all four --expected-* scheduling policy flags together")
-        arguments["expected"] = expected
     result = get_client(args).call("set_priority_rank" if rank_only else "set_priority", arguments)
     print_result(result, args.json)
     return 0
@@ -1508,9 +1450,9 @@ def build_parser() -> argparse.ArgumentParser:
     retry.add_argument("job_id")
     retry.set_defaults(func=cmd_retry)
 
-    display = subparsers.add_parser("set-display", help="update human labels only, fenced to the original job")
+    display = subparsers.add_parser("set-display", help="update human task labels")
     display.add_argument("job_id")
-    for option in ("expected-submit-key", "expected-owner", "expected-name", "name", "submitter-name", "username"):
+    for option in ("name", "submitter-name", "username"):
         display.add_argument("--"+option, required=True)
     display.add_argument("--description", default="")
     display.set_defaults(func=cmd_set_display)
@@ -1518,18 +1460,10 @@ def build_parser() -> argparse.ArgumentParser:
     priority = subparsers.add_parser("set-priority", help="change a pending job's complete priority/yield contract")
     priority.add_argument("job_id")
     priority.add_argument("priority_class", choices=["idle", "normal", "high"])
-    priority.add_argument("--expected-priority", type=parse_priority)
-    priority.add_argument("--expected-yield", choices=["legacy", "never", "now", "save"])
-    priority.add_argument("--expected-restart-policy", choices=[item.value for item in RestartPolicy])
-    priority.add_argument("--expected-mode", choices=[item.value for item in DispatchMode])
     priority.set_defaults(func=cmd_set_priority)
     rank = subparsers.add_parser("set-rank", help="change only a pending job's P0..P4 rank, preserving its other policies")
     rank.add_argument("job_id")
     rank.add_argument("priority_class", type=parse_priority, metavar="P0..P4")
-    rank.add_argument("--expected-priority", type=parse_priority)
-    rank.add_argument("--expected-yield", choices=["legacy", "never", "now", "save"])
-    rank.add_argument("--expected-restart-policy", choices=[item.value for item in RestartPolicy])
-    rank.add_argument("--expected-mode", choices=[item.value for item in DispatchMode])
     rank.set_defaults(func=cmd_set_priority, rank_only=True)
 
     logs = subparsers.add_parser("logs")
@@ -1595,19 +1529,13 @@ def build_parser() -> argparse.ArgumentParser:
     post.add_argument("--on-host", help="host of a local J job (default: this host)")
     delete = board_commands.add_parser("delete", help="hide the specified message")
     delete.add_argument("message_id")
-    sync = subparsers.add_parser("sync", help="manual LAN sync: Git revision or additive files; never delete/overwrite")
+    sync = subparsers.add_parser("sync", help="manual additive file transfer over LAN; never delete/overwrite")
     sync.add_argument("source")
     sync.add_argument("--to", required=True, help="one target fleet host")
     sync.add_argument("--dest", required=True, help="absolute target directory; its parent must exist")
-    sync.add_argument("--mode", choices=["auto", "git", "files"], default="auto")
-    sync.add_argument("--ref", default="HEAD", help="Git branch/tag/HEAD; defaults to current committed revision")
     sync.add_argument("--exclude", action="append", default=[], help="exact relative path to omit in files mode")
     sync.add_argument("--dry-run", action="store_true", help="preview without writing the destination")
     sync.set_defaults(func=lambda args: __import__("gpuq.sync", fromlist=["cmd_sync"]).cmd_sync(args))
-    sync_control = subparsers.add_parser("_sync", help=argparse.SUPPRESS)
-    sync_control.add_argument("operation")
-    sync_control.add_argument("payload")
-    sync_control.set_defaults(func=lambda args: __import__("gpuq.sync", fromlist=["control_entry"]).control_entry(args))
     receiver = subparsers.add_parser("_sync-rsync", help=argparse.SUPPRESS)
     receiver.add_argument("header")
     receiver.add_argument("server_args", nargs=argparse.REMAINDER)

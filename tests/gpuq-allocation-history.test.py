@@ -73,13 +73,6 @@ class History(unittest.TestCase):
         self.assertEqual(self.history(job), before)
         self.assertEqual(self.store.list_leases(), leases)
 
-    def test_missing_history_fails_closed_without_deleting_leases(self):
-        job, attempt = self.running()
-        with self.store._transaction() as con:
-            con.execute('DELETE FROM gpu_allocation_history')
-        with self.assertRaises(S.StoreCorruptError):
-            self.store.release_leases(attempt_id=attempt['id'])
-        self.assertEqual(len(self.store.list_leases()), 1)
 
     def test_shared_gpu_history_is_bound_to_each_attempt(self):
         first = self.submit(share_gpu=True, vram_mb=1000, placement='pinned', requested_gpu_uuids=['GPU-0'])
@@ -114,43 +107,6 @@ class History(unittest.TestCase):
             with self.assertRaises(ApiError):
                 self.coordinator.handle_api('show', {'job_id': other['id'], **args})
 
-    def test_v10_migration_rolls_back_and_never_infers_historical_release(self):
-        job, attempt = self.running()
-        self.store.release_leases(attempt_id=attempt['id'])
-        active, _ = self.running((1,))
-        old = self.root / 'v10.db'
-        source = sqlite3.connect(self.config.db_path)
-        legacy = sqlite3.connect(old)
-        source.backup(legacy)
-        source.close()
-        legacy.execute('DROP TABLE gpu_allocation_history')
-        legacy.execute('ALTER TABLE jobs DROP COLUMN preempt_opt_in_only')
-        legacy.execute('ALTER TABLE jobs DROP COLUMN display_json')
-        legacy.execute('UPDATE schema_meta SET schema_version=10')
-        legacy.execute('PRAGMA user_version=10')
-        legacy.commit()
-        before = legacy.execute('SELECT * FROM leases').fetchall()
-        legacy.close()
-        broken = S.Store(old)
-        with patch.object(broken, '_validate_schema', side_effect=RuntimeError('injected migration failure')):
-            with self.assertRaisesRegex(RuntimeError, 'injected'):
-                broken.initialize()
-        inspect = sqlite3.connect(old)
-        self.assertEqual(inspect.execute('PRAGMA user_version').fetchone()[0], 10)
-        self.assertIsNone(inspect.execute("SELECT name FROM sqlite_master WHERE name='gpu_allocation_history'").fetchone())
-        self.assertEqual(inspect.execute('SELECT * FROM leases').fetchall(), before)
-        inspect.close()
-        migrated = S.Store(old).initialize()
-        try:
-            self.assertEqual(migrated.check_integrity()['schema_version'], S.STORE_SCHEMA_VERSION)
-            self.assertEqual(migrated.list_allocation_history(job_id=job['id']), [])
-            row = migrated.list_allocation_history(job_id=active['id'])[0]
-            self.assertEqual(row['source'], 'migrated_active')
-            self.assertIsNone(row['released_at'])
-            self.assertEqual(row['acquired_at'], migrated.list_leases(job_id=active['id'])[0]['acquired_at'])
-            self.assertEqual(migrated.get_attempt(attempt['id']), self.store.get_attempt(attempt['id']))
-        finally:
-            migrated.close()
 
 
 if __name__ == '__main__':

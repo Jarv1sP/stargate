@@ -121,8 +121,7 @@ def job_operation(operation,args):
         if operation=='priority':
             rank=args['priority']
             if rank not in PRIORITY_RANKS:raise ValueError('请选择有效的任务优先级。')
-            gpu('set-rank',node_id,'P'+str(PRIORITY_RANKS[rank]),'--expected-priority','P'+str(state['priority']),
-                '--expected-yield',state['yield_policy'],'--expected-restart-policy',state['restart_policy'],'--expected-mode',state['dispatch_mode'])
+            gpu('set-rank',node_id,'P'+str(PRIORITY_RANKS[rank]))
             data=gpu('show',node_id);state=data.get('job',data)
         if operation=='logs':return job_log_result(job,data,run([CONFIG['gpu'],'logs','-n','200',node_id])[-200000:])
         if operation=='diagnostics':return job_diagnostics(job,data)

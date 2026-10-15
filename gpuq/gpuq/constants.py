@@ -5,8 +5,7 @@ from enum import Enum
 
 # On-disk control/launch protocol version shared with training adapters.
 SCHEMA_VERSION = 1
-# SQLite schema version.  Kept separate so DB migrations do not invalidate
-# checkpoint adapters or launch specifications.
+# Current SQLite schema metadata, separate from checkpoint/launch messages.
 STORE_SCHEMA_VERSION = 13
 CHECKPOINT_EXIT_CODE = 75
 MAX_PRIORITY = 4

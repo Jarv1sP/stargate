@@ -15,12 +15,12 @@ export function normalizeProgress(value){
   const s=value.snapshot;
   if(!object(s)||!Number.isSafeInteger(s.sequence)||s.sequence<0||!clean(s.phase,64)||
     !pair(s.epochs_completed,s.epochs_total)||!pair(s.steps_completed,s.steps_total)||
-    !object(s.metrics)||Object.keys(s.metrics).length>32||Object.entries(s.metrics).some(([k,v])=>!/^[A-Za-z][A-Za-z0-9_.:/-]{0,63}$/.test(k)||!finite(v))||
+    !object(s.metrics)||
     !['info','warning','error'].includes(s.severity)||s.eta_seconds!==null&&(!finite(s.eta_seconds)||s.eta_seconds<0))
     return {...base,reported:false,error:'invalid progress snapshot'};
   return {...base,source:'training-self-report',snapshot:{sequence:s.sequence,phase:clean(s.phase,64),
     epochsCompleted:s.epochs_completed,epochsTotal:s.epochs_total,stepsCompleted:s.steps_completed,stepsTotal:s.steps_total,
-    metrics:Object.fromEntries(Object.entries(s.metrics)),etaSeconds:s.eta_seconds,severity:s.severity,
+    metrics:Object.fromEntries(Object.entries(s.metrics).filter(([,value])=>finite(value))),etaSeconds:s.eta_seconds,severity:s.severity,
     message:s.severity==='info'?null:clean(s.message,512),updatedAt:age(s.updated_at)}};
 }
 
@@ -32,8 +32,6 @@ export function normalizeAttempt(value){
 }
 
 export function applyJobFeedback(job,result){
-  // Older nodes omit these fields; discard an old attempt's report rather than
-  // displaying it as live after a restart or a version mismatch.
   job.progress=normalizeProgress(result.progress);
   job.latestAttempt=normalizeAttempt(result.latestAttempt);
 }
@@ -59,8 +57,6 @@ function isoTime(value,seconds=false){
   return Number.isFinite(date.getTime())?date.toISOString():null;
 }
 export function jobTiming(job){
-  // finishedAt is the legacy portal-observation timestamp. Project distinct
-  // names without migrating history or inferring an exit from reconciliation.
   const attempt=job.latestAttempt,started=isoTime(attempt?.startedAt,true);
   const exited=EXITED_ATTEMPTS.has(attempt?.state)&&started&&finite(attempt?.finishedAt)
     &&attempt.finishedAt>=attempt.startedAt?isoTime(attempt.finishedAt,true):null;

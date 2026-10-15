@@ -1,6 +1,5 @@
 export const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export const SHA256=/^[a-f0-9]{64}$/;
-export const hasUnexpectedFields=(value,allowed)=>Object.keys(value).some(key=>!allowed.includes(key));
 export const selectFields=(value,allowed)=>Object.fromEntries(allowed.filter(key=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.hasOwn(value,key)).map(key=>[key,value[key]]));
 export const MAX_ARGV_BYTES=1024**2;
 export function assertArgv(argv,{requireCommand=false,message='训练命令无效。'}={}){

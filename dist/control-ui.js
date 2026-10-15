@@ -105,7 +105,7 @@ export function controlUI(store,{navigate,getPage,toast,openSubmit,openJob}){
     if(store.principal?.role==='admin'&&hasAdminSections())rows.push(actionButton('admin','管理后台','',()=>navigate('admin')));
     return rows;
   }
-  const commandMachines=()=>{const user=store.users.find(row=>row.id===store.principal?.userId);return (store.data?.machines||[]).filter(row=>user?.limits?.[row.id]>0);};
+  const commandMachines=()=>store.data?.machines||[];
   function renderNatural(){
     const root=dialog.querySelector('#control-training-preview');if(!root)return;
     const draft=naturalDraft;root.hidden=!draft;dialog.classList.toggle('training-preview',!!draft);dialog.querySelector('.mc-body')?.classList.toggle('has-natural',!!draft);if(!draft)return;

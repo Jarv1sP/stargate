@@ -9,7 +9,7 @@
   background-color:currentColor;-webkit-mask:var(--wm) 0 0/100% 100% no-repeat;mask:var(--wm) 0 0/100% 100% no-repeat;
   overflow:hidden;white-space:nowrap;text-indent:110%;line-height:0;vertical-align:middle}
 .wordmark > *{display:none}
-.m-top .wordmark,.wordmark.sm{font-size:calc(8px / .687)}
+.wordmark.sm{font-size:calc(8px / .687)}
 .nav{display:flex;gap:2px;align-items:center;position:relative}
 .nav a{height:36px;padding:0 16px;border-radius:8px;font-size:var(--fs-body);font-weight:500;color:var(--ink-2);display:flex;align-items:center;gap:8px;white-space:nowrap;position:relative;z-index:1;transition:color var(--t-quick) linear,background-color var(--t-quick) linear}
 .nav a.on{color:var(--ink);background:var(--bg-3)}
@@ -21,11 +21,7 @@
 .sync svg{width:14px;height:14px}
 .sync .t{font-family:var(--mono);font-size:var(--fs-micro);color:var(--ink-2);letter-spacing:0}
 .sync .st{gap:0}
-.sync.fail{color:var(--ink-2)}
 .sync[disabled]{opacity:.5}
-/* account menu */
-.menu{position:absolute;z-index:8;width:288px;padding:6px;background:var(--bg-1);border:1px solid var(--line-2);border-radius:12px;box-shadow:var(--shadow-pop);font-size:var(--fs-meta);color:var(--ink);text-align:left}
-.menu.acct{top:56px;right:calc(var(--edge) - 8px)}
 /* global notice strip — one message at a time, directly under the top bar */
 /* context bar — 服务器 / 项目 / 训练版本; sticky; same component on 工作台 and 数据集 */
 .ctxbar{position:sticky;top:0;z-index:3;height:52px;display:flex;align-items:center;gap:12px;padding:0 var(--edge);background:var(--bg);box-shadow:inset 0 -1px 0 var(--line);white-space:nowrap}
@@ -35,4 +31,3 @@
 .head{display:flex;justify-content:space-between;align-items:flex-end;gap:40px;padding:40px 0 32px}
 .row{display:flex;align-items:center}
 .spread{display:flex;justify-content:space-between;align-items:center;gap:16px}
-

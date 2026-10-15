@@ -6,7 +6,6 @@ can safely try another host only after observing a durable rejection.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,28 +35,13 @@ def preflight(config_path: str, spec: dict[str, Any]) -> dict[str, Any]:
     cwd = Path(submission["cwd"])
     paths = list(spec.get("require_paths", []))
     command = submission["argv"]
-    # Python/torchrun script entrypoints, plus explicitly declared datasets,
-    # configs and checkpoints. We cannot infer arbitrary application I/O.
-    for index, value in enumerate(command[1:], 1):
-        if value.endswith(".py") and not value.startswith("-"):
-            if index > 1 and command[index - 1] == "-c":
-                continue
-            paths.append(value)
     for value in paths:
         path = Path(value)
         if not path.is_absolute():
             path = cwd / path
         if not path.exists() or not os.access(path, os.R_OK):
             raise ValueError(f"required path is missing/unreadable: {path}")
-    if paths:
-        # Persist declared inputs with the local job, so manual synchronization
-        # cannot race a later admission/start or modify active task inputs.
-        submission["env"]["GPU_SYNC_INPUT_PATHS"] = json.dumps(sorted({str((Path(value) if Path(value).is_absolute() else cwd / value).resolve()) for value in paths}))
     modules = list(spec.get("require_modules", []))
-    if Path(command[0]).name.startswith("python") and "-m" in command:
-        index = command.index("-m")
-        if index + 1 < len(command):
-            modules.append(command[index + 1])
     if modules:
         if not Path(command[0]).name.startswith("python"):
             raise ValueError("--require-module needs an explicit Python interpreter")
@@ -80,18 +64,14 @@ def preflight(config_path: str, spec: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"pool hardware does not match: {name}, {memory} MiB")
     from .protocol import Client
     offer = Client(config.socket_path, timeout=15).call("fleet_offer", {"submission": submission})
-    if offer.get("reason") == "working/input directory has an unfinished manual sync":
-        # A not-yet-ready input is not a GPU reservation: let unrelated fleet
-        # tasks use this node while the manually initiated copy is unfinished.
-        offer = {**offer, "kind": "unavailable"}
     return {"submission": submission, **offer}
 
 
 def offer(coordinator: Any, submission: dict[str, Any], allow_preempt: bool = True) -> dict[str, Any]:
-    if coordinator._job_sync_blocked(submission):
-        return {"kind": "busy", "reason": "working/input directory has an unfinished manual sync"}
-    if coordinator.health_name != "ok" or coordinator.observe_only:
-        return {"kind": "busy", "reason": "node is not healthy/active"}
+    if coordinator.health_name != "ok":
+        return {"kind": "unavailable", "reason": "node status is unknown; retry with the same admission token"}
+    if coordinator.observe_only:
+        return {"kind": "busy", "reason": "node is in observe-only mode"}
     if submission.get("share_gpu"):
         raise ValueError("cluster placement does not support sharing; select --host explicitly")
     pending = coordinator.store.list_jobs(states=[JobState.PENDING], limit=10000)
@@ -123,24 +103,27 @@ def node_api(coordinator: Any, operation: str, arguments: dict[str, Any]) -> dic
         return validate_submission(arguments["submission"], len(config.managed_gpu_uuids), max_request_bytes=config.max_request_bytes, managed_gpu_uuids=config.managed_gpu_uuids)
     if operation == "fleet_offer":
         return offer(coordinator, validated())
+    allowed = {"token", "job_id"} if operation == "fleet_retry" else {"token", "submission", "allow_preempt"}
+    arguments = {key: value for key, value in arguments.items() if key in allowed}
     token = str(uuid.UUID(arguments["token"]))
     key = "fleet.admission." + token
-    digest = hashlib.sha256(json.dumps(arguments, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     with coordinator.store.transaction() as tx:
         old = tx.get_setting(key)
         if old is not None:
-            if old["digest"] != digest:
-                raise ValueError("admission token reused with different payload")
             return old["result"]
+        if "submission" in arguments:
+            arguments["submission"] = validated()
         if operation == "fleet_retry":
             result = coordinator._api_retry({"job_id": arguments["job_id"]})
-            tx.set_setting(key, {"digest": digest, "result": result})
+            tx.set_setting(key, {"result": result})
             return result
         try:
-            submission = validated()
+            submission = arguments["submission"]
             choice = offer(coordinator, submission, arguments.get("allow_preempt") is True)
         except (ValueError, OSError, ApiError) as exc:
             choice = {"kind": "busy", "reason": str(exc)}
+        if choice["kind"] == "unavailable":
+            raise ApiError("UNAVAILABLE", choice["reason"])
         if choice["kind"] == "busy":
             result = {"accepted": False, "reason": choice["reason"]}
         else:
@@ -169,5 +152,5 @@ def node_api(coordinator: Any, operation: str, arguments: dict[str, Any]) -> dic
                         raise RuntimeError("admission changed under coordinator lock")
                     coordinator._plan_preemption(job, victims)
                 result = {"accepted": True, "job_id": job["id"]}
-        tx.set_setting(key, {"digest": digest, "result": result})
+        tx.set_setting(key, {"result": result})
         return result

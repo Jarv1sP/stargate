@@ -63,9 +63,6 @@ class Config:
             "observe_only",
             "archive_path",
         }
-        unknown = sorted(set(raw) - allowed)
-        if unknown:
-            raise ValueError(f"unknown config keys: {', '.join(unknown)}")
         required = {
             "root",
             "db_path",
@@ -78,7 +75,7 @@ class Config:
         missing = sorted(required - set(raw))
         if missing:
             raise ValueError(f"missing config keys: {', '.join(missing)}")
-        values: dict[str, Any] = dict(raw)
+        values: dict[str, Any] = {key: value for key, value in raw.items() if key in allowed}
         for key in (
             "root",
             "db_path",

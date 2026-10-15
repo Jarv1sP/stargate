@@ -1,10 +1,4 @@
-/* ── 15 terminal and dock ──────────────────────────────────────────────────────────── */
-/* dock: terminal sessions bar, last in the page flow; sticky to the viewport bottom */
-@media (hover:hover){}
-/* expanded: the terminal panel rises out of the dock (clip-path reveal under .motion) */
 
-/* ── 16 overlays: scrim, drawer, second-level drawer, dialog, toast ────────────────── */
-@media (hover:hover){}
 /* drawer-in-drawer: the first sheet recedes 56px and dims; the second covers it */
 .group{padding:24px 0;border-bottom:1px solid var(--line)}
 .group:last-child{border-bottom:0}
@@ -14,11 +8,9 @@
 /* toast: one slot; above the dock when there is one; text swaps in place, never stacks */
 .toast{position:absolute;left:0;right:0;bottom:32px;margin:0 auto;z-index:8;width:max-content;max-width:min(560px,calc(100% - 32px));min-height:44px;display:flex;align-items:center;gap:10px;padding:10px 14px 10px 16px;border-radius:10px;background:var(--bg-3);border:1px solid var(--line-2);box-shadow:var(--shadow-pop);font-size:var(--fs-meta);line-height:1.5;color:var(--ink);text-align:left}
 .toast .st{flex:none}
-@media (hover:hover){}
 
 /* ── 17 loading vs unknown vs stale — three different no-data states ───────────────── */
 /* loading: solid bars (breathe under .motion) inside the real frame; never 0, never free */
 /* unknown: static hatch + "—"; stale: unknown plus the age of the last good sample */
 
 /* ── 18 rows enter / leave, with a one-time hairline on what changed ───────────────── */
-

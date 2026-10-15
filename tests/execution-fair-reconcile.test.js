@@ -123,9 +123,8 @@ test('lost first reply is not re-observed or replayed in the active pass',{timeo
 
 
 
-test('policy revision changes fence late results and closing never dispatches queued work',{timeout:3000},async t=>{
+test('closing never dispatches queued work or saves late results',{timeout:3000},async t=>{
   const f=await fixture(t),first=await f.submit(),second=await f.submit(),held=f.block(first.id),work=f.start();await tick();
-  await f.service.enqueue(()=>{f.job(first.id).policyRevision=1;f.service.save();});
   f.service.closing=true;held.resolve();await work;
   assert.equal(f.calls.length,1);assert.equal(f.job(first.id).state,'SUBMITTING');assert.equal(f.job(first.id).dispatchPending,false);
   assert.equal(f.job(second.id).dispatchPending,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);

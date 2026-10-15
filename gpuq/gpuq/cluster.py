@@ -115,10 +115,6 @@ class QueueStore:
                 COMMIT;
             """)
             os.chmod(path, 0o600)
-        if self.conn.execute("PRAGMA application_id").fetchone()[0] != APP_ID or self.conn.execute("PRAGMA user_version").fetchone()[0] != 1:
-            raise ValueError("unsupported fleet database")
-        if self.conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
-            raise ValueError("fleet database integrity check failed")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=FULL")
 
@@ -149,8 +145,7 @@ class QueueStore:
 
     def update(self, job_id: str, **values: Any) -> None:
         allowed = {"state", "target", "token", "admission", "remote_job", "cancel_requested", "reasons", "snapshot"}
-        if not set(values).issubset(allowed):
-            raise ValueError("invalid fleet update")
+        values = {key: value for key, value in values.items() if key in allowed}
         values["updated"] = time.time()
         with self.lock:
             self.conn.execute("UPDATE fleet_jobs SET " + ",".join(k + "=?" for k in values) + " WHERE id=?", (*[json_text(v) if k in {"admission", "reasons", "snapshot"} and v is not None else v for k, v in values.items()], job_id))
@@ -188,16 +183,8 @@ class QueueStore:
                 digest = hashlib.sha256(json_text({"owner": owner, "body": body, "job_id": data.get("job_id"), "job_host": data.get("job_host")}).encode()).hexdigest()
                 old = self.conn.execute("SELECT * FROM board_receipts WHERE message_key=?", (key,)).fetchone()
                 if old:
-                    if old["digest"] != digest:
-                        raise ValueError("message-key reused with a different message")
                     exists = self.conn.execute("SELECT 1 FROM board WHERE id=?", (old["message_id"],)).fetchone()
                     return {"message_id": "B" + str(old["message_id"]), "deleted": not bool(exists)}
-                active = self.conn.execute("SELECT * FROM board WHERE message_key=?", (key,)).fetchone()
-                if active:
-                    active_digest = hashlib.sha256(json_text({"owner": active["owner"], "body": active["body"], "job_id": active["job_id"], "job_host": active["job_host"]}).encode()).hexdigest()
-                    if active_digest != digest:
-                        raise ValueError("message-key reused with a different message")
-                    return {"message_id": "B" + str(active["id"]), "deleted": False}
                 now = time.time()
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
@@ -234,8 +221,9 @@ class QueueStore:
 
 def validate_spec(spec: Any, inventory: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     from .cli import build_parser, resolve_job_identity
-    if not isinstance(spec, dict) or set(spec) != {"args", "hosts", "require_paths", "require_modules", "gpu_model", "min_vram_mb"}:
-        raise ValueError("invalid fleet submission fields")
+    if not isinstance(spec, dict):
+        raise ValueError("fleet submission must be an object")
+    spec = {key: value for key, value in spec.items() if key in {"args", "hosts", "require_paths", "require_modules", "gpu_model", "min_vram_mb"}}
     hosts = spec["hosts"]
     if not isinstance(hosts, list) or not hosts or len(set(hosts)) != len(hosts) or not all(h in inventory["hosts"] for h in hosts):
         raise ValueError("unknown/duplicate/empty candidate hosts")
@@ -389,13 +377,13 @@ class FleetCoordinator:
                 job = self.store.get(job_id)
         result = self.node(job["target"], "fleet_admit", job["admission"])
         if not isinstance(result, dict) or type(result.get("accepted")) is not bool:
-            raise ValueError("invalid admission reply; keeping original target fenced")
+            raise ValueError("node admission is unknown; retry on the same node with the same token")
         with self.decision:
             latest = self.store.get(job_id)
             if result["accepted"]:
                 remote_job = result.get("job_id")
-                if not isinstance(remote_job, str) or not remote_job.startswith("J"):
-                    raise ValueError("invalid admission job identity")
+                if not isinstance(remote_job, str) or not remote_job:
+                    raise ValueError("node has not returned a job number; query again with the same admission token")
                 self.store.update(job_id, remote_job=remote_job, state="CANCELING" if latest["cancel_requested"] else "ASSIGNED", reasons={})
             else:
                 self.store.update(job_id, state="CANCELED" if latest["cancel_requested"] else "PENDING", target=None, token=None, admission=None, reasons={job["target"]: result.get("reason", "busy")})

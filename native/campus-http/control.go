@@ -25,18 +25,16 @@ type controlSpec struct {
 	Token  string `json:"token,omitempty"`
 }
 type controlSession struct {
-	origin  *url.URL
-	routeFn func() (route, error)
-	dialFn  func(context.Context, string, string) (net.Conn, error)
-	roots   *x509.CertPool
-	initial route
-	conn    *tls.Conn
-	reader  *bufio.Reader
+	origin *url.URL
+	dialFn func(context.Context, string, string) (net.Conn, error)
+	roots  *x509.CertPool
+	conn   *tls.Conn
+	reader *bufio.Reader
 }
 
 func validateControl(f frame) error {
 	c := f.Control
-	if c == nil || f.BodyBytes > controlRequestLimit || f.Endpoint != "" || f.DialEndpoint != "" || f.ProbeTimeoutMs != 0 || f.Pin != "" || f.Offset != 0 || f.Final != nil {
+	if c == nil || f.BodyBytes > controlRequestLimit {
 		return errors.New("INVALID_CONTROL_FRAME")
 	}
 	u, e := origin(c.Origin)
@@ -74,7 +72,7 @@ func (c *controlSession) connect(ctx context.Context) error {
 	return nil
 }
 func (s *session) controlRequest(f frame, body []byte) (out reply, raw []byte) {
-	out = reply{Schema: 1, Seq: f.Seq, UID: processUID()}
+	out = reply{}
 	started := false
 	fail := func(e error) (reply, []byte) {
 		s.stopped = true
@@ -97,7 +95,7 @@ func (s *session) controlRequest(f frame, body []byte) (out reply, raw []byte) {
 	}
 	if s.control == nil {
 		u, _ := origin(f.Control.Origin)
-		s.control = &controlSession{origin: u, routeFn: s.routeFn, dialFn: s.controlDialFn, roots: s.roots}
+		s.control = &controlSession{origin: u, dialFn: s.controlDialFn, roots: s.roots}
 	} else if s.control.origin.String() != f.Control.Origin {
 		return fail(errors.New("CONTROL_ORIGIN_CHANGED"))
 	}

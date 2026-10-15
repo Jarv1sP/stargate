@@ -8,18 +8,14 @@
 .sb .admin-gpu-fleet{--resource-sidebar:180px;--resource-gap:clamp(16px,3vw,32px)}
 .sb .admin-gpu-fleet .resource-process-scroll,.sb .admin-gpu-fleet .gpu-table-scroll{max-width:100%;overflow:auto}
 .sb .admin-gpu-fleet .resource-detail h2{font-size:20px}
-.sb .admin-root-host,.sb .admin-task-list{margin-top:24px;min-width:0}
-.sb .admin-root-host .host-maintenance{padding:16px;border:1px solid var(--line-1)}
-.sb .admin-root-host .terminal-controls{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
-.sb .admin-root-sessions{margin-top:24px}
+.sb .admin-task-list{margin-top:24px;min-width:0}
 .sb [data-admin-root-sessions]{display:flex;gap:12px;flex-wrap:wrap}
 .sb [data-admin-root-sessions] .button{display:flex;gap:12px;max-width:100%;flex-wrap:wrap;white-space:normal}
 .sb .admin-task-list .section-kicker{display:flex;justify-content:space-between;gap:12px;margin-bottom:16px}
-.sb .admin-task-list h3,.sb .admin-root-sessions h3{font-size:14px;margin:0 0 12px}
+.sb .admin-task-list h3{font-size:14px;margin:0 0 12px}
 .sb .admin-task-list .live-table-wrap{max-width:100%;overflow:auto}
 .sb .admin-task-list .task-table td{overflow-wrap:anywhere}
 @container (max-width:700px){.sb .admin-task-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.sb .admin-task-filters label:last-child{grid-column:1/-1}.sb .admin-gpu-fleet .resource-fleet-actions{left:16px;right:16px}.sb .admin-gpu-fleet .resource-mini{padding:12px 4px}.sb .admin-gpu-fleet .resource-mini .resource-spec{font-size:11px}.sb .admin-task-list .task-table{min-width:0}.sb .admin-task-heading .button{flex:none}}
 .sb .admin-task-approvals{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;font-size:14px}
 .sb .admin-gpu-tasks .resource-card{border:0;border-radius:0;background:none;padding:0;margin:0;min-width:0;box-shadow:none}
-.sb .admin-root-host .host-maintenance>summary{display:flex;align-items:center;min-height:48px}
 .sb .admin-gpu-fleet .resource-fleet-actions>span{white-space:normal;flex-wrap:wrap}

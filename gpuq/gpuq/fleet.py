@@ -12,7 +12,7 @@ import sys
 import uuid
 from typing import Any, Sequence
 
-ALLOWED = {'_cluster', '_sync', 'attach', 'cancel', 'events', 'health', 'list', 'logs', 'q', 'queue', 'retry', 'run', 'set-display', 'set-priority', 'set-rank', 'show', 'status', 'submit', 'watch'}
+ALLOWED = {'_cluster', 'attach', 'cancel', 'events', 'health', 'list', 'logs', 'q', 'queue', 'retry', 'run', 'set-display', 'set-priority', 'set-rank', 'show', 'status', 'submit', 'watch'}
 MAX_PACKET = 1024 * 1024
 
 
@@ -80,7 +80,7 @@ def remote_entry(config: str) -> int:
     if len(raw) > MAX_PACKET:
         raise ValueError("remote packet is too large")
     packet = json.loads(raw)
-    if not isinstance(packet, dict) or set(packet) != {"version", "argv"} or type(packet["version"]) is not int or packet["version"] != 1:
+    if not isinstance(packet, dict):
         raise ValueError("invalid remote packet")
     validate_remote_argv(packet["argv"])
     from .cli import main

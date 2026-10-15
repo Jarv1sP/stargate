@@ -1,9 +1,7 @@
-// Endpoints come only from an authenticated Portal/node descriptor. The grant,
-// canonical TLS name, pin and operation identity never change.
+// Authenticated grants supply the current campus and LAN routes.
 import {isIP} from 'node:net';
 import {createCampusNativeAgent} from './client-campus-native.mjs';
 import {networkFailureCategory,safeNetworkTarget,proxyEnvironmentDetected} from './client-network-errors.mjs';
-const fail=()=>{throw Error('Approved campus endpoints changed or are invalid; original operation preserved');};
 export function privateLanOrigin(value){
   let u;try{u=new URL(value);}catch{return false;}
   if(u.protocol!=='https:'||u.origin!==value||u.username||u.password||u.search||u.hash||u.pathname!=='/'||isIP(u.hostname)!==4)return false;
@@ -12,11 +10,13 @@ export function privateLanOrigin(value){
 }
 export function approvedCampusEndpoints(grant,routes=grant.routes){
   if(routes===undefined)return [{id:'primary',kind:'campus-direct',endpoint:grant.endpoint}];
-  if(!Array.isArray(routes)||!routes.length)fail();
-  if(routes.some(r=>!r||typeof r.id!=='string'||r.kind!=='campus-direct'||!privateLanOrigin(r.endpoint)&&!validOrigin(r.endpoint)))fail();
-  const primary=routes.find(r=>r.id==='primary'),lan=routes.find(r=>r.id==='node-lan');
-  if(primary?.endpoint!==grant.endpoint||lan&&!privateLanOrigin(lan.endpoint)||new Set(routes.map(r=>r.id)).size!==routes.length)fail();
-  return [...(lan?[lan]:[]),...routes.filter(r=>r!==lan)].map(r=>Object.freeze({...r}));
+  const seen=new Set(),usable=(Array.isArray(routes)?routes:[]).filter(r=>{
+    if(!r||typeof r.id!=='string'||r.kind!=='campus-direct'||!validOrigin(r.endpoint)||r.id==='node-lan'&&!privateLanOrigin(r.endpoint)||r.id==='primary'&&r.endpoint!==grant.endpoint||seen.has(r.id))return false;
+    seen.add(r.id);return true;
+  });
+  if(!usable.some(r=>r.endpoint===grant.endpoint))usable.push({id:'primary',kind:'campus-direct',endpoint:grant.endpoint});
+  const lan=usable.find(r=>r.id==='node-lan');
+  return [...(lan?[lan]:[]),...usable.filter(r=>r!==lan)].map(r=>Object.freeze({...r}));
 }
 function validOrigin(value){try{const u=new URL(value);return u.protocol==='https:'&&u.origin===value&&!u.username&&!u.password&&u.pathname==='/'&&!u.search&&!u.hash;}catch{return false;}}
 export const campusConnectionFailure=error=>['DNS_FAILED','TCP_TIMEOUT','TCP_REFUSED','PHYSICAL_CONNECT_FAILED','ACK_UNCONFIRMED','RESPONSE_INTERRUPTED','SESSION_STOPPED','CONNECTION_FAILED','CONNECTION_REFUSED','NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET','EPIPE','ECONNREFUSED'].includes(error?.code);
@@ -42,10 +42,9 @@ export async function probeCampusEndpoint(grant,endpoint,{nativeOptions={},agent
   signal?.addEventListener('abort',abort,{once:true});
   try{
     if(signal?.aborted)throw Object.assign(Error('Endpoint probe canceled'),{code:'ABORT_ERR'});
-    const {value,raw}=await agent.request({op:'probe',endpoint:grant.endpoint,certificateSha256:grant.certificateSha256,
+    const {value}=await agent.request({op:'probe',endpoint:grant.endpoint,certificateSha256:grant.certificateSha256,
       ...(endpoint.endpoint!==grant.endpoint?{dialEndpoint:endpoint.endpoint}:{}),probeTimeoutMs:timeoutMs,offset:0});
-    const observed=value.result;
-    return observed;
+    return value.result;
   }finally{signal?.removeEventListener('abort',abort);await finishCampusOperation(()=>agent.destroy());}
 }
 export async function chooseCampusEndpoint(grant,endpoints,{probe=probeCampusEndpoint,exclude,retryExcluded=false,parallel=false}={}){
@@ -57,7 +56,7 @@ export async function chooseCampusEndpoint(grant,endpoints,{probe=probeCampusEnd
   const failures=new Map();
   const observe=async(endpoint,signal)=>{
     const id=['primary','node-lan'].includes(endpoint.id)?endpoint.id:'endpoint';
-    try{const observed=await probe(grant,endpoint,{signal});
+    try{await probe(grant,endpoint,{signal});
       return endpoint;}
     catch(error){if(!failures.has(id))failures.set(id,{code:endpointFailure(error),category:networkFailureCategory(error),target:safeNetworkTarget(endpoint.endpoint),...(Number.isInteger(error.status)&&error.status>=100&&error.status<=599?{status:error.status}:{})});throw error;}
   };
@@ -75,7 +74,4 @@ export async function chooseCampusEndpoint(grant,endpoints,{probe=probeCampusEnd
   if(waiting.length)return waiting[0];
   const endpointErrors=candidates.map(endpoint=>['primary','node-lan'].includes(endpoint.id)?endpoint.id:'endpoint').filter((id,index,ids)=>failures.has(id)&&ids.indexOf(id)===index).map(id=>({id,...failures.get(id)}));
   throw Object.assign(Error(`No approved LAN or campus endpoint passed pinned TLS and capabilities (${endpointErrors.map(({id,code,category,target,status})=>`${id}: ${code}${category!==code&&category!=='PROBE_FAILED'?' ['+category+']':''}${status?' HTTP '+status:''} (${target})`).join('; ')}); original UUID and offsets preserved.${proxyEnvironmentDetected()?' PROXY_IN_PATH (proxy environment detected; interception unconfirmed).':''}`),{code:'CAMPUS_ENDPOINT_UNAVAILABLE',endpointErrors});
-}
-export function sameCampusEndpoints(before,after){
-  if(before?.find(r=>r.id==='primary')?.endpoint!==after?.find(r=>r.id==='primary')?.endpoint)fail();
 }

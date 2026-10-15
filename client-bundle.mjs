@@ -11,7 +11,7 @@ export const CLIENT_DOWNLOAD_IDLE_MS=120000;
 // Only public artifact downloads may be excluded from business draining.
 // Authenticated GETs (including file bytes) remain business requests.
 export function isClientDownload(req){
-  return ['GET','HEAD'].includes(req.method)&&['/gpuctl.mjs','/amaxctl.mjs'].includes(req.url.split('?')[0]);
+  return ['GET','HEAD'].includes(req.method)&&req.url.split('?')[0]==='/gpuctl.mjs';
 }
 
 export function watchClientDownload(res,{idleTimeout=CLIENT_DOWNLOAD_IDLE_MS,onIdle=()=>{}}={}){

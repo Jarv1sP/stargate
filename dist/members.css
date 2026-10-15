@@ -22,7 +22,7 @@
 .sb #page-users .user-name{font-size:14px;font-weight:500;margin:0 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sb #page-users .user-meta{font-size:12px;color:var(--ink-2)}
 .sb #page-users .user-chevron{font-size:18px;color:var(--ink-2)}
-.sb #page-users .member-list-note,.sb #page-users .member-draft-note{font-size:12px;color:var(--ink-2);line-height:1.7;margin:20px 0 0;overflow-wrap:anywhere}
+.sb #page-users .member-draft-note{font-size:12px;color:var(--ink-2);line-height:1.7;margin:20px 0 0;overflow-wrap:anywhere}
 .sb #page-users .member-editor{container:member-editor / inline-size;grid-column:auto;grid-row:auto;background-color:var(--bg);border:0;border-radius:0;padding:28px 0;min-width:0;overflow:visible}
 .sb #page-users .editor-head{display:grid;grid-template-columns:minmax(0,1fr);align-items:center;gap:16px;padding:0 0 20px;margin:0 0 12px;border-bottom:1px solid var(--line)}
 .sb #page-users .editor-head>div{min-width:0}
@@ -56,7 +56,7 @@
 .sb #page-users .total-limit strong{font-size:14px;font-weight:500}
 .sb #page-users .total-limit small{display:block;margin-top:6px}
 .sb #page-users .total-limit>span:last-child{font-size:12px;color:var(--ink-2);white-space:nowrap}
-.sb #page-users .account-settings,.sb #page-users .team-jobs{margin-top:24px;border-top:1px solid var(--line);padding-top:0;background:none}
+.sb #page-users .account-settings{margin-top:24px;border-top:1px solid var(--line);padding-top:0;background:none}
 .sb #page-users :is(.account-settings,.team-jobs)>summary{display:flex;justify-content:space-between;align-items:center;min-height:56px;font-size:13px;list-style:none;color:var(--ink-2);cursor:pointer}
 .sb #page-users :is(.account-settings,.team-jobs)>summary::after{content:'+';font:14px var(--mono)}
 .sb #page-users :is(.account-settings,.team-jobs)[open]>summary::after{content:'−'}

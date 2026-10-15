@@ -11,7 +11,7 @@ export async function watchJob(call,jobId,{interval=5,json=false,signal,write=ch
     try{job=(await call('jobs.watch',{jobId},signal)).result;}
     catch(error){if(signal?.aborted)return 130;if(error.status!==undefined&&![429,502,503,504].includes(error.status))throw error;write(json?JSON.stringify({id:jobId,state:'UNKNOWN'})+'\n':'暂时无法读取，正在查询原任务。\n');await delay(interval*1000,undefined,{signal}).catch(error=>{if(!signal?.aborted)throw error;});continue;}
     if(signal?.aborted)return 130;
-    if(!job||job.id!==jobId||typeof job.state!=='string')throw Error('Server returned an invalid task watch response');
+    if(typeof job?.state!=='string')job={id:jobId,state:'UNKNOWN'};
     const key=feedbackKey(job);
     if(key!==previous){write(json?JSON.stringify(job)+'\n':(job.nativeObservation?'门户历史结果（命令退出码仍按此结果）：\n':'')+jobFeedbackText(job)+(job.nativeObservation?'\n'+nativeObservationText(job.nativeObservation):'')+'\n\n');previous=key;}
     if(JOB_TERMINAL.has(job.state))return watchExitCode(job);

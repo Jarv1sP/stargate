@@ -4,7 +4,7 @@ const fail=message=>{throw Error(message);};
 export async function runCloudFiles({positionals,options,machine,call,stderr=process.stderr}){
   const action=positionals[2]||'list',expected={info:3,list:3,status:4,cancel:4,download:5,upload:4};
   if(!Object.hasOwn(expected,action)||positionals.length!==expected[action])fail('Usage: data cloud info|list | download FILE_ID PATH | upload PATH | status|cancel OPERATION_ID');
-  if(options.datasets?.length||Object.keys(options).some(k=>!['machines','datasets','url','session-file','json','key','dataset','project'].includes(k)))fail('云文件参数无效，请运行 gpuctl help。');
+  if(Object.keys(options).some(k=>!['machines','url','session-file','json','key','dataset','project'].includes(k)))fail('云文件参数无效，请运行 gpuctl help。');
   const args={machine};
   if(['download','upload'].includes(action)){
     args.key=options.key||randomUUID();if(!UUID.test(args.key))fail('Use a complete UUID --key');

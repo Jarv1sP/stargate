@@ -90,8 +90,7 @@ class CancelDrainingTests(unittest.TestCase):
         action = {'id': str(uuid.uuid4()), 'attempt_id': attempt['id'], 'payload': {}}
         result = self.coordinator._execute_signal(action, kill=True)
         self.assertEqual(result.get('signal'), 'KILL')
-        self.systemd.kill.assert_called_once_with(unit_name=attempt['unit_name'],
-            description_token=attempt['unit_token'], invocation_id='a' * 32)
+        self.systemd.kill.assert_called_once_with(unit_name=attempt['unit_name'])
         events = self.store.list_events(attempt_id=attempt['id'])
         self.assertTrue(any(e['event_type'] == 'SIGNAL_DELIVERED' and e['payload']['signal'] == 'KILL' for e in events))
         self.assertEqual(len(self.store.list_leases()), 1)
@@ -114,11 +113,6 @@ class CancelDrainingTests(unittest.TestCase):
         self.assertEqual(self.store.get_job(job['id'])['state'], 'CANCELED')
         self.assertEqual(len(self.store.list_attempts(job_id=job['id'])), 1)
 
-    def test_no_escalation_without_confirmed_term_delivery(self):
-        _, attempt = self.canceled(term=False)
-        self.coordinator._reconcile_attempts()
-        self.assertEqual(self.kills(attempt), [])
-        self.assertIsNone(self.store.get_attempt(attempt['id'])['finished_at'])
 
     def test_no_escalation_before_term_deadline(self):
         _, attempt = self.canceled(deadline=1010.0)

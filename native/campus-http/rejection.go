@@ -13,7 +13,7 @@ import (
 var rejectionCode = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // HTTP 429 is an explicit refusal. Retry the original request within the caller's bounded budget.
-func admissionBusyDelay(response *http.Response, payload []byte) int {
+func admissionBusyDelay(response *http.Response) int {
 	if response.StatusCode != 429 {
 		return 0
 	}

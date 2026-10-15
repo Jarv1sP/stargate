@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import errno
 import os
 import socket
@@ -11,8 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from .protocol import MAX_RESPONSE_BYTES, PROTOCOL_VERSION
-from .util import json_dumps, reject_duplicate_json
+from .protocol import MAX_RESPONSE_BYTES
+from .util import json_dumps
 
 
 class ApiError(RuntimeError):
@@ -174,13 +176,9 @@ class _RequestHandler(socketserver.BaseRequestHandler):
         request_id: str | None = None
         try:
             raw = data[:-1].decode("utf-8", errors="strict")
-            request = reject_duplicate_json(raw)
+            request = json.loads(raw)
             if not isinstance(request, dict):
                 raise ApiError("BAD_REQUEST", "request must be an object")
-            if set(request) != {"version", "request_id", "op", "args"}:
-                raise ApiError("BAD_REQUEST", "request fields do not match protocol")
-            if request["version"] != PROTOCOL_VERSION:
-                raise ApiError("BAD_VERSION", "unsupported protocol version")
             request_id = str(uuid.UUID(str(request["request_id"])))
             operation = request["op"]
             arguments = request["args"]

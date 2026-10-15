@@ -20,8 +20,6 @@ export function elasticAllocation(value,cards,scheduling){
   return {elastic:{minCards,globalBatch,microBatch,autoExpand},allowed};
 }
 
-export function elasticCapable(host){return host?.reachable===true&&host.gpuq?.connected===true&&Array.isArray(host.gpuq.capabilities)&&host.gpuq.capabilities.includes('console-elastic-v1');}
-
 export function allocationLabel(job){const p=job.placement;return (job.elastic?`弹性 ${job.elastic.minCards}–${job.cards} 张 · 当前 ${job.actualCards??job.assignedIndices?.length??0} 张 · 合法卡数 ${(job.allowedGpuCounts||[]).join(',')}`:`${job.cards} 张`)+(p?` · ${p.shared?'共享':'固定'} GPU ${p.gpuIndices.join(',')}${p.shared?' · '+p.vramMiB+' MiB':''}${p.hami?' · HAMi SM '+p.smPercent+'%':''}`:'');}
 
 export function gpuPlacement(value,cards,elastic,scheduling,priority){
@@ -39,9 +37,4 @@ export function gpuPlacement(value,cards,elastic,scheduling,priority){
     else if(value.smPercent!==undefined)throw Error('SM 限制需要启用 HAMi。');
   }else if(value.vramMiB!==undefined||hami||value.smPercent!==undefined)throw Error('显存预算和 HAMi 仅用于共享任务。');
   return placement;
-}
-
-export function placementCapable(host,placement){
-  const caps=host?.reachable===true&&host.gpuq?.connected===true&&Array.isArray(host.gpuq.capabilities)?host.gpuq.capabilities:[];
-  return caps.includes('console-placement-v1')&&(!placement.shared||caps.includes('console-sharing-v1'))&&(!placement.hami||caps.includes('console-hami-v1'))&&(!(placement.smPercent<100)||caps.includes('console-hami-sm-v1'));
 }

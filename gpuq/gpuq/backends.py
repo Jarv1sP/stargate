@@ -5,8 +5,7 @@ boundaries:
 
 * a partial or ambiguous ``nvidia-smi`` response is never interpreted as an
   idle GPU;
-* a systemd unit is signalled only after its immutable invocation identity,
-  managed description, and cgroup have all been checked.
+* signals target the controlled gpuq unit namespace and its current cgroup.
 
 Commands are always passed to the injected runner as an argument vector with
 ``shell=False``.  Besides making the production path safe, the small runner
@@ -17,7 +16,6 @@ user-systemd instance.
 from __future__ import annotations
 
 import csv
-import hmac
 import io
 import math
 import os
@@ -32,7 +30,6 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 CgroupReader = Callable[[Path], str]
 
 _GPU_UUID_RE = re.compile(r"^GPU-[A-Za-z0-9][A-Za-z0-9-]*$")
-_INVOCATION_ID_RE = re.compile(r"^[0-9A-Fa-f]{32}$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _UNIT_STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _DESCRIPTION_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
@@ -370,7 +367,7 @@ class SystemdUnitStatus:
 
     unit_name: str
     description: str
-    invocation_id: str
+    invocation_id: str | None
     control_group: str
     main_pid: int
     exec_main_status: int
@@ -509,21 +506,16 @@ class UserSystemdBackend:
         )
         return self.status(
             unit_name=unit,
-            description_token=token,
         )
 
     def status(
         self,
         *,
         unit_name: str,
-        description_token: str,
-        invocation_id: str | None = None,
     ) -> SystemdUnitStatus:
-        """Read a unit and validate that it is the expected gpuq invocation."""
+        """Read the current state of a managed gpuq unit."""
 
         unit = self._canonical_unit_name(unit_name)
-        token = self._validate_description_token(description_token)
-        expected_invocation = self._validate_expected_invocation_id(invocation_id)
         command = [
             self._systemctl,
             "--user",
@@ -541,8 +533,6 @@ class UserSystemdBackend:
         properties = self._parse_show_output(result.stdout)
         return self._validated_status(
             unit=unit,
-            token=token,
-            expected_invocation_id=expected_invocation,
             properties=properties,
         )
 
@@ -550,15 +540,11 @@ class UserSystemdBackend:
         self,
         *,
         unit_name: str,
-        description_token: str,
-        invocation_id: str,
     ) -> SystemdUnitStatus:
-        """Send TERM to the exact, identity-checked unit control group."""
+        """Send TERM to the current managed unit control group."""
 
         return self._signal(
             unit_name=unit_name,
-            description_token=description_token,
-            invocation_id=invocation_id,
             signal_name="TERM",
         )
 
@@ -566,15 +552,11 @@ class UserSystemdBackend:
         self,
         *,
         unit_name: str,
-        description_token: str,
-        invocation_id: str,
     ) -> SystemdUnitStatus:
-        """Send KILL to the exact, identity-checked unit control group."""
+        """Send KILL to the current managed unit control group."""
 
         return self._signal(
             unit_name=unit_name,
-            description_token=description_token,
-            invocation_id=invocation_id,
             signal_name="KILL",
         )
 
@@ -582,10 +564,8 @@ class UserSystemdBackend:
         self,
         *,
         unit_name: str,
-        description_token: str,
-        invocation_id: str,
     ) -> SystemdUnitStatus:
-        """Unload a finished transient unit after proving its cgroup is empty.
+        """Unload a finished transient unit after its cgroup is empty.
 
         This is intentionally separate from :meth:`start`: a naming conflict
         is never cleaned up implicitly.  An empty cgroup is verified at the
@@ -597,8 +577,6 @@ class UserSystemdBackend:
         unit = self._canonical_unit_name(unit_name)
         status = self.status(
             unit_name=unit,
-            description_token=description_token,
-            invocation_id=invocation_id,
         )
         if not status.is_cleanup_ready:
             raise UnitNotReadyError(
@@ -628,8 +606,6 @@ class UserSystemdBackend:
         try:
             remaining = self.status(
                 unit_name=unit,
-                description_token=description_token,
-                invocation_id=invocation_id,
             )
         except UnitNotFoundError:
             return status
@@ -642,17 +618,11 @@ class UserSystemdBackend:
         self,
         *,
         unit_name: str,
-        description_token: str,
-        invocation_id: str,
         signal_name: str,
     ) -> SystemdUnitStatus:
         unit = self._canonical_unit_name(unit_name)
-        # Validate immediately before signalling.  Restart=no plus the persisted
-        # InvocationID prevents normal lifecycle reuse from passing this check.
         status = self.status(
             unit_name=unit,
-            description_token=description_token,
-            invocation_id=invocation_id,
         )
         _run_checked(
             self._runner,
@@ -702,14 +672,6 @@ class UserSystemdBackend:
         ):
             raise ValueError("description_token contains unsupported characters")
         return token
-
-    @staticmethod
-    def _validate_expected_invocation_id(value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str) or not _INVOCATION_ID_RE.fullmatch(value):
-            raise ValueError("invocation_id must be exactly 32 hexadecimal characters")
-        return value.lower()
 
     @staticmethod
     def _validate_job_argv(argv: Sequence[str]) -> list[str]:
@@ -777,13 +739,7 @@ class UserSystemdBackend:
                 raise BackendProtocolError("systemctl show returned a malformed line")
             key, value = line.split("=", 1)
             if key not in cls.SHOW_PROPERTIES:
-                raise BackendProtocolError(
-                    f"systemctl show returned unexpected property {key!r}"
-                )
-            if key in properties:
-                raise BackendProtocolError(
-                    f"systemctl show returned duplicate property {key!r}"
-                )
+                continue
             properties[key] = value
         missing = set(cls.SHOW_PROPERTIES).difference(properties)
         if missing:
@@ -796,8 +752,6 @@ class UserSystemdBackend:
         self,
         *,
         unit: str,
-        token: str,
-        expected_invocation_id: str | None,
         properties: Mapping[str, str],
     ) -> SystemdUnitStatus:
         if properties["LoadState"] == "not-found":
@@ -805,19 +759,7 @@ class UserSystemdBackend:
         if properties["Id"] != unit:
             raise UnitIdentityError("systemd returned a different unit ID")
 
-        expected_description = self.description_for(token)
-        if not hmac.compare_digest(properties["Description"], expected_description):
-            raise UnitIdentityError("systemd unit description token does not match")
-
-        invocation = properties["InvocationID"]
-        if not _INVOCATION_ID_RE.fullmatch(invocation):
-            raise UnitIdentityError("systemd unit has no valid InvocationID")
-        invocation = invocation.lower()
-        if (
-            expected_invocation_id is not None
-            and not hmac.compare_digest(invocation, expected_invocation_id)
-        ):
-            raise UnitIdentityError("systemd unit InvocationID does not match")
+        invocation = properties.get("InvocationID", "").lower() or None
 
         main_pid = _parse_systemd_nonnegative_int(properties["MainPID"], "MainPID")
         exec_status = _parse_systemd_nonnegative_int(

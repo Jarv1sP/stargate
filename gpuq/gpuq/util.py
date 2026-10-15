@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -22,18 +22,6 @@ def json_dumps(value: Any) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
-
-
-def reject_duplicate_json(raw: str) -> Any:
-    def hook(pairs: Iterable[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key: {key}")
-            result[key] = value
-        return result
-
-    return json.loads(raw, object_pairs_hook=hook)
 
 
 def validate_label(value: str, field: str) -> str:
