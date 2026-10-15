@@ -1,0 +1,41 @@
+{
+  "account": "nodeops",
+  "releaseRoot": "/mnt/data/stargate/releases",
+  "dataMountPoints": ["/mnt/data"],
+  "gpuCommand": "/home/nodeops/bin/gpu",
+  "environment": {},
+  "gpuq": {
+    "root": "/mnt/data/stargate/scheduler",
+    "db_path": "/mnt/data/stargate/scheduler/state/gpuq.db",
+    "log_dir": "/mnt/data/stargate/scheduler/logs",
+    "control_dir": "/mnt/data/stargate/control",
+    "socket_path": "/run/user/1000/gpuq/gpuq.sock",
+    "managed_gpu_uuids": ["GPU-example"],
+    "observe_only": false
+  },
+  "profiles": {
+    "7IM": {
+      "machine": "node-example",
+      "cards": 1,
+      "root": "/mnt/data/stargate/state",
+      "workspacesRoot": "/mnt/data/workspaces",
+      "datasetsRoot": "/mnt/data/datasets",
+      "jobMemoryGiBPerCard": 2,
+      "memoryPool": null,
+      "personalOci": {
+        "baseImage": "registry.example.invalid/team/python:3",
+        "cdiSpec": "/etc/cdi/nvidia.json"
+      },
+      "directUpload": null,
+      "transferPeer": null,
+      "transferPeers": null,
+      "cloudFiles": null
+    }
+  },
+  "authorizedKeys": [
+    {"publicKey": "ssh-ed25519 REPLACE_WITH_PUBLIC_KEY", "profile": "7IM"}
+  ],
+  "services": [
+    {"name": "stargate-storage-collect.service", "profile": "7IM", "seconds": 3600}
+  ]
+}
