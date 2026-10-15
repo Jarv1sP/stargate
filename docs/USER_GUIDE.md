@@ -136,7 +136,7 @@ gpuctl run -g 1 --name baseline --description "验证新数据集" -- python tra
 gpuctl jobs
 ```
 
-直接使用当前代码和环境，无需关闭开发终端。`--` 后是程序参数；`--data`、`--output` 按自己的训练程序修改。`-g` 指定卡数，每个任务输出独立；写入共用 `/workspace` 时自行区分结果目录。
+直接使用当前代码和环境，无需关闭开发终端。`--name` 最多 64 个字符，不能含换行或控制字符。`--` 后是程序参数；`--data`、`--output` 按自己的训练程序修改。`-g` 指定卡数，每个任务输出独立；写入共用 `/workspace` 时自行区分结果目录。
 
 同一容器的后续任务和开发终端可直接读写 `/job-outputs/前序任务ID/相对路径`，支持复制和修改文件，无需下载再上传。例如前序任务写入 `/outputs/maps/map.osa`，后续任务直接以 `/job-outputs/前序任务ID/maps/map.osa` 为输入，也可将它复制到自己的 `/outputs` 后处理；本轮结果默认写自己的 `/outputs`。
 
