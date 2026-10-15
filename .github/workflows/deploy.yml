@@ -1,0 +1,62 @@
+name: deploy
+on:
+  workflow_run:
+    workflows: [gray]
+    types: [completed]
+permissions:
+  contents: read
+  deployments: write
+concurrency:
+  group: production
+  cancel-in-progress: false
+  queue: max
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion == 'success' &&
+      !contains(github.event.workflow_run.head_commit.message, '【手动】')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      STARGATE_RELEASE_REVISION: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - run: npm ci
+      - run: npm run build:release
+      - name: Build Portal and CLI
+        run: >-
+          docker build -f deploy/Dockerfile
+          --build-arg STARGATE_RELEASE_REVISION="$STARGATE_RELEASE_REVISION"
+          -t "stargate:auto-$STARGATE_RELEASE_REVISION" .
+      - name: Release through restricted SSH command
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          deploy_key="$RUNNER_TEMP/stargate-deploy-key"
+          deploy_hosts="$RUNNER_TEMP/stargate-deploy-hosts"
+          trap 'rm -f "$deploy_key" "$deploy_hosts"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$deploy_hosts"
+          docker save "stargate:auto-$STARGATE_RELEASE_REVISION" | gzip | \
+            ssh -T -i "$deploy_key" -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$deploy_hosts" \
+              -o ConnectTimeout=10 "root@$DEPLOY_HOST" "$STARGATE_RELEASE_REVISION"
