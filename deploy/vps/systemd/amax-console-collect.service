@@ -1,0 +1,13 @@
+[Unit]
+Description=STARGATE node status collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=STARGATE_VPS_CONFIG=/etc/stargate/vps.json
+ExecStart=/usr/bin/python3 -B /opt/stargate/current/deploy/vps/collect-status.py
+Group=1000
+StateDirectory=stargate/status
+StateDirectoryMode=0750
+UMask=0027
