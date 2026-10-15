@@ -68,6 +68,9 @@ function render(preserve=false){
   $('#switch-account').textContent=logged?'退出 AMAX':'登录';$('#refresh-state').disabled=!logged;
   const titles={me:['我的额度',''],transfers:['数据',''],work:['项目',''],jobs:['任务',''],resources:['算力',''],datasets:['数据',''],community:['协作',''],users:['成员与额度',''],admin:['管理台','']};
   const concisePage=['community','users','admin'].includes(page);
+  const eyebrows={resources:MACHINES.length+' 台服务器 · 实时',work:'容器工作区 · /workspace',jobs:'全队共用',datasets:'SSD 工作区 · HDD 数据集',transfers:'SSD 工作区 · HDD 数据集',community:'帖子 · 聊天 · 公告',users:'仅管理员可见',admin:'仅管理员可见'};
+  let eyebrow=$('#page-eyebrow');if(!eyebrow){eyebrow=document.createElement('div');eyebrow.id='page-eyebrow';eyebrow.className='page-eyebrow';$('#page-title').before(eyebrow);}
+  eyebrow.textContent=logged?eyebrows[page]||'':'';eyebrow.hidden=!eyebrow.textContent;
   $('#page-title').textContent=titles[page][0];$('#page-description').textContent=concisePage?'':titles[page][1];$('#page-description').hidden=concisePage||!titles[page][1];$('.help-links').hidden=concisePage;$('#breadcrumb').textContent=titles[page][0];
   if(!concisePage&&titles[page][1])discloseInfo($('#page-description'),'页面说明');
   const descriptionInfo=$('#page-description').closest('.ui-info');if(descriptionInfo)descriptionInfo.hidden=concisePage||!titles[page][1];
