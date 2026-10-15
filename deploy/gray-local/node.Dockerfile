@@ -4,6 +4,7 @@ RUN dnf -y -q install systemd openssh-server openssh-clients python3 python3.10 
  && dnf clean all \
  && systemctl mask systemd-firstboot.service console-getty.service getty.target systemd-udevd.service \
  && useradd --create-home --shell /bin/bash --uid 1001 gpuops \
+ && (getent shadow gpuops | cut -d: -f1) \
  && mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/gpuops \
  && ssh-keygen -A && rm -f /etc/containers/registries.conf.d/* \
  && chmod u+s /usr/bin/newuidmap /usr/bin/newgidmap \

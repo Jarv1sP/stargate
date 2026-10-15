@@ -32,6 +32,9 @@ jobs:
           cache: false
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium
+      - name: Prepare nested PAM
+        # Ubuntu's path-attached profile also blocks the Fedora fixture helper.
+        run: sudo apparmor_parser -R /etc/apparmor.d/unix-chkpwd || true
       - name: full
         shell: bash
         run: |
