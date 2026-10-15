@@ -58,11 +58,11 @@ try{
    if(op==='jobs.diagnostics')return {state:'RUNNING'};
    throw Error('Unexpected RPC '+op);
   }
-  const context=await browser.newContext({viewport:{width,height:1000},acceptDownloads:true,reducedMotion:'reduce'});await context.addInitScript(()=>{const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[1791975600000]));}static now(){return 1791975600000;}};});const page=await context.newPage();page.setDefaultTimeout(10000);page.setDefaultNavigationTimeout(10000);page.on('pageerror',error=>{errors.push(error.stack);console.error(error.stack);});
+  const context=await browser.newContext({viewport:{width,height:1000},acceptDownloads:true,reducedMotion:'reduce'});await context.addInitScript(()=>{const RealDate=Date;globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[1791975600000]));}static now(){return 1791975600000;}};});const page=await context.newPage();page.setDefaultTimeout(10000);page.setDefaultNavigationTimeout(10000);page.on('pageerror',error=>{errors.push(error.stack);console.error(error.stack);});page.on('console',message=>{if(message.type()==='error'&&/Content Security Policy/.test(message.text()))errors.push('CSP: '+message.text());});
   await page.route('**/*',async route=>{
    const request=route.request(),url=new URL(request.url());if(url.origin!==origin){requests.push(url.href);return route.abort();}
    try{
-    if(url.pathname==='/'){let html=await readFile(join(root,'index.html'),'utf8');html=html.replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;');html=html.replace('<head>','<head><script>window.GPUQ_LOCAL_API=true;window.GPUQ_PRODUCTION=true;window.GPUQ_HAS_SESSION=true;</script>');return route.fulfill({contentType:'text/html',body:html});}
+    if(url.pathname==='/'){let html=await readFile(join(root,'index.html'),'utf8');html=html.replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;');html=html.replace('<head>','<head><script>window.GPUQ_LOCAL_API=true;window.GPUQ_PRODUCTION=true;window.GPUQ_HAS_SESSION=true;</script>');return route.fulfill({contentType:'text/html',headers:{'Content-Security-Policy':"style-src 'self'"},body:html});}
     if(url.pathname==='/auth/login')return route.fulfill({contentType:'text/html',body:'统一门户登录'});
     if(url.pathname==='/guide')return route.fulfill({contentType:'text/html',body:await guidePage(null,origin)});
     if(url.pathname==='/machines.js')return route.fulfill({contentType:'text/javascript',body:'export const MACHINES='+JSON.stringify(state.machines)});
