@@ -8,16 +8,19 @@ def data():
     m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
 
 def datasets(config):
-    d=data();root=d.root(config,'datasetsRoot');rows=[]
+    d=data();root=d.root(config,'datasetsRoot');rows=[];complete=True
     for folder in sorted(root.iterdir()):
-        if folder.name.startswith('.') or folder.is_symlink() or not folder.is_dir():continue
-        info=folder.stat();uploader=None
+        try:
+            if folder.name.startswith('.') or folder.is_symlink() or not folder.is_dir():continue
+            info=folder.stat()
+        except OSError:complete=False;continue
+        uploader=None
         records=Path(config['root'])/'dataset-uploaders'
         try:uploader=d.module('project-store').read_json(records/(folder.name+'.json')).get('userId')
-        except FileNotFoundError:pass
-        rows.append({'name':folder.name,'dataset':folder.name,'size':d.size(folder),
+        except (OSError,ValueError):pass
+        rows.append({'name':folder.name,'dataset':folder.name,**d.size(folder,partial=True),
                      'uploadedBy':uploader,'modifiedAt':info.st_mtime})
-    return {'datasets':rows}
+    return {'datasets':rows,'complete':complete}
 
 def process(config,operation,args,root=None):
     d=data();root=d.dataset_root(config,args['dataset']) if root is None else d.require_data_path(config,root)

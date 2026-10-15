@@ -148,3 +148,68 @@
 #page-datasets :is(.dataset-disclosure-label,.dataset-version-caption){min-width:0}
 #page-datasets :is(.cloud-file-details,#cloud-files-pending){margin:0;padding:0}
 #page-datasets :is(.cloud-file-details,#cloud-files-pending)[open]>summary{margin-bottom:var(--dataset-block-gap)}
+
+/* Shared SSD/HDD readings and directory rows. */
+.sb #page-datasets{--queue:#F2B13C;--err:#FF6161}
+#page-datasets .storage-heading p{display:flex;align-items:center;gap:12px;color:var(--d-meta)}
+#page-datasets .storage-cards{display:grid;gap:24px}
+#page-datasets .storage-server{min-width:0;background:var(--d-surface);border:1px solid var(--d-line);border-radius:12px;overflow:hidden}
+#page-datasets .storage-server>header{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 24px;border-bottom:1px solid var(--d-line)}
+#page-datasets .storage-server>header>div:first-child{display:flex;align-items:center;gap:18px;min-width:0}
+#page-datasets .storage-server>header h3{font:22px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;min-width:0}
+#page-datasets .storage-server>header :is(span,small){font-size:12px;color:var(--d-meta)}
+#page-datasets .storage-server-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+#page-datasets .storage-server-actions small{margin-right:8px}
+#page-datasets .storage-disks{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+#page-datasets .storage-disks>section{padding:24px;min-width:0}
+#page-datasets .storage-disks>section+section{border-left:1px solid var(--d-line)}
+#page-datasets .storage-volume-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#page-datasets .storage-volume-heading h3{font-size:17px;font-weight:500;margin:0}
+#page-datasets .storage-volume-heading small{font:10px var(--mono);color:var(--d-meta);border:1px solid var(--d-line);padding:2px 5px;border-radius:4px}
+#page-datasets .storage-volume-heading>span{font:11px var(--mono);color:var(--d-meta)}
+#page-datasets .storage-figures{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}
+#page-datasets .storage-figures dt{font-size:12px;color:var(--d-meta);margin-bottom:8px}
+#page-datasets .storage-figures dd{font:clamp(16px,1.6vw,24px) var(--mono);margin:0;white-space:nowrap}
+#page-datasets .storage-bar{height:6px;background:var(--bg-4,#26282D);border-radius:2px;overflow:hidden}
+#page-datasets .storage-bar i{display:block;height:100%;background:var(--d-ink)}
+#page-datasets .storage-bar.is-unknown{background:repeating-linear-gradient(135deg,var(--hatch,rgba(255,255,255,.17)) 0 2px,transparent 2px 6px);height:6px}
+#page-datasets .storage-warning{font-size:13px;color:var(--queue);margin:10px 0 0}
+#page-datasets .storage-disks h4{font-size:14px;font-weight:500;margin:0}
+#page-datasets [data-storage-projects],#page-datasets [data-storage-datasets]{margin-top:0}
+#page-datasets .storage-disks>section>h4,#page-datasets .storage-list-heading{margin-top:32px;min-height:44px;display:flex;align-items:center;justify-content:space-between}
+#page-datasets .storage-project,#page-datasets .storage-dataset{border-top:1px solid var(--d-line);padding:14px 0;min-width:0}
+#page-datasets .storage-project{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:12px}
+#page-datasets .storage-project strong,#page-datasets .storage-row-heading strong{font-size:14px;font-weight:500;overflow-wrap:anywhere;min-width:0}
+#page-datasets .storage-project small{display:block;font-size:12px;color:var(--d-meta);margin-top:6px;overflow-wrap:anywhere}
+#page-datasets .storage-project>span,#page-datasets [data-directory-size]{font:12px var(--mono);white-space:nowrap}
+#page-datasets .storage-row-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+#page-datasets .storage-dataset p{font-size:12px;color:var(--d-meta);line-height:1.8;margin:6px 0}
+#page-datasets .storage-dataset .file-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:4px}
+#page-datasets .storage-empty{font-size:13px;color:var(--d-meta);line-height:1.8;margin:16px 0}
+#page-datasets .storage-tools{margin-top:32px;border-top:1px solid var(--d-line);padding-top:24px;min-width:0}
+#page-datasets .storage-tools>label{display:grid;gap:8px;max-width:320px;font-size:13px;color:var(--d-meta);margin-bottom:24px}
+#page-datasets .storage-tools>details>summary{min-height:44px;padding:12px 0;cursor:pointer}
+#page-datasets #dataset-upload-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;padding:16px 0}
+#page-datasets #dataset-upload-form label{display:grid;gap:8px;min-width:0;font-size:13px;color:var(--d-meta)}
+#page-datasets .storage-import{margin-top:16px}
+#page-datasets .storage-tools .file-actions{display:flex;flex-wrap:wrap;gap:8px}
+#page-datasets .storage-tools [data-file-path]{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+#page-datasets .button{min-height:44px}
+#page-datasets .copy-help-button{width:44px;min-width:44px;height:44px;min-height:44px}
+@media(max-width:760px){
+  #page-datasets .storage-disks{grid-template-columns:minmax(0,1fr)}
+  #page-datasets .storage-disks>section+section{border-left:0;border-top:1px solid var(--d-line)}
+  #page-datasets .storage-disks>section{padding:22px 16px}
+  #page-datasets .storage-server>header{align-items:flex-start;padding:18px 16px;gap:12px}
+  #page-datasets .storage-server>header>div:first-child{display:block;max-width:48%}
+  #page-datasets .storage-server>header h3{font-size:18px;margin-bottom:8px}
+  #page-datasets .storage-server-actions{gap:4px;max-width:52%}
+  #page-datasets .storage-server-actions small{flex-basis:100%;text-align:right;margin:0}
+  #page-datasets .storage-server-actions .button{padding:0 8px;font-size:12px}
+  #page-datasets .storage-figures{gap:8px}
+  #page-datasets .storage-figures dd{font-size:14px}
+  #page-datasets .storage-project{gap:6px}
+  #page-datasets .storage-project .button{padding:0 8px}
+  #page-datasets .storage-heading p{font-size:13px;gap:4px}
+  #page-datasets #dataset-upload-form{grid-template-columns:minmax(0,1fr)}
+}

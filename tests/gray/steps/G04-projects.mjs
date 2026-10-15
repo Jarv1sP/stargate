@@ -14,7 +14,8 @@ export default {features:["新建项目（可填一个 Git 仓库地址，创建
   ctx.check('分组可读取',(await call(ctx,member,'projects.group.get',{id:group})).members.some(p=>p.project===name));
   ctx.check('归档',(await call(ctx,member,'projects.archive',base)).archived===true);
   ctx.check('取消归档',(await call(ctx,member,'projects.unarchive',base)).archived===false);
-  const quota=await call(ctx,member,'projects.quota',base);ctx.check('磁盘配额可用',quota.usedBytes>0&&quota.availableBytes>0&&quota.totalBytes>0);
+  const quota=await call(ctx,member,'projects.quota',base);
+  for(const [kind,label] of [['workspace','工作区盘'],['datasets','数据集盘']]){const volume=quota.volumes.find(row=>row.kind===kind);ctx.check(label+'容量可用',volume&&volume.usedBytes>0&&volume.availableBytes>0&&volume.totalBytes>0);}
   const content=Buffer.alloc(256*1024);for(let i=0;i<content.length;i++)content[i]=i%251;
   const interrupted=await upload(ctx,member,{project:name,area:'code',path:'resume.bin',content,stopAfter:128*1024});
   const status=await call(ctx,member,'data.upload.status',{machine:ctx.machine,key:interrupted.key});

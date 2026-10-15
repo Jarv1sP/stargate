@@ -431,7 +431,7 @@ async function main() {
         const id=positionals[2];if(!id)fail9('Usage: project group UUID [--display-name NAME --members SERVER/PROJECT,...]');
         if(options['display-name']===undefined)result=(await call('projects.group.get',{id})).result;
         else{const ref=value=>{const parts=value.split('/');if(parts.length!==2)fail9('组成员使用 SERVER/PROJECT。');return {machine:machineName(parts[0]),project:projectSlug(parts[1]),...(targetOwnerId?{ownerId:targetOwnerId}:{})};};result=(await call('projects.group.set',{id,displayName:options['display-name'],members:options.members==='none'?[]:String(options.members||'').split(',').filter(Boolean).map(ref),...(options.primary?{primary:ref(options.primary)}:{})})).result;}
-      }else if(['list','quota'].includes(action))result=(await call('projects.'+action,{machine,...(targetOwnerId?{ownerId:targetOwnerId}:{})})).result;
+      }else if(['list','quota'].includes(action))result=(await call('projects.'+action,{machine,...(targetOwnerId?{ownerId:targetOwnerId}:{}),...(action==='quota'&&options.project?{project:projectSlug(options.project)}:{})})).result;
       else if(['create','use','status','label','archive','unarchive','delete','retire'].includes(action)){
         const project=projectSlug(positionals[2]||options.project||selectedProject(machine)),args={machine,project,...(targetOwnerId?{ownerId:targetOwnerId}:{})};
         if(action==='label')result=(await call('projects.label.'+(options['display-name']===undefined?'get':'set'),{...args,...(options['display-name']===undefined?{}:{displayName:options['display-name']})})).result;
@@ -720,10 +720,9 @@ ${result.project ? "当前项目：" + result.project : "未选择项目；可�
     return;
   }
   if (command === "project" && positionals[1] === "quota") {
-    if (!result.enabled) console.log(result.reason === "OWNER_NOT_ACTIVATED" ? "你的工作区尚未纳入磁盘硬配额；不是零用量，也不代表无限容量。" : "这台服务器尚未启用个人磁盘硬配额；不是零用量，也不代表无限容量。");
-    else for (const row of result.volumes) console.log(`${row.volume} · 内核项目配额
-  已用 ${row.usedBytes} / ${row.bytes} B；剩余 ${row.remainingBytes} B
-  文件／目录 ${row.usedInodes} / ${row.inodes}；剩余 ${row.remainingInodes}`);
+    const bytes=value=>Number.isFinite(value)?value.toLocaleString('en-US')+' B':'未知',usage=result.projectUsage;
+    for (const kind of ['workspace','datasets']){const row=result.volumes?.find(row=>row.kind===kind);console.log(`${kind==='workspace'?'工作区盘（SSD）':'数据集盘（HDD）'}\n  已用 ${bytes(row?.usedBytes)} / 总量 ${bytes(row?.totalBytes)}；可用 ${bytes(row?.availableBytes)}`);}
+    if(usage)console.log(`项目 ${usage.project} 文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${bytes(usage.size)}`);
     return;
   }
   if (command === "run") {

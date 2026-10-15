@@ -184,15 +184,25 @@ class ProjectStore:
         return {**meta,'git':{'url':meta.get('repo'),'branch':None,'commit':None},
                 'workspace':True,'editable':True,'state':'ACTIVE'}
 
-    def list(self,user=None):
-        result=[]
+    def list(self,user=None,*,include_usage=False):
+        result=[];complete=True
         for owner in sorted(self.path.iterdir()):
             if owner.name.startswith('.') or owner.is_symlink() or not owner.is_dir():continue
-            for folder in sorted(owner.iterdir()):
-                if folder.name.startswith('.') or folder.is_symlink() or not folder.is_dir():continue
-                try:result.append(self.status(owner.name,folder.name))
-                except (ValueError,OSError):continue
-        return result
+            try:folders=sorted(owner.iterdir())
+            except OSError:complete=False;continue
+            for folder in folders:
+                try:
+                    if folder.name.startswith('.') or folder.is_symlink() or not folder.is_dir():continue
+                    row=self.status(owner.name,folder.name)
+                except FileNotFoundError:complete=False;continue
+                except ValueError:continue
+                except OSError:
+                    complete=False
+                    if not include_usage:continue
+                    row={'project':folder.name,'ownerId':owner.name}
+                if include_usage:row.update(data().size(folder,partial=True))
+                result.append(row)
+        return {'projects':result,'complete':complete} if include_usage else result
 
     def update(self,user,slug,args):
         with self.locked(user,slug):

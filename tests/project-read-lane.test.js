@@ -13,7 +13,7 @@ async function fixture(t){
   await writeFile(join(dir,'bootstrap'),JSON.stringify({username:'admin',password}));
   const calls=[],service=await PortalService.open(join(dir,'db'),join(dir,'bootstrap'),undefined,async(target,operation,args)=>{
     calls.push({target,operation,args:structuredClone(args)});
-    return operation==='projects.quota'?{owner:args.userId,enabled:false,enforcement:null,volumes:null}:{project:'paper',state:'READY',projects:[]};
+    return operation==='projects.quota'?{volumes:[{kind:'workspace',usedBytes:100,availableBytes:900,totalBytes:1000},{kind:'datasets',usedBytes:null,availableBytes:null,totalBytes:null}],...(args.project?{projectUsage:{project:args.project,size:3,complete:false}}:{})}:{project:'paper',state:'READY',projects:[]};
   });
   for(const key of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[key]);
   const login=await service.login('admin',password);
@@ -39,4 +39,11 @@ test('project reads keep login revocation while other-owner selectors and extra 
  const {service,token,calls}=await fixture(t);
  assert.equal((await service.invoke(token,'projects.status',{machine,project:'paper',ownerId:'another-user',extra:'ignored'})).result.state,'READY');assert.equal(calls[0].args.ownerId,'another-user');assert.equal(calls[0].args.extra,undefined);
  service.revokeSession(token);await assert.rejects(service.invoke(token,'projects.status',{machine,project:'paper'}),e=>[401,403].includes(e.status));assert.equal(calls.length,1);
+});
+
+test('storage usage selector is passed only on request and quota keeps both disk kinds',async t=>{
+ const {service,token,calls}=await fixture(t);
+ await service.invoke(token,'projects.list',{machine,includeUsage:true,extra:'ignored'});assert.equal(calls.at(-1).args.includeUsage,true);assert.equal(calls.at(-1).args.extra,undefined);
+ await service.invoke(token,'projects.list',{machine});assert.equal(calls.at(-1).args.includeUsage,undefined);
+ const reply=await service.invoke(token,'projects.quota',{machine,project:'paper'});assert.deepEqual(reply.result.volumes.map(row=>row.kind),['workspace','datasets']);assert.equal(reply.result.volumes[1].usedBytes,null);assert.deepEqual(reply.result.projectUsage,{project:'paper',size:3,complete:false});
 });
