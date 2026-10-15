@@ -43,7 +43,7 @@ export async function runGray(options){
   try{for(const step of selected){console.error('执行 '+step.id+' '+step.title);const record=await runStep(ctx,step);steps.push(record);console.error(record.status+(record.error?' '+record.error:''));}}
   finally{for(const cleanup of ctx.cleanups.reverse())await cleanup();}
   const markdown=await readFile(resolve(dirname(stack.file),'src/docs/FEATURES.md'),'utf8');
-  const report={version:1,revision:stack.commit,source:stack.source,nodePython:stack.nodePython,nodeRelease:stack.nodeRelease,level:options.level,result:resultStatus(steps),counts:counts(steps),steps,
+  const report={version:1,revision:stack.commit,source:stack.source,nodePython:stack.nodePython,nodeRelease:stack.nodeRelease,authenticationMode:stack.identityMode?'central':'local',level:options.level,result:resultStatus(steps),counts:counts(steps),steps,
     uncoveredFeatures:uncoveredFeatures(markdown,steps.filter(s=>s.status==='passed')),createdAt:new Date().toISOString()};
   await writeReport(folder,report);return report;
 }

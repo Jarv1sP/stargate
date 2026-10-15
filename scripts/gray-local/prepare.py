@@ -12,6 +12,12 @@ def execute(*args):
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 os.umask(0o077)
+if mode == '--identity':
+    (run/'identity').mkdir()
+    (run/'identity-credentials.json').write_text(json.dumps(dict(password=(run/'admin-password').read_text().strip(),bridgeKey=secrets.token_urlsafe(32))))
+    stack=json.loads((run/'stack.json').read_text())
+    (run/'identity-stack.json').write_text(json.dumps({**stack,'identityMode':True,'composeFile':'identity-compose.yml'}))
+    sys.exit(0)
 if mode == '--build':
     for folder in ('node-context', 'base-context'):
         (run/folder).mkdir()

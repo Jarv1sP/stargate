@@ -1,0 +1,19 @@
+services:
+  gray-identity:
+    image: ${GRAY_BRIDGE_IMAGE:?}
+    entrypoint: [python3, -B, /opt/gray-identity.py]
+    mem_limit: 128m
+    volumes:
+      - identity-data:/identity
+      - ${GRAY_RUN:?}/identity-fixture.py:/opt/gray-identity.py:ro
+      - ${GRAY_RUN}/identity-credentials.json:/fixture/identity-credentials.json:ro
+    networks: [gray]
+  gray-portal:
+    group_add: ['2000']
+    environment:
+      DATABASE_PATH: /data/identity-portal.sqlite
+      TEAM_ACCOUNTS_DATABASE: /accounts/accounts.sqlite
+    volumes:
+      - identity-data:/accounts
+volumes:
+  identity-data: {}
