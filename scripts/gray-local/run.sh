@@ -72,7 +72,7 @@ i=0
 until compose exec -T gray-node-1 test -f /run/gray-node-ready 2>/dev/null; do
   i=$((i+1)); [ "$i" -lt 120 ] || { echo '节点安装超时' >&2; exit 1; }
   if compose exec -T gray-node-1 systemctl is-failed -q gray-node-setup 2>/dev/null; then
-    compose exec -T gray-node-1 journalctl -u gray-node-setup --no-pager > "$run/node-setup.log"
+    compose exec -T gray-node-1 journalctl -b --no-pager > "$run/node-setup.log"
     echo "节点安装失败，见 $run/node-setup.log" >&2; exit 1
   fi
   sleep 5

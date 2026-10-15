@@ -33,7 +33,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium
       - name: full
-        run: npm run gray -- --commit "$GITHUB_SHA"
+        shell: bash
+        run: |
+          mkdir -p out/gray
+          npm run gray -- --commit "$GITHUB_SHA" 2>&1 | tee out/gray/run.log
       - name: summary
         if: always()
         run: find out/gray -name summary.md -exec cat {} \; >> "$GITHUB_STEP_SUMMARY"

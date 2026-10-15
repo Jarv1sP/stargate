@@ -35,6 +35,7 @@ until [ -s /keys/executor.pub ] && [ -s /keys/collector.pub ]; do
   i=$((i+1)); [ "$i" -lt 300 ] || exit 1; sleep 1
 done
 loginctl enable-linger gpuops
+systemctl start user@1001.service
 i=0
 until [ -S /run/user/1001/bus ]; do
   i=$((i+1)); [ "$i" -lt 60 ] || exit 1; sleep 1
