@@ -47,3 +47,11 @@ test('storage usage selector is passed only on request and quota keeps both disk
  await service.invoke(token,'projects.list',{machine});assert.equal(calls.at(-1).args.includeUsage,undefined);
  const reply=await service.invoke(token,'projects.quota',{machine,project:'paper'});assert.deepEqual(reply.result.volumes.map(row=>row.kind),['workspace','datasets']);assert.equal(reply.result.volumes[1].usedBytes,null);assert.deepEqual(reply.result.projectUsage,{project:'paper',size:3,complete:false});
 });
+
+test('storage read RPCs preserve one shared filesystem and another member container with unknown size',async t=>{
+ const {service,token}=await fixture(t),volumes=[{kind:'shared',fs:'9223372036854775815',usedBytes:100,availableBytes:900,totalBytes:1000}];
+ service.bridge=async(_machine,operation)=>operation==='projects.quota'?{volumes}:{projects:[{project:'unreadable',ownerId:'another-user',size:null,complete:false}],complete:false};
+ assert.deepEqual((await service.invoke(token,'projects.quota',{machine})).result.volumes,volumes);
+ const result=(await service.invoke(token,'projects.list',{machine,includeUsage:true})).result;
+ assert.equal(result.complete,false);assert.equal(result.projects.length,1);assert.equal(result.projects[0].ownerId,'another-user');assert.equal(result.projects[0].size,null);assert.equal(result.projects[0].complete,false);assert.equal(typeof result.projects[0].ownerName,'string');
+});

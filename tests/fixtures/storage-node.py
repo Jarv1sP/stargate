@@ -21,9 +21,9 @@ try:
             if machine=='gpu-2' and Path(path).name=='partial':raise PermissionError(13,'Permission denied','partial')
             return original_open(path,*a,**kw)
         def capacity(path):
-            workspace=str(path)==case.config['workspacesRoot'];total=(2 if workspace else 16)*1024*GiB
+            workspace=machine=='gpu-2' or str(path)==case.config['workspacesRoot'];total=(2 if workspace else 16)*1024*GiB
             available=(32 if machine=='gpu-3' and workspace else 614 if workspace else 8*1024)*GiB
-            return SimpleNamespace(f_blocks=total,f_frsize=1,f_bfree=available,f_bavail=available)
+            return SimpleNamespace(f_blocks=total,f_frsize=1,f_bfree=available,f_bavail=available,f_fsid=1 if workspace else 2)
         try:
             with patch('os.open',opened),patch('os.statvfs',capacity):
                 if operation=='datasets.list':result=case.files.datasets(case.config)

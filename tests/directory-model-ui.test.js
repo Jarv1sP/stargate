@@ -51,3 +51,10 @@ test('storage distinguishes lower bounds, unknown and real zero without filling 
  const unknown=storageVolumeHTML('workspace',{usedBytes:null,totalBytes:null,availableBytes:null});assert.match(unknown,/is-unknown/);assert.doesNotMatch(unknown,/<i |空间不足/);
  const low=storageVolumeHTML('datasets',{usedBytes:100,totalBytes:200,availableBytes:50});assert.match(low,/空间不足/);assert.match(low,/data-fill="50"/);
 });
+
+test('shared SSD quota renders once without a phantom HDD',()=>{
+ const volume={kind:'shared',fs:'9223372036854775815',usedBytes:100,totalBytes:200,availableBytes:100};
+ const html=projectDiskQuotaHTML({volumes:[volume],projectUsage:{size:null,complete:false}});
+ assert.equal((html.match(/<li>/g)||[]).length,1);assert.match(html,/SSD · 工作区与数据集共用/);assert.match(html,/项目文件用量：未知/);assert.doesNotMatch(html,/HDD/);
+ const card=storageVolumeHTML(volume.kind,volume);assert.match(card,/SSD · 工作区与数据集共用/);assert.match(card,/\/workspace · \/datasets/);assert.doesNotMatch(card,/HDD/);
+});

@@ -85,8 +85,8 @@ export function createSubmitSelectionGuard(){
 }
 export function projectDiskQuotaHTML(value){
   const bytes=n=>Number.isFinite(n)?new Intl.NumberFormat('zh-CN',{maximumFractionDigits:1}).format(n/1024**3)+' GiB':'未知';
-  const usage=value?.projectUsage,volumes=['workspace','datasets'].map(kind=>({kind,...value?.volumes?.find(row=>row.kind===kind)}));
-  return (usage?`<p>项目文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${Number.isFinite(usage.size)?transferBytes(usage.size):'未知'}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${row.kind==='workspace'?'工作区盘（SSD）':'数据集盘（HDD）'}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
+  const usage=value?.projectUsage,volumes=value?.volumes||[];
+  return (usage?`<p>项目文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${Number.isFinite(usage.size)?transferBytes(usage.size):'未知'}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${row.kind==='shared'?'SSD · 工作区与数据集共用':row.kind==='workspace'?'工作区盘（SSD）':'数据集盘（HDD）'}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
 }
 export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,route,onRoute,current=()=>true,onRecoverySupport=()=>{}}={}){
   const check=()=>{signal?.throwIfAborted();if(!current())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');};
