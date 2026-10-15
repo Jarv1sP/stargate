@@ -12,7 +12,7 @@ export function storageVolumeHTML(kind,row){
   return `<div class="storage-volume-heading"><h3>${kind==='workspace'?'工作区盘 <small>SSD</small>':'数据集盘 <small>HDD</small>'}</h3><span>${kind==='workspace'?'/workspace':'/datasets'}</span></div><dl class="storage-figures"><div><dt>已用</dt><dd>${bytes(row?.usedBytes)}</dd></div><div><dt>可用</dt><dd>${bytes(row?.availableBytes)}</dd></div><div><dt>总量</dt><dd>${bytes(row?.totalBytes)}</dd></div></dl><div class="storage-bar${known?'':' is-unknown'}" aria-label="${known?'磁盘已用 '+bytes(row.usedBytes):'磁盘容量未知'}">${known?`<i data-fill="${Math.min(100,Math.max(0,row.totalBytes?row.usedBytes/row.totalBytes*100:0))}"></i>`:''}</div>${Number.isFinite(row?.availableBytes)&&row.availableBytes<64*1024**3?'<p class="storage-warning">空间不足</p>':''}`;
 }
 export function datasetsUI(store,toast){
-  const section=document.querySelector('#page-datasets');let identity='',machineIds='',turn=0,operationTurn=0,active=false,busy=false,selected='',path='.',cursor=null,cloud,trash;
+  const section=document.querySelector('#page-datasets');let identity='',machineIds='',turn=0,operationTurn=0,active=false,busy=false,selected='',path='.',cursor=null,cloud,trash,directoryReads=Promise.resolve();
   const q=s=>section.querySelector(s),machine=()=>q('[name=dataset-machine]')?.value,scope=()=>({machine:machine(),area:'dataset',dataset:selected});
   const card=id=>[...section.querySelectorAll('[data-storage-machine]')].find(node=>node.dataset.storageMachine===id);
   const status=text=>{q('[data-dataset-status]').textContent=text;};
@@ -29,7 +29,11 @@ export function datasetsUI(store,toast){
       for(const kind of ['workspace','datasets']){const place=find(`[data-volume="${kind}"]`);place.innerHTML=storageVolumeHTML(kind,result.volumes?.find(row=>row.kind===kind));const fill=place.querySelector('[data-fill]');if(fill)fill.style.width=fill.dataset.fill+'%';}
     }catch{if(current())find('[data-storage-caption]').textContent='容量未知，请刷新重试。';}
     if(!current())return;
-    await Promise.all([
+    // Capacity reads are small; directory scans run one server at a time so
+    // browsing does not wait behind scans occupying every remote read lane.
+    const read=directoryReads.then(async()=>{
+      if(!current())return;
+      await Promise.all([
       (async()=>{const place=find('[data-storage-projects]');try{
         const result=await store.call('projects.list',{machine:id,includeUsage:true});if(!current())return;
         place.innerHTML=(result.projects||[]).map(row=>`<div class="storage-project"><div><strong>${esc(row.displayName||row.name||row.project)}</strong><small>${esc(row.ownerName||row.ownerId||'未知')}</small></div><span>${directoryBytes(row)}</span><button type="button" class="button quiet" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div>`).join('')||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
@@ -41,6 +45,8 @@ export function datasetsUI(store,toast){
         if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');
       }catch{if(current())place.textContent='数据集未知，请刷新重试。';}})()
     ]);
+    });
+    directoryReads=read.catch(()=>{});await read;
     if(current()){node.dataset.loading='false';find('[data-storage-refresh]').disabled=false;if(find('[data-storage-caption]').textContent==='读取中…')find('[data-storage-caption]').textContent='读取于 '+new Date().toLocaleTimeString('zh-CN');controls();}
   }
   function selectMachine(id){if(id!==machine()){q('[name=dataset-machine]').value=id;q('[name=dataset-machine]').dispatchEvent(new Event('change',{bubbles:true}));}}
