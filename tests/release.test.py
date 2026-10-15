@@ -7,7 +7,7 @@ import tarfile
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SOURCE=Path(__file__).resolve().parents[1]/'deploy/release'
 sys.path.insert(0,str(SOURCE))
@@ -132,6 +132,25 @@ class ReleaseTests(unittest.TestCase):
     def test_offline_stream_preserves_supplied_release_files(self):
         entry.receive(self.archive('./release/deploy.py', b'approved source'), self.root)
         self.assertEqual((self.root/'release/deploy.py').read_bytes(), b'approved source')
+
+    def test_offline_entry_loads_image_then_runs_supplied_script_without_git(self):
+        stream=io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w') as archive:
+            for name, data in [('image.tar.gz', b'image'), ('release/deploy.py', b'approved source')]:
+                item=tarfile.TarInfo(name); item.size=len(data); archive.addfile(item, io.BytesIO(data))
+        stream.seek(0)
+        process=Mock(returncode=0); process.poll.return_value=0
+        with patch.dict(os.environ, {'SSH_ORIGINAL_COMMAND': 'a'*40}), \
+             patch.object(entry.sys, 'stdin', Mock(buffer=stream)), \
+             patch.object(entry.subprocess, 'Popen', return_value=process) as spawn, \
+             patch.object(entry.subprocess, 'run') as run:
+            entry.main(self.root)
+        self.assertEqual(spawn.call_args.args[0], ['docker', 'load'])
+        self.assertEqual(run.call_count, 1)
+        command=run.call_args.args[0]
+        self.assertEqual(command[:3], [sys.executable, '-I', '-B'])
+        self.assertEqual(Path(command[3]).read_bytes(), b'approved source')
+        self.assertEqual(command[-1], 'a'*40)
 
     def test_archive_cannot_write_outside_release_directory(self):
         for name in ('../outside', '/outside'):

@@ -92,8 +92,11 @@ jobs:
           machines = os.environ['DEPLOY_MACHINES'].split()
           if not machines:
               raise SystemExit('Set DEPLOY_MACHINES to the private node inventory')
-          subprocess.run(['python3', 'scripts/build-node-release.py', '--output', 'bundle/nodes',
-                          *[part for machine in machines for part in ('--machine', machine)]], check=True)
+          result = subprocess.run(['python3', 'scripts/build-node-release.py', '--output', 'bundle/nodes',
+                                   *[part for machine in machines for part in ('--machine', machine)]], capture_output=True)
+          if result.returncode:
+              raise SystemExit('Node package build failed')
+          print(f'Prepared {len(machines)} node packages')
           PYTHON
       - name: Prepare one offline stream
         run: |
