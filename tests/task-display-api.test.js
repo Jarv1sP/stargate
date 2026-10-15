@@ -61,7 +61,7 @@ test('role/grant changes while waiting reject results and queued writes before d
   const first=f.service.invoke(f.member.token,'tasks.display.get',f.context);await entered.promise;
   const second=f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'不得派发',description:'',revision:'a'.repeat(64)});
   const firstRejected=assert.rejects(first,e=>e.status===403),secondRejected=assert.rejects(second,e=>e.status===401);
-  f.service.store.users.find(u=>u.id===f.user.id).enabled=false;release.resolve();await firstRejected;await secondRejected;
+  f.service.accounts.db.prepare("UPDATE accounts SET enabled=0 WHERE id=?").run(f.user.id);release.resolve();await firstRejected;await secondRejected;
   assert.equal(f.calls.length,1);assert.equal(f.service.taskDisplayViews.size,0);
 });
 test('new collector replaces bounded presentation while stale collector cannot authorize edits',async t=>{

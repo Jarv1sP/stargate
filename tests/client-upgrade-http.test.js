@@ -24,6 +24,6 @@ test('new CLI passes the one HTTP generation boundary; old CLI only receives the
   assert.equal((await post('login',{username:'admin',password:'Upgrade-Fixture-2026!',client:old})).status,426);
  }
  assert.equal(calls.length,0);
- assert.equal((await post('call',{operation:'state',args:{view:'summary'}},{Cookie:'gpuq_session='+login.data.token,Origin:origin})).status,200);
+ assert.equal((await post('call',{operation:'state',args:{view:'summary'}},{Cookie:'team_session='+login.data.token,Origin:origin})).status,200);
  assert.equal((await post('call',{operation:'state',args:{},client},{Authorization:'Bearer '+'a'.repeat(64)})).status,401);
 });

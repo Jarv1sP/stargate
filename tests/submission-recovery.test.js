@@ -22,7 +22,7 @@ async function fixture(t){
   });
   for(const name of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[name]);
   service.reconciling=true;
-  const user=service.store.users[0];Object.assign(user,{role:'member',limits:{[machine]:1},total:1});
+  const user=service.store.users[0];service.accounts.db.prepare("UPDATE accounts SET role='member' WHERE id=?").run(user.id);Object.assign(user,{role:'member',limits:{[machine]:1},total:1});
   const token=service.issueSession({userId:user.id,username:user.username,role:user.role});
   const request={machine,project:'sample',cards:1,argv:['true'],key:randomUUID()};
   const submit=extra=>service.invoke(token,'jobs.submit',{...request,...extra});

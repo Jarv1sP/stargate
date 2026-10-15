@@ -8,7 +8,7 @@ ARG STARGATE_RELEASE_REVISION
 RUN STARGATE_RELEASE_REVISION="$STARGATE_RELEASE_REVISION" npm run build && npm prune --omit=dev --ignore-scripts
 RUN mkdir -p /runtime/build \
     && cp *.mjs package.json /runtime/ \
-    && cp -R dist docs deploy /runtime/ \
+    && cp -R dist docs deploy accounts /runtime/ \
     && cp build/gpuctl.mjs /runtime/build/ \
     && if [ -d tasks ]; then cp -R tasks /runtime/; fi
 

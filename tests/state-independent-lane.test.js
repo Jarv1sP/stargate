@@ -16,7 +16,7 @@ async function fixture(t,{role='admin'}={}){
  let bridgeCalls=0;
  const service=await PortalService.open(join(dir,'database'),bootstrap,status,async()=>{bridgeCalls++;throw Error('State must never issue a node RPC');});
  for(const key of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[key]);
- const user=service.store.users[0];user.limits=Object.fromEntries(MACHINES.map(m=>[m.id,m.cards]));user.total=100;user.role=role;
+ const user=service.store.users[0];user.limits=Object.fromEntries(MACHINES.map(m=>[m.id,m.cards]));user.total=100;service.accounts.db.prepare("UPDATE accounts SET role=? WHERE id=?").run(role,user.id);
  const {token}=await service.login('admin',password);
  t.after(async()=>{if(!service.closing)service.close();await rm(dir,{recursive:true,force:true});});
  return {service,token,user,status,snapshot,bridgeCalls:()=>bridgeCalls};
@@ -37,8 +37,8 @@ for(const change of ['logout','disable','role','closing'])test('state revalidate
  f.service.refreshGPUQ=async()=>{started.resolve();await held.promise;};
  const pending=f.service.invoke(f.token,'state',{}),denied=assert.rejects(pending,e=>[401,403,503].includes(e.status));await started.promise;
  if(change==='logout')f.service.revokeSession(f.token);
- if(change==='disable')f.user.enabled=false;
- if(change==='role')f.user.role='member';
+ if(change==='disable')f.service.accounts.db.prepare('UPDATE accounts SET enabled=0 WHERE id=?').run(f.user.id);
+ if(change==='role')f.service.accounts.db.prepare("UPDATE accounts SET role='member' WHERE id=?").run(f.user.id);
  if(change==='machine')f.user.limits[MACHINES[0].id]=0;
  if(change==='closing')f.service.close();
  held.resolve();await denied;assert.equal(f.bridgeCalls(),0);

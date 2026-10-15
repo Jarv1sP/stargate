@@ -1,3 +1,4 @@
+import {seedAccounts} from './fixtures/accounts.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
@@ -24,7 +25,7 @@ test('#158 pre-creation refusal crosses node result, Portal HTTP and official cl
  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});});
  // Exercise HTTP without changing the configured host authorization.
  await new Promise(resolve=>server.listen(port,'127.0.0.1',resolve));
- const user={id:'demo-user-1',username:'alice',name:'alice',role:'member',enabled:true,limits:{'gpu-1':1},total:1,policyVersion:0};service.store.users.push(user);
+ const user={id:'demo-user-1',username:'alice',name:'alice',role:'member',enabled:true,limits:{'gpu-1':1},total:1,policyVersion:0};seedAccounts(service,user);
  const token=service.issueSession({userId:user.id,username:user.username,role:user.role});
  const request={machine:'gpu-1',project:'test',key:randomUUID(),clientId:randomUUID(),mode:'new',hostAdmin:false};
  const requestFetch=fetch;

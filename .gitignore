@@ -3,3 +3,12 @@
 /dist/vendor/addon-fit.js
 /dist/vendor/XTERM-LICENSE
 /dist/vendor/ADDON-FIT-LICENSE
+
+accounts/build/
+accounts/*.egg-info/
+accounts/team_accounts/__pycache__/
+
+node_modules/
+build/
+__pycache__/
+*.pyc

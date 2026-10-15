@@ -1,3 +1,4 @@
+import {seedAccounts} from './fixtures/accounts.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
@@ -14,7 +15,7 @@ async function fixture(t){
   const service=await PortalService.open(database,bootstrap);
   for(const timer of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[timer]);
   t.after(async()=>{service.close();await rm(dir,{recursive:true,force:true});});
-  const admin=service.store.users[0],members=[1,2].map(n=>({...admin,id:'demo-user-'+n,username:'member-'+n,role:'member'}));service.store.users.push(...members);
+  const admin=service.store.users[0],members=[1,2].map(n=>({...admin,id:'demo-user-'+n,username:'member-'+n,role:'member'}));seedAccounts(service,...members);
   const token=user=>service.issueSession({userId:user.id,username:user.username,role:user.role});
   const call=(user,op,args={})=>service.invoke(token(user),'community.'+op,args).then(reply=>reply.result);
   const publish=(fields={})=>call(admin,'posts.create',{key:randomUUID(),kind:'announcement',title:'Notice',body:'Visible only to recipients',popup:true,...fields});
@@ -72,7 +73,7 @@ test('pending reads bypass a held write and never sign an acknowledgement implic
 
 
 test('recipient count has no 200-person gate; unknown style fields fall back safely',async t=>{
-  const f=await fixture(t),users=Array.from({length:201},(_,i)=>({...f.members[0],id:'demo-user-'+(i+100),username:'recipient-'+i}));f.service.store.users.push(...users);
+  const f=await fixture(t),users=Array.from({length:201},(_,i)=>({...f.members[0],id:'demo-user-'+(i+100),username:'recipient-'+i}));seedAccounts(f.service,...users);
   const {post}=await f.publish({audience:{type:'users',userIds:users.map(u=>u.id)},appearance:{layout:'future',background:'url(unsafe)',extra:'ignored'}});
   assert.equal(post.audience.userIds.length,201);assert.deepEqual(post.appearance,defaultAppearance);
   assert.deepEqual(normalizeAppearance({layout:'centered',text:'#AaBBcC'}),{...defaultAppearance,layout:'centered',text:'#aabbcc'});

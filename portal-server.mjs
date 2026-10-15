@@ -27,7 +27,7 @@ Object.assign(files,STARBASE_ASSETS);
 const mime={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8',woff2:'font/woff2',png:'image/png',svg:'image/svg+xml',ico:'image/x-icon'};
 const requestTokens=req=>({
   bearer:/^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization||'')?.[1],
-  fromCookie:/(?:^|;\s*)gpuq_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie||'')?.[1],
+  fromCookie:/(?:^|;\s*)team_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie||'')?.[1],
 });
 const escapeHTML=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 files['/guide.css']='guide.css';files['/guide.js']='guide.js';
@@ -54,7 +54,7 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
     const styleNonce=randomBytes(18).toString('base64');
     const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':`default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${styleNonce}'; img-src 'self' data:; connect-src 'self'${uploadConnect?' '+uploadConnect:''}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`};
     const json=(code,data,extra={})=>{res.writeHead(code,{...headers,'Content-Type':'application/json; charset=utf-8',...extra});res.end(JSON.stringify(data));};
-    const cookie=(token,name='gpuq_session')=>`${name}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token?LOGIN_POLICY.cookieSeconds:0}${secure?'; Secure':''}`;
+    const cookie=(token,name='team_session')=>`${name}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token?LOGIN_POLICY.cookieSeconds:0}${secure?'; Secure':''}${process.env.TEAM_SESSION_COOKIE_DOMAIN?'; Domain='+process.env.TEAM_SESSION_COOKIE_DOMAIN:''}`;
     const expiredCookies=()=>[cookie('')];
     let inventoryRequest=false;
     try{

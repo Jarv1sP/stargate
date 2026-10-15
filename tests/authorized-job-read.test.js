@@ -15,7 +15,7 @@ async function fixture(t){
   await writeFile(bootstrap,JSON.stringify({username:'admin',password:'Authorized-Read-Fixture-2026!'}));
   const calls=[],service=await PortalService.open(join(dir,'db'),bootstrap,undefined,async(...args)=>{calls.push(args);return reply(args[1]);});
   for(const key of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[key]);
-  const user=service.store.users[0];Object.assign(user,{role:'member',limits:{[machine]:1},total:1});
+  const user=service.store.users[0];service.accounts.db.prepare("UPDATE accounts SET role='member' WHERE id=?").run(user.id);Object.assign(user,{role:'member',limits:{[machine]:1},total:1});
   const principal={userId:user.id,username:user.username,role:'member'},token=service.issueSession(principal);
   const job={id,userId:user.id,username:user.username,machine,nodeJobId:nodeId,cards:1,state:'SUCCEEDED',
     spec:{id,userId:user.id,argv:['true']}};service.store.jobs=[job];

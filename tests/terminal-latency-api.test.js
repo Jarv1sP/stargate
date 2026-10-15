@@ -1,3 +1,4 @@
+import {seedAccounts} from './fixtures/accounts.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
@@ -21,7 +22,7 @@ async function fixture(){
   },undefined,undefined,[],undefined,['builtin-admin','operator']);
   clearInterval(service.executionTimer);
   for(const [userId,username,role] of [['member','alice','member'],['operator','operator','admin']])
-    service.store.users.push({id:userId,username,name:username,role,enabled:true,limits:{'gpu-1':1},total:1,policyVersion:0});
+    seedAccounts(service,{id:userId,username,name:username,role,enabled:true,limits:{'gpu-1':1},total:1,policyVersion:0});
   const tokens={};
   for(const [label,userId,username,role] of [['admin','builtin-admin','admin','admin'],['member','member','alice','member'],['operator','operator','operator','admin']])
     tokens[label]=service.issueSession({userId,username,role});
@@ -82,9 +83,9 @@ test('fast lane retains trusted argument validation and refuses unauthorized dis
       [request({id:'not-a-session'}),f.tokens.member,/会话/],
       [request({input:'x'.repeat(13000)}),f.tokens.member,/输入过长/],
     ])await assert.rejects(f.exchange(args,token),pattern);
-    const member=f.service.store.users.find(user=>user.id==='member');member.enabled=false;
+    f.service.accounts.db.prepare("UPDATE accounts SET enabled=0 WHERE id='member'").run();
     await assert.rejects(f.exchange(),error=>[401,403].includes(error.status));
-    member.enabled=true;member.role='admin';
+    f.service.accounts.db.prepare("UPDATE accounts SET enabled=1,role='admin' WHERE id='member'").run();
     // Re-enabling/changing a user never resurrects the revoked credential.
     await assert.rejects(f.exchange(),error=>error.status===401);
     assert.equal(f.calls.length,0);assert.equal(f.service.terminalPending,0);assert.equal(f.service.terminalLanes.size,0);
@@ -115,7 +116,7 @@ test('logout, suspension, role change and token expiry suppress delayed private 
       if(change==='logout')await f.service.invoke(token,'logout');
       if(change==='suspension')await f.service.invoke(f.tokens.admin,'users.enabled',{userId:'member',enabled:false});
       if(change==='role')await f.service.invoke(f.tokens.admin,'users.role',{userId:'operator',role:'member'});
-      if(change==='expiry')f.service.db.prepare('UPDATE login_sessions_v2 SET expires_at=? WHERE token_hash=?').run(Date.now()-1,createHash('sha256').update(token).digest('hex'));
+      if(change==='expiry')f.service.accounts.db.prepare('UPDATE login_sessions_v2 SET expires_at=? WHERE token_hash=?').run(Date.now()-1,createHash('sha256').update(token).digest('hex'));
       slow.resolve(output);await check;
       assert.equal(f.calls.length,1);
     }finally{slow.resolve(output);if(check)await check;await f.close();}
