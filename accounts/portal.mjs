@@ -1,8 +1,10 @@
 import {createDecipheriv} from 'node:crypto';
 import {TeamAccounts} from './index.mjs';
+import {CentralAccounts,identityConfig} from './central.mjs';
 
 export function installTeamAccounts(service,path){
-  const accounts=service.accounts=new TeamAccounts(path);
+  const central=identityConfig(path);
+  const accounts=service.accounts=central?new CentralAccounts(central.projectionDatabase||path,central):new TeamAccounts(path);
   const exists=table=>service.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
   const invite=exists('invites_v2')?service.db.prepare("SELECT * FROM invites_v2 WHERE role='member'").get():null;
   let inviteCode;

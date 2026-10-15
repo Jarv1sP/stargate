@@ -33,7 +33,7 @@ curl -fsSL https://gpu.example.com/install.sh | sh
 
 ### 注册、登录与选服务器
 
-管理员提供邀请码后，在网页注册，或用 `gpuctl register USERNAME --url https://gpu.example.com` 按提示输入邀请码和密码。新成员由管理员分配用卡额度后训练。
+启用统一身份后，在统一门户用团队邀请码注册；计算平台的注册按钮会带你过去。注册后可直接进入计算平台与任务平台，新成员仍需由计算平台管理员分配用卡额度后训练。CLI 用同一个用户名和密码登录。
 
 ```sh local
 gpuctl login USERNAME --url https://gpu.example.com
@@ -402,23 +402,14 @@ gpuctl maintenance on all --reason "存储诊断维修"
 gpuctl maintenance off all
 ```
 
-`all` 可换成单台服务器 ID，解除全平台维护不解除单机维护。账号、邀请码与卡数额度由管理员维护：
+`all` 可换成单台服务器 ID，解除全平台维护不解除单机维护。启用统一身份后，账号、密码、角色和邀请码在统一门户维护；计算平台管理员仍可查看成员和分配卡数额度：
 
 ```sh local
 gpuctl users
-gpuctl user add USERNAME
-gpuctl user enable USERNAME
-gpuctl user disable USERNAME
-gpuctl user role USERNAME member
-gpuctl user reset-password USERNAME
-gpuctl user delete USERNAME
-gpuctl invites list
-gpuctl invites rotate member
-gpuctl invites disable member
 gpuctl grant USERNAME --machine SERVER=2 --total 2
 ```
 
-密码按交互提示输入。网页管理员区还有相同账号入口；请先确定要操作的成员，再停用或删除。
+网页的统一账号入口前往门户个人中心；只有门户所有者能管理全局账号和委派应用负责人，AMAX 管理员不会自动取得这些权限。
 
 ### 登录过期或换账号
 

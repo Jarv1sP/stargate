@@ -13,6 +13,7 @@ import {guideTarget,guidePage} from './guide.mjs';
 import {LOGIN_POLICY} from './login-sessions.mjs';
 import {STARBASE_ASSETS} from './frontend-assets.mjs';
 import {directUploadConnectSources} from './direct-upload-policy.mjs';
+import {centralLogin} from './accounts/oidc.mjs';
 
 const files={'/':'index.html','/index.html':'index.html','/styles.css':'styles.css','/workspace.css':'workspace.css','/app.js':'app.js','/model.js':'model.js','/machines.js':'machines.js','/client.js':'client.js','/execution-ui.js':'execution-ui.js','/terminal-ui.js':'terminal-ui.js','/resources-ui.js':'resources-ui.js','/xterm.js':'vendor/xterm.js','/xterm.css':'vendor/xterm.css','/addon-fit.js':'vendor/addon-fit.js'};
 files['/job-progress.js']='job-progress.js';files['/job-progress-ui.js']='job-progress-ui.js';
@@ -25,9 +26,9 @@ files['/gpu-allocation.js']='gpu-allocation.js';
 files['/gpu-allocation-ui.js']='gpu-allocation-ui.js';
 Object.assign(files,STARBASE_ASSETS);
 const mime={html:'text/html; charset=utf-8',css:'text/css; charset=utf-8',js:'text/javascript; charset=utf-8',woff2:'font/woff2',png:'image/png',svg:'image/svg+xml',ico:'image/x-icon'};
-const requestTokens=req=>({
+const requestTokens=(req,name='team_session')=>({
   bearer:/^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization||'')?.[1],
-  fromCookie:/(?:^|;\s*)team_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie||'')?.[1],
+  fromCookie:new RegExp('(?:^|;\\s*)'+name+'=([a-f0-9]{64})(?:;|$)').exec(req.headers.cookie||'')?.[1],
 });
 const escapeHTML=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 files['/guide.css']='guide.css';files['/guide.js']='guide.js';
@@ -50,18 +51,26 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
   const fileExecutor=fileBridgeSocket?bridgeClient(fileBridgeSocket):executor;
   const routedBridge=bridge||(executor&&((machine,operation,args,context)=>(operation==='files.direct.prepare'?fileExecutor:executor)(machine,operation,args,context)));
   const service=await PortalService.open(database,bootstrap,statusPath,routedBridge,config);service.fileLanEndpoints=lanEndpoints;const rate=new Map();
+  const central=service.accounts.central;
+  const cookieName=central?(secure?'__Host-amax_session':'amax_session'):'team_session';
+  const tokens=req=>requestTokens(req,cookieName);
+  const loginHandler=central?centralLogin(service,origin,secure):null;
   const server=http.createServer(async(req,res)=>{
     const styleNonce=randomBytes(18).toString('base64');
     const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':`default-src 'self'; script-src 'self'; style-src 'self' 'nonce-${styleNonce}'; img-src 'self' data:; connect-src 'self'${uploadConnect?' '+uploadConnect:''}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`};
     const json=(code,data,extra={})=>{res.writeHead(code,{...headers,'Content-Type':'application/json; charset=utf-8',...extra});res.end(JSON.stringify(data));};
-    const cookie=(token,name='team_session')=>`${name}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token?LOGIN_POLICY.cookieSeconds:0}${secure?'; Secure':''}${process.env.TEAM_SESSION_COOKIE_DOMAIN?'; Domain='+process.env.TEAM_SESSION_COOKIE_DOMAIN:''}`;
+    const cookie=(token,name=cookieName)=>`${name}=${token}; Path=/; HttpOnly; SameSite=${central?'Lax':'Strict'}; Max-Age=${token?LOGIN_POLICY.cookieSeconds:0}${secure?'; Secure':''}${!central&&process.env.TEAM_SESSION_COOKIE_DOMAIN?'; Domain='+process.env.TEAM_SESSION_COOKIE_DOMAIN:''}`;
     const expiredCookies=()=>[cookie('')];
     let inventoryRequest=false;
     try{
       if(req.headers.host!==url.host)return json(403,{error:'Invalid host'});
       if(req.headers.origin&&req.headers.origin!==url.origin)return json(403,{error:'Cross-origin requests are not allowed'});
       const path=new URL(req.url,origin).pathname;
-      if(path==='/healthz')return json(200,{ok:true,service:'gpuq-console',executionEnabled:service.executionEnabled});
+      if(loginHandler&&await loginHandler(req,res,headers,cookie))return;
+      if(path==='/healthz'){
+        if(service.accounts.central)service.accounts.sessions.assertIdentityFresh();
+        return json(200,{ok:true,service:'gpuq-console',executionEnabled:service.executionEnabled});
+      }
       if(path.startsWith('/api/')){
         headers['Cache-Control']='private, no-store';
         if(req.method!=='POST')return json(405,{error:'POST required'});
@@ -79,17 +88,19 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
         if(path!=='/api/files/direct-check'&&!req.headers.origin&&!(data.client?.name==='gpuctl'&&data.client.protocol===2))return json(426,{error:clientUpgradeMessage(url.origin,data.client?.platform),code:'CLIENT_UPGRADE_REQUIRED'});
         if(path==='/api/files/direct-check')return json(200,service.checkFileTicket(data));
         if(path==='/api/register'){
+          if(central)return json(409,{error:'请在统一门户注册团队账号。',url:new URL('/register',service.accounts.config.portalOrigin).href});
           let global=rate.get('register:global');if(!global||global.until<Date.now()){global={count:0,until:Date.now()+60000};rate.set('register:global',global);}
           if(++global.count>30)return json(429,{error:'注册繁忙，请稍后重试。'},{'Retry-After':'60'});
           return json(200,await service.register(data));
         }
         if(path==='/api/login'){
+          if(central&&data.client==='browser')return json(409,{error:'请使用统一账号登录入口。',url:'/auth/login'});
           const login=await service.login(data.username,data.password);
           if(data.client==='browser'){const {token,...safe}=login;return json(200,safe,{'Set-Cookie':cookie(token)});}
           return json(200,login);
         }
         if(path==='/api/call'){
-          const {bearer,fromCookie}=requestTokens(req);
+          const {bearer,fromCookie}=tokens(req);
           if(!bearer&&fromCookie&&req.headers.origin!==url.origin)return json(403,{error:'Browser origin required'});
           // Abort only pure upload observations. A disconnected write remains
           // an unconfirmed operation and must never be implicitly replayed.
@@ -111,15 +122,15 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       }
       if(req.method!=='GET'&&req.method!=='HEAD')return json(405,{error:'GET required'});
       if(path==='/runtime.js'){
-        const {bearer,fromCookie}=requestTokens(req);let authenticated=false;
+        const {bearer,fromCookie}=tokens(req);let authenticated=false;
         try{if(bearer||fromCookie){service.principal(bearer||fromCookie);authenticated=true;}}
-        catch(error){if(![401,403].includes(error.status))throw error;}
+        catch(error){if(![401,403,503].includes(error.status))throw error;}
         // Avoid an expected 401 fetch (and browser console error) on public
         // login. This hint grants nothing: state and inventory recheck auth.
         // A delayed read-only hint from another tab must not clear a newer
         // login cookie. Explicit logout remains the cookie-clearing operation.
         res.writeHead(200,{...headers,'Cache-Control':'private, no-store','Content-Type':mime.js});
-        return res.end(req.method==='HEAD'?undefined:`globalThis.GPUQ_LOCAL_API=true;globalThis.GPUQ_PRODUCTION=true;globalThis.GPUQ_HAS_SESSION=${authenticated};`);
+        return res.end(req.method==='HEAD'?undefined:`globalThis.GPUQ_LOCAL_API=true;globalThis.GPUQ_PRODUCTION=true;globalThis.GPUQ_HAS_SESSION=${authenticated};globalThis.GPUQ_CENTRAL_IDENTITY=${central?JSON.stringify({portal:service.accounts.config.portalOrigin}):'null'};`);
       }
       if(path==='/gpuctl.mjs'){
         watchClientDownload(res);
@@ -151,7 +162,7 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       }
       const file=files[path];if(!file)return json(404,{error:'Not found'});
       inventoryRequest=file==='machines.js';
-      const {bearer,fromCookie}=inventoryRequest?requestTokens(req):{};
+      const {bearer,fromCookie}=inventoryRequest?tokens(req):{};
       if(inventoryRequest){headers['Cache-Control']='private, no-store';service.principal(bearer||fromCookie);}
       let content=await readFile(new URL(`./dist/${file}`,import.meta.url));
       // Revalidate after I/O so a revoked session cannot receive the catalogue.
