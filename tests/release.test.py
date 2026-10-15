@@ -19,7 +19,7 @@ def load(name):
     value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 
 
-deploy=load('deploy');entry=load('entry')
+deploy=load('deploy');entry=load('entry');docker_backend=load('docker_backend')
 
 
 class Containers:
@@ -104,6 +104,25 @@ class ReleaseTests(unittest.TestCase):
     def test_memory_floor_stops_candidate_before_restoring_old(self):
         backend=self.switch('memory');self.assertEqual(backend.live,{'old'})
         self.assertIn('stop-new',backend.calls)
+
+    def test_public_image_keeps_private_inventory_in_container_and_compose(self):
+        directory=self.root/'runs'/'release';directory.mkdir(parents=True)
+        (directory/'manifest.json').write_text(json.dumps({'revision': 'a'*40, 'tag': 'image', 'rollback': 'previous'}))
+        backend=docker_backend.DockerBackend(directory, Mock())
+        backend.network='portal-net'
+        backend.old={'Config': {'Labels': {'com.docker.compose.project.config_files': 'existing.yml'},
+                                'Env': ['PUBLIC_ORIGIN=https://portal.invalid']},
+                     'HostConfig': {'Binds': ['/private/previous.js:/app/dist/machines.js:ro', '/database:/data']}}
+        backend.api=Mock(return_value={'Id': 'new'})
+        backend.inspect=Mock(return_value={'State': {'Running': False}})
+        backend.create_stopped(512*MIB)
+        body=backend.api.call_args.args[2]
+        inventory=str(self.root/'private/machines.js')+':/app/dist/machines.js:ro'
+        self.assertEqual(body['HostConfig']['Binds'], ['/database:/data', inventory])
+        self.assertEqual(body['HostConfig']['Memory'], 512*MIB)
+        self.assertEqual(body['HostConfig']['RestartPolicy']['Name'], 'unless-stopped')
+        override=json.loads((directory/'portal-image.override.json').read_text())
+        self.assertEqual(override['services']['amax-console']['volumes'], [inventory])
 
     def test_node_changes_fail_before_any_portal_action(self):
         (self.root/'release.json').write_text(json.dumps({'nodesChanged': True}))

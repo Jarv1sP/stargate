@@ -111,15 +111,16 @@ class DockerBackend:
             if value is None:environment.pop(key,None)
             else:environment[key]=value
         body['Env']=[key+'='+value for key,value in environment.items()]
+        inventory=str(self.root.parent.parent/'private/machines.js')+':/app/dist/machines.js:ro'
         override=self.root/'portal-image.override.json'
-        override.write_text(json.dumps({'services':{'amax-console':{'image':self.manifest['tag'],'command':command,'mem_limit':limit,'restart':'unless-stopped','environment':changes}}}))
+        override.write_text(json.dumps({'services':{'amax-console':{'image':self.manifest['tag'],'command':command,'mem_limit':limit,'restart':'unless-stopped','environment':changes,'volumes':[inventory]}}}))
         oldfiles=self.old['Config']['Labels']['com.docker.compose.project.config_files'].split(',')
         chain=oldfiles+[str(override)]
         body['Labels']['com.docker.compose.project.config_files']=','.join(chain)
         body['HostConfig']=copy.deepcopy(self.old['HostConfig']);body['HostConfig']['Memory']=limit
         body['HostConfig']['RestartPolicy']={'Name':'unless-stopped','MaximumRetryCount':0}
         binds=[v for v in body['HostConfig'].get('Binds',[]) if v.split(':')[1]!='/app/dist/machines.js']
-        body['HostConfig']['Binds']=binds+[str(self.root.parent.parent/'private/machines.js')+':/app/dist/machines.js:ro']
+        body['HostConfig']['Binds']=binds+[inventory]
         body['NetworkingConfig']={'EndpointsConfig':{self.network:{'Aliases':['amax-console','amax-console-handoff']}}}
         self.new=self.api('POST','/containers/create?name='+quote(name),body)['Id']
         value=self.inspect(self.new)
