@@ -5,11 +5,13 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import stat
 import subprocess
 import tempfile
 import threading
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -264,6 +266,41 @@ class RuntimeTests(unittest.TestCase):
                                      *map(str, unit_root.glob('*.service')), *map(str, unit_root.glob('*.timer'))],
                                     env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which('docker'), 'requires local Docker for the build context regression')
+    def test_gray_image_context_contains_runtime_sources_but_no_private_or_cache_files(self):
+        environment = {**os.environ, 'DOCKER_HOST': 'unix:///var/run/docker.sock', 'DOCKER_BUILDKIT': '0'}
+        environment.pop('DOCKER_CONTEXT', None)
+        def docker(*args, check=True):
+            return subprocess.run(['docker', *args], env=environment, capture_output=True, timeout=60, check=check)
+        if docker('info', '--format', '{{.ServerVersion}}', check=False).returncode:
+            self.skipTest('local Docker daemon is not available')
+        context = self.base/'context'
+        context.mkdir()
+        shutil.copy2(ROOT/'.dockerignore', context/'.dockerignore')
+        shutil.copytree(ROOT/'deploy/vps', context/'deploy/vps')
+        (context/'deploy/gray-local').mkdir(parents=True)
+        shutil.copy2(ROOT/'deploy/gray-local/bridge-entrypoint.sh', context/'deploy/gray-local/bridge-entrypoint.sh')
+        (context/'private.json').write_text('synthetic private fixture')
+        (context/'deploy/vps/__pycache__').mkdir(exist_ok=True)
+        (context/'deploy/vps/__pycache__/fixture.pyc').write_bytes(b'not source')
+        (context/'Dockerfile').write_text('FROM scratch\nCOPY . /context/\nCMD ["/unused"]\n')
+        image = self.base/'image-id'
+        container = None
+        try:
+            docker('build', '--network=none', '--force-rm', '--iidfile', str(image), str(context))
+            container = docker('create', image.read_text().strip()).stdout.decode().strip()
+            with tarfile.open(fileobj=io.BytesIO(docker('export', container).stdout)) as archive:
+                for name in ('deploy/vps/collect-status.py', 'deploy/vps/direct-storage-bridge.py',
+                             'deploy/vps/ssh-transport.py', 'deploy/gray-local/bridge-entrypoint.sh'):
+                    self.assertEqual(archive.extractfile('context/'+name).read(), (ROOT/name).read_bytes())
+                self.assertNotIn('context/private.json', archive.getnames())
+                self.assertNotIn('context/deploy/vps/__pycache__/fixture.pyc', archive.getnames())
+        finally:
+            if container:
+                docker('rm', '-f', container, check=False)
+            if image.exists():
+                docker('image', 'rm', image.read_text().strip(), check=False)
 
 
 if __name__ == '__main__':
