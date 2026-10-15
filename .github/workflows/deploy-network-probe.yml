@@ -1,0 +1,26 @@
+name: deploy-network-probe
+on:
+  push:
+    branches: [feat/production-deploy]
+  workflow_dispatch:
+    inputs:
+      host:
+        description: Temporary TCP destination
+        required: true
+        type: string
+permissions: {}
+jobs:
+  tcp:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      TARGET_HOST: ${{ inputs.host }}
+    steps:
+      - run: |
+          python3 - <<'PY'
+          import os, socket, time
+          started = time.monotonic()
+          with socket.create_connection((os.environ['TARGET_HOST'], 22), timeout=8):
+              print(f'TCP 22 connected in {time.monotonic() - started:.3f}s')
+          PY
