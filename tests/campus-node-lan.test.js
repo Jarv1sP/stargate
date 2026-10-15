@@ -70,7 +70,7 @@ test('a timeout followed by an ambiguous PUT reconciles the original key instead
     assert.equal(op,'data.upload.finish');return {result:{state:'COMPLETE'}};
   };
   const agentFactory=nativeFactory(()=>++frames===1?{ok:false,code:'TCP_TIMEOUT'}:{ok:false,code:'ACK_UNCONFIRMED',writeMayHaveReachedPeer:true});
-  const result=await uploadLocalFile(call,{machine:'fixture',context:{area:'code',project:'own'},path:'source',local,key:uploadId,
+  const result=await uploadLocalFile(call,{machine:'fixture',context:{area:'code',project:'own'},path:'source',local,key:uploadId,via:'direct',
     transportFactory:(call,options)=>createPersonalFileTransport(call,{...options,probeEndpoint:async()=>{},agentFactory,send:campusNativePersonalFileRequest})});
   assert.equal(result.state,'COMPLETE');assert.equal(queries,1);assert.equal(frames,2);
 });

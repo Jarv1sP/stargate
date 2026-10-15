@@ -1,5 +1,5 @@
 // Authenticated grants supply the current campus and LAN routes.
-import {isIP} from 'node:net';
+import {isIP,connect} from 'node:net';
 import {createCampusNativeAgent} from './client-campus-native.mjs';
 import {networkFailureCategory,safeNetworkTarget,proxyEnvironmentDetected} from './client-network-errors.mjs';
 export function privateLanOrigin(value){
@@ -20,6 +20,17 @@ export function approvedCampusEndpoints(grant,routes=grant.routes){
 }
 function validOrigin(value){try{const u=new URL(value);return u.protocol==='https:'&&u.origin===value&&!u.username&&!u.password&&u.pathname==='/'&&!u.search&&!u.hash;}catch{return false;}}
 export const campusConnectionFailure=error=>['DNS_FAILED','TCP_TIMEOUT','TCP_REFUSED','PHYSICAL_CONNECT_FAILED','ACK_UNCONFIRMED','RESPONSE_INTERRUPTED','SESSION_STOPPED','CONNECTION_FAILED','CONNECTION_REFUSED','NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET','EPIPE','ECONNREFUSED'].includes(error?.code);
+export async function tcpCampusReachable(grant,{agentFactory=createCampusNativeAgent,platform=process.platform}={}){
+  if(!['linux','win32'].includes(platform))return new Promise(resolve=>{
+    const endpoint=new URL(grant.endpoint),socket=connect({host:endpoint.hostname,port:Number(endpoint.port||443),signal:AbortSignal.timeout(1500)});
+    const finish=reachable=>{socket.destroy();resolve(reachable);};
+    socket.once('connect',()=>finish(true));socket.once('error',()=>finish(false));
+  });
+  const agent=agentFactory(grant.certificateSha256,{timeoutMs:2000});
+  try{await agent.request({op:'probe',endpoint:grant.endpoint,certificateSha256:grant.certificateSha256,probeTimeoutMs:1500,tcpOnly:true});return true;}
+  catch{return false;}
+  finally{await finishCampusOperation(()=>agent.destroy(),{warn:()=>{}});}
+}
 // Use only when the caller has already decided its result. A bounded helper
 // shutdown failure cannot undo a verified receipt or replace the original
 // business error. In-flight request/ACK cleanup remains strict in the agent.

@@ -42,7 +42,7 @@ gpuctl push LOCAL_FILE_OR_DIR [REMOTE_PATH] [--key UUID]
 gpuctl push-status LOCAL_FILE_OR_DIR [REMOTE_PATH] --key UUID
 gpuctl files [PATH] / pull REMOTE_PATH LOCAL_PATH [--job JOB_ID]
 gpuctl pull-status LOCAL_DIRECTORY
-默认校园网 HTTPS 直连；下载 --via portal、上传 --via relay 可明确选择门户。
+项目文件默认经 VPS，任务输出只走 VPS；数据集开始前探测校园网选路，其余传输可用 --via 明确选择。
 失败保留原编号和偏移，用原 --key 续传；不会自动换路。
 
 gpuctl ssh [--reconnect SESSION_ID] [--takeover]
@@ -141,7 +141,7 @@ function parseCLIOptions(argv) {
   }
   return { options: options2, positionals: positionals2, training: [] };
 }
-async function uploadCodeFiles(call,{machine,context,local,remote='.',inspectOnly=false,key,progress=message=>process.stderr.write(message),stateDirectory,via='auto'}){
+async function uploadCodeFiles(call,{machine,context,local,remote='.',inspectOnly=false,key,progress=message=>process.stderr.write(message),stateDirectory,via}){
   return uploadLocalTree(call,{machine,context:{area:'code',...context},local,remote,key,inspectOnly,stateDirectory,via,exclude:name=>['.git','.ssh','.aws','.azure','.venv','venv','node_modules','__pycache__','id_rsa','id_ed25519','.env'].includes(name)||name.startsWith('.env.')&&name!=='.env.example',progress:row=>progress(`${row.path||''} · ${row.offset??'?'} / ${row.totalSize??'?'} · ${row.key}\n`)});
 }
 async function secret(label = "Password") {
@@ -575,7 +575,7 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       else if(action==='list')result=(await call('datasets.list',{machine})).result;
       else if(action==='files'){if(!dataset)fail9('Usage: data files DATASET [PATH]');result=(await call('files.list',{machine,area:'dataset',dataset,path:positionals[3]||'.',...(options.cursor?{cursor:options.cursor}:{}),...(options.limit?{limit:Number(options.limit)}:{})})).result;}
       else if(action==='delete'){if(!dataset)fail9('Usage: data delete DATASET [--key UUID]');const key=options.key||randomUUID7();process.stderr.write('删除编号：'+key+'；重试沿用 --key '+key+'\n');result=(await call('datasets.delete',{machine,dataset,key})).result;}
-      else if(action==='put'){if(positionals.length<4||positionals.length>5)fail9('Usage: data put LOCAL_FILE DATASET [REMOTE_FILE]');result=await uploadLocalFile(call,{machine,context:{area:'dataset',dataset:positionals[3]},path:positionals[4]||basename2(positionals[2]),local:positionals[2],key:options.key,via:options.via||'auto',progress:row=>progress('UPLOADING',row)});}
+      else if(action==='put'){if(positionals.length<4||positionals.length>5)fail9('Usage: data put LOCAL_FILE DATASET [REMOTE_FILE]');result=await uploadLocalFile(call,{machine,context:{area:'dataset',dataset:positionals[3]},path:positionals[4]||basename2(positionals[2]),local:positionals[2],key:options.key,stateDirectory:sessionFile+'.uploads',via:options.via||'auto',progress:row=>progress('UPLOADING',row)});}
       else if(action==='upload'){if(!dataset||!options.name)fail9('Usage: data upload LOCAL_DIR --name DATASET [--key UUID]');result=await uploadTransfer(call,{machine,name:options.name,directory:positionals[2],key:options.key,via:options.via||'auto',stateDirectory:sessionFile+'.uploads',progress});}
       else if(action==='get'){if(positionals.length!==5)fail9('Usage: data get DATASET REMOTE_FILE LOCAL_FILE');result=await downloadResultFile(call,{machine,context:{area:'dataset',dataset},path:positionals[3],destination:positionals[4],origin:base.origin,userId:session.principal.userId,via:options.via});}
       else if(action==='download'){if(positionals.length!==4)fail9('Usage: data download DATASET LOCAL_DIR');result=await downloadTransfer(call,{machine,dataset,destination:positionals[3],key:options.key,origin:base.origin,userId:session.principal.userId,via:options.via,progress});}
@@ -598,7 +598,7 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       const indices = options.gpu?.split(",").map((n) => /^\d+$/.test(n) ? Number(n) : NaN), cards = Number(options.cards || indices?.length || 1);
       const elastic = elasticKeys.some((k) => Object.hasOwn(options, k)) ? elasticAllocation({ minCards: Number(options["min-cards"]), globalBatch: Number(options["global-batch"]), microBatch: Number(options["micro-batch"]), autoExpand: options["auto-expand"] === true }, cards, scheduling).elastic : null;
       const placement = placementKeys.some((k) => Object.hasOwn(options, k)) ? gpuPlacement({ gpuIndices: indices, shared: options.share === true, ...options["vram-mib"] ? { vramMiB: Number(options["vram-mib"]) } : {}, hami: options.hami === true, ...options["sm-percent"] ? { smPercent: Number(options["sm-percent"]) } : {} }, cards, elastic, scheduling, options.priority) : null;
-      if(options.sync){if(!context.project)fail9('run --sync 请先用 project create/use 选择项目。');await uploadCodeFiles(call,{machine:developmentMachine,context,local:options['sync-dir']||process.cwd(),remote:'.',key,stateDirectory:sessionFile+'.uploads',via:options.via||'auto'});}
+      if(options.sync){if(!context.project)fail9('run --sync 请先用 project create/use 选择项目。');await uploadCodeFiles(call,{machine:developmentMachine,context,local:options['sync-dir']||process.cwd(),remote:'.',key,stateDirectory:sessionFile+'.uploads',via:options.via});}
       process.stderr.write('工作区：'+(context.project||'默认 OCI 项目')+' · 数据集 /datasets\n');
       if (options.interactive) context.interactive = true;
       if (memoryLimitGiB !== void 0) context.memoryLimitGiB = memoryLimitGiB;
@@ -654,7 +654,7 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
     else if (["upload", "upload-status"].includes(command) && positionals.length >= 3 && positionals.length <= 4) {
       if (options.job) fail9("Job outputs cannot be uploaded; upload project code without --job");
       const machine = positionals[1], context = fileArgs(machine);
-      result = await uploadCodeFiles(call, { machine, context, local: positionals[2], remote: positionals[3] || basename2(positionals[2]), inspectOnly: command === "upload-status",key:options.key,stateDirectory:sessionFile+".uploads",via:options.via||"auto" });
+      result = await uploadCodeFiles(call, { machine, context, local: positionals[2], remote: positionals[3] || basename2(positionals[2]), inspectOnly: command === "upload-status",key:options.key,stateDirectory:sessionFile+".uploads",via:options.via });
     } else if (command === "download" && positionals.length === 4) {
       const context = fileArgs(positionals[1]);
       result = await downloadResultFile(call, { machine: positionals[1], context, path: positionals[2], destination: positionals[3], origin: base.origin, userId: session.principal.userId,sessionFile,via:options.via });

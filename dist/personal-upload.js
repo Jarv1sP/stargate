@@ -1,4 +1,5 @@
 const CHUNK=1024*1024;
+export const CAMPUS_CONNECTION_HELP='校园网暂时不通（夜间认证时段），可以加 --via relay（上传）或 --via portal（下载）走 VPS，原 key 不变。';
 const encode=bytes=>{let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(text);};
 // One file, one original key, offset resume, atomic finish on the node.
 export async function uploadPersonalFile({call,machine,area='code',project,ownerId,dataset,transferId,ownerExecutable,path,size,read,overwrite=false,key=crypto.randomUUID(),chunkBytes=CHUNK,signal,onProgress=()=>{},timeoutMs=7200000,wait=()=>new Promise(resolve=>setTimeout(resolve,1000))}){
@@ -25,17 +26,30 @@ export async function uploadPersonalFile({call,machine,area='code',project,owner
     result=await pending(await request('finish',{...(typeof ownerExecutable==='boolean'?{executable:ownerExecutable}:{})}));
     if(result.state!=='COMPLETE')throw Error('上传尚未完成，请按原编号查询或续传。');
     onProgress({...result,key,path,totalSize:size,offset:size});return result;
-  }catch(error){error.key=key;error.message+='\n上传编号：'+key+'；续传请沿用原编号。';throw error;}
+  }catch(error){error.key=key;if(!(error instanceof DOMException))error.message+='\n上传编号：'+key+'；续传请沿用原编号。';throw error;}
+}
+export async function selectBrowserTransferRoute(call,args,{route,signal,onRoute=message=>console.warn(message)}){
+  if(route.via&&route.via!=='auto')return;
+  const grant=await call('files.direct-ticket',args);
+  try{
+    await fetch(new URL('/capabilities',grant.endpoint),{mode:'no-cors',cache:'no-store',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(1500)]):AbortSignal.timeout(1500)});
+    route.via='direct';
+  }catch(error){signal?.throwIfAborted();route.via=args.action==='put'?'relay':'portal';}
+  route.save?.(route.via);
+  if(route.via!=='direct')onRoute('校园网不可达，本次经 VPS 传输（较慢）。');
+  return route.via==='direct'?grant:undefined;
 }
 export async function uploadBrowserFile(file,options){
-  const {call,signal}=options;let grant;
+  const {call,signal,route={},onRoute}=options;let grant;
   const scope={machine:options.machine,area:options.area||'code',...(options.project?{project:options.project}:{}),...(options.ownerId?{ownerId:options.ownerId}:{}),...(options.dataset?{dataset:options.dataset}:{}),path:options.path};
   return uploadPersonalFile({...options,size:file.size,read:async(offset,length)=>new Uint8Array(await file.slice(offset,offset+length).arrayBuffer()),call:async(operation,args)=>{
-    if(operation!=='data.upload.chunk')return call(operation,args);
+    if(operation!=='data.upload.chunk'||scope.area!=='dataset')return call(operation,args);
+    grant??=await selectBrowserTransferRoute(call,{...scope,action:'put',uploadId:args.key,totalSize:file.size},{route,signal,onRoute});
+    if(route.via==='relay')return call(operation,args);
     if(!grant||grant.expiresAt*1000<=Date.now()+5000)grant=await call('files.direct-ticket',{...scope,action:'put',uploadId:args.key,totalSize:file.size});
     const endpoint=new URL(grant.endpoint);if(endpoint.protocol!=='https:')throw Error('校园直连需要 HTTPS 地址。');
     const url=new URL('/v1/files/'+encodeURIComponent(grant.grantId)+'/put',endpoint);url.searchParams.set('offset',args.offset);url.searchParams.set('final','false');
-    const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+grant.ticket,'Content-Type':'application/octet-stream'},body:Uint8Array.from(atob(args.data),c=>c.charCodeAt(0)),signal});
+    const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+grant.ticket,'Content-Type':'application/octet-stream'},body:Uint8Array.from(atob(args.data),c=>c.charCodeAt(0)),signal}).catch(error=>{if(error instanceof TypeError)error.message+='\n'+CAMPUS_CONNECTION_HELP;throw error;});
     const value=await response.json();if(!response.ok)throw Error(value.error||'上传连接中断，请沿用原编号续传。');return value.result;
   }});
 }

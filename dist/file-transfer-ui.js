@@ -1,16 +1,18 @@
+import {CAMPUS_CONNECTION_HELP,selectBrowserTransferRoute} from './personal-upload.js';
 const join=(parent,name)=>parent==='.'?name:parent+'/'+name;
 export function filePath(parent,name){if(typeof name!=='string'||!name||name.includes('/')||/[\\\x00-\x1f\x7f]/.test(name)||name==='.'||name==='..')throw Error('文件名超出了当前目录。');return join(parent,name);}
-export async function readBrowserFile(call,scope,path,{signal,onProgress=()=>{}}={}){
+export async function readBrowserFile(call,scope,path,{signal,onProgress=()=>{},route={},onRoute}={}){
   let offset=0,size,grant;const chunks=[];
   do{
     signal?.throwIfAborted();
     let bytes,metadata;
-    if(scope.area==='output'){
+    if(scope.area==='dataset')grant??=await selectBrowserTransferRoute(call,{...scope,path,action:'get'},{route,signal,onRoute});
+    if(scope.area!=='dataset'||route.via==='portal'){
       metadata=await call('files.get',{...scope,path,offset});bytes=Uint8Array.from(atob(metadata.data),c=>c.charCodeAt(0));
     }else{
       if(!grant||grant.expiresAt*1000<=Date.now()+5000)grant=await call('files.direct-ticket',{...scope,path,action:'get'});
       const url=new URL('/v1/files/'+encodeURIComponent(grant.grantId)+'/get',grant.endpoint);if(url.protocol!=='https:')throw Error('校园直连需要 HTTPS 地址。');url.searchParams.set('offset',offset);
-      const response=await fetch(url,{headers:{Authorization:'Bearer '+grant.ticket},signal});if(!response.ok)throw Error('下载连接中断，请使用 CLI 续传原下载。');
+      const response=await fetch(url,{headers:{Authorization:'Bearer '+grant.ticket},signal}).catch(error=>{if(error instanceof TypeError)error.message+='\n'+CAMPUS_CONNECTION_HELP;throw error;});if(!response.ok)throw Error('下载连接中断，请使用 CLI 续传原下载。');
       bytes=new Uint8Array(await response.arrayBuffer());metadata=JSON.parse(atob(response.headers.get('x-gpuq-file-metadata').replaceAll('-','+').replaceAll('_','/')));
     }
     size??=metadata.size;if(!Number.isSafeInteger(size)||size<0||metadata.size!==size||metadata.offset!==offset||offset+bytes.length>size||!bytes.length&&offset<size)throw Error('下载大小或偏移改变，请续传原下载。');
@@ -29,8 +31,8 @@ function tarEntry(parts,path,blob,type='0'){
   for(;;){const actual=encoder.encode(length+' '+record).length;if(actual===length)break;length=actual;}
   const pax=encoder.encode(length+' '+record);parts.push(tarHeader('Path',pax.length,'x'),pax,new Uint8Array((512-pax.length%512)%512),tarHeader('Entry',blob.size,type),blob,new Uint8Array((512-blob.size%512)%512));
 }
-export async function downloadBrowserPath(call,scope,path,{directory=false,onProgress=()=>{},signal}={}){
-  if(!directory){save(await readBrowserFile(call,scope,path,{onProgress,signal}),path.split('/').at(-1));return;}
+export async function downloadBrowserPath(call,scope,path,{directory=false,onProgress=()=>{},signal,route={},onRoute}={}){
+  if(!directory){save(await readBrowserFile(call,scope,path,{onProgress,signal,route,onRoute}),path.split('/').at(-1));return;}
   const parts=[],queue=[{path,relative:''}];
   for(let i=0;i<queue.length;i++){
     const current=queue[i];let cursor;
@@ -39,7 +41,7 @@ export async function downloadBrowserPath(call,scope,path,{directory=false,onPro
       for(const entry of page.entries||[]){
         const remote=filePath(current.path,entry.name),relative=filePath(current.relative||'.',entry.name);
         if(entry.type==='directory'){tarEntry(parts,relative+'/',new Blob([]),'5');queue.push({path:remote,relative});continue;}if(entry.type!=='file')continue;
-        const blob=await readBrowserFile(call,scope,remote,{onProgress,signal});tarEntry(parts,relative,blob);
+        const blob=await readBrowserFile(call,scope,remote,{onProgress,signal,route,onRoute});tarEntry(parts,relative,blob);
       }
       cursor=page.hasMore?page.nextCursor:null;
     }while(cursor);

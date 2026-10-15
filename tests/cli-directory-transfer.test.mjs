@@ -22,7 +22,7 @@ test('single file upload keeps 512KiB chunks, original UUID, final execute inten
 });
 test('directory resume keeps one UUID for each relative file, and new uploads use new operation UUIDs',async t=>{
  const root=await mkdtemp(join(tmpdir(),'c3-directory-keys-'));t.after(()=>rm(root,{recursive:true,force:true}));const source=join(root,'files');await import('node:fs/promises').then(fs=>fs.mkdir(source));await writeFile(join(source,'a'),'one');await writeFile(join(source,'b'),'two');const seen=[],key=randomUUID(),stateDirectory=join(root,'states');
- const options={machine:'node-a',context:{area:'dataset',dataset:'images'},local:source,key,stateDirectory,uploadFile:async(_call,args)=>{seen.push(args);return {state:'COMPLETE',size:3};}};
+ const options={machine:'node-a',context:{area:'dataset',dataset:'images'},local:source,key,stateDirectory,via:'relay',uploadFile:async(_call,args)=>{seen.push(args);return {state:'COMPLETE',size:3};}};
  await uploadLocalTree(()=>assert.fail('unexpected RPC'),options);const first=seen.map(row=>row.key);seen.length=0;
  await uploadLocalTree(()=>assert.fail('unexpected RPC'),options);assert.deepEqual(seen.map(row=>row.key),first);assert.notEqual(first[0],first[1]);
  const saved=JSON.parse(await readFile(join(stateDirectory,key+'.json'),'utf8'));assert.equal(saved.a,first[0]);assert.equal(saved.b,first[1]);seen.length=0;
