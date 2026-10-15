@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -64,7 +65,7 @@ class Host(INSTALL.Installer):
         code, output = 0, ''
         if action in ('is-active', 'is-enabled'):
             code = 0 if value['active' if action == 'is-active' else 'enabled'] else 3
-        elif action == 'start':
+        elif action in ('start', 'restart'):
             if name == self.fail_start:
                 self.fail_start = None
                 code = 1
@@ -283,6 +284,65 @@ class InstallationTests(unittest.TestCase):
                 with self.assertRaises((subprocess.CalledProcessError, RuntimeError)):
                     self.host.install(self.make_package('fail-' + action))
                 self.assertEqual(self.selected(), first)
+                self.assert_running()
+
+    @unittest.skipUnless(shutil.which('systemd-analyze'), 'requires the systemd unit parser')
+    def test_working_directory_accepts_spaces_and_percent_but_rejects_quoted_paths(self):
+        root = self.base/'scheduler space %value'
+        root.mkdir()
+        self.config['gpuq']['root'] = str(root)
+        manifest = json.loads((self.package/'manifest.json').read_text())
+        files, _ = self.host.bindings(manifest)
+        body = files[str(self.home/'.config/systemd/user/gpuq.service')][0].decode()
+        setting = next(line for line in body.splitlines() if line.startswith('WorkingDirectory='))
+        unit = self.base/'working-directory.service'
+        def verify(value):
+            # Offline parser only: no daemon, service start or system changes.
+            unit.write_text('[Unit]\nDefaultDependencies=no\n[Service]\nExecStart=/usr/bin/true\n'+value+'\n')
+            return subprocess.run(['systemd-analyze', 'verify', '--man=no', '--generators=no', str(unit)],
+                                  capture_output=True, text=True)
+        quoted = verify('WorkingDirectory='+json.dumps(str(root)).replace('%', '%%'))
+        self.assertNotEqual(quoted.returncode, 0)
+        self.assertIn('WorkingDirectory=', quoted.stderr)
+        accepted = verify(setting)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(setting, 'WorkingDirectory='+str(root).replace('%', '%%'))
+
+    def test_restore_repairs_old_files_and_pointer_even_when_stopping_broken_units_fails(self):
+        self.host.install(self.package)
+        first = self.selected()
+        unit = self.home/'.config/systemd/user/gpuq.service'
+        original = unit.read_bytes()
+        systemctl = self.host.systemctl
+        for state in ('not-found', 'bad-setting', 'error', 'loaded', 'exception'):
+            with self.subTest(load_state=state):
+                self.host.install(self.make_package('broken-'+state))
+                unit.write_text('[Service]\nWorkingDirectory="/invalid"\n')
+                restarted = []
+                def broken(scope, *args, check=True):
+                    if args[-1] == 'gpuq.service':
+                        if args[0] == 'stop':
+                            if state == 'exception':
+                                raise OSError('fixture stop unavailable')
+                            return subprocess.CompletedProcess(args, 1, '', 'fixture broken unit')
+                        if args[0] == 'show':
+                            return subprocess.CompletedProcess(args, 0, state+'\n', '')
+                        if args[0] == 'restart':
+                            self.assertEqual(self.selected(), first)
+                            self.assertEqual(unit.read_bytes(), original)
+                            restarted.append(self.selected())
+                    return systemctl(scope, *args, check=check)
+                with patch.object(self.host, 'systemctl', side_effect=broken):
+                    units = [dict(scope='user', name='gpuq.service')]
+                    if state in ('not-found', 'bad-setting', 'error'):
+                        self.host.stop(units)
+                    else:
+                        with self.assertRaises((RuntimeError, OSError)):
+                            self.host.stop(units)
+                    self.assertEqual(self.host.rollback()['state'], 'ROLLED_BACK')
+                self.assertEqual(restarted, [first])
+                self.assertEqual(self.selected(), first)
+                self.assertEqual(unit.read_bytes(), original)
                 self.assert_running()
 
     def test_failed_first_install_removes_new_bindings_and_leaves_no_current_version(self):

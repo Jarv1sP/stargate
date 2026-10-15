@@ -239,7 +239,8 @@ class Installer:
                 service += 'Environment=' + json.dumps(f'{key}={value}').replace('%', '%%') + '\n'
             service += 'ExecStart=\nExecStart=' + ' '.join(map(self.unit_word, command)) + '\nUMask=0077\n'
             if spec.get('gpuq'):
-                service += ('WorkingDirectory=' + self.unit_word(self.config['gpuq']['root']) +
+                # This setting takes one path, including spaces, not an argv word.
+                service += ('WorkingDirectory=' + str(self.config['gpuq']['root']).replace('%', '%%') +
                             '\nRuntimeDirectory=gpuq\nRuntimeDirectoryMode=0700\n')
             body = '[Unit]\nDescription=STARGATE node runtime\n' + service
             body += '[Install]\nWantedBy=' + ('default.target' if scope == 'user' else 'multi-user.target') + '\n'
@@ -313,7 +314,7 @@ class Installer:
                 stopped = self.systemctl(unit['scope'], 'stop', name, check=False)
                 if stopped.returncode:
                     loaded = self.systemctl(unit['scope'], 'show', '--property=LoadState', '--value', name, check=False)
-                    if loaded.stdout.strip() != 'not-found':
+                    if loaded.stdout.strip() not in ('not-found', 'bad-setting', 'error'):
                         raise RuntimeError('节点服务未停止，未继续切换；请在节点查看服务日志。')
 
     def healthy(self, units):
@@ -328,7 +329,11 @@ class Installer:
         raise RuntimeError('节点服务未启动或读不到 GPU，已停止切换；请查看服务日志后重试。')
 
     def restore(self, record):
-        self.stop(record['units'])
+        try:
+            self.stop(record['units'])
+        except Exception:
+            # Repair files and the selector even if the broken unit cannot stop.
+            pass
         for item in reversed(record['files']):
             if item['data'] is None:
                 Path(item['path']).unlink(missing_ok=True)
@@ -340,7 +345,8 @@ class Installer:
         for unit in record['units']:
             self.systemctl(unit['scope'], 'enable' if unit['enabled'] else 'disable', unit['name'], check=unit['enabled'])
             if unit['active']:
-                self.systemctl(unit['scope'], 'start', unit['name'])
+                # Restart also replaces a new process left alive by a failed stop.
+                self.systemctl(unit['scope'], 'restart', unit['name'])
                 active.append(unit)
         if active:
             self.healthy(active)
