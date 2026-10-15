@@ -11,7 +11,7 @@ const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{
 try{
  for(const role of ['member','admin'])for(const width of [1440,390,320]){
   const owner='member-a',peer='member-b',machine='fixture-node-a',jobId='11111111-1111-4111-8111-111111111111';
-  let cloudConnected=false,campusReachable=true,probes=0;const calls=[],errors=[],requests=[],files=new Map(),uploads=new Map(),grants=new Map(),trash=[];let datasets=[{dataset:'images',name:'images',size:3,ownerId:peer,ownerName:'成员乙',uploadedBy:'成员乙',modifiedAt:1700000000}];
+  let cloudConnected=false,campusReachable=true,probes=0,searchDataset='images';const calls=[],errors=[],requests=[],files=new Map(),uploads=new Map(),grants=new Map(),trash=[];let datasets=[{dataset:'images',name:'images',size:3,ownerId:peer,ownerName:'成员乙',uploadedBy:'成员乙',modifiedAt:1700000000}];
   const users=[{id:owner,username:'alice',name:'成员甲',role,enabled:true,approvedAt:'2026-10-14T11:00:00.000Z',total:4,limits:{[machine]:4}},{id:peer,username:'bob',name:'成员乙',role:'member',enabled:true,total:4,limits:{[machine]:4}}];
   const projects=[{project:'vision',ownerId:peer,ownerName:'成员乙',displayName:'共享实验',environmentMode:'oci',lifecycle:{state:'ACTIVE'},git:{url:'https://example.test/team/repo.git',branch:'main',commit:'abc123'}}];
   const state={machines:[{id:machine,name:'示例服务器',cards:4,model:'Fixture GPU'}],users,jobs:[{id:jobId,nodeJobId:'J111111111111',machine,userId:peer,ownerId:peer,username:'bob',name:'团队训练',project:'vision',cards:1,state:'RUNNING',priority:'normal',assignedIndices:[0],createdAt:'2026-10-14T11:00:00.000Z',argv:['python','train.py']}],executionEnabled:true,execution:{},gpuq:{stale:false,connected:true,checkedAt:'2026-10-14T11:00:00.000Z',hosts:[{id:machine,reachable:true,checkedAt:'2026-10-14T11:00:00.000Z',gpus:Array.from({length:4},(_,index)=>({index,model:'Fixture GPU',utilization:index?0:80,memoryUsedMiB:index?0:1024,memoryTotalMiB:8192,temperatureC:40,processes:[],processesAvailable:true})),disks:[{mountPoint:'/fixture-data',totalBytes:1000,usedBytes:100,availableBytes:900}],tasks:[],gpuq:{connected:true,health:'ok',observeOnly:false,schedulableIndices:[0,1,2,3]}}]},operationalMaintenance:{global:null,machines:{}},announcements:{pending:[]},transfers:{}};
@@ -24,6 +24,7 @@ try{
    if(op==='cloud.auth.poll'){cloudConnected=true;return {state:'CONFIRMED'};}
    if(op==='cloud.auth.disconnect'){cloudConnected=false;return {disconnected:true};}
    if(op==='state')return {principal,state};
+   if(op==='logout')return {loggedOut:true};
    if(op==='projects.list')return {projects,environmentModes:['oci']};
    if(op==='projects.status'&&args.diagnoseNetwork)return {network:{dns:'ok',https:'ok'}};
    if(op==='projects.status')return projects.find(row=>row.project===args.project&&(!args.ownerId||row.ownerId===args.ownerId))||{};
@@ -36,7 +37,7 @@ try{
    if(op==='data.upload.begin'){if(!uploads.has(args.key))uploads.set(args.key,{...args,state:'UPLOADING',offset:0,bytes:Buffer.alloc(0)});return uploads.get(args.key);}
    if(op==='data.upload.status')return uploads.get(args.key)||{state:'ABSENT'};
    if(op==='data.upload.chunk'){const row=uploads.get(args.key),bytes=Buffer.from(args.data,'base64');assert.equal(args.offset,row.offset);row.bytes=Buffer.concat([row.bytes,bytes]);row.offset+=bytes.length;return {offset:row.offset,state:'UPLOADING'};}
-   if(op==='data.upload.finish'){const row=uploads.get(args.key);assert.equal(row.offset,row.totalSize);row.state='COMPLETE';files.set(resource(row),row.bytes);return {key:args.key,state:'COMPLETE',size:row.totalSize};}
+   if(op==='data.upload.finish'){const row=uploads.get(args.key);assert.equal(row.offset,row.totalSize);row.state='COMPLETE';files.set(resource(row),row.bytes);if(row.area==='dataset'&&!datasets.some(item=>item.dataset===row.dataset))datasets.push({dataset:row.dataset,name:row.dataset,size:row.totalSize,ownerId:owner,ownerName:'成员甲',uploadedBy:'成员甲',modifiedAt:1700000000});return {key:args.key,state:'COMPLETE',size:row.totalSize};}
    if(op==='files.direct-ticket'){const id=randomUUID();grants.set(id,args);return {grantId:id,endpoint:origin,ticket:'isolated-browser-ticket',expiresAt:1791975900,chunkBytes:1024**2,file:{size:files.get(resource(args))?.length||3}};}
    if(op==='datasets.delete'){datasets=datasets.filter(row=>row.dataset!==args.dataset);const row={...args,kind:'dataset',state:'TRASHED',retainUntil:1792580400,actor:{userId:owner},originalPath:args.dataset};trash.push(row);return row;}
    if(op==='outputs.delete'){const row={key:args.key,kind:'output',ownerId:peer,project:'vision',jobId:args.jobId,state:'TRASHED',originalPath:args.path,actor:{userId:owner},retainUntil:1792580400};trash.push(row);return row;}
@@ -61,6 +62,7 @@ try{
    const request=route.request(),url=new URL(request.url());if(url.origin!==origin){requests.push(url.href);return route.abort();}
    try{
     if(url.pathname==='/'){let html=await readFile(join(root,'index.html'),'utf8');html=html.replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;');html=html.replace('<head>','<head><script>window.GPUQ_LOCAL_API=true;window.GPUQ_PRODUCTION=true;window.GPUQ_HAS_SESSION=true;</script>');return route.fulfill({contentType:'text/html',body:html});}
+    if(url.pathname==='/auth/login')return route.fulfill({contentType:'text/html',body:'统一门户登录'});
     if(url.pathname==='/guide')return route.fulfill({contentType:'text/html',body:await guidePage(null,origin)});
     if(url.pathname==='/machines.js')return route.fulfill({contentType:'text/javascript',body:'export const MACHINES='+JSON.stringify(state.machines)});
     if(url.pathname==='/capabilities'){probes++;return campusReachable?route.fulfill({contentType:'application/json',body:'{}'}):route.abort('connectionrefused');}
@@ -69,7 +71,7 @@ try{
     const path=resolve(root,'.'+url.pathname);if(!path.startsWith(root+'/'))throw Error('Outside static root');return route.fulfill({contentType:extname(path)==='.js'?'text/javascript':extname(path)==='.css'?'text/css':extname(path)==='.woff2'?'font/woff2':'application/octet-stream',body:await readFile(path)});
    }catch(error){errors.push(error.stack);console.error(error.stack);await route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:error.message})});}
   });
-  await page.goto(origin+'/#work');await page.locator('[name=workspace-project] option[data-owner-id="member-b"]').waitFor({state:'attached'}).catch(async error=>{console.error(JSON.stringify({errors,calls,requests,body:(await page.locator('body').innerText()).slice(0,500)}));throw error;});
+  await page.goto(origin);await page.locator('[data-nav=resources][aria-current=page]').waitFor();await page.locator('[data-nav=work]').click();await page.locator('[name=workspace-project] option[data-owner-id="member-b"]').waitFor({state:'attached'}).catch(async error=>{console.error(JSON.stringify({errors,calls,requests,body:(await page.locator('body').innerText()).slice(0,500)}));throw error;});
   await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · '+machine});
   await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   assert.match(await page.locator('#project-status-detail').textContent(),/abc123/);assert.equal(await page.locator('#project-publish').count(),0);assert.equal(await page.locator('[name=release]').count(),0);
@@ -77,7 +79,7 @@ try{
   assert.equal(calls.find(row=>row.op==='projects.create').args.repo,'https://example.test/team/new.git');await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · '+machine});await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-work.png'),fullPage:true});
   await page.locator('#project-network-check').click();await page.locator('#project-network-result').filter({hasText:'https'}).waitFor();
-  await page.locator('[data-job-output="'+jobId+'"]').first().click();await page.locator('[data-result-delete="sample.bin"]').waitFor();
+  await page.locator('[data-nav=jobs]').click();await page.locator('[data-job-output="'+jobId+'"]').first().click();await page.locator('[data-result-delete="sample.bin"]').waitFor();
   assert.equal(await page.locator('#workspace-upload').isVisible(),false);assert.equal(await page.locator('[name=files]').isVisible(),false);
   await page.screenshot({path:join(shots,role+'-'+width+'-outputs.png'),fullPage:true,animations:'disabled'});
   await page.locator('[data-result-path="sample.bin"]').click();const outputDownloaded=page.waitForEvent('download');await page.locator('#workspace-download').click();const outputDownload=await outputDownloaded;assert.deepEqual(await readFile(await outputDownload.path()),Buffer.from('abc'));
@@ -100,7 +102,15 @@ try{
   await page.locator('[data-dataset-delete=images]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent.includes('7 天'));
   await page.locator('#page-datasets .project-trash>summary').click();await page.locator('#page-datasets [data-trash-restore]').last().click();await page.locator('[data-dataset-open=images]').waitFor();
   await page.locator('#page-datasets [data-trash-restore]').first().click();assert.ok(calls.some(row=>row.op==='projects.retire.restore'&&row.args.kind==='output'));
-  if(role==='admin'){await page.locator('[data-dataset-delete=images]').click();await page.locator('#page-datasets [data-trash-refresh]').click();await page.locator('#page-datasets [data-trash-purge]').waitFor();page.once('dialog',dialog=>dialog.accept());await page.locator('#page-datasets [data-trash-purge]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent==='已彻底删除。',null,{timeout:2000});}
+  if(role==='admin'){
+   await page.locator('[data-dataset-delete=images]').click();await page.locator('#page-datasets [data-trash-refresh]').click();await page.locator('#page-datasets [data-trash-purge]').waitFor();page.once('dialog',dialog=>dialog.accept());await page.locator('#page-datasets [data-trash-purge]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent==='已彻底删除。',null,{timeout:2000});
+   assert.equal(datasets.some(row=>row.dataset==='images'),false,'purged data stays absent from the catalog');
+   searchDataset='search-images';await page.locator('[name=upload-dataset]').fill(searchDataset);
+   await page.locator('[name=upload-files]').setInputFiles({name:'sample.bin',mimeType:'application/octet-stream',buffer:Buffer.from('abc')});
+   await page.locator('#dataset-upload-form [type=submit]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent.includes('上传完成'));
+   await page.locator('[data-dataset-open="'+searchDataset+'"]').waitFor();assert.equal(datasets.some(row=>row.dataset===searchDataset),true,'the upload creates a real catalog entry for subsequent search');
+   const uploaded=[...uploads.values()].find(row=>row.dataset===searchDataset);assert.deepEqual(uploaded.bytes,Buffer.from('abc'));
+  }
   await page.locator('.storage-import>summary').click();
   await page.locator('[name=cloud-target-name]').fill('images');await page.locator('[name=cloud-url]').fill('https://example.test/payload.bin');await page.locator('[name=cloud-path]').fill('payload.bin');await page.locator('#cloud-import-form [type=submit]').click();await page.waitForTimeout(50);const imported=calls.find(row=>row.op==='cloud.import.start');assert.equal(imported.args.area,'dataset');assert.equal(imported.args.dataset,'images');
   if(role==='admin'){await page.locator('#cloud-admin>summary').click({position:{x:8,y:8}});await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent.includes('未连接'));for(let round=0;round<2;round++){await page.locator('#cloud-auth-begin').click();await page.locator('#cloud-auth-check').waitFor({state:'visible'});await page.locator('#cloud-auth-check').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent==='云盘已连接。');await page.locator('#cloud-auth-disconnect').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent==='已断开。');}await page.locator('#cloud-admin>summary').click({position:{x:8,y:8}});}
@@ -108,10 +118,37 @@ try{
   await page.locator('[data-nav=resources]').click();await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-resources.png'),fullPage:true});
   await page.locator('[data-nav=community]').click();await page.waitForTimeout(50);await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-community.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'no horizontal page overflow at '+width);
-  if(role==='admin'){await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-dialog [data-maintenance-resume]').click();await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});}
+  if(role==='admin'){
+   await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();
+   await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-reason').fill('隔离测试维护');
+   await page.locator('#maintenance-settings-dialog [type=submit]').click();await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});
+   assert.equal(state.operationalMaintenance.global.reason,'隔离测试维护');
+   await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-dialog [data-maintenance-resume]').click();
+   await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});assert.equal(state.operationalMaintenance.global,null);
+   assert.equal(await page.locator('[data-maintenance-settings]').evaluate(node=>document.activeElement===node),true);
+   await page.locator('[data-maintenance-settings]').click();await page.evaluate(()=>{location.hash='#resources';});
+   await page.locator('#maintenance-settings-dialog').waitFor({state:'detached'});assert.equal(await page.locator('[data-nav=resources][aria-current=page]').count(),1,'leaving admin also closes and removes its maintenance dialog');
+   await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();
+   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});
+  }
+  await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
+  await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});
+  await page.locator('[data-shell-action=quota]').click();await page.locator('#quota-ledger').waitFor();
+  assert.equal(await page.locator('#room-nav [data-nav]').count(),5);assert.equal(await page.locator('[data-shell-action=control]').count(),1);assert.equal(await page.locator('#control-strip,#mobile-control,#shell-context').count(),0);
+  const touch=await page.locator('#room-nav a,#account-menu-toggle,.command-trigger').evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return r.width>=44&&r.height>=44;}));assert.ok(touch.every(Boolean));
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('火星');await page.locator('.egg-mars').waitFor();
+  await page.screenshot({path:join(shots,role+'-'+width+'-palette.png'),animations:'disabled'});
+  await page.locator('#control-command').fill('月球');await page.locator('.egg-moon').waitFor();await page.keyboard.press('Escape');assert.equal(await page.locator('.command-trigger').evaluate(node=>node===document.activeElement),true);
+  await page.keyboard.press('Control+k');await page.locator('#control-command').fill('团队训练');await page.locator('[data-command-id="job:'+jobId+'"]').waitFor();await page.keyboard.press('Enter');await page.locator('.job-log-dialog[open]').waitFor();await page.locator('.job-log-dialog').evaluate(node=>node.close());
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('新建任务');await page.locator('[data-command-id=submit]').click();await page.locator('#work-submit[open]').waitFor();await page.locator('#close-submit').click();await page.locator('#work-submit').waitFor({state:'hidden'});
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('共享实验');await page.locator('[data-command-id^="project:"]').click();await page.locator('[data-nav=work][aria-current=page]').waitFor();
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill(searchDataset);await page.locator('[data-command-id="dataset:'+machine+':'+searchDataset+'"]').click();await page.locator('[data-nav=datasets][aria-current=page]').waitFor();await page.locator('[data-dataset-current]').filter({hasText:searchDataset}).waitFor();await page.locator('[data-dataset-files]').waitFor({state:'visible'});await page.locator('[data-file-path="sample.bin"]').waitFor();assert.equal(await page.locator('[name=dataset-machine]').inputValue(),machine);
+  assert.ok(await page.evaluate(()=>document.getAnimations().every(animation=>animation.playState!=='running')),'reduced motion disables animation');
   await page.goto(origin+'/guide');await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:join(shots,role+'-'+width+'-guide.png'),fullPage:true,animations:'disabled'});
+  await page.route('https://www.j4rv1s.xyz/',route=>route.fulfill({contentType:'text/html',body:'统一门户首页'}));
+  await page.goto(origin+'/#resources');await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('#switch-account').innerText(),'退出 AMAX');await page.locator('#switch-account').click();await page.waitForURL('https://www.j4rv1s.xyz/');assert.equal(calls.filter(row=>row.op==='logout').length,1);
   await page.route(origin+'/',async route=>{let html=await readFile(join(root,'index.html'),'utf8');html=html.replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;');html=html.replace('<head>','<head><script>window.GPUQ_PRODUCTION=true;window.GPUQ_HAS_SESSION=false;</script>');await route.fulfill({contentType:'text/html',body:html});});
-  await page.goto(origin);await page.locator('#login-dialog').waitFor({state:'visible'});await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:join(shots,role+'-'+width+'-login.png'),fullPage:true,animations:'disabled'});
+  await page.goto(origin);await page.waitForURL(origin+'/auth/login');assert.equal(await page.locator('#login-dialog,#register-dialog').count(),0);await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:join(shots,role+'-'+width+'-login.png'),fullPage:true,animations:'disabled'});
   assert.deepEqual(errors,[]);assert.deepEqual(requests,[]);await context.close();console.log(role+' '+width+' PASS');
  }
 }finally{await browser.close();if(!process.env.UI_SCREENSHOTS)await rm(temporary,{recursive:true,force:true});}

@@ -144,7 +144,7 @@ export function quotaLedgerHTML(store,machine=''){
 export function boundarySweep(element){
   const line=element?.querySelector('.r5-boundary-line');if(!line)return;
   for(const animation of line.getAnimations())animation.cancel();
-  line.animate(reducedMotion()?[{opacity:.65},{opacity:0}]:[{transform:'scaleX(0)',opacity:1},{transform:'scaleX(1)',opacity:1,offset:.8},{transform:'scaleX(1)',opacity:0}],{duration:reducedMotion()?150:320,easing:'cubic-bezier(.2,0,0,1)'});
+  line.animate(reducedMotion()?[{opacity:.65},{opacity:0}]:[{transform:'scaleX(0)',opacity:1},{transform:'scaleX(1)',opacity:1,offset:.8},{transform:'scaleX(1)',opacity:0}],{duration:reducedMotion()?0:320,easing:'cubic-bezier(.2,0,0,1)'});
 }
 export function workbenchCards(jobs,{actions=()=>'',focusId,maintenance,ledger='',historyState=''}={}){
   const active=jobs.filter(job=>!endedJob(job));

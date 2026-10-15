@@ -12,7 +12,7 @@ export function storageVolumeHTML(kind,row){
   return `<div class="storage-volume-heading"><h3>${kind==='workspace'?'工作区盘 <small>SSD</small>':'数据集盘 <small>HDD</small>'}</h3><span>${kind==='workspace'?'/workspace':'/datasets'}</span></div><dl class="storage-figures"><div><dt>已用</dt><dd>${bytes(row?.usedBytes)}</dd></div><div><dt>可用</dt><dd>${bytes(row?.availableBytes)}</dd></div><div><dt>总量</dt><dd>${bytes(row?.totalBytes)}</dd></div></dl><div class="storage-bar${known?'':' is-unknown'}" aria-label="${known?'磁盘已用 '+bytes(row.usedBytes):'磁盘容量未知'}">${known?`<i data-fill="${Math.min(100,Math.max(0,row.totalBytes?row.usedBytes/row.totalBytes*100:0))}"></i>`:''}</div>${Number.isFinite(row?.availableBytes)&&row.availableBytes<64*1024**3?'<p class="storage-warning">空间不足</p>':''}`;
 }
 export function datasetsUI(store,toast){
-  const section=document.querySelector('#page-datasets');let identity='',machineIds='',turn=0,operationTurn=0,active=false,busy=false,selected='',path='.',cursor=null,cloud,trash;
+  const section=document.querySelector('#page-datasets');let identity='',machineIds='',turn=0,operationTurn=0,active=false,busy=false,selected='',path='.',cursor=null,cloud,trash,directoryReads=Promise.resolve();
   const q=s=>section.querySelector(s),machine=()=>q('[name=dataset-machine]')?.value,scope=()=>({machine:machine(),area:'dataset',dataset:selected});
   const card=id=>[...section.querySelectorAll('[data-storage-machine]')].find(node=>node.dataset.storageMachine===id);
   const status=text=>{q('[data-dataset-status]').textContent=text;};
@@ -29,7 +29,11 @@ export function datasetsUI(store,toast){
       for(const kind of ['workspace','datasets']){const place=find(`[data-volume="${kind}"]`);place.innerHTML=storageVolumeHTML(kind,result.volumes?.find(row=>row.kind===kind));const fill=place.querySelector('[data-fill]');if(fill)fill.style.width=fill.dataset.fill+'%';}
     }catch{if(current())find('[data-storage-caption]').textContent='容量未知，请刷新重试。';}
     if(!current())return;
-    await Promise.all([
+    // Capacity reads are small; directory scans run one server at a time so
+    // browsing does not wait behind scans occupying every remote read lane.
+    const read=directoryReads.then(async()=>{
+      if(!current())return;
+      await Promise.all([
       (async()=>{const place=find('[data-storage-projects]');try{
         const result=await store.call('projects.list',{machine:id,includeUsage:true});if(!current())return;
         place.innerHTML=(result.projects||[]).map(row=>`<div class="storage-project"><div><strong>${esc(row.displayName||row.name||row.project)}</strong><small>${esc(row.ownerName||row.ownerId||'未知')}</small></div><span>${directoryBytes(row)}</span><button type="button" class="button quiet" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div>`).join('')||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
@@ -41,6 +45,8 @@ export function datasetsUI(store,toast){
         if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');
       }catch{if(current())place.textContent='数据集未知，请刷新重试。';}})()
     ]);
+    });
+    directoryReads=read.catch(()=>{});await read;
     if(current()){node.dataset.loading='false';find('[data-storage-refresh]').disabled=false;if(find('[data-storage-caption]').textContent==='读取中…')find('[data-storage-caption]').textContent='读取于 '+new Date().toLocaleTimeString('zh-CN');controls();}
   }
   function selectMachine(id){if(id!==machine()){q('[name=dataset-machine]').value=id;q('[name=dataset-machine]').dispatchEvent(new Event('change',{bubbles:true}));}}
@@ -52,6 +58,7 @@ export function datasetsUI(store,toast){
     controls();
   }
   async function browse(target='.',next=false){const token=operationTurn;path=target;q('[data-dataset-current]').textContent=selected+' / '+path;q('[data-dataset-files]').hidden=false;if(!next)q('[data-dataset-file-list]').textContent='读取中…';let page;try{page=await store.call('files.list',{...scope(),path,limit:1000,...(next&&cursor?{cursor}:{})});}catch(error){if(token===operationTurn&&!next)q('[data-dataset-file-list]').textContent='文件列表未知，请重试。';throw error;}if(token!==operationTurn)return;cursor=page.hasMore?page.nextCursor:null;const html=(page.entries||[]).filter(row=>['file','directory'].includes(row.type)).map(row=>`<button type="button" class="button quiet" data-file-path="${esc(filePath(path,row.name))}" data-file-type="${row.type}">${row.type==='directory'?'▱':'□'} ${esc(row.name)} ${row.type==='file'?transferBytes(row.size):''}</button>`).join('');if(next)q('[data-dataset-file-list]').insertAdjacentHTML('beforeend',html);else q('[data-dataset-file-list]').innerHTML=html||'<p>空目录。</p>';q('#dataset-file-more').hidden=!cursor;q('[name=upload-dataset]').value=selected;}
+  function openDataset(dataset){selected=dataset;void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest'});});}
   function build(machines){
     cloud?.reset();section.innerHTML=`<header class="storage-heading"><p>项目工作区放在 SSD，数据集放在 HDD。${copyHelp('容量与目录大小','盘容量包含同盘的其他内容。项目大小统计项目目录，不分摊共享容器镜像；读不到的部分标为至少，完全读不到显示未知。删除可能影响正在运行的任务。')}</p></header><nav class="data-room-tabs"><a href="#datasets" aria-current="page">容量与目录</a><a href="#datasets/transfers">传输与导入</a></nav><div class="storage-cards">${machines.map(row=>`<article class="storage-server" data-storage-machine="${esc(row.id)}"><header><div><h3 title="${esc(row.id)}">${esc(row.id)}</h3><span>${esc(row.model)} · ${esc(row.cards)}张</span></div><div class="storage-server-actions"><small data-storage-caption></small><button type="button" class="button" data-storage-refresh>刷新</button><button type="button" class="button" data-storage-trash>回收站</button></div></header><div class="storage-disks"><section><div data-volume="workspace">${storageVolumeHTML('workspace')}</div><h4>项目</h4><div data-storage-projects></div></section><section><div data-volume="datasets">${storageVolumeHTML('datasets')}</div><div class="storage-list-heading"><h4>数据集</h4><button type="button" class="button" data-storage-upload>上传</button></div><div data-storage-datasets data-dataset-list></div></section></div></article>`).join('')}</div><section class="storage-tools"><label>操作服务器<select name="dataset-machine">${machines.map(row=>`<option value="${esc(row.id)}">${esc(row.id)}</option>`).join('')}</select></label><section data-dataset-files hidden><h3 data-dataset-current></h3><button type="button" class="button quiet" id="dataset-file-up">上一级</button><div class="file-actions" data-dataset-file-list></div><button type="button" class="button" id="dataset-file-more" hidden>下一页</button></section><details class="data-workspace-card" id="dataset-upload"><summary>上传到新建或已有数据集</summary><form id="dataset-upload-form"><label>数据集目录名<input name="upload-dataset" required></label><label>目标相对目录<input name="upload-directory" value="."></label><label>选择文件<input name="upload-files" type="file" multiple></label><label>或选择目录<input name="upload-folder" type="file" webkitdirectory multiple></label><label>续传编号（新上传留空）<input name="upload-key"></label><button type="submit" class="button primary">上传 / 续传</button></form></details><p data-dataset-status role="status"></p><details class="storage-import"><summary>云盘与链接导入</summary>${cloudImportHTML(store.principal?.role==='admin',store.users||store.data?.users||[])}</details></section>`;
     trash=createTrashUI({call:(...args)=>store.call(...args),getContext:()=>({owner:store.principal?.userId,machine:machine(),enabled:!!store.principal&&!!machine(),isAdmin:store.principal?.role==='admin'}),changed:(row,result)=>{if(row.kind==='dataset'&&result.state==='RESTORED')showDataset(row.dataset||row.originalPath.split('/').pop());status(result.state==='RESTORED'?'已恢复，点击刷新更新目录大小。':result.state==='PURGED'?'已彻底删除。':'结果未知，请按原编号查询：'+row.key);},toast});q('.storage-tools').append(trash.element);cloud ||= cloudImportUI(store,section,toast);
@@ -62,7 +69,7 @@ export function datasetsUI(store,toast){
       if(b.hasAttribute('data-storage-trash')){trash.element.open=true;trash.element.scrollIntoView({block:'nearest'});return;}
       if(b.hasAttribute('data-storage-upload')){q('#dataset-upload').open=true;q('#dataset-upload').scrollIntoView({block:'nearest'});return;}
       if(b.dataset.storageProject)return document.dispatchEvent(new CustomEvent('gpuq-open-project',{detail:{userId:store.principal.userId,authGeneration:store.authGeneration,machine:target,project:b.dataset.storageProject,ownerId:b.dataset.ownerId}}));
-      if(b.dataset.datasetOpen){selected=b.dataset.datasetOpen;return void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest'});});}
+      if(b.dataset.datasetOpen)return openDataset(b.dataset.datasetOpen);
       if(b.dataset.datasetDownload)return void run(()=>downloadBrowserPath((...args)=>store.call(...args),{machine:machine(),area:'dataset',dataset:b.dataset.datasetDownload},'.',{directory:true,onRoute:status,onProgress:row=>status(row.path+' · '+row.offset+' / '+row.size)}));
       if(b.dataset.datasetDelete)return void run(async current=>{const dataset=b.dataset.datasetDelete,cache='dataset-delete:'+store.principal.userId+':'+machine()+':'+dataset,key=sessionStorage.getItem(cache)||crypto.randomUUID();sessionStorage.setItem(cache,key);status('删除编号：'+key);const result=await store.call('datasets.delete',{machine:machine(),dataset,key});if(!current())return;if(result.state==='TRASHED'){sessionStorage.removeItem(cache);b.closest('[data-dataset-row]').remove();if(selected===dataset){selected='';q('[data-dataset-files]').hidden=true;}status('已删除，7 天内可在回收站恢复。');}else status('结果未知，请按原编号查询：'+key);});
       if(b.dataset.filePath)return void run(()=>b.dataset.fileType==='directory'?browse(b.dataset.filePath):downloadBrowserPath((...args)=>store.call(...args),scope(),b.dataset.filePath,{onRoute:status,onProgress:row=>status(row.path+' · '+row.offset+' / '+row.size)}));
@@ -78,6 +85,7 @@ export function datasetsUI(store,toast){
       showDataset(dataset);status('上传完成 · '+key+'；点击刷新更新目录大小。');q('[name=upload-key]').value='';
     });});
   }
+  document.addEventListener('gpuq-open-dataset',event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||!q('[name=dataset-machine]'))return;if(busy){toast('请等待当前数据操作完成，再打开数据集。');return;}selectMachine(detail.machine);openDataset(detail.dataset);});
   return ()=>{
     const next=JSON.stringify([store.authGeneration,store.principal?.userId]),machines=store.principal?store.data?.machines||[]:[],ids=machines.map(row=>row.id).join(',');
     if(next!==identity||ids!==machineIds||!q('[name=dataset-machine]')){identity=next;machineIds=ids;turn++;operationTurn++;busy=false;active=false;build(machines);}

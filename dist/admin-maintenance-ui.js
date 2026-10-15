@@ -19,6 +19,7 @@ export function maintenanceAdminUI(store,experience,{getPage,toast,refresh}){
 
       }
       el.addEventListener('click',event=>{if(event.target.closest('[data-maintenance-settings]')&&active(ctx))settings.querySelector('dialog')?.showModal();},{signal:ctx.signal});
+      settings.addEventListener('close',()=>{if(active(ctx))el.querySelector('[data-maintenance-settings]')?.focus({preventScroll:true});},{capture:true,signal:ctx.signal});
       document.addEventListener('gpuq-maintenance-host',event=>{if(!active(ctx)||event.detail?.userId!==ctx.principal.userId)return;diagnostics.select(event.detail.machine);document.querySelector('#admin-host-diagnostics')?.scrollIntoView({block:'start',behavior:'instant'});},{signal:ctx.signal});
       ctx.subscribe(render);
     },

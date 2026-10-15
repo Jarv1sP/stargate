@@ -1,13 +1,9 @@
-/* Member policy is one current draft. Authentication shares the Carbon shell. */
+
 .sb #page-users{container:members / inline-size;font:14px/1.7 var(--sans);color:var(--ink);min-width:0}
-.sb #page-users :is(button,input,summary):focus-visible,.sb :is(.member-dialog,.auth-dialog) :is(button,input,a,summary):focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-.sb #page-users button,.sb :is(.member-dialog,.auth-dialog) button{transform:none;transition:color 140ms linear,background-color 140ms linear,border-color 140ms linear}
+.sb #page-users :is(button,input,summary):focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.sb #page-users button{transform:none;transition:color 140ms linear,background-color 140ms linear,border-color 140ms linear}
 .sb #page-users .management-toolbar{display:flex;justify-content:space-between;align-items:center;gap:20px;margin:0 0 28px;flex-wrap:wrap}
-.sb #page-users .management-actions{display:flex;gap:12px;flex-wrap:wrap;min-width:0}
-.sb #page-users .management-actions .button{white-space:nowrap}
-.sb #create-user-dialog .field input{min-height:40px;padding:8px 12px}
-.sb #create-user-dialog .icon-button{width:40px;height:40px;min-height:40px}
-.sb #create-user-dialog :is([data-create-user-state],[data-create-user-error]):empty{display:none}
+
 .sb #page-users .filter-tabs{display:flex;gap:20px;flex-wrap:wrap}
 .sb #page-users .filter-tabs button{background:none;color:var(--ink-2);border:0;border-bottom:2px solid transparent;border-radius:0;min-height:40px;font:13px/1.5 var(--sans);padding:8px 0}
 .sb #page-users .filter-tabs [aria-pressed=true]{color:var(--ink);border-bottom-color:var(--ink)}
@@ -56,55 +52,19 @@
 .sb #page-users .total-limit strong{font-size:14px;font-weight:500}
 .sb #page-users .total-limit small{display:block;margin-top:6px}
 .sb #page-users .total-limit>span:last-child{font-size:12px;color:var(--ink-2);white-space:nowrap}
-.sb #page-users .account-settings{margin-top:24px;border-top:1px solid var(--line);padding-top:0;background:none}
-.sb #page-users :is(.account-settings,.team-jobs)>summary{display:flex;justify-content:space-between;align-items:center;min-height:56px;font-size:13px;list-style:none;color:var(--ink-2);cursor:pointer}
-.sb #page-users :is(.account-settings,.team-jobs)>summary::after{content:'+';font:14px var(--mono)}
-.sb #page-users :is(.account-settings,.team-jobs)[open]>summary::after{content:'−'}
-.sb #page-users :is(.account-settings,.team-jobs)>summary::-webkit-details-marker{display:none}
-.sb #page-users .account-settings :is(p,small){color:var(--ink-2);font-size:12px;line-height:1.75}
-.sb #page-users .account-actions{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
-.sb #page-users .approval-note,.sb .member-dialog .approval-note{padding:16px 0;background:none;color:var(--ink-2);font-size:14px;line-height:1.75}
+
+.sb #page-users :is(.team-jobs)>summary{display:flex;justify-content:space-between;align-items:center;min-height:56px;font-size:13px;list-style:none;color:var(--ink-2);cursor:pointer}
+.sb #page-users :is(.team-jobs)>summary::after{content:'+';font:14px var(--mono)}
+.sb #page-users :is(.team-jobs)[open]>summary::after{content:'−'}
+.sb #page-users :is(.team-jobs)>summary::-webkit-details-marker{display:none}
+
+.sb #page-users .approval-note{padding:16px 0;background:none;color:var(--ink-2);font-size:14px;line-height:1.75}
 .sb #page-users .editor-empty{padding:10px 0 28px}
 .sb #page-users .editor-empty h2{font:300 32px/1.4 var(--display);margin-bottom:14px}
 .sb #page-users .editor-empty .button{margin-top:24px}
 .sb #page-users .empty{padding:20px 0;text-align:left;background:none;color:var(--ink-2);font-size:13px}
-.sb #page-users .form-error,.sb :is(.member-dialog,.auth-dialog) .form-error{color:var(--err);font-size:13px;overflow-wrap:anywhere}
-.sb .member-dialog{background:var(--bg-1);color:var(--ink);border:1px solid var(--line-2);border-radius:14px;box-shadow:var(--shadow);padding:28px;font:14px/1.7 var(--sans)}
-.sb .member-dialog::backdrop{background:var(--scrim)}
-.sb :is(.member-dialog,.auth-dialog) .modal-head h2{font-weight:500;color:var(--ink);font-size:24px;line-height:1.4}
-.sb :is(.member-dialog,.auth-dialog) .icon-button{color:var(--ink-2);width:44px;height:44px;min-height:44px;flex:none;font-size:26px}
-.sb :is(.member-dialog,.auth-dialog) .muted{color:var(--ink-2);font-size:14px;line-height:1.75}
-.sb :is(.member-dialog,.auth-dialog) .eyebrow{font:11px var(--mono);color:var(--ink-2);letter-spacing:1.2px}
-.sb :is(.member-dialog,.auth-dialog) .field{font:13px/1.65 var(--sans);color:var(--ink-2);gap:8px;margin-top:22px}
-.sb :is(.member-dialog,.auth-dialog) .field :is(input,select){font:14px/1.5 var(--sans);color:var(--ink);background:var(--bg);border:1px solid var(--line-2);border-radius:6px;min-height:44px;padding:10px 12px;box-shadow:none}
-.sb :is(.member-dialog,.auth-dialog) .field small{font-size:12px;color:var(--ink-2);line-height:1.7}
-.sb .member-dialog .invite-card{background:none;border:0;border-radius:0;margin-top:24px;padding:0}
-.sb .member-dialog .invite-heading{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px}
-.sb .member-dialog .invite-heading h3{font-size:16px;font-weight:500}
-.sb .member-dialog .badge{background:none;color:var(--ink-2);font-size:12px;padding:0;border:0}
-.sb .member-dialog .badge.active{color:var(--run)}
-.sb .member-dialog .badge.pending{color:var(--queue)}
-.sb .member-dialog #current-invite{font-family:var(--mono)}
-.sb .member-dialog .invite-actions{flex-wrap:wrap;gap:12px;margin-top:24px}
-.sb .auth-dialog{position:fixed;inset:0;margin:0;width:100%;max-width:none;height:100dvh;max-height:100dvh;border:0;border-radius:0;padding:0 64px 60px;background:var(--bg);color:var(--ink);box-shadow:none;overflow:auto;font:14px/1.7 var(--sans)}
-.sb .auth-dialog::backdrop{background:var(--bg)}
-.sb .auth-dialog .auth-mast{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:32px;min-height:80px;margin:0 auto 64px;max-width:1280px}
-.sb .auth-dialog .auth-wordmark{font-size:18px;color:var(--ink)}
-.sb .auth-dialog .auth-hero-mark{display:block;font-size:43px;color:var(--ink);margin-bottom:36px}
-.sb .auth-dialog .guide-link{display:inline-flex;align-items:center;min-height:44px;font:12px var(--sans);color:var(--ink-2);white-space:nowrap}
-.sb .auth-dialog .auth-horizon{position:absolute;inset:0;overflow:hidden;pointer-events:none}
-.sb .auth-dialog .auth-horizon::before{content:'';position:absolute;left:-70vw;top:calc(100dvh - 140px);width:240vw;height:240vw;border:1px solid var(--line);border-radius:50%;opacity:.6}
-.sb .auth-dialog>form{position:relative;z-index:1;width:420px;max-width:100%;margin:0 auto;background:var(--bg);padding:0 0 24px}
-.sb .auth-dialog .modal-head{margin:0 0 20px;align-items:start;gap:20px}
-.sb .auth-dialog .modal-head h2{font:300 34px/1.4 var(--display);letter-spacing:-.02em;margin:14px 0 0}
-.sb .auth-dialog .modal-head .icon-button{margin-top:0}
-.sb .auth-dialog .modal-actions{display:flex;gap:12px;margin-top:28px}
-.sb .auth-dialog .modal-actions .primary{flex:1}
-.sb .auth-dialog .auth-footer{font-size:13px;color:var(--ink-2);margin-top:28px;padding-top:20px;gap:8px;flex-wrap:wrap}
-.sb .auth-dialog .auth-footer .button{font-size:13px}
-.sb .auth-dialog .demo-credentials{font-size:12px;color:var(--ink-2);line-height:1.75;margin-top:20px}
-.sb .auth-dialog .demo-credentials summary{min-height:44px;display:flex;align-items:center;cursor:pointer}
-.sb .auth-dialog .demo-credentials code{font:12px var(--mono);overflow-wrap:anywhere}
+.sb #page-users .form-error{color:var(--err);font-size:13px;overflow-wrap:anywhere}
+
 @container members (min-width:56rem){
  .sb #page-users .authorization-layout{grid-template-columns:minmax(14rem,.8fr) minmax(0,2.8fr)}
  .sb #page-users .user-panel{grid-column:1;grid-row:1;border-top:0;border-right:1px solid var(--line);padding:0 clamp(16px,3cqi,28px) 0 0}
@@ -115,9 +75,7 @@
  .sb #page-users{font-size:16px}
  .sb #page-users .management-toolbar{margin-bottom:24px;gap:14px}
  .sb #page-users .management-toolbar>.button{font-size:13px;min-height:48px}
- .sb #page-users .management-actions .button{font-size:13px;min-height:48px}
- .sb #create-user-dialog .field input{min-height:44px}
- .sb #create-user-dialog .icon-button{width:44px;height:44px;min-height:44px}
+
  .sb #page-users .filter-tabs button{min-height:48px}
  .sb #page-users .member-editor{padding:22px 0 0}
  .sb #page-users .editor-head{gap:12px}
@@ -134,17 +92,9 @@
  .sb #page-users .total-limit>span:last-child{margin-left:auto}
  .sb #page-users .user-name{font-size:16px}
  .sb #page-users .user-meta{font-size:13px}
- .sb .member-dialog{width:calc(100% - 32px);max-width:none;padding:24px 20px;font-size:16px}
- .sb :is(.member-dialog,.auth-dialog) .field :is(input,select){font-size:16px}
- .sb .auth-dialog{padding:0 20px 40px}
- .sb .auth-dialog .auth-mast{min-height:80px;gap:20px;padding:0;margin-bottom:36px}
- .sb .auth-dialog .auth-wordmark{font-size:16px}
- .sb .auth-dialog .auth-hero-mark{font-size:32px;margin-bottom:28px}
- .sb .auth-dialog .modal-head h2{font-size:30px}
- .sb :is(.member-dialog,.auth-dialog) .muted{font-size:15px}
- .sb .auth-dialog .auth-footer .button{min-height:44px}
+
 }
-@media(prefers-reduced-motion:reduce){.sb #page-users *,.sb .member-dialog *,.sb .auth-dialog *{transition:none!important;scroll-behavior:auto!important}}
+@media(prefers-reduced-motion:reduce){.sb #page-users *{transition:none!important;scroll-behavior:auto!important}}
 
 /* Policy controls follow their actual editor and permission-row width. */
 .sb #page-users .member-action-help{justify-content:flex-start;gap:8px;min-width:0}
@@ -158,88 +108,13 @@
  .sb #page-users .permission-spec{grid-column:2;margin:0;text-align:left}
  .sb #page-users .permission-bottom{grid-template-columns:minmax(0,1fr)}
 }
-.sb :is(#invites-dialog,#password-dialog){container:member-dialog / inline-size;width:min(36rem,calc(100% - 32px));max-width:none;max-height:calc(100dvh - 32px);padding:clamp(16px,3vw,28px);overflow:auto}
-.sb :is(#invites-dialog,#password-dialog) .modal-head{gap:12px;align-items:center}
-.sb :is(#invites-dialog,#password-dialog) .modal-head>div{min-width:0}
-.sb :is(#invites-dialog,#password-dialog) .icon-button{width:48px;height:48px;min-height:48px}
-.sb :is(#invites-dialog,#password-dialog) .field input{min-height:48px}
-.sb #invites-dialog .invite-heading{flex-wrap:wrap}
-@media(max-width:379px){
- .sb :is(#invites-dialog,#password-dialog){width:100%;border-inline:0;border-radius:0}
-}
-@container member-dialog (max-width:14rem){
- .sb :is(#invites-dialog,#password-dialog) .modal-head{gap:4px}
- .sb :is(#invites-dialog,#password-dialog) .modal-head .copy-caption{gap:4px}
- .sb :is(#invites-dialog,#password-dialog) .modal-head h2{font-size:20px;white-space:nowrap}
-}
-
-/* R5Login: approved original hardware silhouettes, never live telemetry. */
-.sb #login-dialog{background:#000;padding:0 64px 56px}
-.sb #login-dialog .auth-mast{max-width:1312px;margin:0 auto;min-height:94px;border-bottom:1px solid var(--line);gap:24px}
-.sb #login-dialog .auth-platform{font:12px var(--sans);color:var(--ink-2)}
-.sb #login-dialog .auth-r5-layout{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:100px;max-width:1312px;margin:0 auto;padding-top:clamp(48px,10dvh,100px);align-items:start}
-.sb #login-dialog .auth-login-identity{padding-top:10px;min-width:0}
-.sb #login-dialog .auth-r5-wordmark{display:block;width:100%;max-width:none;height:auto;aspect-ratio:9753/711;fill:var(--ink);stroke:none;stroke-width:0;overflow:visible;background:none;-webkit-mask:none;mask:none;text-indent:0;line-height:normal}
-.sb #login-dialog .auth-r5-wordmark path{display:inline;fill:var(--ink);stroke:none}
-.sb #login-dialog .auth-login-fleet{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:23px;align-items:end;margin-top:clamp(32px,7dvh,70px);padding:0 4px}
-.sb #login-dialog .auth-login-fleet figure{margin:0;min-width:0}
-.sb #login-dialog .auth-chassis{display:block;width:100%;height:auto;max-height:40dvh;fill:none;stroke:#45474b;stroke-width:1;stroke-linecap:butt;stroke-linejoin:miter}
-.sb #login-dialog .auth-chassis :is(path,rect,circle){vector-effect:non-scaling-stroke}
-.sb #login-dialog .auth-chassis .outer-depth{fill:#070708;stroke:#27282b}
-.sb #login-dialog .auth-chassis .bezel{fill:#101012;stroke:#55565c}
-.sb #login-dialog .auth-chassis .face{fill:#050506;stroke:#35363a}
-.sb #login-dialog .auth-chassis .edge-light{stroke:#777980}
-.sb #login-dialog .auth-chassis .panel-seam{stroke:#25262a}
-.sb #login-dialog .auth-chassis .handle{fill:#070708;stroke:#55565a}
-.sb #login-dialog .auth-chassis .bay-face{fill:#101012;stroke:#414248}
-.sb #login-dialog .auth-chassis .bay-line{stroke:#696a70}
-.sb #login-dialog .auth-chassis .bay-pin{fill:#74767b;stroke:none}
-.sb #login-dialog .auth-chassis .port{fill:#050505;stroke:#61636a}
-.sb #login-dialog .auth-chassis .engraving{stroke:#96989e}
-.sb #login-dialog .auth-chassis .hardware-id{font:400 9px var(--mono);fill:#aaaeb5;stroke:none}
-.sb #login-dialog .auth-chassis .screw{fill:#070708;stroke:#777980}
-.sb #login-dialog .auth-chassis .foot{fill:#101012;stroke:#3c3e43}
-.sb #login-dialog .auth-chassis .perforation{fill:#6b6d74;stroke:none}
-.sb #login-dialog #login-form{margin:0;width:100%;padding:24px 0 0;border-top:1px solid var(--line-3);background:#000}
-.sb #login-dialog .modal-head{margin-bottom:22px;align-items:center;gap:12px}
-.sb #login-dialog .modal-head h2{font:500 22px/1.4 var(--sans);margin:0}
-.sb #login-dialog .modal-head .icon-button{width:32px;min-width:32px;height:32px;min-height:32px;font-size:24px}
-.sb #login-dialog .field{margin-top:18px;font-size:12px}
-.sb #login-dialog .field input{border-radius:2px;min-height:47px}
-.sb #login-dialog .modal-actions{border:0;padding-top:0;margin-top:24px}
-.sb #login-dialog .modal-actions .button{border-radius:2px;min-height:47px}
-.sb #login-dialog .modal-actions [data-close]{background:none;border-color:transparent;color:var(--ink-2);padding-inline:0;margin-right:8px}
-.sb #login-dialog .auth-footer{margin-top:24px;padding-top:14px;font-size:12px;justify-content:space-between}
-.sb #login-dialog .auth-footer .button{padding-inline:0;font-size:12px}
-.sb #login-dialog .auth-horizon::before{border-color:#313a48;opacity:.7;top:calc(100dvh - 130px)}
-.sb #login-dialog.wordmark-ignition .auth-lambda{animation:auth-lambda-ignite 600ms cubic-bezier(.2,.8,.2,1) both}
-@keyframes auth-lambda-ignite{from{opacity:.12;clip-path:inset(100% 0 0 0)}to{opacity:1;clip-path:inset(0)}}
-.sb #register-dialog .field-caption label{font:inherit;color:inherit}
-.sb #register-dialog .field-caption .copy-help-button{margin-right:-8px}
-@media(max-width:1099px){.sb #login-dialog{padding-inline:40px}.sb #login-dialog .auth-r5-layout{grid-template-columns:minmax(0,1fr) 300px;gap:48px}.sb #login-dialog .auth-login-fleet{gap:14px}}
-@media(max-width:759px){
- .sb #login-dialog{padding:0 20px 32px}
- .sb #login-dialog .auth-mast{min-height:64px}
- .sb #login-dialog .auth-r5-layout{display:block;padding-top:24px}
- .sb #login-dialog .auth-login-identity{padding-top:0}
- .sb #login-dialog .auth-login-fleet{margin-top:20px;gap:12px;padding:0}
- .sb #login-dialog .auth-chassis{max-height:154px}
- .sb #login-dialog #login-form{margin-top:24px;padding-top:14px}
- .sb #login-dialog .modal-head{margin-bottom:0}
- .sb #login-dialog .modal-head .icon-button{width:44px;min-width:44px;height:44px;min-height:44px}
- .sb #login-dialog .field{margin-top:14px}
- .sb #login-dialog .field input{font-size:16px;min-height:44px}
- .sb #login-dialog .modal-actions{margin-top:22px}
- .sb #login-dialog .auth-footer{margin-top:18px;padding-top:10px}
-}
-@media(prefers-reduced-motion:reduce){.sb #login-dialog.wordmark-ignition .auth-lambda{animation:none!important;opacity:1;clip-path:none}}
 
 /* Keep one mobile control entry and fit the compact header without a second row. */
 .sb #app-topbar{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 .sb #app-topbar .account-menu{min-width:0;flex:0 1 auto}
 .sb #app-topbar #account-menu-toggle{min-width:0}
 .sb #app-topbar #account-menu-toggle>span:last-child,.sb #app-topbar .av,.sb #app-topbar :is(.guide-link,.sync){flex:none}
-.sb #app-topbar .acct-t{min-width:0;max-width:12em}
+
 .sb #app-topbar #profile-name{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 @media(max-width:759px){
  .sb[data-room=admin]:has(#admin-content #page-users) .page-heading{display:flex;flex-direction:row;align-items:center;justify-content:space-between}
@@ -247,7 +122,7 @@
  .sb[data-room=admin]:has(#admin-content #page-users) .page-heading h1{white-space:nowrap}
  .sb[data-room=admin]:has(#admin-content #page-users) .page-heading .heading-actions{width:auto;margin:0;flex:none}
  .sb[data-room=admin]:has(#admin-content #page-users) .page-heading .heading-actions .button{width:auto;flex:none;min-height:44px}
- .sb[data-room=admin]:has(#admin-content #page-users):has(#mobile-control:not([hidden]) #live-pill:not([hidden])) .page-heading .heading-actions{display:none}
+
 }
 @media(max-width:360px){
  .sb #app-topbar .wordmark{font-size:calc(8px / .687)}

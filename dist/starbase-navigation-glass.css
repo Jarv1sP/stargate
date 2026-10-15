@@ -2,12 +2,12 @@
    HIG: controls float above content as a distinct functional layer; glass only on navigation,
    never on content. The hero frame marks the ONE object a page is about (once per page). */
 .sb .topbar{position:sticky;top:0;z-index:7}
-.sb .topbar ~ .ctxbar,.sb .topbar + * .ctxbar{top:60px}
-.sb .topbar,.sb .ctxbar,.sb .glass{
+
+.sb .topbar,.sb .glass{
   background:color-mix(in srgb,var(--bg) 74%,transparent);
   -webkit-backdrop-filter:blur(22px) saturate(1.35);backdrop-filter:blur(22px) saturate(1.35)}
 @media (prefers-reduced-transparency:reduce){
-.sb .topbar,.sb .ctxbar,.sb .glass{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
+.sb .topbar,.sb .glass{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
   }
 .hero-frame{--tick:var(--ink-3);--tl:14px;position:relative;padding:28px 32px 30px;
   background:

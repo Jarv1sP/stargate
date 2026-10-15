@@ -237,7 +237,7 @@ export function terminalUI(store,toast){
   });
   document.addEventListener('gpuq-route-leaving',cancelRecovery);
   window.addEventListener('pagehide',cancelRecovery);
-  function revealMotion(){const reduce=typeof matchMedia==='function'?matchMedia('(prefers-reduced-motion:reduce)').matches:true;dialog.animate?.(reduce?[{opacity:0},{opacity:1}]:[{clipPath:'inset(100% 0 0 0)'},{clipPath:'inset(0)'}],{duration:reduce?150:320,easing:'cubic-bezier(.2,0,0,1)'});}
+  function revealMotion(){const reduce=typeof matchMedia==='function'?matchMedia('(prefers-reduced-motion:reduce)').matches:true;dialog.animate?.(reduce?[{opacity:0},{opacity:1}]:[{clipPath:'inset(100% 0 0 0)'},{clipPath:'inset(0)'}],{duration:reduce?0:320,easing:'cubic-bezier(.2,0,0,1)'});}
   async function openTerminal(button,knownTarget=null){
     button.disabled=true;let pendingOpen=null;
     try{

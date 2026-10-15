@@ -44,12 +44,12 @@ export function revealSheet(dialog,{drilldown=false}={}){
     const element=openDialogs().filter(layer=>layer!==dialog).at(-1)||document.querySelector('[data-page]:not([hidden])');
     if(element){const distance=innerWidth*.3,animation=element.animate([{transform:'none'},{transform:`translateX(${-distance}px)`}],{duration:350,easing:standard,fill:'forwards'});underLayers.set(dialog,{element,distance,animation});}
   }
-  const animation=dialog.animate(reduce?[{opacity:0},{opacity:1}]:[{transform:phone()&&!drilldown?'translateY(100%)':'translateX(100%)'},{transform:'none'}],{duration:reduce?150:phone()?drilldown?350:380:320,easing:standard});
+  const animation=dialog.animate(reduce?[{opacity:0},{opacity:1}]:[{transform:phone()&&!drilldown?'translateY(100%)':'translateX(100%)'},{transform:'none'}],{duration:reduce?0:phone()?drilldown?350:380:320,easing:standard});
   entrances.set(dialog,animation);
   if(!boundDialogs.has(dialog)){boundDialogs.add(dialog);dialog.addEventListener('close',()=>{if(dialog.open)return;entrances.get(dialog)?.cancel();restoreUnderLayer(dialog)?.();});}return animation;
 }
 export function fadeDialog(dialog){
-  return dialog.animate(reducedMotion()?[{opacity:0},{opacity:1}]:[{opacity:0,transform:'scale(.98)'},{opacity:1,transform:'none'}],{duration:reducedMotion()?150:220,easing:standard});
+  return dialog.animate(reducedMotion()?[{opacity:0},{opacity:1}]:[{opacity:0,transform:'scale(.98)'},{opacity:1,transform:'none'}],{duration:reducedMotion()?0:220,easing:standard});
 }
 export function captureObject(source){
   if(!source)return null;const rect=source.getBoundingClientRect(),style=getComputedStyle(source);
@@ -63,13 +63,13 @@ export function dismissSheet(dialog,{drilldown=false,target=null}={}){
   clone.classList.add('exiting-layer');clone.style.inset='auto';clone.style.left=rect.left+'px';clone.style.top=rect.top+'px';clone.style.width=rect.width+'px';clone.style.height=rect.height+'px';clone.style.margin='0';layer.append(clone);
   if(target)sharedObject(dialog.querySelector('.sheet-object'),target);
   dialog.close();
-  back?.();const reduce=reducedMotion();retire(layer,clone.animate(reduce?[{opacity:1},{opacity:0}]:[{transform:'none',opacity:1},{transform:phone()&&!drilldown?'translateY(100%)':'translateX(100%)',opacity:0}],{duration:reduce?150:phone()&&drilldown?350:220,easing:'cubic-bezier(.4,0,1,1)'}));
+  back?.();const reduce=reducedMotion();retire(layer,clone.animate(reduce?[{opacity:1},{opacity:0}]:[{transform:'none',opacity:1},{transform:phone()&&!drilldown?'translateY(100%)':'translateX(100%)',opacity:0}],{duration:reduce?0:phone()&&drilldown?350:220,easing:'cubic-bezier(.4,0,1,1)'}));
 }
 export function dismissReveal(dialog,element=dialog){
   if(!dialog?.open)return null;
   const rect=element.getBoundingClientRect(),clone=cleanClone(element),layer=animationLayer();
   clone.style.position='absolute';clone.style.left=rect.left+'px';clone.style.top=rect.top+'px';clone.style.width=rect.width+'px';clone.style.height=rect.height+'px';clone.style.margin='0';layer.append(clone);dialog.close();
-  const animation=clone.animate(reducedMotion()?[{opacity:1},{opacity:0}]:[{clipPath:'inset(0)'},{clipPath:'inset(100% 0 0 0)'}],{duration:reducedMotion()?150:220,easing:'cubic-bezier(.4,0,1,1)'});retire(layer,animation);return animation;
+  const animation=clone.animate(reducedMotion()?[{opacity:1},{opacity:0}]:[{clipPath:'inset(0)'},{clipPath:'inset(100% 0 0 0)'}],{duration:reducedMotion()?0:220,easing:'cubic-bezier(.4,0,1,1)'});retire(layer,animation);return animation;
 }
 export function sharedObject(source,target,{uniformScale=false}={}){
   if(!source||!target)return;
@@ -77,7 +77,7 @@ export function sharedObject(source,target,{uniformScale=false}={}){
   const from=saved.rect,to=target.getBoundingClientRect();
   if(!from.width||!from.height||!to.width||!to.height)return;
   const reduce=reducedMotion();
-  if(reduce){target.animate([{opacity:.4},{opacity:1}],{duration:150,easing:'linear'});return;}
+  if(reduce)return;
   const clone=cleanClone(saved.element),layer=animationLayer();clone.classList.add('flip-ghost');if(saved.font)clone.style.font=saved.font;clone.style.color=saved.color;
   clone.style.position='absolute';clone.style.left=from.left+'px';clone.style.top=from.top+'px';clone.style.width=from.width+'px';clone.style.height=from.height+'px';clone.style.transformOrigin='0 0';layer.append(clone);
   const scaleY=to.height/from.height,scaleX=uniformScale?scaleY:to.width/from.width;

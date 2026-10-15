@@ -6,9 +6,9 @@
    Motion is opt-in (.sb.motion on the root). Every comp renders its settled end state.
    Application adapters are in shell.css and workbench.css.
    Sections: 01 tokens · 02 reset · 03 base · 04 type · 05 shell (top bar, account,
-   sync, notices, context bar) · 06 frame · 07 controls · 08 readouts · 09 gpu ·
+   sync, notices) · 06 frame · 07 controls · 08 readouts · 09 gpu ·
    10 status · 11 timeline · 12 jobs & transfer · 13 surfaces · 14 command blocks ·
-   15 terminal & dock · 16 overlays · 17 loading/unknown/stale · 18 rows · 19 phone ·
+   15 terminal · 16 overlays · 17 loading/unknown/stale · 18 rows · 19 phone ·
    20 light theme · 21 responsive · 22 motion
    ===================================================================================== */
 
@@ -34,33 +34,20 @@
   --seg-on:#2A2C31;
   --code-bg:rgba(242,242,239,.08);
   --ring:var(--ink); /* focus ring colour of the page theme (survives re-scoped inks) */
-  /* page grid: the top bar, context bar, notices and .wrap share one left/right line */
+  /* page grid: the top bar, notices and .wrap share one left/right line */
   --gutter:48px;--content:1280px;
   --edge:max(var(--gutter),calc((100% - var(--content)) / 2));
   /* type scale — nine text sizes + four numeral sizes. Phone (.m) remaps five of them. */
-    /* Archivo 300 — project / server / dataset names at title size */
   --fs-title:40px;    /* page title (CJK 500) */
-         /* sheet, drawer and guide headings */
-         /* section titles, dialog titles */
   --fs-row:16px;      /* row titles (job, post, dataset), lead */
   --fs-body:14px;     /* body, buttons, inputs */
   --fs-meta:13px;     /* secondary lines, status words, tables, small buttons */
   --fs-small:12px;    /* labels, captions, legends — the smallest CJK size */
   --fs-micro:11px;    /* Geist Mono metadata only: ids, hashes, times, kbd */
-   /* Archivo numerals */
   /* control heights */
   --h-md:40px;
-  /* motion — durations (no UI motion longer than 480ms) and curves (none overshoots) */
-       /* press scale, switch thumb */
+  /* shell motion uses 160–550ms, ease-out and spring curves. */
   --t-quick:140ms;    /* hover, colour, small text swaps */
-       /* state change, indicator, dialog, toast, readout tick */
-       /* drawer, dock reveal, row height, disclosure */
-      /* measured fills move to a new sample */
-       /* one ring after a real new sample */
-       /* delay: hold a confirmed result before it resolves */
-     /* enter / settle */
-        /* exit (use at ×0.7 duration) */
-       /* in-place move / resize */
   /* measured value, symmetric */
   font-family:var(--sans);color:var(--ink);background:var(--bg);
   font-size:var(--fs-body);line-height:1.6;letter-spacing:.005em;

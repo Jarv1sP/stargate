@@ -38,13 +38,13 @@ export function createCommunityUI(store,toast){
     cancelAnimationFrame(fitFrame);fitFrame=requestAnimationFrame(()=>{
       const rail=q('#community-chat');if(!rail)return;
       if(!wide.matches||!visible){rail.style.removeProperty('height');return;}
-      const strip=document.querySelector('#control-strip'),boundary=strip&&!strip.hidden?strip.getBoundingClientRect().top-12:innerHeight-24;
+      const strip=document.querySelector('#room-nav'),boundary=strip&&getComputedStyle(strip).position==='fixed'?strip.getBoundingClientRect().top-12:innerHeight-24;
       const height=Math.max(180,Math.min(900,boundary-Math.max(88,rail.getBoundingClientRect().top)));
       const value=Math.floor(height)+'px';if(rail.style.height!==value)rail.style.height=value;
     });
   }
   const railObserver=new ResizeObserver(fitChat);
-  for(const node of document.querySelectorAll('.page-heading,.demo-note,#operational-maintenance,#control-strip'))railObserver.observe(node);
+  for(const node of document.querySelectorAll('.page-heading,.demo-note,#operational-maintenance,#room-nav'))railObserver.observe(node);
   addEventListener('resize',fitChat);addEventListener('scroll',fitChat,{passive:true});
   function stop(){clearTimeout(timer);timer=null;}
   function reset(){epoch++;stop();notes?.reset();notes=null;notesCapable=false;tab='posts';ready=false;infoBusy=false;loading=false;chatBusy=false;composeBusy=false;commentBusy=false;chatSending=false;posts=[];postCursor=null;selected=null;comments=[];messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;chatLoaded=false;postsLoaded=false;chatStatus='';chatFailed=false;postStatus='';postFailed=false;keys.reset();commentDrafts.clear();editing=null;detail?.close();composer?.close();detail?.remove();composer?.remove();detail=null;composer=null;root.replaceChildren();}
