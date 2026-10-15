@@ -1,8 +1,8 @@
 import {spawn} from 'node:child_process';
-import {mkdtemp,open,chmod,rm,lstat} from 'node:fs/promises';
+import {access,readFile,readdir,mkdir,writeFile,rename,chmod,rm} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {constants as fsConstants} from 'node:fs';
 import {resolveCampusNativeRuntime,prepareWindowsNativeFolder} from './client-campus-native-runtime.mjs';
 export {resolveCampusNativeRuntime} from './client-campus-native-runtime.mjs';
 
@@ -22,48 +22,47 @@ const failed=(code,status,writeMayHaveReachedPeer=false,details={})=>{
   return Object.assign(Error(`Campus physical transport stopped (${code}${suffix?'; '+suffix:''}); keep the original operation identity; no VPS or Tail fallback`),{code,status,writeMayHaveReachedPeer,...details});
 };
 const writing=op=>['put','control'].includes(op);
-// A private temporary-file failure must not replace a business result. Process
-// exit is still checked separately, and the folder identity guard stays intact.
+// Releasing an agent must not replace its operation result. Cached helpers
+// persist across CLI processes; only old versions are removed on first write.
 const cleanupTemporaryHelper=async(cleanup,timeoutMs=2000)=>{
   try{await bounded(Promise.resolve().then(cleanup),timeoutMs,'NATIVE_CLEANUP_UNCONFIRMED');}
   catch{/* Temporary-file cleanup must not replace the operation result. */}
 };
-export async function extractCampusNative(artifacts=EMBEDDED,{platform,arch=process.arch,resolveRuntime=resolveCampusNativeRuntime,prepareWindows=prepareWindowsNativeFolder}={}){
+export async function extractCampusNative(artifacts=EMBEDDED,{platform,arch=process.arch,resolveRuntime=resolveCampusNativeRuntime,prepareWindows=prepareWindowsNativeFolder,directory=tmpdir(),remove=rm}={}){
   const runtime=await resolveRuntime({...(platform?{platform}:{}),arch});
   let windowsFolder;if(runtime.platform==='windows')windowsFolder=await prepareWindows(runtime);
   platform=runtime.platform;arch=windowsFolder?.arch||runtime.arch;
-  const cleanupWindows=()=>cleanupTemporaryHelper(()=>windowsFolder?.cleanup());
-  if(!['linux','windows'].includes(platform)||!['x64','arm64'].includes(arch)){await cleanupWindows();throw failed('PLATFORM_UNSUPPORTED');}
+  if(!['linux','windows'].includes(platform)||!['x64','arm64'].includes(arch))throw failed('PLATFORM_UNSUPPORTED');
   if(artifacts==null&&arguments[0]===undefined){
-    // Source CLI uses the same verified output as npm run build:client.
-    // npm run cli runs that build first; an installed one-file client embeds it.
+    // Source CLI uses the native build input; the installed client embeds it.
     const path=new URL('./build/campus-native/embedded-artifacts.private.json',import.meta.url);
-    let fd;
-    try{fd=await open(path,fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK);const info=await fd.stat();
-      if(!info.isFile()||info.nlink!==1||info.size>64*1024**2||(info.mode&0o022)||process.getuid&&![0,process.getuid()].includes(info.uid))throw Error();
-      artifacts=JSON.parse(await fd.readFile('utf8'));
-    }catch{await cleanupWindows();throw failed('SOURCE_NATIVE_BUILD_REQUIRED');}finally{await fd?.close();}
+    try{artifacts=JSON.parse(await readFile(path,'utf8'));}catch{throw failed('SOURCE_NATIVE_BUILD_REQUIRED');}
   }
+  const temporary=windowsFolder?.folder||directory,root=join(temporary,platform==='windows'?'stargate-campus':`stargate-campus-${process.getuid?.()??'user'}`);
+  const version=encodeURIComponent(artifacts?.version).replace(/^\.+$/,'_'),folder=join(root,version),path=join(folder,platform==='windows'?'campus-http.exe':'campus-http');
+  const binary={path,cleanup:async()=>{},platform,interop:runtime.interop};
+  try{await access(path);return binary;}catch(error){if(error.code!=='ENOENT')throw error;}
   const item=artifacts?.artifacts?.[`${platform}-${arch}`];
-  if(!item||!Number.isSafeInteger(item.bytes)||item.bytes<1||item.bytes>20*1024**2||typeof item.base64!=='string'){await cleanupWindows();throw failed('NATIVE_NOT_BUNDLED');}
-  if(item.base64.length>28*1024**2){await cleanupWindows();throw failed('NATIVE_ARTIFACT_INVALID');}
-  const bytes=Buffer.from(item.base64,'base64');
-  const folder=windowsFolder?.folder||await mkdtemp(join(tmpdir(),'stargate-campus-'));if(!windowsFolder)await chmod(folder,0o700);const path=join(folder,windowsFolder?'campus-http.exe':'campus-http');
-  const cleanup=windowsFolder?.cleanup||(()=>rm(folder,{recursive:true,force:true}));
+  if(!item)throw failed('NATIVE_NOT_BUNDLED');
+  await mkdir(folder,{recursive:true,mode:0o700});const pending=path+'.'+randomUUID()+'.tmp';
   try{
-    const fd=await open(path,'wx',0o600);try{await fd.writeFile(bytes);await fd.sync();}finally{await fd.close();}
-    if(!windowsFolder||runtime.interop)await chmod(path,0o700);const info=await lstat(path);
-    if(!info.isFile()||info.isSymbolicLink()||info.nlink!==1||!windowsFolder&&((info.mode&0o7777)!==0o700||process.getuid&&info.uid!==process.getuid()))throw failed('NATIVE_ARTIFACT_INVALID');
-    return {path,cleanup,platform:runtime.platform,interop:runtime.interop};
-  }catch(error){await cleanupTemporaryHelper(cleanup);throw error;}
+    await writeFile(pending,Buffer.from(item.base64,'base64'),{flag:'wx',mode:0o700});
+    if(platform!=='windows'||runtime.interop)await chmod(pending,0o700);
+    try{await rename(pending,path);}catch(error){try{await access(path);}catch{throw error;}}
+  }finally{await remove(pending,{force:true}).catch(()=>{});}
+  const versions=await readdir(root,{withFileTypes:true}).catch(()=>[]),legacy=await readdir(temporary,{withFileTypes:true}).catch(()=>[]);
+  const retired=[...versions.filter(entry=>entry.isDirectory()&&entry.name!==version).map(entry=>join(root,entry.name)),
+    ...legacy.filter(entry=>entry.isDirectory()&&/^stargate-campus-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(entry.name)).map(entry=>join(temporary,entry.name))];
+  await Promise.all(retired.map(path=>remove(path,{recursive:true,force:true}).catch(()=>{})));
+  return binary;
 }
 
 const bounded=(promise,timeoutMs,code)=>new Promise((resolve,reject)=>{
   const timer=setTimeout(()=>reject(failed(code)),timeoutMs);
   Promise.resolve(promise).then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});
 });
-// One verified executable per artifact in this CLI process. Agents retain
-// separate pipes, grants, sockets and request queues; the last one removes it.
+// Share bootstrap work within a process. Agents keep separate pipes, grants,
+// sockets and request queues; releasing them leaves the cached helper in place.
 export function createSharedNativeExtractor(extract=extractCampusNative){
   const active=new Map();
   return async(artifacts,options)=>{

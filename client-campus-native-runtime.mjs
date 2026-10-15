@@ -1,6 +1,5 @@
 import {spawn} from 'node:child_process';
-import {readFile,lstat,rm} from 'node:fs/promises';
-import {randomUUID} from 'node:crypto';
+import {readFile,lstat} from 'node:fs/promises';
 import {win32,posix} from 'node:path';
 
 const fail=code=>Object.assign(Error(`Windows host transport stopped (${code}); no WSL network fallback`),{code});
@@ -13,7 +12,7 @@ export async function resolveCampusNativeRuntime({platform=process.platform,arch
   if(typeof release!=='string'||release.length>4096)throw fail('PLATFORM_UNCONFIRMED');
   return {platform:/microsoft/i.test(release)?'windows':'linux',arch,interop:/microsoft/i.test(release)};
 }
-const bootstrapEnv=()=>Object.fromEntries(['SystemRoot','WINDIR','WSL_INTEROP'].filter(key=>typeof process.env[key]==='string').map(key=>[key,process.env[key]]));
+const bootstrapEnv=()=>Object.fromEntries(['SystemRoot','WINDIR','WSL_INTEROP','TEMP','TMP','USERPROFILE','LOCALAPPDATA'].filter(key=>typeof process.env[key]==='string').map(key=>[key,process.env[key]]));
 export function boundedLocalCommand(program,args,{spawnProcess=spawn,timeoutMs=8000,limit=8192}={}){
   return new Promise((resolve,reject)=>{
     let child,done=false,total=0,output=[],failure,exitTimer;
@@ -43,28 +42,11 @@ export async function windowsPowerShell(runtime,{env=process.env,read=readFile,s
   for(const path of [...new Set(candidates)].slice(0,32)){try{const info=await stat(path);if(info.isFile()&&!info.isSymbolicLink())return path;}catch{}}
   throw fail('WINDOWS_INTEROP_UNAVAILABLE');
 }
-export function windowsPrivateFolderScript(uuid){
-  if(!/^[a-f0-9-]{36}$/.test(uuid))throw fail('WINDOWS_BOOTSTRAP_INVALID');
-  return `$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;$temp=[IO.Path]::GetTempPath();if($temp -notmatch '^[A-Za-z]:\\\\'){throw 'local temp required'};$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($temp));if($drive.DriveType -ne [IO.DriveType]::Fixed){throw 'local fixed drive required'};$path=[IO.Path]::Combine($temp,'stargate-campus-${uuid}');if([IO.Directory]::Exists($path)){throw 'existing folder'};$acl=[Security.AccessControl.DirectorySecurity]::new();$acl.SetAccessRuleProtection($true,$false);$acl.SetOwner($sid);$inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit';$prop=[Security.AccessControl.PropagationFlags]::None;foreach($s in @($sid,[Security.Principal.SecurityIdentifier]::new('S-1-5-18'))){$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($s,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,$prop,[Security.AccessControl.AccessControlType]::Allow))};$null=[IO.Directory]::CreateDirectory($path,$acl);$arch=if([Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE') -eq 'ARM64'){'arm64'}elseif([Environment]::Is64BitOperatingSystem){'x64'}else{throw 'unsupported architecture'};[Console]::Out.WriteLine((@{schema=1;path=$path;arch=$arch;private=$true;owner=$sid.Value}|ConvertTo-Json -Compress))`;
+export function windowsTempScript(){
+  return `$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$temp=[IO.Path]::GetTempPath();if($temp -notmatch '^[A-Za-z]:\\\\'){throw 'local temp required'};$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($temp));if($drive.DriveType -ne [IO.DriveType]::Fixed){throw 'local fixed drive required'};$arch=if([Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE') -eq 'ARM64'){'arm64'}elseif([Environment]::Is64BitOperatingSystem){'x64'}else{throw 'unsupported architecture'};[Console]::Out.WriteLine((@{path=$temp;arch=$arch}|ConvertTo-Json -Compress))`;
 }
-export async function prepareWindowsNativeFolder(runtime,{command=boundedLocalCommand,powerShell=windowsPowerShell,uuid=randomUUID(),stat=lstat,remove=rm}={}){
-  const ps=await powerShell(runtime);let value;try{value=JSON.parse((await command(ps,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',windowsPrivateFolderScript(uuid)])).trim());}catch(error){throw error?.code?error:fail('WINDOWS_BOOTSTRAP_INVALID');}
-  if(typeof value.path!=='string'||value.path.length>1024||! /^[A-Za-z]:\\/.test(value.path)||win32.basename(value.path)!==`stargate-campus-${uuid}`||win32.normalize(value.path)!==value.path)throw fail('WINDOWS_BOOTSTRAP_INVALID');
+export async function prepareWindowsNativeFolder(runtime,{command=boundedLocalCommand,powerShell=windowsPowerShell}={}){
+  const ps=await powerShell(runtime);let value;try{value=JSON.parse((await command(ps,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',windowsTempScript()])).trim());}catch(error){throw error?.code?error:fail('WINDOWS_BOOTSTRAP_INVALID');}
   const folder=runtime.interop?(await command('/usr/bin/wslpath',['-u',value.path])).trim():value.path;
-  if(runtime.interop&&(!folder.startsWith('/')||folder.includes('\n')||posix.basename(folder)!==`stargate-campus-${uuid}`))throw fail('WINDOWS_BOOTSTRAP_INVALID');
-  const info=await stat(folder);if(!info.isDirectory()||info.isSymbolicLink())throw fail('WINDOWS_BOOTSTRAP_INVALID');
-  return {folder,arch:['x64','arm64'].includes(value.arch)?value.arch:runtime.arch,interop:runtime.interop,cleanup:async()=>{
-    const current=await stat(folder);if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==info.dev||current.ino!==info.ino)throw fail('NATIVE_CLEANUP_UNCONFIRMED');
-    if(runtime.interop){
-      await command(ps,['-NoLogo','-NoProfile','-NonInteractive','-Command',`$ErrorActionPreference='Stop';for($i=0;;$i++){try{[IO.Directory]::Delete('${value.path.replaceAll("'","''")}',$true);break}catch [IO.IOException],[UnauthorizedAccessException]{if($i -eq 5){throw};Start-Sleep -Milliseconds (50*($i+1))}}`]);
-      return;
-    }
-    for(let attempt=0;;attempt++){
-      try{await remove(folder,{recursive:true,force:true});return;}
-      catch(error){
-        if(attempt===5||!['EIO','EBUSY','EPERM','ENOTEMPTY'].includes(error.code))throw error;
-        await new Promise(resolve=>setTimeout(resolve,50*(attempt+1)));
-      }
-    }
-  }};
+  return {folder,arch:value.arch,interop:runtime.interop};
 }

@@ -12,11 +12,11 @@ export async function buildClient({root=fileURLToPath(new URL('..',import.meta.u
   // Release builds regenerate all four helpers with build:release. A plain
   // bundle would silently lose Windows control and campus transfer support.
   const artifacts=JSON.parse(await readFile(resolve(root,'build/campus-native/embedded-artifacts.private.json'),'utf8'));
+  if(!revision)try{revision=(await promisify(execFile)('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true})).stdout.trim();}catch{}
   await build({absWorkingDir:root,entryPoints:['cli.mjs'],outfile,bundle:true,
-    define:{STARGATE_CAMPUS_NATIVE_BUNDLE:JSON.stringify(artifacts)},
+    define:{STARGATE_CAMPUS_NATIVE_BUNDLE:JSON.stringify({...artifacts,version:revision||artifacts.version})},
     platform:'node',format:'esm',target:'node22.13',charset:'utf8',sourcemap:false,
     legalComments:'inline',logLevel:'silent'});
-  if(!revision)try{revision=(await promisify(execFile)('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true})).stdout.trim();}catch{}
   // Count origin substitutions once while building. At runtime a bounded
   // footer read and stat give the rendered size; the CLI is never prehashed.
   const literal=Buffer.from(JSON.stringify('__GPUQ_PUBLIC_ORIGIN__'));let tail=Buffer.alloc(0),originSlots=0;

@@ -4,6 +4,7 @@ import {mkdtemp,mkdir,readFile,writeFile,rename,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {resolve,dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {randomUUID} from 'node:crypto';
 
 const execute=promisify(execFile);
 const targets=[['linux-x64','linux','amd64'],['linux-arm64','linux','arm64'],
@@ -13,7 +14,7 @@ export async function buildCampusNative({root=fileURLToPath(new URL('..',import.
   outfile=resolve(root,'build/campus-native/embedded-artifacts.private.json'),
   go=process.env.STARGATE_GO_BINARY||'go',run=execute}={}){
   const env={...process.env,CGO_ENABLED:'0',GOTOOLCHAIN:'local',GOPROXY:'off',GOSUMDB:'off',GOWORK:'off',GOFLAGS:''};
-  const manifest={artifacts:{}};
+  const manifest={version:randomUUID(),artifacts:{}};
   const work=await mkdtemp(join(tmpdir(),'stargate-native-build-'));
   try{
     for(const [platform,GOOS,GOARCH] of targets){

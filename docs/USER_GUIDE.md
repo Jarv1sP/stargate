@@ -252,6 +252,8 @@ gpuctl transfer resume TRANSFER_ID
 
 默认使用已配置的校园 HTTPS 直连，LAN 与校园入口间可自动换线。校外可明确选择下载 `--via portal`、上传 `--via relay` 经门户；客户端不会自动改走门户中转。
 
+Windows 和 WSL 的原生传输助手按 CLI 构建版本保存在用户临时目录 `stargate-campus/<版本>/`；Linux 使用 `stargate-campus-<uid>/<版本>/` 区分本机用户。后续命令直接复用，新版本首次写入时尽力清理旧版本与旧临时助手目录；删不掉不影响命令。
+
 ### HTTPS 与阿里云盘分享导入
 
 ```sh local
