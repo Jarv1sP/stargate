@@ -32,6 +32,17 @@ cleanup() {
   [ -z "$extract" ] || docker rm -f "$extract" >/dev/null 2>&1 || :
   compose logs --no-color > "$run/compose.log" 2>&1 || :
   compose exec -T gray-node-1 journalctl -b --no-pager > "$run/node-journal.log" 2>&1 || :
+  if [ "$result" -ne 0 ]; then
+    compose exec -T gray-node-1 python3 - > "$run/gpuq-task-logs.log" 2>&1 <<'PY' || :
+from pathlib import Path
+import shutil,sys
+root = Path('/data1/stargate/scheduler/logs')
+for path in sorted((p for p in root.rglob('*') if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+    sys.stdout.buffer.write(('\n===== '+str(path.relative_to(root))+' =====\n').encode())
+    with path.open('rb') as source:
+        shutil.copyfileobj(source, sys.stdout.buffer)
+PY
+  fi
   compose down -v --remove-orphans > "$run/teardown.log" 2>&1 || result=1
   for role in base portal bridge node registry; do docker image rm "stargate-gray/$role:$stamp" >/dev/null 2>&1 || :; done
   exit "$result"

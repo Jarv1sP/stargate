@@ -42,6 +42,7 @@ private=dict(account='gpuops',releaseRoot='/data1/stargate/releases',dataMountPo
 Path('/etc/gpuq-console/node-install.json').write_text(json.dumps(private))
 spec={'cdiVersion':'0.6.0','kind':'nvidia.com/gpu','devices':[{'name':g['uuid'],'containerEdits':{'deviceNodes':[{'path':f"/dev/nvidia{g['minor']}"}]}} for g in gpus],'containerEdits':{'deviceNodes':[{'path':'/dev/nvidiactl'},{'path':'/dev/nvidia-uvm'}],'mounts':[{'hostPath':'/usr/bin/nvidia-smi','containerPath':'/usr/bin/nvidia-smi','options':['ro','bind']}]}}
 Path('/etc/gpuq-console/cdi/gpuq-nvidia.json').write_text(json.dumps(spec))
+Path('/etc/gpuq-console/cdi/gpuq-nvidia.json').chmod(0o644)
 PY
 # 基础镜像已自带模拟卡清单，CDI 仅挂驱动工具与分配设备。
 python3 - <<'PY'

@@ -1,5 +1,6 @@
 """Local node installation/rollback with real files and simulated host commands."""
 import copy
+import builtins
 from contextlib import redirect_stdout
 import importlib.util
 import io
@@ -430,6 +431,31 @@ class BoundaryTests(unittest.TestCase):
         run = (ROOT/'scripts/gray-local/run.sh').read_text()
         self.assertIn('"$run/src/deploy/node/install.py"', run)
         self.assertIn('COPY node-install.py /opt/node-install.py', (ROOT/'deploy/gray-local/node.Dockerfile').read_text())
+
+    def test_gray_cdi_is_readable_while_installer_config_stays_private(self):
+        setup = (ROOT/'deploy/gray-local/node-setup.sh').read_text()
+        program = next(part.split('\nPY', 1)[0] for part in setup.split("python3 - <<'PY'\n")[1:]
+                       if 'node-install.json' in part.split('\nPY', 1)[0])
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            for name in ('etc/gray-sim', 'etc/gpuq-console/cdi', 'keys'):
+                (base/name).mkdir(parents=True, exist_ok=True)
+            (base/'etc/gray-sim/gpus.json').write_text(json.dumps([dict(uuid='GPU-fixture', minor=0)]))
+            for role in ('executor', 'collector'):
+                (base/'keys'/f'{role}.pub').write_text('ssh-ed25519 AAAAFIXTURE')
+            def imports(name, *args, **kwargs):
+                if name == 'pathlib':
+                    return SimpleNamespace(Path=lambda *parts: base/str(Path(*parts)).lstrip('/'))
+                if name == 'pwd':
+                    return SimpleNamespace(getpwnam=lambda _: SimpleNamespace(pw_uid=os.getuid()))
+                return builtins.__import__(name, *args, **kwargs)
+            mask = os.umask(0o022)
+            try:
+                exec(program, {'__builtins__': {**vars(builtins), '__import__': imports}})
+            finally:
+                os.umask(mask)
+            self.assertEqual(stat.S_IMODE((base/'etc/gpuq-console/node-install.json').stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((base/'etc/gpuq-console/cdi/gpuq-nvidia.json').stat().st_mode), 0o644)
 
 
 if __name__ == '__main__':
