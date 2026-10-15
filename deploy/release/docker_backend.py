@@ -101,7 +101,7 @@ class DockerBackend:
         return self.old['Id']
 
     def create_stopped(self, limit):
-        command=['node','portal-rollout.mjs','http://127.0.0.1:9',self.manifest['revision']]
+        command=['node','portal-rollout.mjs','http://127.0.0.1:9',uuid.uuid4().hex]
         name='amax-console-staged-'+self.manifest['revision'][:12]
         body=copy.deepcopy(self.old['Config']);body['Image']=self.manifest['tag'];body['Hostname']='';body['Cmd']=command
         body['Labels']['org.opencontainers.image.revision']=self.manifest['revision']
