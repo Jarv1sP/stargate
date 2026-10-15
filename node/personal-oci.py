@@ -1,5 +1,5 @@
 """Rootless mutable OCI workspaces on the SSD data disk."""
-import contextlib,importlib.util,json,os,re,select,stat,subprocess,time,uuid
+import contextlib,fcntl,importlib.util,json,os,re,select,shutil,stat,subprocess,time,uuid
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 STDERR_LIMIT=65536
@@ -53,7 +53,21 @@ class PersonalOCI:
         self.root=self.d.root(config,'root');self.owner=self.d.name(user)
         self.policy=config['personalOci'];self.folder=self.s.private_dir(self.d.root(config,'workspacesRoot')/'.oci',create=True)
         self.folder=self.s.private_dir(self.folder/self.owner,create=True)
-        for name in ('graph','run','tmp','home'):self.s.private_dir(self.folder/name,create=True)
+        lock=os.open(self.folder/'runtime.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        try:
+            self.s.wait_project_lock(lock,fcntl.LOCK_EX,'个人容器正在恢复，请稍后重试。')
+            for name in ('graph','run','tmp','home'):self.s.private_dir(self.folder/name,create=True)
+            try:
+                with os.fdopen(os.open(self.folder/'tmp/alive',os.O_RDONLY|os.O_NOFOLLOW),'rb') as alive:
+                    cached_boot=alive.read(128).strip()
+            except FileNotFoundError:cached_boot=b''
+            if cached_boot and cached_boot!=Path('/proc/sys/kernel/random/boot_id').read_bytes().strip():
+                # Podman normally keeps these in tmpfs. Data-disk runtimes need
+                # the same reboot cleanup; graph and project files persist.
+                for name in ('run','tmp'):
+                    shutil.rmtree(self.folder/name)
+                    self.s.private_dir(self.folder/name,create=True)
+        finally:os.close(lock)
         self.runtime_tmp=self.folder/'run'
         self.env={'PATH':'/usr/bin:/bin','HOME':str(self.folder/'home'),'TMPDIR':str(self.folder/'tmp'),
                   'XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid()),'LANG':'C.UTF-8',
