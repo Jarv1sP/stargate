@@ -54,6 +54,7 @@ type frame struct {
 	Endpoint       string       `json:"endpoint,omitempty"`
 	DialEndpoint   string       `json:"dialEndpoint,omitempty"`
 	ProbeTimeoutMs int          `json:"probeTimeoutMs,omitempty"`
+	TCPOnly        bool         `json:"tcpOnly,omitempty"`
 	Pin            string       `json:"certificateSha256,omitempty"`
 	Offset         int64        `json:"offset"`
 	Final          *bool        `json:"final,omitempty"`
@@ -291,6 +292,18 @@ func (s *session) request(f frame, body []byte) (out reply, raw []byte) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
+	if f.Op == "probe" && f.TCPOnly {
+		port := s.origin.Port()
+		if port == "" {
+			port = "443"
+		}
+		conn, err := s.dialFn(ctx, s.initial, s.origin.Hostname(), port)
+		if err != nil {
+			return fail(err)
+		}
+		conn.Close()
+		return reply{OK: true, Result: json.RawMessage(`{"reachable":true}`)}, nil
+	}
 	if s.conn == nil {
 		if e := s.connect(ctx); e != nil {
 			return fail(e)

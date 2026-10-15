@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {symlink} from 'node:fs/promises';
+import {symlink,mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {parseCLIOptions} from '../cli.mjs';
 import {personalHTTPFixture,originalKey as key} from './fixtures/personal-http-upload.mjs';
@@ -32,4 +32,10 @@ test('403 never becomes absence or retry and the original UUID remains visible',
 });
 test('the CLI parser retains --key for push and push-status',()=>{
  for(const command of ['push','push-status'])assert.equal(parseCLIOptions([command,'payload','payload','--key',key]).options.key,key);
+});
+test('a saved campus route survives the VPS default until relay is explicitly selected',async t=>{
+ const f=await personalHTTPFixture(t),stateDirectory=join(f.root,'states');await mkdir(stateDirectory);await writeFile(join(stateDirectory,key+'.route.json'),JSON.stringify({via:'direct'}));
+ f.onCall=(op,args)=>{if(op==='files.direct-ticket')throw Object.assign(Error('campus offline'),{status:400});return f.perform(op,args);};
+ await assert.rejects(f.run({stateDirectory,via:undefined}),/campus offline/);assert.equal(f.stored.length,0);
+ f.calls.length=0;assert.equal((await f.run({stateDirectory,via:'relay'})).uploaded,1);assert.equal(f.calls.some(row=>row.operation==='files.direct-ticket'),false);assert.deepEqual(f.stored,f.bytes);assert.equal(f.receipt().key,key);
 });

@@ -2,6 +2,7 @@ import {approvedCampusEndpoints,chooseCampusEndpoint,campusConnectionFailure} fr
 import {request as httpsRequest} from 'node:https';
 import {pinnedUploadAgent,probeDirectUploadRoute} from './client-direct-upload.mjs';
 import {campusNativeTransportOptions} from './client-campus-native.mjs';
+import {CAMPUS_CONNECTION_HELP} from './dist/personal-upload.js';
 
 const CHUNK=1024**2,MAX_CHUNK=16*CHUNK;
 const HASH=/^[a-f0-9]{64}$/,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -86,16 +87,16 @@ export function personalFileRequest(grant,agent,action,args,{request=httpsReques
   });
 }
 
-export async function createPersonalFileTransport(call,{machine,context,path,action,identity={},agentFactory,send,platform=process.platform,nativeOptions={},probeEndpoint,now=()=>Date.now()/1000,monotonic=()=>performance.now()}={}){
+export async function createPersonalFileTransport(call,{machine,context,path,action,identity={},initialGrant,agentFactory,send,platform=process.platform,nativeOptions={},probeEndpoint,now=()=>Date.now()/1000,monotonic=()=>performance.now()}={}){
   const defaults=['linux','win32'].includes(platform)?campusNativeTransportOptions(nativeOptions):{agentFactory:pinnedUploadAgent,send:personalFileRequest};
   // Supplying a custom Agent keeps its existing request contract; callers can
   // still inject either or both hooks for isolated tests or an explicit client.
   send??=agentFactory?personalFileRequest:defaults.send;
   agentFactory??=defaults.agentFactory;
   let request={machine,...context,path,action,...identity};
-  let ticketStarted;
+  let ticketStarted=monotonic();
   const ticket=()=>requestPersonalFileTicket((...args)=>{ticketStarted=monotonic();return call(...args);},request);
-  let grant=personalFileGrant((await ticket()).result,path,action),closed=false;
+  let grant=personalFileGrant(initialGrant??(await ticket()).result,path,action),closed=false;
   const validity=value=>value.ttl??Math.min(300,value.expiresAt-now());
   let grantDeadline=ticketStarted+Math.max(0,validity(grant))*1000;
   const remainingGrant=()=>Math.max(0,Math.min((grantDeadline-monotonic())/1000,
@@ -138,7 +139,7 @@ export async function createPersonalFileTransport(call,{machine,context,path,act
           if(!campusConnectionFailure(error))throw error;
           const remaining=endpoints.filter(row=>!attempted.has(row.endpoint));
           if(!remaining.length){
-            if(firstError.writeMayHaveReachedPeer===false)firstError.message+='\n校园直连连不上（不在校园网或校园网断开）；上传加 --via relay、下载加 --via portal，用原 --key 续传。';
+            if(firstError.writeMayHaveReachedPeer===false)firstError.message+='\n'+CAMPUS_CONNECTION_HELP;
             throw firstError;
           }
           await agent.destroy();selected=await chooseCampusEndpoint(grant,remaining,{probe});agent=makeAgent();

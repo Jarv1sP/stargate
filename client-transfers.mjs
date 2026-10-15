@@ -7,18 +7,23 @@ import {createPersonalFileTransport} from './client-personal-file-campus.mjs';
 import {dataPath,sameDatasetFile} from './client-file-path.mjs';
 import {recoverOriginalWrite,uncertainWrite} from './client-http.mjs';
 import {downloadResultFile} from './client-result-download.mjs';
+import {selectTransferRoute} from './client-transfer-route.mjs';
 const safe=value=>String(value??'').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,c=>'\\u{'+c.codePointAt(0).toString(16)+'}');
 export function transferText(row){const result=row.result||{},bytes=result.bytes??row.bytes??(Number.isFinite(result.totalBytes)&&Number.isFinite(result.remainingBytes)?result.totalBytes-result.remainingBytes:'?'),total=result.totalBytes??row.totalBytes;return `${safe(row.id)} · ${safe(row.kind)} · ${safe(row.from?row.from+' → '+row.machine:row.machine)} · ${safe(row.state)}\n  ${bytes} / ${total??'?'} bytes${result.path?' · '+safe(result.path):''}${row.error||result.error?'\n  '+safe(row.error||result.error):''}`;}
-export async function uploadLocalFile(call,{machine,context,path,local,key=randomUUID(),transferId,via='auto',progress=()=>{},transportFactory=createPersonalFileTransport,lstatFile=lstat,openFile=open,platform=process.platform}){
+export async function uploadLocalFile(call,{machine,context,path,local,key=randomUUID(),transferId,via,initialGrant,stateDirectory,probe,progress=()=>{},transportFactory=createPersonalFileTransport,lstatFile=lstat,openFile=open,platform=process.platform}){
   dataPath(path);const named=await lstatFile(local,{bigint:true});if(!named.isFile()||named.isSymbolicLink()||named.size>BigInt(Number.MAX_SAFE_INTEGER))throw Error('请选择普通文件，链接不会上传。');
   const file=await openFile(local,constants.O_RDONLY|(constants.O_NOFOLLOW||0));let transport;
   const scope={machine,...context,path,key,...(transferId?{transferId}:{})};
   try{
     const info=await file.stat({bigint:true});if(!sameDatasetFile(named,info,{pathToHandle:true,platform}))throw Error('本地路径改变，原上传已保留。');
-    const size=Number(info.size),request=async(operation,args)=>{
+    const size=Number(info.size);let selected;
+    try{selected=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{...scope,action:'put',uploadId:key,totalSize:size,overwrite:true})).result});}
+    catch(error){error.key=key;error.message+='\n上传编号：'+key+'；续传请沿用原编号。';throw error;}
+    via=selected.via;initialGrant??=selected.grant;
+    const request=async(operation,args)=>{
       const send=async()=>{
         if(operation==='data.upload.chunk'&&via!=='relay'){
-          transport ||= await transportFactory(call,{machine,context,path,action:'put',identity:{uploadId:key,totalSize:size}});
+          transport ||= await transportFactory(call,{machine,context,path,action:'put',initialGrant,identity:{uploadId:key,totalSize:size}});
           return {result:await transport.request({offset:args.offset,bytes:Buffer.from(args.data,'base64'),final:false})};
         }
         return call(operation,args);
@@ -36,12 +41,12 @@ export async function uploadLocalFile(call,{machine,context,path,local,key=rando
     return {...result,machine,path,bytes:size};
   }finally{await file.close();await transport?.close();}
 }
-export async function uploadLocalTree(call,{machine,context,local,remote='.',key=randomUUID(),stateDirectory,transferId,via='auto',inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
+export async function uploadLocalTree(call,{machine,context,local,remote='.',key=randomUUID(),stateDirectory,transferId,via,probe,inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
   if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key))throw Error('上传编号必须是完整 UUID。');
   const keyFile=stateDirectory?join(stateDirectory,key+'.json'):null;let keys={};
   if(keyFile)try{keys=JSON.parse(await readFile(keyFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
   const save=async()=>{if(!keyFile)return;await mkdir(dirname(keyFile),{recursive:true,mode:0o700});const temporary=keyFile+'.'+randomUUID()+'.new';await writeFile(temporary,JSON.stringify(keys),{mode:0o600});await rename(temporary,keyFile);};
-  let count=0,bytes=0;const files=[];
+  let count=0,bytes=0,selected;const files=[];
   const single=(await lstat(local)).isFile();
   async function visit(source,path){
     if(exclude(basename(source)))return;
@@ -49,7 +54,9 @@ export async function uploadLocalTree(call,{machine,context,local,remote='.',key
     if(info.isDirectory()){for(const name of (await readdir(source)).sort())await visit(join(source,name),path==='.'?name:path+'/'+name);return;}
     if(!info.isFile())throw Error('请选择普通文件或目录：'+source);dataPath(path);
     keys[path] ||= single?key:randomUUID();await save();
-    const result=inspectOnly?(await call('data.upload.status',{machine,...context,path,key:keys[path]})).result:await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via,progress});
+    if(!inspectOnly)selected??=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{machine,...context,path,action:'put',uploadId:keys[path],totalSize:info.size,overwrite:true})).result});
+    const result=inspectOnly?(await call('data.upload.status',{machine,...context,path,key:keys[path]})).result:await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via:selected.via,initialGrant:selected.grant,progress});
+    if(selected)delete selected.grant;
     files.push({path,...result});count++;bytes+=info.size;
   }
   progress({key,state:'STARTING'});try{await visit(resolve(local),remote);}catch(error){error.key=key;error.message+='\n上传编号：'+key+'；用原命令加 --key '+key+' 续传。';throw error;}
