@@ -1,0 +1,40 @@
+# 草案，未在 GitHub runner 上验证；需要维护者复制到 .github/workflows/ 并手动触发一次验证。
+# 节点容器有特权：只运行维护者已读过并认可的提交；不要改成 pull_request_target。
+name: gray-cpu-draft
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # 剧本、栈与豁免取 base；PR 仅提供被测代码。手动触发使用所选分支。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || github.ref_name }}
+          path: trusted
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: 安装可信剧本依赖
+        run: |
+          npm ci --prefix trusted --ignore-scripts
+      - name: 获取并测试提交
+        env:
+          GRAY_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git -C trusted fetch origin "$GRAY_REVISION"
+          sh trusted/scripts/gray-local/run.sh --commit "$GRAY_REVISION" --level fast
+      - name: 保存结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gray-cpu-report
+          path: |
+            trusted/out/gray/*/report.json
+            trusted/out/gray/*/summary.md
+          if-no-files-found: warn
