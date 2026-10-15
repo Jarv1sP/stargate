@@ -97,7 +97,7 @@ function gpuFacts(view,index,mine){
   return {gpu,tasks,owner:tasks.length?gpuTaskSummary(tasks,mine,gpu,view):processEvidence(gpu,view)};
 }
 function chassis(view,mine,index,metricMode,drawer){
-  return `<div class="resource-chassis"><div class="resource-chassis-ear" aria-hidden="true"><i></i><b></b><i></i></div><div class="resource-chassis-face">${towers(view,mine,{portrait:true,selectedGPU:index,metricMode,drawer})}<div class="resource-chassis-controls" aria-hidden="true"><span class="resource-led ${view.fresh?'online':''}"></span><span>⏻</span><span class="resource-vents"></span><span class="mono">${view.count} GPU</span></div></div><div class="resource-chassis-ear" aria-hidden="true"><i></i><b></b><i></i></div></div>`;
+  return `<div class="resource-chassis"><div class="resource-chassis-ear" aria-hidden="true"><i></i><b></b><i></i></div><div class="resource-chassis-face">${towers(view,mine,{portrait:true,selectedGPU:index,metricMode,drawer})}<div class="resource-chassis-controls" aria-hidden="true"><span class="resource-led ${view.fresh?'online':''}"></span><svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg><svg class="resource-slots" width="110" height="20" viewBox="0 0 110 20"><rect x="1" y="3" width="30" height="14" rx="1"/><path d="M6 8h20M6 12h20"/><rect x="37" y="3" width="30" height="14" rx="1"/><path d="M42 8h20M42 12h20"/><rect x="74" y="2" width="16" height="16" rx="1"/><path d="M78 2v5h8V2"/><path d="M99 5v10M104 5v10"/></svg><span class="resource-vents"></span><span class="mono">${view.count} GPU</span></div></div><div class="resource-chassis-ear" aria-hidden="true"><i></i><b></b><i></i></div></div>`;
 }
 function gpuRows(view,mine,drawer){
   return `<div class="resource-gpu-rows" aria-label="逐卡信息">${Array.from({length:view.count},(_,index)=>{
@@ -193,6 +193,15 @@ export function fitResourceNames(root){
   }
 }
 
+// Fleet totals roll from the shown value to the new one; unknown stays a word.
+function rollNumber(element,value){
+  const from=Number(element.dataset.value),text=metric(value);
+  element.dataset.value=Number.isFinite(value)?String(value):'';
+  if(!Number.isFinite(value)||!Number.isFinite(from)||from===value||reducedMotion()){element.textContent=text;return;}
+  const start=performance.now();
+  const step=now=>{const k=Math.min(1,(now-start)/700),eased=1-Math.pow(1-k,3);element.textContent=k<1?String(Math.round(from+(value-from)*eased)):text;if(k<1&&element.isConnected)requestAnimationFrame(step);};
+  requestAnimationFrame(step);
+}
 export function resourcesUI(store,{machines,getPage,navigate}){
   const grid=document.querySelector('#machine-grid');
   const orbit=document.createElement('canvas');orbit.className='resource-orbit';orbit.setAttribute('aria-hidden','true');
@@ -259,7 +268,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
     updateOrbit();
     if(sheet.open){const detail=grid.querySelector('.resource-detail');if(detail)sheet.querySelector('.sheet-scroll').replaceChildren(detail);sheet.querySelector('#resource-sheet-title').textContent=selected;sheet.querySelector('#resource-sheet-title').title=selected;}
     summary.hidden=!store.principal||getPage()!=='resources';
-    const totals=resourceTotals(views);for(const number of summary.querySelectorAll('[data-summary]')){const value=totals[number.dataset.summary];number.textContent=metric(value);number.classList.toggle('hatch',value===null);}
+    const totals=resourceTotals(views);for(const number of summary.querySelectorAll('[data-summary]')){const value=totals[number.dataset.summary];rollNumber(number,value);number.classList.toggle('hatch',value===null);}
     const picker=sheet.querySelector('[data-resource-gpu-picker]');picker.innerHTML=Array.from({length:view?.count||0},(_,number)=>`<option value="${number}">GPU ${number}</option>`).join('');picker.value=String(index);
     for(const root of [grid,sheet])for(const detail of root.querySelectorAll('details[data-resource-detail],details[data-resource-info]')){const key=detail.dataset.resourceDetail||'info:'+detail.dataset.resourceInfo;if(expanded.has(key))detail.open=expanded.get(key);if(focusDetail&&focusDetail===detail.dataset.resourceDetail||focusInfo&&focusInfo===detail.dataset.resourceInfo)detail.querySelector('summary')?.focus({preventScroll:true});}
     for(const root of [grid,sheet])for(const region of root.querySelectorAll('.gpu-table-scroll,.process-content')){
