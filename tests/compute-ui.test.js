@@ -40,3 +40,28 @@ test('all cards stay inspectable with no personal quota and selected drawer cont
   assert.match(render({admin:true,management:true,selectedGPU:0,gpus:[gpu(0,{processes:[{pid:123,name:'python',owner:'fixture-user'}]}),gpu(1)]}),/系统用户/);
   assert.doesNotMatch(render({selectedGPU:0,gpus:[gpu(0,{processes:[{pid:123,name:'python',owner:'fixture-user'}]}),gpu(1)]}),/fixture-user/);
 });
+
+test('zero capacity and incomplete disk samples stay unknown without low-space warnings',()=>{
+  for(const disk of [{totalBytes:0,usedBytes:0,availableBytes:0},{totalBytes:null,usedBytes:0,availableBytes:0},{totalBytes:1024**4,usedBytes:null,availableBytes:0}]){
+    const html=render({disks:[{mountPoint:'/fixture/ssd',...disk}]});
+    assert.match(html,/resource-disk unknown/);assert.match(html,/可用 未知/);assert.doesNotMatch(html,/空间不足|可用 0/);
+  }
+  assert.match(render({disks:[{mountPoint:'/fixture/ssd',totalBytes:1024**4,usedBytes:1024**4,availableBytes:0}]}),/空间不足/,'a genuinely full measured disk still warns');
+});
+test('compute queue shows only waiting jobs as one row each, with honest empty and missing states',()=>{
+  const html=render({host:{tasks:[{id:'q',name:'等待训练',state:'QUEUED',priority:2,gpuCount:2},{id:'r',name:'已运行训练',state:'RUNNING',priority:1,gpuCount:1}]}});
+  assert.match(html,/data-resource-queue-row/);assert.match(html,/1\. 等待训练/);assert.match(html,/P2 · 2 张/);assert.doesNotMatch(html,/已运行训练|任务队列与近期记录|本次没有返回任务记录/);
+  assert.match(render(),/没有排队，提交即开始。/);
+  assert.match(render({host:{samplingStale:true}}),/队列读数未知/);
+  assert.doesNotMatch(render({host:{samplingStale:true}}),/提交即开始/);
+  assert.match(render({maintenance:{global:{reason:'维护',since:'2026-10-15T18:00:00Z'}}}),/维护中，不接新任务/);
+});
+test('fleet summary totals free, busy and queued independently and preserves unknown observations',async()=>{
+  const {resourceTotals,resourceServerView}=await import('../dist/resources-ui.js');
+  const snapshot={stale:false,hosts:[{id:machine.id,reachable:true,gpus:[gpu(0,{processes:[{pid:1}]}),gpu(1)],tasks:[{state:'QUEUED'},{state:'PENDING'},{state:'RUNNING'}]}]};
+  const view=resourceServerView(machine,{production:true,snapshot});assert.deepEqual(resourceTotals([view]),{free:1,busy:1,queued:2});
+  const partial=resourceServerView(machine,{production:true,snapshot:{...snapshot,hosts:[{...snapshot.hosts[0],gpus:[gpu(0)]}]}});
+  assert.deepEqual(resourceTotals([partial]),{free:null,busy:null,queued:2});
+  assert.deepEqual(resourceTotals([resourceServerView(machine)]),{free:null,busy:null,queued:null});
+  assert.deepEqual(resourceTotals([]),{free:null,busy:null,queued:null});
+});

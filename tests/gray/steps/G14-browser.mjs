@@ -50,6 +50,8 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
               await page.screenshot({path:join(screens,role+'-'+width+'-'+label+'.png'),fullPage:true,animations:'disabled'});
               checks.push([title,async()=>{ctx.check(title+' 无横向滚动',!overflow);ctx.check(title+' 主要入口可见',visible);}]);
               if(label==='resources'){
+                const summaryCount=await page.locator('[data-summary=free],[data-summary=busy],[data-summary=queued]').count(),legacyQueue=await page.locator('.resource-queue details').count();
+                checks.push([title+'/compute-data',async()=>{ctx.check('空闲、使用中、排队汇总已接线',summaryCount===3);ctx.check('本机队列使用简洁列表',legacyQueue===0);}]);
                 await page.locator('[data-resource-metric=utilization]').click();
                 const metricSelected=await page.locator('[data-resource-metric=utilization]').getAttribute('aria-pressed')==='true';
                 const bays=page.locator('.resource-chassis-bays [data-resource-card]'),targets=await bays.evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return {width:r.width,height:r.height};}));

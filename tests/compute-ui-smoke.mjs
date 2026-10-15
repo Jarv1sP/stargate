@@ -15,7 +15,7 @@ function host(machine,index){
     gpus:Array.from({length:machine.cards},(_,index)=>({index,model:'Fixture GPU',memoryUsedMiB:index<3?4096:0,memoryTotalMiB:8192,utilization:index<3?75:0,temperatureC:42,powerDrawW:100,powerLimitW:350,processesAvailable:index!==3,
       processes:index===0?[{pid:101,name:'python',owner:'fixture-user',memoryUsedMiB:4096,task:own}]:index===1?[{pid:102,memoryUsedMiB:1024,task:own},{pid:103,memoryUsedMiB:3072,task:peer}]:index===2?[{pid:104,memoryUsedMiB:4096,task:peer}]:[]})),
     disks:(index===0?['ssd','hdd']:['ssd']).map(name=>({mountPoint:'/fixture/'+name,totalBytes:1024**4,usedBytes:256*1024**3,availableBytes:768*1024**3})),
-    tasks:[{...peer,state:'QUEUED',priority:'normal',assignedGpuIndices:[],updatedAt:'2026-10-15T18:00:00Z'}]};
+    tasks:[{...peer,state:'QUEUED',priority:'normal',gpuCount:2,assignedGpuIndices:[],updatedAt:'2026-10-15T18:00:00Z'}]};
 }
 const browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}});
 try{
@@ -40,6 +40,18 @@ try{
       await page.goto(origin);await page.locator('.resource-chassis-bays button').first().waitFor();await page.evaluate(()=>document.fonts.ready);
       const bays=page.locator('.resource-chassis-bays button');assert.equal(await bays.count(),8);
       assert.equal(await page.locator('.resource-disks .resource-disk').count(),2);
+      assert.equal(await page.locator('[data-summary]').count(),3);
+      assert.deepEqual(await page.locator('[data-summary]').allTextContents(),['未知','未知','未知']);
+      assert.match(await page.locator('[data-resource-queue-row]').innerText(),/P2 · 2 张/);assert.equal(await page.locator('.resource-queue details').count(),0);
+      await page.evaluate(()=>{
+        const sample=structuredClone(window.fixture.gpuq);sample.hosts[2].reachable=true;
+        for(const host of sample.hosts)for(const gpu of host.gpus)gpu.processesAvailable=true;
+        sample.hosts[0].disks=sample.hosts[0].disks.map(disk=>({...disk,totalBytes:0,usedBytes:0,availableBytes:0}));
+        window.store.data.gpuq=sample;window.refresh();
+      });
+      assert.deepEqual(await page.locator('[data-summary]').allTextContents(),['8','7','3']);
+      assert.equal(await page.locator('.resource-disks .resource-disk.unknown').count(),2);assert.doesNotMatch(await page.locator('.resource-disks').innerText(),/空间不足|0\.0/);
+      await page.evaluate(()=>{window.store.data.gpuq=window.fixture.gpuq;window.refresh();});
       const targets=await page.locator('#machine-grid button,#machine-grid summary').evaluateAll(nodes=>nodes.filter(node=>node.getClientRects().length).map(node=>({label:node.getAttribute('aria-label')||node.textContent,width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height})));
       assert.ok(targets.every(r=>r.width>=44&&r.height>=44),JSON.stringify(targets.filter(r=>r.width<44||r.height<44)));
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
