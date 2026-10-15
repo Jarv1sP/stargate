@@ -2,6 +2,7 @@
 !dist/**
 !*.mjs
 !tasks/**
+!accounts/**
 !proto/clouddrive-pilot.proto
 !package.json
 !package-lock.json
@@ -12,3 +13,7 @@
 !deploy/Dockerfile
 !deploy/install-client.sh
 !deploy/install-client.ps1
+
+accounts/build/**
+accounts/*.egg-info/**
+**/__pycache__/**
