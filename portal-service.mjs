@@ -2,7 +2,7 @@ import {selectFields} from './portal-request-validation.mjs';
 import {DatabaseSync} from 'node:sqlite';
 import {mkdir,readFile,writeFile,chmod} from 'node:fs/promises';
 import {dirname} from 'node:path';
-import {createHash,randomBytes,createCipheriv,createDecipheriv} from 'node:crypto';
+import {randomBytes} from 'node:crypto';
 import {DemoService,credential} from './dist/service.js';
 import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
 import {installExecution,executionCall,publicJob,usage,priorityCapable,priorityRankCapable,TERMINAL,pendingJobReason} from './execution.mjs';
@@ -13,7 +13,7 @@ import {installFileCampus,fileTicket} from './campus-files.mjs';
 import {installJobNotifications} from './job-notifications.mjs';
 import {installTransfers,transferCall} from './transfers.mjs';
 import {installCloudImports,cloudImportCall} from './cloud-import.mjs';
-import {LoginSessions} from './login-sessions.mjs';
+import {installTeamAccounts,accountOperation} from './accounts/portal.mjs';
 import {installProjectCatalog} from './project-catalog.mjs';
 import {installTaskDisplay,taskDisplayCall} from './task-display.mjs';
 
@@ -52,7 +52,7 @@ function compactTerminalStateJob(job,users){
 // One process owns this database. Serial transactions keep account changes atomic.
 // Reservations are durable before the separate restricted executor dispatches GPUQ.
 export class PortalService extends DemoService{
-  static async open(path,bootstrapPath,statusPath,bridge,notificationConfig){
+  static async open(path,bootstrapPath,statusPath,bridge,notificationConfig,accountsPath=process.env.TEAM_ACCOUNTS_DATABASE||path+'.accounts.sqlite'){
     await mkdir(dirname(path),{recursive:true,mode:0o700});
     const service=new PortalService();service.production=true;service.tail=Promise.resolve();service.pending=0;
     service.terminalLanes=new Map();service.terminalPending=0;
@@ -72,35 +72,32 @@ export class PortalService extends DemoService{
     const saved=service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get();
     if(saved)service.restore(JSON.parse(saved.data));
     else{
-      if(!bootstrapPath)throw Error('Initial administrator credentials are required.');
-      const initial=JSON.parse(await readFile(bootstrapPath,'utf8'));
+      const initial=bootstrapPath?JSON.parse(await readFile(bootstrapPath,'utf8')):null;
+      if(!initial){service.store.users=[];service.store.jobs=[];service.store.sequence=0;}
+      else {
       if(initial.username!=='admin'||typeof initial.password!=='string'||initial.password.length<20)throw Error('Bootstrap requires admin and a generated password of at least 20 characters.');
       service.store.users=[{id:'builtin-admin',name:'管理员',username:'admin',role:'admin',enabled:true,limits:{},total:0}];service.store.jobs=[];service.store.sequence=0;
-      service.credentials=new Map([['admin',await credential(initial.password,600000)]]);service.save();
+      service.legacyCredentials=new Map([['admin',await credential(initial.password,600000)]]);
+      }
     }
-    // Public registration never grants administrative authority.
-    service.db.prepare("UPDATE invites_v2 SET enabled=0 WHERE role='admin'").run();
-    for(const user of service.store.users)user.policyVersion??=0;
-    service.loginSessions=new LoginSessions(service.db,id=>service.store.users.find(user=>user.id===id),{initialPrune:!service.globalMaintenanceActive()});
+    installTeamAccounts(service,accountsPath);
     service.statusPath=statusPath;await service.refreshGPUQ();installExecution(service,bridge);installMaintenance(service);installJobNotifications(service,notificationConfig);
     maintainTaskNotes(service);
     installTransfers(service);installFileCampus(service);
-    service.dummy=await credential(crypto.randomUUID(),600000);return service;
+    return service;
   }
-  export(){return {schema:1,users:this.store.users,jobs:this.store.jobs,sequence:this.store.sequence,credentials:[...this.credentials].map(([name,r])=>[name,{salt:Buffer.from(r.salt).toString('base64'),hash:Buffer.from(r.hash).toString('base64'),iterations:r.iterations||210000}])};}
-  restore(data){this.store.users=data.users;this.store.jobs=data.jobs;this.store.sequence=data.sequence;this.credentials=new Map(data.credentials.map(([name,r])=>[name,{salt:new Uint8Array(Buffer.from(r.salt,'base64')),hash:new Uint8Array(Buffer.from(r.hash,'base64')),iterations:r.iterations}]));}
+  export(){return {schema:2,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),jobs:this.store.jobs,sequence:this.store.sequence};}
+  restore(data){
+    this.store.users=data.users;this.store.jobs=data.jobs;this.store.sequence=data.sequence;
+    if(data.credentials)this.legacyCredentials=new Map(data.credentials.map(([name,r])=>[name,{salt:new Uint8Array(Buffer.from(r.salt,'base64')),hash:new Uint8Array(Buffer.from(r.hash,'base64')),iterations:r.iterations}]));
+    this.refreshAccounts?.();
+  }
   save(){this.db.prepare('INSERT INTO portal_state_v2(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(this.export()));}
-  issueSession(principal){
-    const admission=this.loginAdmissions?.get(principal.username);
-    // Password hashing awaits; a reset or revoke may have completed meanwhile.
-    admission?.check();
-    const token=this.loginSessions.issue(principal);
-    if(admission)admission.issued=token;
-    return token;
-  }
-  principal(token){return this.loginSessions.principal(token);}
+  issueSession(principal){return this.loginSessions.issue(principal);}
+  principal(token){const principal=this.loginSessions.principal(token);this.refreshAccounts();return principal;}
   revokeSession(token){this.loginSessions.revoke(token);}
   invalidate(username){this.loginSessions.invalidate(username);}
+  invitations(){return this.accounts.invitations();}
   audit(actor,operation,subject,outcome){this.db.prepare('INSERT INTO audit(time,actor,operation,subject,outcome) VALUES(?,?,?,?,?)').run(new Date().toISOString(),String(actor).slice(0,64),String(operation).slice(0,64),subject?String(subject).slice(0,64):null,outcome);}
   enqueue(fn){
     if(this.pending>=24){const e=Error('服务忙，请稍后重试。');e.status=429;return Promise.reject(e);}
@@ -245,83 +242,26 @@ export class PortalService extends DemoService{
     return {result,principal:check()};
   }
   async login(username,password){
-    // Authentication must not wait behind remote writes or scheduler dispatch.
-    // Bound expensive password work independently; same-account attempts remain
-    // serial so the inherited failure counter cannot lose concurrent updates.
-    username=String(username??'').trim();
-    if(username.length>24||typeof password!=='string'||password.length>128)
-      throw Error('用户名或密码错误。');
     if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
-    this.loginPending??=0;this.loginAdmissions??=new Map();
-    if(this.loginPending>=2||this.loginAdmissions.has(username))
-      throw Object.assign(Error('登录验证繁忙，请稍后重试。'),{status:429});
+    this.loginPending??=0;
+    if(this.loginPending>=2)throw Object.assign(Error('登录验证繁忙，请稍后重试。'),{status:429});
     this.loginPending++;
-    const record=this.credentials.get(username);
-    const admitted=this.store.users.find(user=>user.username===username);
-    const identity=admitted?{id:admitted.id,role:admitted.role||'member'}:null;
-    const check=()=>{
-      if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
-      const current=this.store.users.find(user=>user.username===username);
-      if(this.credentials.get(username)!==record||
-         (identity&&(!current?.enabled||current.id!==identity.id||(current.role||'member')!==identity.role)))
-        throw Object.assign(Error('账号权限或密码已改变，请重新登录。'),{status:403});
-    };
-    const admission={check,issued:null};this.loginAdmissions.set(username,admission);
     try{
-      const result=await super.login(username,password);
-      check();this.audit(username,'login',null,'ok');return result;
-    }catch(e){
-      if(admission.issued&&!this.closing)this.revokeSession(admission.issued);
-      if(!this.closing)this.audit(username,'login',null,'denied');
-      throw e;
-    }finally{this.loginPending--;this.loginAdmissions.delete(username);}
+      const {user,token}=await this.accounts.authenticate(username,password,true);
+      if(this.closing){this.revokeSession(token);throw Object.assign(Error('服务正在关闭。'),{status:503});}
+      const principal={userId:user.id,username:user.username,role:user.role};
+      this.refreshAccounts();
+      this.audit(user.username,'login',null,'ok');
+      return {token,principal,state:this.state(principal)};
+    }finally{this.loginPending--;}
   }
-  invitations(){return ['member'].map(role=>{
-    const row=this.db.prepare('SELECT role,enabled,uses,max_uses,created_at FROM invites_v2 WHERE role=?').get(role);
-    return row?{role,enabled:!!row.enabled,uses:row.uses,maxUses:row.max_uses,createdAt:row.created_at,available:!!row.enabled&&(row.max_uses===null||row.uses<row.max_uses)}:{role,enabled:false,uses:0,maxUses:role==='admin'?1:null,createdAt:null,available:false};
-  });}
-  // Immutable storage-format identifier: keep existing encrypted invitations valid.
-  sealInvite(code){const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',this.inviteKey,nonce);cipher.setAAD(Buffer.from('amax-invite-v1'));const data=Buffer.concat([cipher.update(code,'utf8'),cipher.final()]);return Buffer.concat([nonce,cipher.getAuthTag(),data]).toString('base64');}
-  currentInvite(){const row=this.db.prepare("SELECT enabled,code_cipher FROM invites_v2 WHERE role='member'").get();if(!row?.enabled||!row.code_cipher)return null;const data=Buffer.from(row.code_cipher,'base64'),decipher=createDecipheriv('aes-256-gcm',this.inviteKey,data.subarray(0,12));decipher.setAAD(Buffer.from('amax-invite-v1'));decipher.setAuthTag(data.subarray(12,28));return Buffer.concat([decipher.update(data.subarray(28)),decipher.final()]).toString('utf8');}
   register(args){return this.enqueue(async()=>{
-    const before=structuredClone(this.export());let transaction=false;
-    try{
-      if(!args||typeof args!=='object'||Array.isArray(args))throw Error('注册参数无效；角色由邀请码决定。');
-      args=selectFields(args,['username','password','invite','client','name']);
-      const {password,invite}=args,username=String(args.username??'').trim();
-      if(!validUsername(username))throw Error('用户名须为 2–24 位，使用汉字或小写字母开头，可含数字、下划线和短横线。');
-      if(typeof password!=='string'||password.length<8||password.length>128)throw Error('密码需为 8–128 个字符。');
-      if(typeof invite!=='string'||invite.length>128){const e=Error('邀请码无效、已停用或已用完。');e.status=403;throw e;}
-      const digest=createHash('sha256').update(invite.trim()).digest('hex');
-      const code=this.db.prepare("SELECT * FROM invites_v2 WHERE role='member' AND digest=? AND enabled=1 AND (max_uses IS NULL OR uses<max_uses)").get(digest);
-      if(!code){const e=Error('邀请码无效、已停用或已用完。');e.status=403;throw e;}
-      if(this.store.users.some(u=>u.username===username))throw Error('这个用户名已存在，请换一个。');
-      const record=await credential(password,600000);
-      this.db.exec('BEGIN IMMEDIATE');transaction=true;
-      const update=this.db.prepare('UPDATE invites_v2 SET uses=uses+1 WHERE role=? AND digest=? AND enabled=1 AND (max_uses IS NULL OR uses<max_uses)').run(code.role,digest);
-      if(update.changes!==1)throw Error('邀请码已失效，请联系管理员。');
-      const user=this.store.create(args.name??username,username);this.store.setRole(user.id,'member');this.store.users.find(u=>u.id===user.id).policyVersion=0;this.credentials.set(username,record);
-      this.save();this.audit(username,'register',code.role,'ok');this.db.exec('COMMIT');transaction=false;
-      return {registered:true,username,role:code.role};
-    }catch(e){if(transaction)this.db.exec('ROLLBACK');this.restore(before);this.audit('guest','register',null,'denied');throw e;}
+    if(!args||typeof args!=='object'||Array.isArray(args))throw Error('注册参数无效。');
+    if(typeof args.invite!=='string')throw Object.assign(Error('请输入团队邀请码。'),{status:403});
+    const user=await this.accounts.create({...args,role:'member'},args.invite);
+    this.refreshAccounts();this.save();this.audit(user.username,'register','member','ok');
+    return {registered:true,username:user.username,role:'member'};
   });}
-  manageInvites(principal,operation,args){
-    if(principal.role!=='admin'){const e=Error('此操作需要管理员权限。');e.status=403;throw e;}
-    if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
-    if(operation==='invites.list')return {invitations:this.invitations(),code:this.currentInvite()};
-    const {role}=args;if(role!=='member'||!['invites.rotate','invites.disable'].includes(operation))throw Error('只开放普通用户邀请码；管理员权限不能通过注册获得。');
-    let result;this.db.exec('BEGIN IMMEDIATE');
-    try{
-      if(operation==='invites.rotate'){
-        const code=`GPUQ-U-${randomBytes(24).toString('base64url')}`;
-        const digest=createHash('sha256').update(code).digest('hex');
-        this.db.prepare('INSERT INTO invites_v2(role,digest,enabled,uses,max_uses,created_at) VALUES(?,?,1,0,?,?) ON CONFLICT(role) DO UPDATE SET digest=excluded.digest,enabled=1,uses=0,max_uses=excluded.max_uses,created_at=excluded.created_at').run(role,digest,null,new Date().toISOString());
-        this.db.prepare('UPDATE invites_v2 SET code_cipher=? WHERE role=?').run(this.sealInvite(code),role);
-        result={role,code,invitations:this.invitations()};
-      }else{this.db.prepare('UPDATE invites_v2 SET enabled=0 WHERE role=?').run(role);result={role,disabled:true,invitations:this.invitations()};}
-      this.audit(principal.username,operation,role,'ok');this.db.exec('COMMIT');return result;
-    }catch(e){this.db.exec('ROLLBACK');throw e;}
-  }
   async invoke(token,operation,args={},options={}){
     if(!args||typeof args!=='object'||Array.isArray(args))return Promise.reject(Object.assign(Error('参数格式错误。'),{status:400}));
     if(operation==='state')return this.readState(token,args);
@@ -357,20 +297,11 @@ export class PortalService extends DemoService{
       'policy.full':['userId'],'policy.save':['userId','total','limits'],'invites.list':[],'invites.rotate':['role'],'invites.disable':['role']};
     if(!Object.hasOwn(accountFields,operation))return Promise.reject(Object.assign(Error('未知操作。'),{status:400}));
     args=selectFields(args,accountFields[operation]);
+    if(operation!=='policy.full'&&operation!=='policy.save')return this.enqueue(()=>accountOperation(this,token,operation,args));
     return this.enqueue(async()=>{
     const principal=this.principal(token),actor=principal.username;
     const before=structuredClone(this.export()),sessions=new Map(this.sessions);
     try{
-      if(operation==='users.delete'){
-        if(principal.role!=='admin')throw Object.assign(Error('此操作需要管理员权限。'),{status:403});
-        const user=this.store.get(args.userId);
-    if(user.id===principal.userId||user.enabled||this.store.jobs.some(job=>job.userId===user.id&&!['SUCCEEDED','FAILED','CANCELED'].includes(job.state)))throw Error('只能删除已暂停且没有待完成任务的非当前账号。历史任务和文件保留。');
-        if(user.role==='admin'&&!this.store.users.some(u=>u.id!==user.id&&u.enabled&&u.role==='admin'))throw Error('不能删除最后一名可登录管理员。');
-        this.db.exec('BEGIN IMMEDIATE');
-        try{this.invalidate(user.username);this.credentials.delete(user.username);this.store.users=this.store.users.filter(u=>u.id!==user.id);this.save();this.audit(actor,operation,user.id,'ok');this.db.exec('COMMIT');}catch(e){this.db.exec('ROLLBACK');throw e;}
-        return {result:{deleted:true},state:this.state(principal)};
-      }
-      if(typeof operation==='string'&&operation.startsWith('invites.'))return {result:this.manageInvites(principal,operation,args),...(operation==='invites.list'?{}:{state:this.state(principal)}),principal:{username:principal.username,role:principal.role,userId:principal.userId}};
       if(operation==='policy.full'){
         if(principal.role!=='admin')throw Object.assign(Error('此操作需要管理员权限。'),{status:403});
         args={userId:args.userId,limits:Object.fromEntries(MACHINES.map(m=>[m.id,m.cards])),total:MACHINES.reduce((n,m)=>n+m.cards,0)};operation='policy.save';
@@ -383,7 +314,6 @@ export class PortalService extends DemoService{
       }
       const result=await super.invoke(token,operation,args);
       if(operation==='policy.save'){const u=this.store.users.find(u=>u.id===args.userId);u.policyVersion++;u.approvedBy=actor;u.approvedAt=new Date().toISOString();result.result=this.store.get(u.id);result.state=this.state(principal);}
-      if(operation==='users.create'){this.store.users.find(u=>u.id===result.result.id).policyVersion=0;result.state=this.state(principal);}
       this.db.exec('BEGIN IMMEDIATE');
       try{if(operation!=='logout')this.save();this.audit(actor,operation,args?.userId||args?.jobId,'ok');this.db.exec('COMMIT');}
       catch(e){this.db.exec('ROLLBACK');throw e;}
@@ -447,5 +377,5 @@ export class PortalService extends DemoService{
       execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},announcements:announcementState(this,principal),
       ...(principal.role==='admin'?{invitations:this.invitations()}:{})});
   }
-  close(){this.closing=true;for(const admission of this.loginAdmissions?.values()||[])if(admission.issued)this.revokeSession(admission.issued);this.cloudProvider?.clear();clearInterval(this.executionTimer);clearInterval(this.notificationTimer);clearInterval(this.maintenanceTimer);clearInterval(this.transferTimer);this.db.close();}
+  close(){this.closing=true;for(const admission of this.loginAdmissions?.values()||[])if(admission.issued)this.revokeSession(admission.issued);this.cloudProvider?.clear();clearInterval(this.executionTimer);clearInterval(this.notificationTimer);clearInterval(this.maintenanceTimer);clearInterval(this.transferTimer);this.accounts.close();this.db.close();}
 }

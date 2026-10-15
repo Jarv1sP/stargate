@@ -1,3 +1,4 @@
+import {seedAccounts} from './fixtures/accounts.mjs';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
@@ -13,7 +14,7 @@ const bootstrap=join(temporary,'bootstrap');await writeFile(bootstrap,JSON.strin
 const service=await PortalService.open(join(temporary,'db'),bootstrap);
 for(const name of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer','storageArchiveTimer','projectCopyTimer'])clearInterval(service[name]);
 const admin=service.store.users[0],actors=Object.fromEntries(['admin','member'].flatMap((role,r)=>[1440,390,320].map((width,i)=>{
-  const user={...admin,id:'demo-user-'+(100+r*10+i),username:'fixture-'+role+'-'+width,name:'Fixture '+role,role};service.store.users.push(user);
+  const user={...admin,id:'demo-user-'+(100+r*10+i),username:'fixture-'+role+'-'+width,name:'Fixture '+role,role};seedAccounts(service,user);
   return [role+'-'+width,user];
 })));
 const token=user=>service.issueSession({userId:user.id,username:user.username,role:user.role});

@@ -13,7 +13,7 @@ test('current directory/project/task reads do not rebuild the full dashboard or 
 });
 for(const change of ['logout','disabled','role','closing'])test('an async directory read rejects '+change+' before returning delayed data',async t=>{
  const f=await fixture(t);let release,started;const held=new Promise(resolve=>release=resolve),ready=new Promise(resolve=>started=resolve);f.service.bridge=async()=>{started();await held;return {datasets:[]};};const pending=f.service.invoke(f.token,'datasets.list',{machine}),rejected=assert.rejects(pending,e=>[401,403,503].includes(e.status));await ready;
- if(change==='logout')f.service.revokeSession(f.token);if(change==='disabled')f.user.enabled=false;if(change==='role')f.user.role='member';if(change==='closing')f.service.closing=true;release();await rejected;
+ if(change==='logout')f.service.revokeSession(f.token);if(change==='disabled')f.service.accounts.db.prepare('UPDATE accounts SET enabled=0 WHERE id=?').run(f.user.id);if(change==='role')f.service.accounts.db.prepare("UPDATE accounts SET role='member' WHERE id=?").run(f.user.id);if(change==='closing')f.service.closing=true;release();await rejected;
 });
 test('new upload status retries a transient lock once under the same UUID and keeps unknown replies unknown',async t=>{
  const f=await fixture(t),calls=[];f.service.bridge=async(host,op,args)=>{calls.push({host,op,args});if(calls.length===1)throw Object.assign(Error('lock busy'),{status:503});return {key:id,state:'UNKNOWN',offset:null};};const reply=await f.service.invoke(f.token,'data.upload.status',{machine,key:id});assert.equal(reply.result.state,'UNKNOWN');assert.equal(reply.result.offset,null);assert.equal(calls.length,2);assert.deepEqual(calls[1],calls[0]);

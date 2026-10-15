@@ -104,7 +104,7 @@ test('a cancel arriving during sync waits for that job only and retains quota un
 test('a pending foreground job rechecks current authority after its lane becomes available',{timeout:3000},async t=>{
   const f=await fixture(t),first=await f.submit(),second=await f.submit(),held=f.block(first.id),work=f.start();await tick();
   assert.equal(f.calls.length,1);assert.equal(f.job(second.id).dispatchPending,true);
-  await f.service.enqueue(()=>{f.service.store.users.find(u=>u.id==='builtin-admin').enabled=false;f.service.save();});
+  await f.service.enqueue(()=>{f.service.accounts.db.prepare("UPDATE accounts SET enabled=0 WHERE id='builtin-admin'").run();f.service.refreshAccounts();f.service.save();});
   held.resolve();await work;
   assert.equal(f.calls.length,1);assert.equal(f.job(second.id).state,'FAILED');assert.match(f.job(second.id).error,/授权已改变/);
   assert.equal(f.job(second.id).notSubmitted,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);

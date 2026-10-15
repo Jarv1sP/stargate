@@ -39,7 +39,7 @@ test('CLI submit returns the same durable UUID without building state or replayi
 
 test('browser cookie and Origin-bearing bearer submit retain their dashboard state',async t=>{
   const f=await fixture(t);
-  for(const headers of [{Cookie:`gpuq_session=${f.login.token}`,Origin:'https://fixture.invalid'},
+  for(const headers of [{Cookie:`team_session=${f.login.token}`,Origin:'https://fixture.invalid'},
     {Authorization:`Bearer ${f.login.token}`,Origin:'https://fixture.invalid'}]){
     const response=await f.send(JSON.stringify({operation:'jobs.submit',args:f.args}),headers),value=await response.json();
     assert.equal(response.status,200);assert.equal(value.result.id,f.job.id);assert.equal(value.state.jobs.length,1);

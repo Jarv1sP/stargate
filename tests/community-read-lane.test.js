@@ -28,9 +28,9 @@ test('community reads bypass a slow remote write without bypassing authorization
     assert.notEqual(result,'BLOCKED_BY_WRITE');assert.equal(result.length,6);assert.equal(wrote,false);
     for(const reply of result)assert.equal(reply.principal.userId,account.id);
     await assert.rejects(service.invoke('invalid','community.posts.list'),error=>error.status===401);
-    const user=service.store.users.find(value=>value.id==='builtin-admin');user.enabled=false;
+    service.accounts.db.prepare("UPDATE accounts SET enabled=0 WHERE id='builtin-admin'").run();
     await assert.rejects(service.invoke(admin.token,'community.posts.list'),error=>error.status===403);
-    user.enabled=true;
+    service.accounts.db.prepare("UPDATE accounts SET enabled=1 WHERE id='builtin-admin'").run();
   }finally{clearTimeout(timer);release();await held;await write;}
   assert.equal(wrote,true);
 });
