@@ -9,7 +9,6 @@ permissions:
 concurrency:
   group: production
   cancel-in-progress: false
-  queue: max
 jobs:
   deploy:
     if: >-
