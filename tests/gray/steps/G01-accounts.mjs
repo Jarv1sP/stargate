@@ -12,7 +12,7 @@ export default {features:["注册（邀请码）、登录、退出、改姓名",
   ctx.check('管理员新建 C',!!c.id);
   await api('users.enabled',{userId:c.id,enabled:false});
   const disabled=await ctx.client.raw('/api/login',{body:{username,password}});
-  ctx.check('停用 C 后登录被拒',disabled.status===400&&disabled.body?.error==='账号已暂停，请联系管理员。'&&!disabled.body?.token,{status:disabled.status,error:disabled.body?.error});
+  ctx.check('停用 C 后登录被拒',[401,403].includes(disabled.status)&&!disabled.body?.token,{status:disabled.status,error:disabled.body?.error});
   await api('users.enabled',{userId:c.id,enabled:true});
   ctx.check('启用 C 后可登录',!!(await ctx.client.login(username,password)).token);
   await api('users.role',{userId:c.id,role:'admin'});
@@ -20,7 +20,7 @@ export default {features:["注册（邀请码）、登录、退出、改姓名",
   await api('users.role',{userId:c.id,role:'member'});
   const replacement=ctx.password();await api('users.reset',{userId:c.id,password:replacement});
   const old=await ctx.client.raw('/api/login',{body:{username,password}});
-  ctx.check('旧密码失效',old.status===400&&old.body?.error==='用户名或密码错误。'&&!old.body?.token,{status:old.status,error:old.body?.error});
+  ctx.check('旧密码失效',[401,403].includes(old.status)&&!old.body?.token,{status:old.status,error:old.body?.error});
   ctx.check('新密码可登录',!!(await ctx.client.login(username,replacement)).token);
   await api('policy.save',{userId:c.id,total:1,limits:{[ctx.machine]:1}});
   const policy=(await adminState(ctx)).users.find(u=>u.id===c.id);

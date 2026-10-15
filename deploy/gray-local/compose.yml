@@ -60,6 +60,7 @@ services:
     image: ${GRAY_NODE_IMAGE:?}
     hostname: gray-node-1
     privileged: true
+    security_opt: ['systempaths=unconfined']
     cgroup: private
     mem_limit: 4g
     tmpfs: [/run, /run/lock, /tmp]
