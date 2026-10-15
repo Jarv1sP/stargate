@@ -21,7 +21,7 @@ def install_nodes(run, root, resources):
         print('Installing node '+machine, flush=True)
         resources.checkpoint('node '+machine+' begin')
         try:
-            command=['ssh', '-F', str(root/'node-ssh.conf'),
+            command=['ssh', '-T', '-F', str(root/'node-ssh.conf'),
                  '-i', str(root/'node-release-ed25519'), '-o', 'IdentitiesOnly=yes',
                  '-o', 'StrictHostKeyChecking=yes', '-o', 'BatchMode=yes',
                  '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15',
