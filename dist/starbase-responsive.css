@@ -19,6 +19,6 @@
   .sb:not(.m) .job{grid-template-columns:minmax(0,1fr)}
   .sb:not(.m) .job-side{align-items:flex-start;margin-top:16px;min-width:0}
   .tl{overflow:hidden}
-  .ctxbar{overflow-x:auto;scrollbar-width:none}
+
 }
 

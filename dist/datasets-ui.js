@@ -78,6 +78,7 @@ export function datasetsUI(store,toast){
       showDataset(dataset);status('上传完成 · '+key+'；点击刷新更新目录大小。');q('[name=upload-key]').value='';
     });});
   }
+  document.addEventListener('gpuq-open-dataset',event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId)return;const select=q('[name=dataset-machine]');if(!select)return;if(busy){toast('请等待当前数据操作完成，再打开数据集。');return;}turn++;select.value=detail.machine;selected=detail.dataset;void run(async()=>{await load();await browse();});});
   return ()=>{
     const next=JSON.stringify([store.authGeneration,store.principal?.userId]),machines=store.principal?store.data?.machines||[]:[],ids=machines.map(row=>row.id).join(',');
     if(next!==identity||ids!==machineIds||!q('[name=dataset-machine]')){identity=next;machineIds=ids;turn++;operationTurn++;busy=false;active=false;build(machines);}

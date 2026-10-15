@@ -10,7 +10,7 @@ export function toastPosition(target){
     if(!target.classList.contains('visible'))return;
     const box=target.getBoundingClientRect(),gap=8;
     const edge=Math.min(Math.max(16,parseFloat(getComputedStyle(target).getPropertyValue('--gutter'))||16),(innerWidth-box.width)/2);
-    const anchors=[...document.querySelectorAll('#control-strip,#live-pill,#mobile-control,#room-nav')].map(visible).filter(rect=>rect&&rect.top>innerHeight/2);
+    const anchors=[...document.querySelectorAll('#room-nav')].map(visible).filter(rect=>rect&&rect.top>innerHeight/2);
     const ceiling=Math.min(innerHeight-edge,...anchors.map(rect=>rect.top));
     const blockers=[...document.querySelectorAll('button,a[href],input:not([type=hidden]),select,textarea,summary,[role=button]')].filter(element=>!target.contains(element)).map(visible).filter(Boolean);
     const positions=[ceiling-gap-box.height,...blockers.map(rect=>rect.top-gap-box.height)].filter(y=>y>=edge&&y+box.height<=ceiling-gap).sort((a,b)=>b-a);

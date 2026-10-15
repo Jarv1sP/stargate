@@ -24,6 +24,7 @@ try{
    if(op==='cloud.auth.poll'){cloudConnected=true;return {state:'CONFIRMED'};}
    if(op==='cloud.auth.disconnect'){cloudConnected=false;return {disconnected:true};}
    if(op==='state')return {principal,state};
+   if(op==='logout')return {loggedOut:true};
    if(op==='projects.list')return {projects,environmentModes:['oci']};
    if(op==='projects.status'&&args.diagnoseNetwork)return {network:{dns:'ok',https:'ok'}};
    if(op==='projects.status')return projects.find(row=>row.project===args.project&&(!args.ownerId||row.ownerId===args.ownerId))||{};
@@ -61,6 +62,7 @@ try{
    const request=route.request(),url=new URL(request.url());if(url.origin!==origin){requests.push(url.href);return route.abort();}
    try{
     if(url.pathname==='/'){let html=await readFile(join(root,'index.html'),'utf8');html=html.replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;');html=html.replace('<head>','<head><script>window.GPUQ_LOCAL_API=true;window.GPUQ_PRODUCTION=true;window.GPUQ_HAS_SESSION=true;</script>');return route.fulfill({contentType:'text/html',body:html});}
+    if(url.pathname==='/auth/login')return route.fulfill({contentType:'text/html',body:'统一门户登录'});
     if(url.pathname==='/guide')return route.fulfill({contentType:'text/html',body:await guidePage(null,origin)});
     if(url.pathname==='/machines.js')return route.fulfill({contentType:'text/javascript',body:'export const MACHINES='+JSON.stringify(state.machines)});
     if(url.pathname==='/capabilities'){probes++;return campusReachable?route.fulfill({contentType:'application/json',body:'{}'}):route.abort('connectionrefused');}
@@ -69,7 +71,7 @@ try{
     const path=resolve(root,'.'+url.pathname);if(!path.startsWith(root+'/'))throw Error('Outside static root');return route.fulfill({contentType:extname(path)==='.js'?'text/javascript':extname(path)==='.css'?'text/css':extname(path)==='.woff2'?'font/woff2':'application/octet-stream',body:await readFile(path)});
    }catch(error){errors.push(error.stack);console.error(error.stack);await route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:error.message})});}
   });
-  await page.goto(origin+'/#work');await page.locator('[name=workspace-project] option[data-owner-id="member-b"]').waitFor({state:'attached'}).catch(async error=>{console.error(JSON.stringify({errors,calls,requests,body:(await page.locator('body').innerText()).slice(0,500)}));throw error;});
+  await page.goto(origin);await page.locator('[data-nav=resources][aria-current=page]').waitFor();await page.locator('[data-nav=work]').click();await page.locator('[name=workspace-project] option[data-owner-id="member-b"]').waitFor({state:'attached'}).catch(async error=>{console.error(JSON.stringify({errors,calls,requests,body:(await page.locator('body').innerText()).slice(0,500)}));throw error;});
   await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · '+machine});
   await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   assert.match(await page.locator('#project-status-detail').textContent(),/abc123/);assert.equal(await page.locator('#project-publish').count(),0);assert.equal(await page.locator('[name=release]').count(),0);
@@ -77,7 +79,7 @@ try{
   assert.equal(calls.find(row=>row.op==='projects.create').args.repo,'https://example.test/team/new.git');await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · '+machine});await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-work.png'),fullPage:true});
   await page.locator('#project-network-check').click();await page.locator('#project-network-result').filter({hasText:'https'}).waitFor();
-  await page.locator('[data-job-output="'+jobId+'"]').first().click();await page.locator('[data-result-delete="sample.bin"]').waitFor();
+  await page.locator('[data-nav=jobs]').click();await page.locator('[data-job-output="'+jobId+'"]').first().click();await page.locator('[data-result-delete="sample.bin"]').waitFor();
   assert.equal(await page.locator('#workspace-upload').isVisible(),false);assert.equal(await page.locator('[name=files]').isVisible(),false);
   await page.screenshot({path:join(shots,role+'-'+width+'-outputs.png'),fullPage:true,animations:'disabled'});
   await page.locator('[data-result-path="sample.bin"]').click();const outputDownloaded=page.waitForEvent('download');await page.locator('#workspace-download').click();const outputDownload=await outputDownloaded;assert.deepEqual(await readFile(await outputDownload.path()),Buffer.from('abc'));
@@ -109,9 +111,24 @@ try{
   await page.locator('[data-nav=community]').click();await page.waitForTimeout(50);await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-community.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'no horizontal page overflow at '+width);
   if(role==='admin'){await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-dialog [data-maintenance-resume]').click();await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});}
+  await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
+  await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});
+  await page.locator('[data-shell-action=quota]').click();await page.locator('#quota-ledger').waitFor();
+  assert.equal(await page.locator('#room-nav [data-nav]').count(),5);assert.equal(await page.locator('[data-shell-action=control]').count(),1);assert.equal(await page.locator('#control-strip,#mobile-control,#shell-context').count(),0);
+  const touch=await page.locator('#room-nav a,#account-menu-toggle,.command-trigger').evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return r.width>=44&&r.height>=44;}));assert.ok(touch.every(Boolean));
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('火星');await page.locator('.egg-mars').waitFor();
+  await page.screenshot({path:join(shots,role+'-'+width+'-palette.png'),animations:'disabled'});
+  await page.locator('#control-command').fill('月球');await page.locator('.egg-moon').waitFor();await page.keyboard.press('Escape');assert.equal(await page.locator('.command-trigger').evaluate(node=>node===document.activeElement),true);
+  await page.keyboard.press('Control+k');await page.locator('#control-command').fill('团队训练');await page.locator('[data-command-id="job:'+jobId+'"]').waitFor();await page.keyboard.press('Enter');await page.locator('.job-log-dialog[open]').waitFor();await page.locator('.job-log-dialog').evaluate(node=>node.close());
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('新建任务');await page.locator('[data-command-id=submit]').click();await page.locator('#work-submit[open]').waitFor();await page.locator('#close-submit').click();await page.locator('#work-submit').waitFor({state:'hidden'});
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('共享实验');await page.locator('[data-command-id^="project:"]').click();await page.locator('[data-nav=work][aria-current=page]').waitFor();
+  await page.locator('.command-trigger').click();await page.locator('#control-command').fill('images');await page.locator('[data-command-id^="dataset:"]').click();await page.locator('[data-nav=datasets][aria-current=page]').waitFor();await page.locator('[data-dataset-current]').filter({hasText:'images'}).waitFor();
+  assert.ok(await page.evaluate(()=>document.getAnimations().every(animation=>animation.playState!=='running')),'reduced motion disables animation');
   await page.goto(origin+'/guide');await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:join(shots,role+'-'+width+'-guide.png'),fullPage:true,animations:'disabled'});
+  await page.route('https://www.j4rv1s.xyz/',route=>route.fulfill({contentType:'text/html',body:'统一门户首页'}));
+  await page.goto(origin+'/#resources');await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('#switch-account').innerText(),'退出 AMAX');await page.locator('#switch-account').click();await page.waitForURL('https://www.j4rv1s.xyz/');assert.equal(calls.filter(row=>row.op==='logout').length,1);
   await page.route(origin+'/',async route=>{let html=await readFile(join(root,'index.html'),'utf8');html=html.replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;');html=html.replace('<head>','<head><script>window.GPUQ_PRODUCTION=true;window.GPUQ_HAS_SESSION=false;</script>');await route.fulfill({contentType:'text/html',body:html});});
-  await page.goto(origin);await page.locator('#login-dialog').waitFor({state:'visible'});await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:join(shots,role+'-'+width+'-login.png'),fullPage:true,animations:'disabled'});
+  await page.goto(origin);await page.waitForURL(origin+'/auth/login');assert.equal(await page.locator('#login-dialog,#register-dialog').count(),0);await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:join(shots,role+'-'+width+'-login.png'),fullPage:true,animations:'disabled'});
   assert.deepEqual(errors,[]);assert.deepEqual(requests,[]);await context.close();console.log(role+' '+width+' PASS');
  }
 }finally{await browser.close();if(!process.env.UI_SCREENSHOTS)await rm(temporary,{recursive:true,force:true});}
