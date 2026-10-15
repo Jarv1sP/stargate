@@ -35,6 +35,9 @@ jobs:
       - name: Prepare nested PAM
         # Ubuntu's path-attached profile also blocks the Fedora fixture helper.
         run: sudo apparmor_parser -R /etc/apparmor.d/unix-chkpwd || true
+      - name: Prepare nested user namespaces
+        # Ubuntu's default restriction blocks rootless containers in this disposable runner.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: full
         shell: bash
         run: |

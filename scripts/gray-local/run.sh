@@ -31,6 +31,7 @@ cleanup() {
   trap - EXIT INT TERM
   [ -z "$extract" ] || docker rm -f "$extract" >/dev/null 2>&1 || :
   compose logs --no-color > "$run/compose.log" 2>&1 || :
+  compose exec -T gray-node-1 journalctl -b --no-pager > "$run/node-journal.log" 2>&1 || :
   compose down -v --remove-orphans > "$run/teardown.log" 2>&1 || result=1
   for role in base portal bridge node registry; do docker image rm "stargate-gray/$role:$stamp" >/dev/null 2>&1 || :; done
   exit "$result"
