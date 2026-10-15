@@ -19,6 +19,7 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 ## 安装
 
 调用者负责 SSH/传输；节点本机用 Python 3.10 以管理员权限运行 `python3 deploy/node/install.py <单机包目录或tar包> --config <本机私有JSON>`。
+自动安装由强制 SSH 命令调用 `deploy/node/receive.py`：stdin 为未压缩 tar，根目录包含 `install.py` 和 `package/` 单机包；在 `/var/tmp` 临时解包后调用安装器，输出其 JSON/退出码，临时文件自动清理；默认私有配置 `/etc/gpuq-console/node-install.json`，可由节点安装者通过 `--config` 指定。
 私有配置结构见 [config.example.json](../deploy/node/config.example.json)：account、releaseRoot、dataMountPoints、gpuq、profiles、authorizedKeys（每条显式写 profile）、services；数据盘列表由顶层统一填入各 profile，真实值只留节点。
 安装器写 policy.json、完整 profile 配置和服务/定时器；已有 ExecStart drop-in 可在对应 service 的 dropin 字段指定，无指纹或历史内容核对。
 每版使用独立的真实 pyz 路径；current 原子切换后只重启受管服务，独立任务单元、旧发布目录和数据库保留；仅新库初始化。
