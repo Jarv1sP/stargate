@@ -1,0 +1,14 @@
+[Unit]
+Description=Install the candidate gray node runtime (gray stack only)
+After=network-online.target systemd-logind.service ssh.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/gray-node-setup
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
