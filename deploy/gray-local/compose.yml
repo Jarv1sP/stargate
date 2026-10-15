@@ -1,0 +1,107 @@
+name: stargate-gray
+services:
+  gray-init:
+    image: ${GRAY_BRIDGE_IMAGE:?}
+    entrypoint: [sh, -c, 'chown 1000:1000 /data && chmod 700 /data']
+    mem_limit: 256m
+    network_mode: none
+    volumes: ['portal-data:/data']
+  gray-portal:
+    image: ${GRAY_PORTAL_IMAGE:?}
+    depends_on:
+      gray-init: {condition: service_completed_successfully}
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    mem_limit: 512m
+    pids_limit: 128
+    tmpfs: ['/tmp:size=16m,noexec,nosuid,nodev']
+    environment:
+      NODE_ENV: production
+      PUBLIC_ORIGIN: http://127.0.0.1:${GRAY_PORT:?}
+      DATABASE_PATH: /data/portal.sqlite
+      BOOTSTRAP_FILE: /run-config/bootstrap.json
+      GPUQ_STATUS_PATH: /status/snapshot.json
+      EXECUTOR_SOCKET: /bridge/bridge.sock
+    volumes:
+      - portal-data:/data
+      - status:/status:ro
+      - bridge-run:/bridge:ro
+      - ${GRAY_RUN:?}/machines.js:/app/dist/machines.js:ro
+      - ${GRAY_RUN}/portal:/run-config:ro
+    ports: ['127.0.0.1:${GRAY_PORT}:8080']
+    networks:
+      gray: {ipv4_address: 172.30.77.5}
+      host-access: {}
+  gray-bridge:
+    image: ${GRAY_BRIDGE_IMAGE:?}
+    command: [bridge]
+    mem_limit: 256m
+    volumes:
+      - bridge-state:/opt/gray
+      - status:/opt/gray/status
+      - keys:/keys
+      - bridge-run:/bridge
+      - ${GRAY_RUN}/inventory.json:/run-config/inventory.json:ro
+    networks:
+      gray: {ipv4_address: 172.30.77.10}
+  gray-collector:
+    image: ${GRAY_BRIDGE_IMAGE:?}
+    command: [collector]
+    mem_limit: 256m
+    depends_on: [gray-bridge]
+    network_mode: service:gray-bridge
+    volumes:
+      - bridge-state:/opt/gray
+      - status:/opt/gray/status
+      - ${GRAY_RUN}/inventory.json:/run-config/inventory.json:ro
+  gray-node-1:
+    image: ${GRAY_NODE_IMAGE:?}
+    hostname: gray-node-1
+    privileged: true
+    cgroup: private
+    mem_limit: 4g
+    tmpfs: [/run, /run/lock, /tmp]
+    stop_signal: SIGRTMIN+3
+    volumes:
+      - keys:/keys
+      - node-data1:/data1
+      - node-data2:/data2
+      - ${GRAY_RUN}/registry/ca.crt:/registry-ca/ca.crt:ro
+    networks:
+      gray: {ipv4_address: 172.30.77.21}
+  gray-registry:
+    image: ${GRAY_REGISTRY_IMAGE:?}
+    mem_limit: 256m
+    environment:
+      REGISTRY_HTTP_ADDR: ':5000'
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/registry.crt
+      REGISTRY_HTTP_TLS_KEY: /certs/registry.key
+    volumes:
+      - registry-data:/var/lib/registry
+      - ${GRAY_RUN}/registry:/certs:ro
+    networks:
+      gray: {ipv4_address: 172.30.77.30}
+  gray-git:
+    image: ${GRAY_BRIDGE_IMAGE:?}
+    mem_limit: 256m
+    entrypoint: [python3, -m, http.server, '8000', --directory, /repos]
+    volumes: ['${GRAY_RUN}/git:/repos:ro']
+    networks:
+      gray: {ipv4_address: 172.30.77.40}
+volumes:
+  portal-data: {}
+  status: {}
+  bridge-run: {}
+  bridge-state: {}
+  keys: {}
+  registry-data: {}
+  node-data1: {}
+  node-data2: {}
+networks:
+  gray:
+    internal: true
+    ipam:
+      config: [{subnet: 172.30.77.0/24}]
+  host-access: {}

@@ -6,6 +6,7 @@
     "gpuctl": "./cli.mjs"
   },
   "scripts": {
+    "gray": "sh scripts/gray-local/run.sh",
     "build": "npm run build:vendor && npm run build:client",
     "build:native": "node scripts/build-campus-native.mjs",
     "build:release": "npm run build:native && npm run build",

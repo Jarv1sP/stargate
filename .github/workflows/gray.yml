@@ -1,0 +1,50 @@
+name: gray
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gray-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - name: full
+        run: npm run gray -- --commit "$GITHUB_SHA"
+      - name: summary
+        if: always()
+        run: find out/gray -name summary.md -exec cat {} \; >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gray-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            out/gray/**/summary.md
+            out/gray/**/report.json
+            out/gray/**/*.log
+            out/gray/**/cli/*.json
+            out/gray/**/screens/*.png
