@@ -1,5 +1,7 @@
 import {adminSession,adminState,registerMember,approve} from '../lib/accounts.mjs';
+import {identityAccounts} from '../lib/identity.mjs';
 export default {features:["注册（邀请码）、登录、退出、改姓名", "管理员：新建/启用/停用/删除成员、改角色、重置密码、查看和轮换邀请码、分配卡数额度"],id:'G01',title:'账号与成员管理（FEATURES 一）',level:'fast',async run(ctx){
+  if(ctx.stack.identityMode)return identityAccounts(ctx);
   const admin=await adminSession(ctx),api=(operation,args={})=>ctx.client.call(admin.token,operation,args);
   const before=(await api('invites.list')).result;
   const invite=(await api('invites.rotate',{role:'member'})).result.code;ctx.shared.invite=invite;

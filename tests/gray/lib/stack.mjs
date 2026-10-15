@@ -15,7 +15,7 @@ export async function loadStack(file){
 }
 export async function compose(stack,...args){
   validateStack(stack);
-  return promisify(execFile)('docker',['compose','-p','stargate-gray','-f',resolve(dirname(stack.file),'compose.yml'),...args],{timeout:180000,maxBuffer:4*1024*1024});
+  return promisify(execFile)('docker',['compose','-p','stargate-gray','-f',resolve(dirname(stack.file),stack.composeFile||'compose.yml'),...args],{timeout:180000,maxBuffer:4*1024*1024});
 }
 export async function stackExec(stack,service,...args){
   if(!/^gray-(node-1|bridge|collector|portal|git|registry)$/.test(service))throw Error('服务不属于灰度栈');

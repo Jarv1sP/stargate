@@ -1,5 +1,7 @@
 import {registerMember,memberState} from '../lib/accounts.mjs';
+import {identityLogin} from '../lib/identity.mjs';
 export default {features:["注册（邀请码）、登录、退出、改姓名"],id:'G02',title:'登录、资料和退出（FEATURES 一/第一道墙）',level:'fast',async run(ctx){
+  if(ctx.stack.identityMode)return identityLogin(ctx);
   const machines=await ctx.client.raw('/machines.js',{method:'GET'});
   ctx.check('未登录不能下载机器表',machines.status===401&&!machines.text.includes('gray-node-1'));
   for(const operation of ['state','projects.list','datasets.list','files.list']){

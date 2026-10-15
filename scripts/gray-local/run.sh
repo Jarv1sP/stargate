@@ -23,7 +23,14 @@ export STARGATE_RELEASE_REVISION=$commit
 port=${GRAY_PORT:-$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')}
 export GRAY_RUN=$run GRAY_PORT=$port
 export GRAY_PORTAL_IMAGE=stargate-gray/portal:$stamp GRAY_BRIDGE_IMAGE=stargate-gray/bridge:$stamp GRAY_NODE_IMAGE=stargate-gray/node:$stamp GRAY_REGISTRY_IMAGE=stargate-gray/registry:$stamp
-compose() { docker compose -p stargate-gray -f "$TRUSTED/deploy/gray-local/compose.yml" "$@"; }
+identity_mode=
+compose() {
+  if [ -n "$identity_mode" ]; then
+    docker compose -p stargate-gray -f "$TRUSTED/deploy/gray-local/compose.yml" -f "$TRUSTED/deploy/gray-local/identity.yml" "$@"
+  else
+    docker compose -p stargate-gray -f "$TRUSTED/deploy/gray-local/compose.yml" "$@"
+  fi
+}
 build_image() { DOCKER_BUILDKIT=0 docker build --force-rm --network=host "$@"; }
 extract=
 cleanup() {
@@ -104,3 +111,12 @@ stack=dict(source=json.loads(Path(run,'source.json').read_text()),nodePython=nod
 Path(run,'stack.json').write_text(json.dumps(stack,indent=2))
 PY
 node "$TRUSTED/tests/gray/run.mjs" --stack "$run/stack.json" --level full --report "$run"
+python3 "$TRUSTED/scripts/gray-local/prepare.py" "$run" "$TRUSTED" --identity
+cp "$TRUSTED/deploy/gray-local/identity-fixture.py" "$run/identity-fixture.py"
+identity_mode=1
+compose config > "$run/identity-compose.yml"
+compose run --rm --no-deps gray-identity --init > "$run/identity-init.log" 2>&1
+compose up -d --no-deps gray-identity > "$run/identity-start.log" 2>&1
+compose stop gray-portal >> "$run/identity-start.log" 2>&1
+compose up -d --no-deps --force-recreate gray-portal >> "$run/identity-start.log" 2>&1
+node "$TRUSTED/tests/gray/run.mjs" --stack "$run/identity-stack.json" --level fast --only G01,G02 --report "$run/identity"
