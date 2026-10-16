@@ -1,0 +1,49 @@
+/* The opening is the loading screen. This sheet is the only one in <head>, so the Λ lift-off paints and plays
+   while the platform's stylesheets, scripts, fonts and data are still arriving; startup-ui.js opens the cover
+   once one full cycle has played and the first room has rendered. Colours are literal: no tokens exist yet. */
+html,body{background:#0A0B0D}
+#startup-wordmark{position:fixed;inset:0;z-index:100;display:grid;place-items:center;width:100%;height:100%;margin:0;padding:24px;background:#0A0B0D;border:0;border-radius:0;color:#F2F2EF;cursor:pointer;-webkit-tap-highlight-color:transparent;animation:startup-fallback .3s 15s forwards}
+#startup-wordmark[hidden]{display:none}
+#startup-wordmark:focus{outline:none}
+#startup-wordmark .lift{position:relative;display:grid;place-items:center;width:min(560px,calc(100vw - 48px));height:340px}
+#startup-wordmark .lift>*{grid-area:1/1}
+#startup-wordmark .lift-ring{width:168px;height:168px;fill:none;stroke:#F2F2EF;stroke-width:1;overflow:visible;animation:lift-ring-out .45s 1.05s cubic-bezier(.4,0,1,1) forwards}
+#startup-wordmark .lift-ring circle{stroke-dasharray:290;stroke-dashoffset:290;animation:lift-draw .55s cubic-bezier(.16,1,.3,1) forwards}
+#startup-wordmark .lift-rocket{position:relative;width:56px;height:68px;opacity:0;animation:lift-in .35s .2s cubic-bezier(.16,1,.3,1) forwards,lift-off .6s .55s cubic-bezier(.55,0,.75,.3) forwards,lift-gone .12s 1.12s linear forwards}
+#startup-wordmark .lift-rocket svg{display:block;width:100%;height:100%;fill:none;stroke:#F2F2EF;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+#startup-wordmark .lift-flame{position:absolute;left:50%;top:92%;width:3px;height:0;margin-left:-1.5px;border-radius:2px;background:linear-gradient(#F2F2EF,rgba(242,242,239,0));animation:lift-flame .55s .55s ease-out forwards}
+#startup-wordmark .lift-sparks{position:relative;width:0;height:0;transform:translateY(-170px)}
+#startup-wordmark .lift-sparks i{position:absolute;left:-2px;top:-2px;width:4px;height:4px;border-radius:50%;background:#F2F2EF;opacity:0;animation:lift-spark .7s 1.1s cubic-bezier(.16,1,.3,1) forwards}
+#startup-wordmark .lift-sparks i:nth-child(2){--a:30deg}#startup-wordmark .lift-sparks i:nth-child(3){--a:60deg}#startup-wordmark .lift-sparks i:nth-child(4){--a:90deg}#startup-wordmark .lift-sparks i:nth-child(5){--a:120deg}#startup-wordmark .lift-sparks i:nth-child(6){--a:150deg}#startup-wordmark .lift-sparks i:nth-child(7){--a:180deg}#startup-wordmark .lift-sparks i:nth-child(8){--a:210deg}#startup-wordmark .lift-sparks i:nth-child(9){--a:240deg}#startup-wordmark .lift-sparks i:nth-child(10){--a:270deg}#startup-wordmark .lift-sparks i:nth-child(11){--a:300deg}#startup-wordmark .lift-sparks i:nth-child(12){--a:330deg}
+#startup-wordmark .lift-word{width:100%;opacity:0;clip-path:inset(0 50%);transform:scaleX(.6);animation:lift-word .75s 1.25s cubic-bezier(.16,1,.3,1) forwards}
+#startup-wordmark .auth-r5-wordmark{display:block;width:100%;height:auto;aspect-ratio:9753/711;fill:#F2F2EF;overflow:visible}
+#startup-wordmark .auth-lambda{animation:auth-lambda-ignite 600ms cubic-bezier(.2,.8,.2,1) 1.55s both}
+/* Still loading after the first cycle (timed here, since the script may not have arrived): a scan line and a status line. */
+#startup-wordmark .startup-hold{position:absolute;left:50%;top:calc(50% + 44px);width:min(240px,50vw);height:1px;margin-left:calc(min(240px,50vw)/-2);background:#2D2F35;overflow:hidden;opacity:0;animation:startup-wait .4s 2.3s forwards}
+#startup-wordmark .startup-hold i{position:absolute;top:0;left:0;width:36px;height:1px;background:linear-gradient(90deg,transparent,#F2F2EF,transparent);animation:startup-scan 1.3s 2.3s ease-in-out infinite}
+#startup-wordmark .startup-status{position:absolute;left:0;right:0;top:calc(50% + 60px);text-align:center;font:12px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:#9C9EA5;opacity:0;animation:startup-wait .4s 2.3s forwards}
+#startup-wordmark.leaving{animation:startup-open .45s cubic-bezier(.4,0,1,1) forwards}
+#startup-wordmark.leaving .lift-word{animation:none;opacity:1;clip-path:none;transform:none}
+#startup-wordmark.leaving .lift{animation:startup-open-mark .45s cubic-bezier(.4,0,1,1) forwards}
+@keyframes lift-draw{to{stroke-dashoffset:0}}
+@keyframes lift-in{from{opacity:0;transform:translateY(8px) scale(.9)}to{opacity:1;transform:none}}
+@keyframes lift-off{from{opacity:1;transform:none}to{opacity:1;transform:translateY(-170px)}}
+@keyframes lift-gone{from{opacity:1;transform:translateY(-170px)}to{opacity:0;transform:translateY(-170px) scale(.5)}}
+@keyframes lift-flame{0%{height:0;opacity:.9}70%{height:110px;opacity:.7}100%{height:140px;opacity:0}}
+@keyframes lift-ring-out{to{opacity:0;transform:scale(1.25)}}
+@keyframes lift-spark{0%{opacity:1;transform:rotate(var(--a,0deg)) translateY(0)}100%{opacity:0;transform:rotate(var(--a,0deg)) translateY(-90px)}}
+@keyframes lift-word{to{opacity:1;clip-path:inset(0 0);transform:none}}
+@keyframes auth-lambda-ignite{from{opacity:.12;clip-path:inset(100% 0 0 0)}to{opacity:1;clip-path:inset(0)}}
+@keyframes startup-wait{to{opacity:1}}
+@keyframes startup-scan{from{transform:translateX(-40px)}to{transform:translateX(min(240px,50vw))}}
+@keyframes startup-open{to{opacity:0;visibility:hidden}}
+@keyframes startup-open-mark{to{transform:scale(1.08)}}
+/* If the platform script never runs, the cover still steps aside. */
+@keyframes startup-fallback{to{opacity:0;visibility:hidden}}
+/* Reduced motion: the finished wordmark holds still until the platform is ready. */
+@media (prefers-reduced-motion:reduce){
+  #startup-wordmark .lift-ring,#startup-wordmark .lift-rocket,#startup-wordmark .lift-sparks{display:none}
+  #startup-wordmark .lift-word{animation:none;opacity:1;clip-path:none;transform:none}
+  #startup-wordmark .auth-lambda,#startup-wordmark .startup-hold i{animation:none}
+  #startup-wordmark.leaving{animation:none;opacity:0;visibility:hidden}
+}
