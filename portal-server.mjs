@@ -2,7 +2,7 @@ import {clientUpgradeMessage} from './client-compatibility.mjs';
 import {validateFileLanEndpoints} from './campus-files.mjs';
 import http from 'node:http';
 import {randomBytes} from 'node:crypto';
-import {readFile} from 'node:fs/promises';
+import {readFile,stat} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import {PortalService} from './portal-service.mjs';
 import {bridgeClient} from './execution.mjs';
@@ -166,6 +166,14 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       inventoryRequest=file==='machines.js';
       const {bearer,fromCookie}=inventoryRequest?tokens(req):{};
       if(inventoryRequest){headers['Cache-Control']='private, no-store';service.principal(bearer||fromCookie);}
+      else if(file!=='index.html'){
+        // Static files revalidate on every load, since any release may change them, but an
+        // unchanged one costs an empty 304 instead of a download. The proxy's compression
+        // may weaken or suffix the tag, so match on its core.
+        const info=await stat(new URL(`./dist/${file}`,import.meta.url)),tag=info.size.toString(36)+'-'+Math.trunc(info.mtimeMs).toString(36);
+        headers['Cache-Control']='no-cache';headers.ETag=`"${tag}"`;
+        if(req.headers['if-none-match']?.includes(tag)){res.writeHead(304,headers);return res.end();}
+      }
       let content=await readFile(new URL(`./dist/${file}`,import.meta.url));
       // Revalidate after I/O so a revoked session cannot receive the catalogue.
       if(inventoryRequest)service.principal(bearer||fromCookie);

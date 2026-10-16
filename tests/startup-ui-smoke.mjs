@@ -32,6 +32,7 @@ try{
       const lambda=await page.locator('.auth-lambda').evaluate(node=>{const timing=node.getAnimations()[0].effect.getTiming();return {duration:timing.duration,delay:timing.delay,easing:getComputedStyle(node).animationTimingFunction};});
       assert.deepEqual(lambda,{duration:600,delay:1550,easing:'cubic-bezier(0.2, 0.8, 0.2, 1)'});
       assert.equal(await cover.evaluate(node=>node.getAnimations().find(animation=>animation.animationName==='startup-fallback').effect.getTiming().delay),15000,'steps aside after 15 s even if the app never runs');
+      assert.deepEqual(await cover.evaluate(node=>[...new Set(node.getAnimations({subtree:true}).filter(animation=>/^(lift-|auth-lambda)/.test(animation.animationName)).flatMap(animation=>animation.effect.getKeyframes().flatMap(Object.keys)))].filter(key=>!['offset','computedOffset','easing','composite','transform','opacity'].includes(key))),[],'the lift-off moves only transform and opacity, so loading underneath never stalls it');
       if(scenario==='normal'){
         await page.evaluate(()=>window.start());await page.waitForTimeout(Math.max(0,1500-await since()));
         await page.screenshot({path:join(shots,'startup-1440.png')});
