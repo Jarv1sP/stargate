@@ -52,9 +52,8 @@ try{
         window.store.data.gpuq=sample;window.refresh();
       });
       assert.deepEqual(await page.locator('[data-summary]').allTextContents(),['8','7','3']);
-      assert.equal(await page.locator('[data-summary-note]').isHidden(),true);
       await page.evaluate(()=>{const sample=structuredClone(window.store.data.gpuq);sample.hosts[2].reachable=false;window.store.data.gpuq=sample;window.refresh();});
-      assert.deepEqual(await page.locator('[data-summary]').allTextContents(),['8','6','2']);assert.match(await page.locator('[data-summary-note]').innerText(),/不含 fixture-node-unknown/);
+      assert.deepEqual(await page.locator('[data-summary]').allTextContents(),['8','6','2']);assert.equal(/不含|读不到）/.test(await page.locator('body').innerText()),false,'an offline server adds no caveat to the totals');
       assert.equal(await page.locator('.resource-disks .resource-disk.unknown').count(),2);assert.doesNotMatch(await page.locator('.resource-disks').innerText(),/空间不足|0\.0/);
       await page.evaluate(()=>{window.store.data.gpuq=window.fixture.gpuq;window.refresh();});
       const targets=await page.locator('#machine-grid button,#machine-grid summary').evaluateAll(nodes=>nodes.filter(node=>node.getClientRects().length).map(node=>({label:node.getAttribute('aria-label')||node.textContent,width:node.getBoundingClientRect().width,height:node.getBoundingClientRect().height})));

@@ -238,6 +238,8 @@ export function executionUI(store,refresh,toast){
       +'<dialog class="pr-sheet" id="pr-switch-sheet" aria-labelledby="pr-switch-title"><div class="pr-sheet-in"><div class="pr-sheet-head"><div><div class="page-eyebrow">切换项目</div><div class="pr-sheet-title" id="pr-switch-title">选择服务器和项目</div></div><button type="button" class="jr-x" id="pr-switch-close" aria-label="关闭">✕</button></div></div></dialog>';
     const pane=key=>room.querySelector(`[data-pp=${key}]`),sheet=room.querySelector('#pr-switch-sheet'),files=query('#workspace-files');
     pane('term').prepend(query('.personal-terminal'));
+    // Terminal header as in the approved design: where it runs, then plain links.
+    pane('term').querySelector('#terminal-open').textContent='连接终端';pane('term').querySelector('#terminal-reconnect').textContent='重新连接';
     // 不占卡 / 带 1 张卡 from the approved design: the second asks for one card as a
     // GPU interactive terminal in this project and attaches once it is running.
     const gpuSeg=document.createElement('div');gpuSeg.className='pr-gpu-seg';gpuSeg.setAttribute('role','group');gpuSeg.setAttribute('aria-label','终端是否占卡');
@@ -412,7 +414,7 @@ export function executionUI(store,refresh,toast){
     if(!section||!actor)return;
     const entries=directoryEntries(),selected=entries.find(item=>item.machine===machine&&item.info.project===project&&(!projectOwner||item.info.ownerId===projectOwner));
     const value=selected?projectDirectoryValue(selected,entries,machine):'';
-    const title=query('#pr-name');if(title){title.textContent=selected?(selected.info.displayName||selected.info.project):'选择项目';query('#pr-srv').textContent=selected?selected.machine.replace(/^amax-/,''):'';}
+    const title=query('#pr-name');if(title){title.textContent=selected?(selected.info.displayName||selected.info.project):'选择项目';query('#pr-srv').textContent=selected?selected.machine.replace(/^amax-/,''):'';const where=query('#personal-terminal-title');if(where)where.textContent=selected?selected.machine.replace(/^amax-/,'')+' · '+selected.info.project:'开发终端';}
     query('[name=workspace-project]').innerHTML=projectSelectHTML(entries.map(entry=>({...entry.info,machine:entry.machine,selectionValue:projectDirectoryValue(entry,entries,machine)})),value,projectManagement?.includeArchived(),projectEnvironmentLabel);
     query('[name=workspace-project]').value=value;
     const info=currentProject(),environment=query('#project-environment');environment.hidden=!info;environment.textContent=info?'OCI 容器':'';
