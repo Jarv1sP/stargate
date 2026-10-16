@@ -2,6 +2,7 @@ import {MACHINES} from '../dist/model.js';
 import {normalizeJobSubmission,createSubmittedJob,personalCardQuotaExempt} from '../job-submission.mjs';
 import {selectMachine} from '../machine-selection.mjs';
 import {nativeJobRequest} from '../native-task-metadata.mjs';
+import {transferCall} from '../transfers.mjs';
 
 export const priorityCapable=host=>host?.reachable===true&&host.gpuq?.connected===true&&Array.isArray(host.gpuq.capabilities)&&host.gpuq.capabilities.includes('priority-policy-v1')&&host.gpuq.capabilities.includes('preempt-idle-only-v1');
 export const priorityRankCapable=host=>priorityCapable(host)&&host.gpuq.capabilities.includes('priority-rank-v1');
@@ -12,6 +13,19 @@ export const submissionError=job=>Date.now()-Date.parse(job.dispatchStartedAt||j
 export const submissionDelay=attempt=>Math.min(60000,15000*2**Math.min(2,attempt));
 
 export async function firstDispatch(service,job,{usage,RANKS,fail}){
+  if(job.spec.projectCopy){
+    const user=service.store.get(job.userId),principal={userId:user.id,username:user.username,role:user.role};
+    let result=await transferCall(service,principal,job.projectPreparation?'transfers.status':'transfers.create',
+      job.projectPreparation?{id:job.id}:{key:job.id,kind:'copy',from:job.sourceMachine,machine:job.machine,
+        reference:{project:job.project,ownerId:job.ownerId,environment:true,jobId:job.id}});
+    if(result.state==='ABSENT')result=await transferCall(service,principal,'transfers.resume',{id:job.id});
+    await service.enqueue(()=>{
+      job.projectPreparation={id:job.id,state:result.state,...(result.error?{error:result.error}:{})};
+      job.error=['FAILED','PAUSED'].includes(result.state)?`项目复制已暂停：${result.error||'传输中断'}。续传：gpuctl transfer resume ${job.id}`:null;
+      service.save();
+    });
+    if(result.state!=='SUCCEEDED')return null;
+  }
   // Node writers retain the live disk guard. Do not repeat remote reads before dispatch.
   return service.enqueue(()=>{
     const current=service.store.jobs.find(j=>j.id===job.id);

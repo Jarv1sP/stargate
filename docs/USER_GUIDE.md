@@ -103,6 +103,20 @@ gpuctl pull train.py ./train.py
 
 `gpuctl project quota` 查看工作区盘和数据集盘的已用、可用、总量；加 `--project my-project` 查看该项目文件用量。同名项目用 `--owner USERNAME` 定位。项目大小不分摊共享容器镜像，盘已用包含同盘其他内容；“至少”表示部分目录读不到，“未知”不表示零。包构建可临时设置 `TMPDIR="$HOME/.cache/build-tmp"`，先创建该目录，完成后清理不用的文件。
 
+### 跨服务器复制项目
+
+```sh local
+gpuctl project copy my-project --from SOURCE --to TARGET
+gpuctl project copy my-project --from SOURCE --to TARGET --name my-project-copy --detach
+gpuctl transfer status COPY_ID
+gpuctl transfer resume COPY_ID
+gpuctl transfer cancel COPY_ID
+```
+
+复制当前工作区、HOME 和容器内已安装的依赖环境，保留执行权限及软链接。源项目保留；目标已有同名项目时保持原样，用 `--name` 指定新项目名。操作不创建发布版本；断线查询原 `COPY_ID`，重复原命令沿用 `--key COPY_ID`。数据集和历史任务输出留在原处。
+
+自动选机若选到项目所在节点以外的服务器，平台先复制到该任务的运行副本，再提交 GPU 调度。目标已有项目不被覆盖；副本中的代码、依赖和 HOME 改动不自动回写源项目，新结果仍写本任务 `/outputs`。复制期间继续修改源文件会影响副本内容。
+
 ### 整理与删除项目
 
 网页「整理项目」可改显示名、分组、归档或取消归档；显示名和分组不搬文件。CLI 对应：
@@ -162,7 +176,7 @@ gpuctl run --machine auto --candidates SERVER_A,SERVER_B --project my-project -g
 gpuctl run --sync -g 1 -- python train.py --output /outputs
 ```
 
-AUTO 在已有工作区的候选中按资源和队列选机，不搬运代码或数据；输入由本机 `/datasets` 提供。`--sync` 先上传本机代码再提交，失败不提交，不替你安装依赖或删除远端多余文件；与 AUTO 同用时只选本次上传的工作区服务器。
+AUTO 按资源和队列选机，异机执行前自动复制当前项目代码、HOME 和容器依赖环境；输入仍由目标节点 `/datasets` 提供。`--sync` 先上传本机代码到当前开发项目，再允许跨节点选机；上传失败不提交，远端多余文件保持原样。
 
 Windows 路径用双引号，无需 WSL 或 rsync：
 

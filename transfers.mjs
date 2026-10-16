@@ -33,7 +33,7 @@ export async function transferCall(service,principal,operation,input,check=()=>{
   if(action==='create'&&!row){
     if(!known(args.machine)||args.kind==='copy'&&!known(args.from))fail('请选择列表中的服务器。');
     if(!['upload','copy','download'].includes(args.kind))fail('请选择上传、下载或服务器间复制。');
-    const ref=selectFields(args.reference,['dataset','project','ownerId','path']);
+    const ref=selectFields(args.reference,['dataset','project','ownerId','path','environment','jobId']);
     if(!ref.dataset&&!ref.project)fail('请选择来源数据集或项目目录。');
     row={id,key:id,kind:args.kind,machine:args.machine,from:args.from??args.machine,reference:ref,name:args.name??ref.dataset,
       state:args.kind==='copy'?'CREATED':'WAITING_CLIENT',actor:userId,createdAt:new Date().toISOString()};save(service,row);fresh=true;
@@ -63,14 +63,17 @@ export async function transferCall(service,principal,operation,input,check=()=>{
     if(!fresh){
       const status=await call(row.machine,'transfers.status',{id});
       if(terminal.has(status.state)||!['ABSENT','FAILED','PAUSED'].includes(status.state))return view(status);
-      if(['FAILED','PAUSED'].includes(status.state))return view(await call(row.machine,'transfers.resume',{id}));
+      if(['FAILED','PAUSED'].includes(status.state)){
+        if(row.reference.environment)await call(row.from,'transfers.project.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine});
+        return view(await call(row.machine,'transfers.resume',{id}));
+      }
     }
     // Only one source authorization, then one target start. Both nodes dedupe
     // this original UUID. Source bytes are never hashed or compared in Portal.
-    const source=await call(row.from,'transfers.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine});
+    const source=await call(row.from,row.reference.environment?'transfers.project.prepare':'transfers.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine});
     if(typeof source?.token!=='string')return view({state:source?.state||'UNKNOWN',message:'来源目录正在读取，请按原编号查询。'});
     row.state='DISPATCHING';save(service,row);
-    const result=await call(row.machine,'transfers.start',{id,source:{...row.reference,userId:principal.userId},target:{...row.reference,...(row.name?{dataset:row.name}:{}),userId:principal.userId},ticket:{id:source.id??id,token:source.token},sourceMachine:row.from});
+    const result=await call(row.machine,row.reference.environment?'transfers.project.start':'transfers.start',{id,source:{...row.reference,userId:principal.userId},target:{...row.reference,...(row.name?{[row.reference.project?'project':'dataset']:row.name}:{}),userId:principal.userId},ticket:{id:source.id??id,token:source.token},sourceMachine:row.from});
     service.audit(principal.username,operation,id,JSON.stringify({from:row.from,machine:row.machine,reference:row.reference}));
     return view(result);
   })().finally(()=>service.transferWrites.delete(id));

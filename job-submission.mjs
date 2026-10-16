@@ -9,7 +9,7 @@ import {taskDescription,displayName} from './dist/task-metadata.js';
 const FIELDS=new Set([
   'machine','cards','minVramGiB','argv','name','description','key',
   'project','priority','scheduling','elastic','placement',
-  'machineSelection','interactive','memoryLimitGiB',
+  'machineSelection','interactive','memoryLimitGiB','sourceMachine',
 ]);
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 
@@ -39,6 +39,7 @@ export function normalizeJobSubmission(args,principal){
     machineSelection={mode:'auto',...(candidates?{candidates:[...candidates].sort()}: {})};
   }else if(!Object.hasOwn(args,'machine')||typeof args.machine!=='string'||!MACHINES.some(m=>m.id===args.machine))fail('请选择有效的服务器，或使用 auto 自动选机。');
   const project={...projectReference({project:args.project??'default'},{optional:false}),ownerId:args.ownerId??principal.userId,workspace:true};
+  const sourceMachine=MACHINES.some(machine=>machine.id===args.sourceMachine)?args.sourceMachine:undefined;
   if(args.interactive!==undefined&&(args.interactive!==true||!project.workspace||JSON.stringify(args.argv)!==JSON.stringify(['/bin/bash','--noprofile','--norc','-i'])))fail('GPU 交互终端需要当前项目工作区和交互 shell。');
   if(args.interactive&&explicit?.restartPolicy==='on-preempt')fail('交互终端不能自动重放手动命令；需要自动恢复或扩卡，请直接提交训练命令。');
   if(typeof args.key!=='string'||!UUID.test(args.key))fail('需提供 UUID 提交键，重试必须复用。');
@@ -56,6 +57,7 @@ export function normalizeJobSubmission(args,principal){
   if(/[\x00-\x1f]/.test(name))fail('任务名称不能包含换行或控制字符。');
   const description=taskDescription(args.description);
   const request={machine:machineSelection?'auto':args.machine,cards:args.cards,minVramGiB,argv:[...args.argv],name,description,key:args.key,
+    ...(sourceMachine?{sourceMachine}:{}),
     project,priority,priorityProvided:args.priority!==undefined,explicit,
     ...(machineSelection?{machineSelection}:{}),...(args.interactive?{interactive:true}:{}),
     ...(placement?{placement}:{}),
@@ -66,10 +68,11 @@ export function normalizeJobSubmission(args,principal){
 
 export function createSubmittedJob(request,user,prioritySupported,{id=randomUUID(),now=new Date().toISOString()}={}){
   const {machine,cards,minVramGiB,name,key,project,priority,explicit}=request;
-  const context={...project,...(request.interactive?{interactive:true}:{}),...(request.elastic?{elastic:structuredClone(request.elastic)}:{}),...(request.placement?{placement:structuredClone(request.placement)}:{})};
+  const context={...project,...(request.sourceMachine&&request.sourceMachine!==machine?{projectCopy:id}:{}),...(request.interactive?{interactive:true}:{}),...(request.elastic?{elastic:structuredClone(request.elastic)}:{}),...(request.placement?{placement:structuredClone(request.placement)}:{})};
   const policy=explicit?{scheduling:structuredClone(explicit)}:prioritySupported?{priority,preemptIdleOnly:true}:{};
   const spec={id,userId:user.id,username:user.username,cards,argv:[...request.argv],name,minVramGiB,...context,...policy,...(request.memoryLimitGiB!==undefined?{memoryLimitGiB:request.memoryLimitGiB}:{})};
   return {id,key,spec,userId:user.id,username:user.username,submitterName:displayName(user.name??user.username),machine,cards,name,description:request.description,...context,
+    ...(request.sourceMachine?{sourceMachine:request.sourceMachine}:{}),
     ...(request.machineSelection?{machineSelection:structuredClone(request.machineSelection),
       ...(request.selectionSummary?{selectionSummary:structuredClone(request.selectionSummary)}:{})}:{}),
     ...(request.elastic?{allowedGpuCounts:[...request.allowedGpuCounts]}:{}),

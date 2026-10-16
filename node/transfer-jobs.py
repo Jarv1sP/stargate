@@ -95,6 +95,7 @@ class TransferJobs:
                 if stat.S_ISREG(info.st_mode) and not n.startswith('.upload-'):yield {'path':str(relative/n),'type':'file','size':info.st_size,'executable':bool(info.st_mode&0o100)}
 
     def prepare(self,args):
+        if args['source'].get('environment') is True:return module('project-copy').ProjectCopy(self).prepare(args)
         key=args.get('key',args.get('id'));ref=args['source'];root=self.root(ref)
         relative=self.d.relative(ref.get('path',''),empty=True);source=root/relative
         self.d.require_data_path(self.config,source)
@@ -123,6 +124,11 @@ class TransferJobs:
         row=self.s.read_json(self.path(args['id'],'.source.json'))
         if not hmac.compare_digest(row['token'],token):raise PermissionError('请重新获取已登录的传输凭据。')
         action=args['action']
+        if row.get('environment'):
+            if action=='complete':return module('project-copy').ProjectCopy(self).complete(args['id'])
+            row=module('project-copy').ProjectCopy(self).observe(row)
+            if row['state']=='PREPARING':return {'state':'PREPARING','entries':[],'nextOffset':0}
+            if row['state']=='FAILED':return {'state':'FAILED','error':row['error']}
         if action=='list':
             import itertools
             offset=int(args.get('offset',0))
@@ -138,7 +144,7 @@ class TransferJobs:
 
     def status(self,args):
         try:return self.view(self.s.read_json(self.path(args.get('id',args.get('key')))))
-        except FileNotFoundError:return {'state':'UNKNOWN','error':'未知，请按原编号查询。'}
+        except FileNotFoundError:return {'state':'ABSENT'}
 
     def launch(self,key):
         return self.e.run(['/usr/bin/systemd-run','--user','--collect','--unit=gpuq-transfer-'+key,
@@ -151,6 +157,7 @@ class TransferJobs:
             file=self.path(key)
             if file.exists():
                 row=self.s.read_json(file)
+                if row['state']=='CANCELED':return self.view(row)
                 if row['request']!=request:raise ValueError('原传输编号已用于不同请求。')
                 return self.view(row)
             row={**request,'request':request,'actor':args.get('actor',{'userId':args.get('userId')}),'id':key,'key':key,'state':'PENDING','bytes':0,'totalBytes':None,'createdAt':time.time(),'uploadKeys':{}}
@@ -160,7 +167,8 @@ class TransferJobs:
     def cancel(self,args):
         key=args.get('key',args.get('id'))
         with self.lock(key):
-            row=self.s.read_json(self.path(key))
+            try:row=self.s.read_json(self.path(key))
+            except FileNotFoundError:row={'id':key,'key':key,'state':'CANCELED'}
             if row['state']!='SUCCEEDED':row['state']='CANCELED';self.s.atomic_json(self.path(key),row)
             return self.view(row)
 
@@ -176,11 +184,25 @@ class TransferJobs:
         row=self.s.read_json(self.path(key));ticket=row['ticket']
         peer=PeerClient(self.config['transferPeers'][row['sourceMachine']],ticket)
         try:
-            target=row['target'];root=self.d.dataset_root(self.config,target['dataset'],create=True) if target.get('dataset') else self.root(target)
+            target=row['target'];copy=module('project-copy').ProjectCopy(self) if target.get('environment') is True else None
+            if copy:
+                root=self.s.private_dir(copy.target(row)/'received',create=True)
+                # A lost completion reply must not reinstall a successful copy.
+                owner=target.get('ownerId') or target['userId']
+                destination=copy.target(row) if target.get('jobId') else self.e.projects().store.owner_path(owner,create=True)/self.d.name(target['project'])
+                if (destination/'project.json').exists() and self.s.read_json(destination/'project.json').get('copyKey')==key:
+                    peer.call('complete')
+                    with self.lock(key):row.update(state='SUCCEEDED');self.s.atomic_json(self.path(key),row)
+                    return 0
+            else:root=self.d.dataset_root(self.config,target['dataset'],create=True) if target.get('dataset') else self.root(target)
             uploads=module('data-uploads').Uploads(self.config,target.get('userId','team'),root=root)
             cursor=0;done=0
             while cursor is not None:
                 page=peer.call('list',offset=cursor)
+                if page.get('state')=='PREPARING':
+                    if self.status({'id':key})['state']=='CANCELED':return 0
+                    time.sleep(1);continue
+                if page.get('state')=='FAILED':raise ValueError(page['error'])
                 for entry in page['entries']:
                     if entry['type']=='directory':
                         with self.d.parent(root,entry['path']+'/.directory',create=True):pass
@@ -204,6 +226,10 @@ class TransferJobs:
                         if self.s.read_json(self.path(key))['state']=='CANCELED':return 0
                         uploads.process('finish',{'key':upload_key});done+=entry['size']
                 cursor=page['nextOffset']
+            if copy:
+                if self.status({'id':key})['state']=='CANCELED':return 0
+                if copy.install(row) is False:return 0
+                peer.call('complete')
             with self.lock(key):
                 row=self.s.read_json(self.path(key))
                 if row['state']!='CANCELED':row.update(state='SUCCEEDED',bytes=done,totalBytes=done);self.s.atomic_json(self.path(key),row)
@@ -217,6 +243,8 @@ class TransferJobs:
 
     def process(self,operation,args):
         action=operation.removeprefix('transfers.')
+        if action=='project.prepare':return self.prepare(args)
+        if action=='project.start':return self.start(args)
         if action=='prepare':return self.prepare(args)
         if action=='start':return self.start(args)
         if action=='status':return self.status(args)

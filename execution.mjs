@@ -61,6 +61,11 @@ export function installExecution(service,bridge){
   const step=async job=>{
     let dispatched=false;
     try{
+      if(job.cancelRequested&&job.dispatchPending===true&&job.spec.projectCopy){
+        await service.bridge(job.machine,'transfers.cancel',{id:job.id,userId:job.userId});
+        await service.enqueue(()=>{job.state='CANCELED';job.finishedAt=new Date().toISOString();job.notSubmitted=true;service.save();});
+        return;
+      }
       if(job.state==='SUBMITTING'&&job.dispatchPending!==true&&!job.cancelRequested){
         // Watch never submits or releases resources; only definite absence allows dispatch.
         const result=await service.bridge(job.machine,'watch',{job:nativeJobSpec(job)},{rpcTimeoutMs:27000});

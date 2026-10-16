@@ -217,7 +217,13 @@ class ProjectStore:
         return private_dir(outputs/jobid,create=create)
 
     def runtime_paths(self,spec,jobid,terminal=False):
-        paths=self.dev_paths(spec.get('ownerId') or spec['userId'],spec['project'])
+        if spec.get('projectCopy'):
+            import importlib.util
+            module=importlib.util.spec_from_file_location('runtime_copy',Path(__file__).with_name('project-copy.py'))
+            copy=importlib.util.module_from_spec(module);module.loader.exec_module(copy)
+            folder=copy.runtime_folder(self.config,spec['projectCopy'])
+            paths={name:private_dir(folder/name) for name in ('code','home')}
+        else:paths=self.dev_paths(spec.get('ownerId') or spec['userId'],spec['project'])
         return {**paths,'output':self.workspace_output(spec['userId'],spec['project'],jobid=jobid),
                 'environmentMode':'oci','workspace':True,'readonly':False}
 
