@@ -218,7 +218,8 @@ export function pendingJobReason(service,job,now=Date.now()){
 function publicGpuMetrics(job){
   const metrics=job.gpuMetrics;
   if(!metrics)return null;
-  const fresh=!TERMINAL.has(job.state)&&job.state!=='UNKNOWN'&&Number.isFinite(metrics.sampledAt)&&Date.now()/1000-metrics.sampledAt<=30;
+  const receivedAt=Date.parse(job.checkedAt);
+  const fresh=!TERMINAL.has(job.state)&&job.state!=='UNKNOWN'&&Number.isFinite(receivedAt)&&Date.now()-receivedAt<=30000;
   return {...metrics,gpus:(metrics.gpus||[]).map(gpu=>fresh?{...gpu}:{...gpu,utilization:null,memoryUsedMiB:null})};
 }
 export function publicJob(job,users=[]){const {spec,schedulerPolicy,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,gpuMetrics:publicGpuMetrics(job),

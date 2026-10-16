@@ -267,7 +267,7 @@ print(json.dumps(result))
             args += ['--interactive', '--tty', '--env=TERM=xterm-256color']
         if uuids:
             for device in cdi_selection(self.config,uuids):args += ['--device',device]
-            args += ['--cpuset-cpus='+','.join(map(str,module('job-resources').allocated_cpus(uuids,self.config)))]
+            if getattr(self,'cpu_set',[]):args += ['--cpuset-cpus='+','.join(map(str,self.cpu_set))]
         if not terminal and spec.get('interactive'):args+=['--interactive','--tty','--env=TERM=xterm-256color']
         args += translate_control(list(control), getattr(self, '_mount_sources', {}))
         return args
@@ -392,6 +392,8 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
                 dataset_fds, datafd=None, runtimefd=None, resourcefd=None, cgroupfd=None, *, stderr_sink=None):
     """Both existing scheduler profiles enter here after allocation/limits."""
     owner = PersonalOCI(config, spec.get('ownerId') or spec['userId'])
+    resources = module('job-resources')
+    owner.cpu_set = resources.allocated_cpus(uuids,config) if uuids and resources.cpuset_available() else []
     if spec.get('projectCopy'):owner.state_folder=module('project-copy').runtime_folder(config,spec['projectCopy'])
     owner.stderr_sink = stderr_sink
     mounts = [(workfd, '/workspace', False), (project_fds['home'], '/home/gpuq', False),
@@ -416,9 +418,9 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
         control += ['--setenv', 'PATH', '/opt/gpuq/bin:'+image_path]
         if resourcefd is not None:
             budget = json.loads(os.pread(resourcefd, 65536, 0))
-            for key, value in module('job-resources').resource_environment(budget).items():
+            for key, value in resources.resource_environment(budget).items():
                 control += ['--setenv', key, value]
-            owner.thread_defaults = module('job-resources').thread_defaults(budget)
+            owner.thread_defaults = resources.thread_defaults(budget,owner.cpu_set)
             for key in owner.thread_defaults:
                 if key in os.environ: control += ['--setenv', key, os.environ[key]]
         if runtimefd is not None:

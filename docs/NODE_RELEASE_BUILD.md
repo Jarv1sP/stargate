@@ -22,7 +22,7 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 自动安装由强制 SSH 命令调用 `deploy/node/receive.py`：stdin 为未压缩 tar，根目录包含 `install.py` 和 `package/` 单机包；在 `/var/tmp` 临时解包后调用安装器，输出其 JSON/退出码，临时文件自动清理；默认私有配置 `/etc/gpuq-console/node-install.json`，可由节点安装者通过 `--config` 指定。
 私有配置结构见 [config.example.json](../deploy/node/config.example.json)：account、releaseRoot、dataMountPoints、gpuq、profiles、authorizedKeys（每条显式写 profile）、services；数据盘列表由顶层统一填入各 profile，真实值只留节点。
 安装器写 policy.json、完整 profile 配置和服务/定时器；已有 ExecStart drop-in 可在对应 service 的 dropin 字段指定，无指纹或历史内容核对。
-安装器只为 account 对应的 `user@UID.service` 委托 cpu/cpuset/io/memory/pids 控制器，使 rootless 作业可设置 CPU 段；daemon-reload 生效，不重启用户管理器，失败时委托文件随其他绑定恢复。
+安装器只为 account 对应的 `user@UID.service` 配置 cpu/cpuset/io/memory/pids 委托并 daemon-reload，不重启已在运行的用户管理器；任务仅在当前 cgroup 已有 cpuset 控制器时绑定 CPU，缺少时保留线程默认值并正常启动，失败时委托文件随其他绑定恢复。
 每版使用独立的真实 pyz 路径；current 原子切换后只重启受管服务，独立任务单元、旧发布目录和数据库保留；仅新库初始化。
 健康仅看服务 active 和 GPU 可读；失败时即使新单元损坏或停止失败，也先恢复旧文件和指针，再重启原先活跃的服务。`python3 deploy/node/install.py --config <私有JSON> --rollback` 回上一版，不回滚用户数据。
 灰测的 `deploy/gray-local/node-setup.sh` 生成模拟配置并调用同一安装器；私有配置保持 0600，模拟 CDI 规范为 0644，供非 root 任务读取，不另写安装流程。

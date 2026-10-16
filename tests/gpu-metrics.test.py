@@ -70,11 +70,28 @@ class GpuMetrics(unittest.TestCase):
         _, attempt = self.running()
         metrics = self.metrics()
         path = Path(attempt['control_dir']) / 'gpu-metrics.json'
-        for value in ('{bad', '[]', '{"gpus": null}', '{"gpus": [{}]}'):
+        for value in ('{bad', '[]', '{"gpus": null}', '{"gpus": [{}]}', '[' * 60000):
             path.write_text(value)
             self.assertIsNone(metrics.read_metrics(attempt, 100)['gpus'][0]['memoryPeakMiB'])
         with patch.object(metrics.os, 'replace', side_effect=OSError('disk full')):
             metrics.observe(attempt, self.sample(1), 100)
+
+    def test_deeply_nested_user_metrics_do_not_stop_tick_status_or_show(self):
+        job, attempt = self.running()
+        path = Path(attempt['control_dir']) / 'gpu-metrics.json'
+        path.write_text('[' * 60000)
+        self.coordinator._gpu_samples_available = True
+        shown = self.coordinator.handle_api('show', {'job_id': job['id']})
+        self.assertIsNone(shown['gpuMetrics']['gpus'][0]['memoryUsedMiB'])
+        status = self.coordinator.handle_api('status', {})
+        self.assertIn(job['id'], [row['id'] for row in status['jobs']])
+        self.coordinator.gpu_provider.snapshot.return_value = self.coordinator._snapshot
+        self.systemd.status.return_value = SimpleNamespace(
+            main_pid=0, invocation_id='a' * 32, is_cleanup_ready=False,
+            control_group='/user.slice/gpuq-active.service')
+        self.coordinator.tick(); self.coordinator.tick()
+        self.assertEqual(self.coordinator.health_name, 'ok')
+        self.assertIsNotNone(self.coordinator.handle_api('show', {'job_id': job['id']})['gpuMetrics']['sampledAt'])
 
     def test_user_writable_control_file_cannot_follow_a_link_or_block_the_scheduler_on_a_fifo(self):
         _, attempt = self.running()

@@ -26,7 +26,7 @@ def read_metrics(attempt, now, *, available=True):
             record = json.loads(stream.read(64 * 1024)) if stat.S_ISREG(os.fstat(stream.fileno()).st_mode) else {}
         result['sampledAt'] = _number(record.get('sampledAt'))
         saved = {row['uuid']: row for row in record.get('gpus', []) if isinstance(row, dict) and 'uuid' in row}
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
         pass
     current = (available and attempt.get('state') in ACTIVE_ATTEMPT_STATES
                and result['sampledAt'] is not None and now - result['sampledAt'] <= 30)

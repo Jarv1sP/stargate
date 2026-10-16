@@ -20,8 +20,10 @@ THREAD_VARIABLES = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'
                     'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'TORCHINDUCTOR_COMPILE_THREADS')
 
 
-def thread_defaults(budget):
-    return dict.fromkeys(THREAD_VARIABLES, str(max(1, math.floor(budget['cpuLimit']))))
+def thread_defaults(budget, cpus=()):
+    count = math.floor(budget['cpuLimit'])
+    if cpus: count = min(count, len(cpus))
+    return dict.fromkeys(THREAD_VARIABLES, str(max(1, count)))
 
 
 def _cpu_list(value):
@@ -32,9 +34,28 @@ def _cpu_list(value):
     return result
 
 
+def cpuset_available(proc=Path('/proc/self/cgroup'), root=Path('/sys/fs/cgroup')):
+    try:
+        group = next(line[3:] for line in proc.read_text().splitlines() if line.startswith('0::'))
+        return 'cpuset' in (root / group.lstrip('/') / 'cgroup.controllers').read_text().split()
+    except (OSError, StopIteration):
+        return False
+
+
 def gpu_cpu_layout(gpus, cpus, sysfs=Path('/sys')):
     """Fixed, disjoint segments per physical GPU, local to its NUMA node."""
     cpus = sorted(cpus)
+    if not gpus or not cpus: return {}
+    remaining, cores = set(cpus), []
+    for cpu in cpus:
+        if cpu not in remaining: continue
+        try:
+            siblings = _cpu_list((sysfs / 'devices/system/cpu' / ('cpu' + str(cpu)) / 'topology/thread_siblings_list').read_text())
+        except (OSError, ValueError):
+            siblings = {cpu}
+        core = sorted((siblings | {cpu}) & remaining)
+        cores.append(core)
+        remaining.difference_update(core)
     groups = {}
     try:
         for gpu in gpus:
@@ -44,16 +65,23 @@ def gpu_cpu_layout(gpus, cpus, sysfs=Path('/sys')):
             groups.setdefault(node, (local, []))[1].append(gpu)
     except (OSError, ValueError, KeyError):
         groups = {None: (cpus, list(gpus))}
-    result = {}
-    for local, cards in groups.values():
-        cards = sorted(cards, key=lambda gpu: gpu['index'])
-        width, extra = divmod(len(local), len(cards))
-        start = 0
-        for position, gpu in enumerate(cards):
-            end = start + width + (position < extra)
-            # Very small simulated hosts may have fewer CPUs than GPUs.
-            result[gpu['uuid']] = local[start:end] or [local[position % len(local)]]
-            start = end
+
+    def split(groups):
+        result = {}
+        for local, cards in groups:
+            local = set(local)
+            local_cores = [core for core in cores if core[0] in local]
+            width, extra = divmod(len(local_cores), len(cards))
+            start = 0
+            for position, gpu in enumerate(sorted(cards, key=lambda gpu: gpu['index'])):
+                end = start + width + (position < extra)
+                result[gpu['uuid']] = sorted(cpu for core in local_cores[start:end] for cpu in core)
+                start = end
+        return result
+
+    result = split(groups.values())
+    if any(len(segment) < len(cpus) // len(gpus) for segment in result.values()):
+        result = split([(cpus, gpus)])
     return result
 
 
@@ -67,14 +95,9 @@ def allocated_cpus(uuids, config):
                  'pci': row[2].strip().lower()[-12:]} for row in csv.reader(io.StringIO(raw)) if row]
         if not set(uuids) <= {gpu['uuid'] for gpu in gpus}: raise ValueError('GPU topology unavailable')
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        assigned = os.environ.get('GPUQ_ASSIGNED_GPU_INDICES', '').split(',')
-        indices = [int(i) for i in assigned if i.isdigit()]
-        if len(indices) != len(uuids): indices = list(range(len(uuids)))
-        by_index = dict(zip(indices, uuids))
-        count = max(config.get('cards', 0), max(indices, default=0) + 1)
-        gpus = [{'index': i, 'uuid': by_index.get(i), 'pci': ''} for i in range(count)]
+        return []
     layout = gpu_cpu_layout(gpus, cpus)
-    return sorted({cpu for uuid in uuids for cpu in layout.get(uuid, cpus)})
+    return sorted({cpu for uuid in uuids for cpu in layout[uuid]})
 
 
 def memory_pool(config):
@@ -262,7 +285,7 @@ def ray_environment(budget, environ):
     result['RAY_prestart_worker_first_driver'] = 'false'
     for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
                 'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
-        result.setdefault(key, '1')
+        result[key] = '1'
     # An explicit opt-in profile must not inherit Ray's host-CPU bypass or a
     # stale external-cluster address. The job-local cgroup view is authoritative.
     result.pop('RAY_USE_MULTIPROCESSING_CPU_COUNT', None)

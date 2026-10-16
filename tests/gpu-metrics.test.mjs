@@ -18,8 +18,20 @@ test('node samples survive Portal feedback and jobs details with real zero and u
 
 test('an unreachable node cannot leave old samples looking current in jobs details',t=>{
   t.mock.method(Date,'now',()=>200000);
-  const job={state:'RUNNING',spec:{argv:['python','train.py']},gpuMetrics:{sampledAt:100,gpus:[{index:0,utilization:37,memoryUsedMiB:64,memoryPeakMiB:128}]}};
+  const job={state:'RUNNING',checkedAt:new Date(100000).toISOString(),spec:{argv:['python','train.py']},gpuMetrics:{sampledAt:1000,gpus:[{index:0,utilization:37,memoryUsedMiB:64,memoryPeakMiB:128}]}};
   const gpu=publicJob(job).gpuMetrics.gpus[0];
   assert.deepEqual(gpu,{index:0,utilization:null,memoryUsedMiB:null,memoryPeakMiB:128});
   assert.equal(job.gpuMetrics.gpus[0].memoryUsedMiB,64);
+});
+
+test('fresh node feedback uses the Portal receive time despite node clock skew',t=>{
+  t.mock.method(Date,'now',()=>200000);
+  for(const sampledAt of [1,1000]){
+    const gpuMetrics={sampledAt,gpus:[{index:0,utilization:37,memoryUsedMiB:64,memoryPeakMiB:128}]};
+    const job={state:'RUNNING',spec:{argv:['python','train.py']}};
+    schedulerResult(job,{state:'RUNNING',gpuMetrics});
+    assert.deepEqual(publicJob(job).gpuMetrics,gpuMetrics);
+    job.checkedAt=new Date(175000).toISOString();
+    assert.deepEqual(publicJob(job).gpuMetrics,gpuMetrics);
+  }
 });
