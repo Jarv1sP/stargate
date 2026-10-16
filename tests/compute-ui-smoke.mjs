@@ -25,7 +25,7 @@ try{
     const data={machines,principal:{userId:'member-a',role},users:[{id:'member-a',role,limits:{},total:0}],jobs:[{id:'own-job',userId:'member-a'}],gpuq:{stale:false,checkedAt:'2026-10-15T18:00:00Z',hosts:machines.map(host)}};
     await page.route('**/*',async route=>{
       const url=new URL(route.request().url());assert.equal(url.origin,origin);
-      if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">${['styles.css','fonts.css','starbase.css','shell.css','workspace.css','workbench.css','maintenance-experience.css','resources.css','portal-shell.css'].map(name=>'<link rel="stylesheet" href="/'+name+'">').join('')}</head><body class="sb"><main id="main-content"><div class="heading-actions"></div><section id="page-resources"><span id="resource-summary"></span><p id="monitor-status"></p><div id="machine-grid"></div></section></main><script type="module">
+      if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',headers:{'Content-Security-Policy':"style-src 'self'"},body:`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">${['styles.css','fonts.css','starbase.css','shell.css','workspace.css','workbench.css','maintenance-experience.css','resources.css','portal-shell.css'].map(name=>'<link rel="stylesheet" href="/'+name+'">').join('')}</head><body class="sb"><main id="main-content"><div class="heading-actions"></div><section id="page-resources"><span id="resource-summary"></span><p id="monitor-status"></p><div id="machine-grid"></div></section></main><script type="module">
         import {resourcesUI} from '/resources-ui.js';
         const fixture=${JSON.stringify(data)};let room='resources',auth;
         const store={principal:fixture.principal,users:fixture.users,jobs:fixture.jobs,production:true,data:{gpuq:fixture.gpuq},usage:()=>0,onAuthChange:callback=>{auth=callback;}};
@@ -38,6 +38,8 @@ try{
     });
     try{
       await page.goto(origin);await page.locator('.resource-chassis-bays button').first().waitFor();await page.evaluate(()=>document.fonts.ready);
+      // The portal CSP blocks inline style attributes; the rack labels must still form one column per GPU.
+      assert.equal(await page.locator('.resource-baylabels').evaluate(node=>getComputedStyle(node).gridTemplateColumns.split(' ').length),8);
       const bays=page.locator('.resource-chassis-bays button');assert.equal(await bays.count(),8);
       assert.equal(await page.locator('.resource-disks .resource-disk').count(),2);
       assert.equal(await page.locator('[data-summary]').count(),3);
