@@ -46,7 +46,7 @@ export function shellUI(store,{navigate,getPage,toast}){
   function sky(){const reading=skyReading();q('#sky-utc').textContent=reading.utc;q('#sky-utc').dateTime=new Date().toISOString();q('#sky-moon-label').textContent=reading.moon;q('#sky-moon-path').setAttribute('d',reading.path);q('#sky-mars').textContent=reading.mars;}
   sky();setInterval(()=>{if(!document.hidden)sky();},1000);
   addEventListener('scroll',()=>q('#app-topbar')?.classList.toggle('scrolled',scrollY>4),{passive:true});
-  if(store.principal)installWordmark();new ResizeObserver(updateIndicator).observe(nav);addEventListener('resize',()=>{for(const animation of entrance)animation.cancel();underline?.cancel();updateIndicator();});document.fonts?.ready.then(updateIndicator);
+  installWordmark();new ResizeObserver(updateIndicator).observe(nav);addEventListener('resize',()=>{for(const animation of entrance)animation.cancel();underline?.cancel();updateIndicator();});document.fonts?.ready.then(updateIndicator);
   matchMedia('(prefers-reduced-motion:reduce)').addEventListener('change',event=>{if(event.matches){for(const animation of document.getAnimations())if(Number.isFinite(animation.effect?.getComputedTiming().endTime))animation.finish();q('#startup-wordmark').hidden=true;}});
   store.onAuthChange(()=>{control.close();account.open=false;scrolls.clear();});
   return {update,route,control,syncStatus(state,time){q('#sync-label').textContent=state==='syncing'?'正在同步':state==='failed'?'同步失败，请刷新':'已同步 '+new Date(time||Date.now()).toLocaleTimeString('zh-CN',{hour12:false});q('#refresh-state').title=q('#sync-label').textContent;}};

@@ -1,15 +1,15 @@
 // Original R5 A/Λ ignition, moved from the retired login dialog to app startup.
 const wordmark="<svg class=\"wordmark auth-r5-wordmark\" viewBox=\"0 0 9753 711\" role=\"img\" aria-label=\"平台字标\"><path class=\"r5-mark-letter\" d=\"M432 711Q354 711 286.0 701.5Q218 692 167.0 667.5Q116 643 87.5 599.0Q59 555 59 486Q59 484 59.0 481.0Q59 478 60 476H210Q209 480 208.5 485.5Q208 491 208 498Q208 529 235.0 548.5Q262 568 312.0 577.0Q362 586 429 586Q458 586 487.5 583.5Q517 581 544.0 576.0Q571 571 592.5 562.0Q614 553 626.5 539.5Q639 526 639 508Q639 482 615.5 466.5Q592 451 552.0 441.0Q512 431 462.0 424.0Q412 417 358.5 408.5Q305 400 255.0 385.5Q205 371 165.0 348.0Q125 325 101.5 288.5Q78 252 78 199Q78 151 101.0 114.0Q124 77 169.0 51.5Q214 26 279.5 13.0Q345 0 430 0Q516 0 580.0 14.0Q644 28 686.0 54.0Q728 80 748.5 116.5Q769 153 769 198V214H621V201Q621 179 597.0 162.0Q573 145 532.0 135.0Q491 125 439 125Q367 125 322.0 134.0Q277 143 256.0 158.5Q235 174 235 193Q235 216 258.5 230.0Q282 244 322.0 252.5Q362 261 412.0 268.0Q462 275 515.5 284.0Q569 293 619.0 307.0Q669 321 709.0 344.5Q749 368 772.5 403.5Q796 439 796 491Q796 571 750.0 619.5Q704 668 622.0 689.5Q540 711 432 711ZM1561 699V146H1256V12H2018V146H1713V699ZM3809 699V12H4353Q4426 12 4472.5 41.5Q4519 71 4542.0 119.5Q4565 168 4565 227Q4565 288 4533.5 341.5Q4502 395 4436 425L4582 699H4411L4285 454H3961V699ZM3961 328H4311Q4358 328 4383.5 300.5Q4409 273 4409 230Q4409 201 4398.0 180.5Q4387 160 4365.0 149.5Q4343 139 4311 139H3961ZM5495 711Q5287 711 5183.0 623.0Q5079 535 5079 356Q5079 239 5132.0 159.5Q5185 80 5285.5 40.0Q5386 0 5526 0Q5617 0 5692.0 15.5Q5767 31 5821.5 62.5Q5876 94 5905.5 142.0Q5935 190 5935 255H5787Q5787 219 5766.0 194.0Q5745 169 5709.0 154.5Q5673 140 5627.5 133.5Q5582 127 5532 127Q5468 127 5413.5 139.5Q5359 152 5319.0 178.5Q5279 205 5257.0 246.0Q5235 287 5235 343V367Q5235 445 5269.0 492.5Q5303 540 5365.5 562.0Q5428 584 5513 584Q5607 584 5667.5 567.0Q5728 550 5757.5 518.0Q5787 486 5787 443V435H5509V315H5936V699H5842L5826 609Q5789 645 5737.5 667.5Q5686 690 5624.5 700.5Q5563 711 5495 711ZM8024 699V146H7719V12H8481V146H8176V699ZM8984 699V12H9679V139H9136V286H9619V413H9136V572H9687V699Z\"></path><path class=\"auth-lambda\" d=\"M2448 699L2792 12L2964 12L3308 699L3141 699L2873 150L2604 699ZM6429 699L6773 12L6945 12L7289 699L7122 699L6854 150L6585 699Z\"></path></svg>";
+// The cover is in the page from the first paint, so the room never shows
+// before the opening. Once per browser session: ignite, hold, then open.
 export function installWordmark(){
-  const root=document.querySelector('#startup-wordmark'),reduce=matchMedia('(prefers-reduced-motion:reduce)');
-  const key='starbase-r5-wordmark-ignited';let ignited=false,timer;
-  try{ignited=sessionStorage.getItem(key)==='1';}catch{}
-  function finish(){clearTimeout(timer);root.hidden=true;root.classList.remove('wordmark-ignition');root.replaceChildren();}
-  function ignite(){
-    if(ignited||document.hidden)return;ignited=true;try{sessionStorage.setItem(key,'1');}catch{}
-    if(reduce.matches)return;
-    root.innerHTML=wordmark;root.hidden=false;root.classList.add('wordmark-ignition');timer=setTimeout(finish,650);
-  }
-  root.addEventListener('click',finish);document.addEventListener('visibilitychange',ignite);
-  reduce.addEventListener('change',event=>{if(event.matches)finish();});ignite();
+  const root=document.querySelector('#startup-wordmark'),reduce=matchMedia('(prefers-reduced-motion:reduce)');if(!root)return;
+  const key='starbase-r5-wordmark-ignited';let seen=false,timer;
+  try{seen=sessionStorage.getItem(key)==='1';}catch{}
+  function finish(){clearTimeout(timer);root.hidden=true;root.classList.remove('wordmark-ignition','wordmark-leaving');root.replaceChildren();}
+  if(seen||reduce.matches){finish();return;}
+  try{sessionStorage.setItem(key,'1');}catch{}
+  root.innerHTML=wordmark;root.hidden=false;root.classList.add('wordmark-ignition');
+  timer=setTimeout(()=>{root.classList.add('wordmark-leaving');timer=setTimeout(finish,450);},1100);
+  root.addEventListener('click',finish);reduce.addEventListener('change',event=>{if(event.matches)finish();});
 }
