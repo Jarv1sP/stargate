@@ -393,7 +393,7 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
     """Both existing scheduler profiles enter here after allocation/limits."""
     owner = PersonalOCI(config, spec.get('ownerId') or spec['userId'])
     resources = module('job-resources')
-    owner.cpu_set = resources.allocated_cpus(uuids,config) if uuids and resources.cpuset_available() else []
+    owner.cpu_set = resources.allocated_cpus(uuids) if uuids and resources.cpuset_available() else []
     if spec.get('projectCopy'):owner.state_folder=module('project-copy').runtime_folder(config,spec['projectCopy'])
     owner.stderr_sink = stderr_sink
     mounts = [(workfd, '/workspace', False), (project_fds['home'], '/home/gpuq', False),

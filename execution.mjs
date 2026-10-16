@@ -218,7 +218,7 @@ export function pendingJobReason(service,job,now=Date.now()){
 function publicGpuMetrics(job){
   const metrics=job.gpuMetrics;
   if(!metrics)return null;
-  const receivedAt=Date.parse(job.checkedAt);
+  const receivedAt=Date.parse(job.schedulerCheckedAt);
   const fresh=!TERMINAL.has(job.state)&&job.state!=='UNKNOWN'&&Number.isFinite(receivedAt)&&Date.now()-receivedAt<=30000;
   return {...metrics,gpus:(metrics.gpus||[]).map(gpu=>fresh?{...gpu}:{...gpu,utilization:null,memoryUsedMiB:null})};
 }

@@ -37,7 +37,7 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
       ctx.check('任务只可见一张分配卡',result.visibleGpuUuids.length===1,result.visibleGpuUuids);
       if(mode==='gpu')ctx.check('指定 GPU 1 生效',result.visibleGpuUuids[0]==='GPU-00000000-0000-0000-0000-000000000002');
       const layout=await stackExec(ctx.stack,'gray-node-1','python3','-c',
-        'import importlib.util,json,sys;from pathlib import Path;c=json.load(open("/etc/gpuq-console/node-install.json"));p=Path(c["releaseRoot"])/"current/node/job-resources.py";s=importlib.util.spec_from_file_location("resources",p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.allocated_cpus(json.loads(sys.argv[1]),c["profiles"]["7IM"])))',JSON.stringify(result.visibleGpuUuids));
+        'import importlib.util,json,sys;from pathlib import Path;c=json.load(open("/etc/gpuq-console/node-install.json"));p=Path(c["releaseRoot"])/"current/node/job-resources.py";s=importlib.util.spec_from_file_location("resources",p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.allocated_cpus(json.loads(sys.argv[1]))))',JSON.stringify(result.visibleGpuUuids));
       const expected=JSON.parse(layout.stdout);
       ctx.check('容器亲和性等于分配卡的 CPU 段',JSON.stringify(result.cpu.affinity)===JSON.stringify(expected),{actual:result.cpu,expected});
       ctx.check('nproc 等于分到的核数（清掉 OMP 对显示的覆盖）',result.cpu.nproc===expected.length,result.cpu);

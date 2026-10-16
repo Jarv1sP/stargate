@@ -85,7 +85,7 @@ def gpu_cpu_layout(gpus, cpus, sysfs=Path('/sys')):
     return result
 
 
-def allocated_cpus(uuids, config):
+def allocated_cpus(uuids):
     cpus = sorted(os.sched_getaffinity(0))
     try:
         raw = subprocess.run(['/usr/bin/nvidia-smi', '--query-gpu=index,uuid,pci.bus_id',

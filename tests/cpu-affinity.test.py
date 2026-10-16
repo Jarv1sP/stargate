@@ -85,11 +85,11 @@ class CpuAllocation(unittest.TestCase):
         with patch.object(self.resources.os, 'sched_getaffinity', return_value=set(range(16))), \
                 patch.object(self.resources.subprocess, 'run', return_value=SimpleNamespace(stdout=rows)), \
                 patch.object(self.resources, 'gpu_cpu_layout', side_effect=lambda gpus, cpus: layout(gpus, cpus, self.sysfs)):
-            self.assertEqual(self.resources.allocated_cpus(['GPU-0', 'GPU-2'], {'cards': 4}), [0, 1, 2, 3, 8, 9, 10, 11])
+            self.assertEqual(self.resources.allocated_cpus(['GPU-0', 'GPU-2']), [0, 1, 2, 3, 8, 9, 10, 11])
             # A shared job on GPU 2 and an elastic job currently on GPU 2 use
             # that card's segment, never their requested maximum card count.
-            self.assertEqual(self.resources.allocated_cpus(['GPU-2'], {'cards': 4}), [8, 9, 10, 11])
-            self.assertEqual(self.resources.allocated_cpus(['GPU-1', 'GPU-3'], {'cards': 4}), [4, 5, 6, 7, 12, 13, 14, 15])
+            self.assertEqual(self.resources.allocated_cpus(['GPU-2']), [8, 9, 10, 11])
+            self.assertEqual(self.resources.allocated_cpus(['GPU-1', 'GPU-3']), [4, 5, 6, 7, 12, 13, 14, 15])
 
     def test_failed_or_timed_out_gpu_query_skips_binding_instead_of_inventing_a_different_layout(self):
         for error in (OSError('unavailable'), subprocess.CalledProcessError(1, 'nvidia-smi'),
@@ -97,7 +97,7 @@ class CpuAllocation(unittest.TestCase):
             with self.subTest(error=type(error).__name__), \
                     patch.object(self.resources.subprocess, 'run', side_effect=error), \
                     patch.dict(os.environ, {'GPUQ_ASSIGNED_GPU_INDICES': '2,3'}):
-                self.assertEqual(self.resources.allocated_cpus(['GPU-2', 'GPU-3'], {'cards': 4}), [])
+                self.assertEqual(self.resources.allocated_cpus(['GPU-2', 'GPU-3']), [])
 
     def test_cpuset_availability_uses_the_current_process_cgroup_controllers(self):
         proc = self.sysfs / 'proc-cgroup'; proc.write_text('0::/user.slice/job.service\n')
@@ -198,7 +198,7 @@ class CpuAllocation(unittest.TestCase):
                     {'home': directory, 'output': directory}, [], resourcefd=descriptor)
             self.assertEqual(set(engine.thread_defaults.values()), {str(expected)})
             self.assertEqual(engine.cpu_set, cpus if delegated and uuids else [])
-            if delegated and uuids: allocate.assert_called_once_with(uuids, {'root': str(self.sysfs)})
+            if delegated and uuids: allocate.assert_called_once_with(uuids)
             else: allocate.assert_not_called()
             environment = dict((control[i+1], control[i+2]) for i, value in enumerate(control) if value == '--setenv')
             self.assertEqual(environment['OMP_NUM_THREADS'], '3')
