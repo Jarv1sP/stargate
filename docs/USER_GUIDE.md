@@ -37,7 +37,7 @@ curl -fsSL https://gpu.example.com/install.sh | sh
 
 ### 注册、登录与选服务器
 
-注册、登录、邀请码和密码在统一门户管理。新成员由计算平台管理员分配用卡额度后即可训练。CLI 仍用 `gpuctl login 用户名`，账号密码与统一门户相同。
+注册、登录、邀请码和密码在统一门户管理。新成员由计算平台管理员分配用卡额度后即可训练。CLI 仍用 `gpuctl login 用户名`，账号密码与统一门户相同。已登录后的普通查询和传输不按共享出口 IP 限流；登录、注册、找回密码的限制及请求体大小上限保留。
 
 ```sh local
 gpuctl login USERNAME --url https://gpu.example.com
