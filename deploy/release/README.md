@@ -11,7 +11,8 @@ production environment 只允许 main，提供一个 secret `DEPLOY_SSH_KEY`，
 以及变量 `DEPLOY_HOST`、`DEPLOY_KNOWN_HOSTS`、`DEPLOY_INITIAL_SHA`
 （首次启用时的现役提交）、`DEPLOY_MACHINES`（空格分隔的私有节点 ID）。部署密钥不提供交互 shell、
 PTY、端口转发或 agent 转发。GitHub environment 和 Actions 记录此次发布；
-VPS 的 `deployed-sha` 记录最近一次成功发布的提交，用于下一次文件差异。
+VPS 的 `deployed-sha` 仅记录最近一次成功发布的提交，供运维查看；
+发布差异以 GitHub 最近成功的部署记录为基线。
 节点单独发布也会更新它，门户镜像仍保留上次门户发布的版本。所有实际地址、机器清单和凭据留在私有配置中。
 
 ## VPS 一次性接线
