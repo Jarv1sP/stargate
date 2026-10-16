@@ -94,10 +94,19 @@ def main(run, revision):
     (run/'manifest.json').write_text(json.dumps(manifest))
     resource_log=run/'memory.jsonl'
     resources=ResourceGuard(resource_log)
-    backend=DockerBackend(run,resources)
+    backend=None
+    scope=json.loads((run/'release.json').read_text())
     started=time.monotonic();status='FAILED'
     try:
-        identity=switch(backend,resources,lambda: install_nodes(run,root,resources))
+        if scope['portalChanged']:
+            backend=DockerBackend(run,resources)
+            identity=switch(backend,resources,lambda: install_nodes(run,root,resources))
+        else:
+            try:
+                resources.start()
+                install_nodes(run,root,resources)
+                identity=None
+            finally:resources.close()
         temporary=root/'deployed-sha.tmp';temporary.write_text(revision+'\n');temporary.replace(root/'deployed-sha')
         status='DEPLOYED'
         return identity
@@ -107,7 +116,8 @@ def main(run, revision):
             path=run/name
             if path.exists():readings.extend(json.loads(line)['available'] for line in path.read_text().splitlines())
         result={'status':status,'revision':revision,'seconds':round(time.monotonic()-started,3),
-                'minimumAvailableBytes':min(readings) if readings else None,'drain':backend.drain_result}
+                'minimumAvailableBytes':min(readings) if readings else None,'drain':backend.drain_result if backend else None,
+                'portalChanged':scope['portalChanged'],'nodesChanged':scope['nodesChanged']}
         (run/'result.json').write_text(json.dumps(result)+'\n')
         print(json.dumps(result),flush=True)
 

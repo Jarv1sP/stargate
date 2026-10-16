@@ -11,7 +11,7 @@ import {watchJob} from './job-watch.mjs';
 import {progressText,jobTimingText} from './dist/job-progress.js';
 import {elasticAllocation,allocationLabel,gpuPlacement} from './dist/gpu-allocation.js';
 import {displayName,taskDescription} from './dist/task-metadata.js';
-import {apiPost} from './client-http.mjs';
+import {commandPost} from './client-http.mjs';
 import {readCLIState,submitJobWithReceipt} from './client-state.mjs';
 import {defaultPlatformControlTransport,finishPlatformControlTransport} from './client-windows-control.mjs';
 import {downloadResultFile} from './client-result-download.mjs';
@@ -252,9 +252,13 @@ async function main() {
   if (session && session.url !== base.origin) session = void 0;
   const controlTransport = await defaultPlatformControlTransport(base);
   try {
-  async function post(path, body2, requestSignal) {
-    return apiPost(base, path, body2, { token: session?.token, signal: requestSignal, fetchImpl:controlTransport.fetchImpl });
-  }
+  // Transfers and attached sessions intentionally outlive a one-shot query.
+  const [verb,action]=positionals;
+  const continuous=['push','upload','pull','download','ssh','shell','watch'].includes(verb)||
+    ['project','transfer'].includes(verb)&&['copy','upload','download','watch'].includes(action)||
+    verb==='data'&&['upload','put','get','download','import','cloud'].includes(action)||
+    verb==='run'&&(options.sync||options.interactive);
+  const post=commandPost(base,{token:session?.token,fetchImpl:controlTransport.fetchImpl,continuous});
   let targetOwnerId;
   const call = (operation, args2 = {}, signal) => post("call", { operation, args: {...(targetOwnerId&&/^(projects\.|files\.|data\.|datasets\.|cloud\.|terminal\.|jobs\.submit$)/.test(operation)?{ownerId:targetOwnerId}:{}),...args2} }, signal);
   let command = positionals[0];

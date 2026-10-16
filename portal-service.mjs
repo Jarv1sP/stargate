@@ -142,7 +142,7 @@ export class PortalService extends DemoService{
 
       return current;
     };
-    if(args.view!=='summary'&&args.jobId===undefined)await this.refreshGPUQ();
+    if(args.view!=='summary'&&args.jobId===undefined)void this.refreshGPUQ().catch(()=>{});
     const current=check();
     const state=args.view==='summary'||args.jobId!==undefined?this.stateSummary(current):this.state(current);
     if(args.jobId!==undefined){
@@ -357,7 +357,8 @@ export class PortalService extends DemoService{
   }
   state(principal){
     const state={machines:MACHINES,users:this.store.users.map(user=>this.store.get(user.id))};
-    const snapshot=this.taskDisplaySnapshot(this.gpuq||{checkedAt:null,stale:true,hosts:[]});
+    const cached=this.gpuq||{checkedAt:null,stale:true,hosts:[]},age=Date.now()-Date.parse(cached.checkedAt);
+    const snapshot=this.taskDisplaySnapshot({...cached,stale:cached.stale!==false||!Number.isFinite(age)||age>180000||age< -30000});
     const visible=this.store.jobs.map(j=>this.taskDisplayJob(j)),jobsTotal=visible.length;
     const gpuq=visibleGPUQStatus(snapshot,principal,this.store.get(principal.userId).limits,{jobs:this.store.jobs.map(j=>this.taskDisplayJob(j)),users:this.store.users});
     const capabilities=Object.fromEntries(gpuq.hosts.map(h=>[h.id,!gpuq.stale&&priorityCapable(h)===true]));

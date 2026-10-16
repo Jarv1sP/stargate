@@ -32,11 +32,14 @@ test('a team member can read another member job after their own submit quota is 
  for(const operation of operations)assert.ok((await f.service.invoke(f.token,operation,{jobId:id,extension:'ignored'})).result);
  assert.equal(f.calls.length,operations.length);
 });
-test('state ignores approval metadata updated during local collector reading',async t=>{
-  const f=await fixture(t),started=deferred(),blocked=deferred();f.service.state=()=>({jobs:[]});
-  f.service.refreshGPUQ=async()=>{started.resolve();await blocked.promise;};
-  const pending=f.service.invoke(f.token,'state');await started.promise;f.user.name='Changed';f.user.approvalNote='Changed';blocked.resolve();
-  assert.deepEqual((await pending).state,{jobs:[]});
+test('state returns immediately while approval metadata and collector refresh change independently',async t=>{
+ const f=await fixture(t),blocked=deferred();f.service.state=()=>({jobs:[]});
+ f.service.refreshGPUQ=()=>blocked.promise;
+ try{
+  assert.deepEqual((await f.service.invoke(f.token,'state')).state,{jobs:[]});
+  f.user.name='Changed';f.user.approvalNote='Changed';
+  assert.deepEqual((await f.service.invoke(f.token,'state')).state,{jobs:[]});
+ }finally{blocked.resolve();}
 });
 test('project status uses the same narrowed authorization across its nested read checks',async t=>{
   const f=await fixture(t),started=deferred(),blocked=deferred();
