@@ -1,18 +1,103 @@
 #!/usr/bin/python3
-"""Discover the enforced job budget; opt-in, unprivileged Ray conveniences.
+"""Enforced budgets, GPU-local CPU sets, thread defaults and opt-in Ray helpers.
 
 The cgroup remains the security boundary. Ray's logical resources and the JSON
 snapshot are admission/discovery aids, not an additional resource reservation.
 """
+import csv
+import io
 import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import subprocess
 import sys
 
 GIB = 1024 ** 3
 RESOURCE_FILE = '/run/gpuq/resources.json'
 RAY_SPILL_DIR = '/tmp/gpuq-ray-spill'
+THREAD_VARIABLES = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                    'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'TORCHINDUCTOR_COMPILE_THREADS')
+
+
+def thread_defaults(budget, cpus=()):
+    count = math.floor(budget['cpuLimit'])
+    if cpus: count = min(count, len(cpus))
+    return dict.fromkeys(THREAD_VARIABLES, str(max(1, count)))
+
+
+def _cpu_list(value):
+    result = set()
+    for part in value.strip().split(','):
+        ends = list(map(int, part.split('-')))
+        result.update(range(ends[0], ends[-1] + 1))
+    return result
+
+
+def cpuset_available(proc=Path('/proc/self/cgroup'), root=Path('/sys/fs/cgroup')):
+    try:
+        group = next(line[3:] for line in proc.read_text().splitlines() if line.startswith('0::'))
+        return 'cpuset' in (root / group.lstrip('/') / 'cgroup.controllers').read_text().split()
+    except (OSError, StopIteration):
+        return False
+
+
+def gpu_cpu_layout(gpus, cpus, sysfs=Path('/sys')):
+    """Fixed, disjoint segments per physical GPU, local to its NUMA node."""
+    cpus = sorted(cpus)
+    if not gpus or not cpus: return {}
+    remaining, cores = set(cpus), []
+    for cpu in cpus:
+        if cpu not in remaining: continue
+        try:
+            siblings = _cpu_list((sysfs / 'devices/system/cpu' / ('cpu' + str(cpu)) / 'topology/thread_siblings_list').read_text())
+        except (OSError, ValueError):
+            siblings = {cpu}
+        core = sorted((siblings | {cpu}) & remaining)
+        cores.append(core)
+        remaining.difference_update(core)
+    groups = {}
+    try:
+        for gpu in gpus:
+            node = int((sysfs / 'bus/pci/devices' / gpu['pci'] / 'numa_node').read_text())
+            local = sorted(_cpu_list((sysfs / 'devices/system/node' / ('node' + str(node)) / 'cpulist').read_text()) & set(cpus))
+            if not local: raise ValueError('NUMA locality unavailable')
+            groups.setdefault(node, (local, []))[1].append(gpu)
+    except (OSError, ValueError, KeyError):
+        groups = {None: (cpus, list(gpus))}
+
+    def split(groups):
+        result = {}
+        for local, cards in groups:
+            local = set(local)
+            local_cores = [core for core in cores if core[0] in local]
+            width, extra = divmod(len(local_cores), len(cards))
+            start = 0
+            for position, gpu in enumerate(sorted(cards, key=lambda gpu: gpu['index'])):
+                end = start + width + (position < extra)
+                result[gpu['uuid']] = sorted(cpu for core in local_cores[start:end] for cpu in core)
+                start = end
+        return result
+
+    result = split(groups.values())
+    if any(len(segment) < len(cpus) // len(gpus) for segment in result.values()):
+        result = split([(cpus, gpus)])
+    return result
+
+
+def allocated_cpus(uuids):
+    cpus = sorted(os.sched_getaffinity(0))
+    try:
+        raw = subprocess.run(['/usr/bin/nvidia-smi', '--query-gpu=index,uuid,pci.bus_id',
+                              '--format=csv,noheader,nounits'], check=True, capture_output=True,
+                             text=True, timeout=5).stdout
+        gpus = [{'index': int(row[0]), 'uuid': row[1].strip(),
+                 'pci': row[2].strip().lower()[-12:]} for row in csv.reader(io.StringIO(raw)) if row]
+        if not set(uuids) <= {gpu['uuid'] for gpu in gpus}: raise ValueError('GPU topology unavailable')
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return []
+    layout = gpu_cpu_layout(gpus, cpus)
+    return sorted({cpu for uuid in uuids for cpu in layout[uuid]})
 
 
 def memory_pool(config):

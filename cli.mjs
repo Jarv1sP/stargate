@@ -24,6 +24,10 @@ import { createInterface } from "node:readline/promises";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+export function gpuMetricsText(metrics){
+  const value=(number,unit)=>Number.isFinite(number)?number+unit:'未知';
+  return metrics?.gpus?.length?metrics.gpus.map(gpu=>`GPU ${gpu.index}：利用率 ${value(gpu.utilization,'%')} · 显存 ${value(gpu.memoryUsedMiB,' MiB')} · 本次峰值 ${value(gpu.memoryPeakMiB,' MiB')}`).join('\n  '):'GPU 采样：未知';
+}
 
 var daily = `STARGATE — 团队项目、数据集与训练
 
@@ -801,7 +805,7 @@ ${n.body}
   if (command === "jobs") {
     console.log(result.length ? [...result].slice(-50).reverse().map((j) => `${j.id}  ${j.state}${j.preempted ? "（让位中断，不会自动重跑）" : ""}
   ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${Number.isInteger(j.schedulerPriority) ? 'P'+j.schedulerPriority : ["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}
-  ${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}`).join("\n") : "暂无任务。");
+  ${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}\n  ${gpuMetricsText(j.gpuMetrics)}`).join("\n") : "暂无任务。");
     if (result.length > 50) console.log("显示最近 50 条；完整记录：gpuctl jobs --json");
     return;
   }

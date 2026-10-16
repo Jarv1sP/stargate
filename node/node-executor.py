@@ -53,7 +53,8 @@ def scheduling_status(job,data):
     return {'schedulerState':state.get('state'),'schedulerPriority':state.get('priority'),
             'priorityMutable':state.get('state')=='PENDING','queueReason':state.get('state_reason'),
             'schedulerPolicy':{k:state.get(k) for k in ('priority','yield_policy','restart_policy','dispatch_mode')},
-            'progress':data.get('progress'),'latestAttempt':attempts[0] if attempts else None}
+            'progress':data.get('progress'),'gpuMetrics':data.get('gpuMetrics'),
+            'latestAttempt':attempts[0] if attempts else None}
 
 def scheduler_finished(data):
     # Native state already reflects GPUQ process cleanup; no second completion check.

@@ -46,6 +46,7 @@ from .constants import (
 )
 from .elastic import compatible_world_sizes
 from .hami import runtime_library, runtime_environment
+from .gpu_metrics import observe as observe_gpu_metrics, read_metrics as gpu_metrics
 from .policy import VictimCandidate, victim_in_scope, preemption_mode, select_scale_target, select_victims
 from .progress import (
     PROGRESS_FILE_NAME,
@@ -270,6 +271,7 @@ class Coordinator:
         self._health = "recovering"
         self._last_error: str | None = None
         self._snapshot: tuple[GpuDevice, ...] = ()
+        self._gpu_samples_available = False
         self._statuses: dict[str, Any] = {}
         self._external: dict[str, set[int]] = {}
         self._idle_counts: dict[str, int] = {}
@@ -962,7 +964,11 @@ class Coordinator:
                     states=ACTIVE_ATTEMPT_STATES, limit=10_000
                 )
                 self._scan_progress(attempts)
+                self._gpu_samples_available = False
                 devices = tuple(self.gpu_provider.snapshot())
+                self._gpu_samples_available = True
+                for attempt in attempts:
+                    observe_gpu_metrics(attempt, devices, self.clock())
                 by_uuid = {device.uuid: device for device in devices}
                 missing = [
                     item
@@ -4620,6 +4626,7 @@ class Coordinator:
                         else None
                     ),
                     "progress": self._progress_status(active_attempt),
+                    "gpuMetrics": gpu_metrics(active_attempt, self.clock(), available=self._gpu_samples_available),
                 }
             )
             jobs.append(summary)
@@ -4717,6 +4724,7 @@ class Coordinator:
             },
             "attempts": attempts,
             "progress": self._progress_status(attempts[0] if attempts else None),
+            "gpuMetrics": gpu_metrics(attempts[0] if attempts else None, self.clock(), available=self._gpu_samples_available),
             "leases": self.store.list_leases(job_id=job["id"]),
             "allocation_history": history,
             "allocation_history_available": True,

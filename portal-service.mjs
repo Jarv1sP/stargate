@@ -41,7 +41,7 @@ function compactTerminalStateJob(job,users){
     ...(view.project!==undefined?{project:view.project}:{}),
     ...(view.machineSelection!==undefined?{machineSelection:view.machineSelection}:{}),
     ...(view.selectionSummary!==undefined?{selectionSummary:view.selectionSummary}:{}),
-    schedulerState:view.schedulerState??null,priority:view.priority??null,
+    schedulerState:view.schedulerState??null,priority:view.priority??null,gpuMetrics:view.gpuMetrics??null,
     submitter:{name:view.submitter?.name??null,username:view.submitter?.username??null},
     createdAt:view.createdAt??null,startedAt:view.startedAt??view.workerStartedAt??null,
     finishedAt:view.finishedAt??view.terminalObservedAt??null,
