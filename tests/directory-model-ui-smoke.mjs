@@ -63,7 +63,7 @@ try{
    const request=route.request(),url=new URL(request.url());if(url.origin!==origin){requests.push(url.href);return route.abort();}
    try{
     if(url.pathname==='/'){let html=await readFile(join(root,'index.html'),'utf8');html=html.replace('globalThis.GPUQ_LOCAL_API=false;','globalThis.GPUQ_LOCAL_API=true;');html=html.replace('<head>','<head><script>window.GPUQ_LOCAL_API=true;window.GPUQ_PRODUCTION=true;window.GPUQ_HAS_SESSION=true;</script>');return route.fulfill({contentType:'text/html',headers:{'Content-Security-Policy':"style-src 'self'"},body:html});}
-    if(url.pathname==='/auth/login')return route.fulfill({contentType:'text/html',body:'统一门户登录'});
+    if(url.pathname==='/auth/login')return route.fulfill({contentType:'text/html; charset=utf-8',body:'统一门户登录'});
     if(url.pathname==='/guide')return route.fulfill({contentType:'text/html',body:await guidePage(null,origin)});
     if(url.pathname==='/machines.js')return route.fulfill({contentType:'text/javascript',body:'export const MACHINES='+JSON.stringify(state.machines)});
     if(url.pathname==='/capabilities'){probes++;return campusReachable?route.fulfill({contentType:'application/json',body:'{}'}):route.abort('connectionrefused');}

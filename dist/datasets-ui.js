@@ -12,7 +12,8 @@ const when=value=>{if(!value)return '时间未知';const date=new Date(typeof va
 export const directoryBytes=row=>!Number.isFinite(row?.size)?'未知':(row.complete===false?'至少 ':'')+transferBytes(row.size);
 export function datasetRows(rows){return rows.map(row=>`<div class="dr-row dr-ds" data-dataset-row="${esc(row.dataset)}"><div class="dr-main"><div class="dr-t mono">${esc(row.name||row.dataset)}</div><div class="dr-s">${esc(row.ownerName||row.uploadedBy||'上传人未知')} 上传 · ${esc(when(row.modifiedAt))}</div></div><div class="dr-s dr-hide-m" data-directory-size>${directoryBytes(row)}</div><div class="dr-s dr-hide-m mono">共用 · /datasets/${esc(row.dataset)}</div><div class="dr-acts"><button type="button" class="jr-link" data-dataset-open="${esc(row.dataset)}">浏览</button><button type="button" class="jr-link" data-dataset-download="${esc(row.dataset)}">下载</button><button type="button" class="jr-link danger" data-dataset-delete="${esc(row.dataset)}">删除</button></div></div>`).join('');}
 // One disk line of a server gauge; unknown capacity stays unknown.
-export function gaugeDiskHTML(label,row){
+export function gaugeDiskHTML(label,row,{loading=false}={}){
+  if(loading)return `<div class="dr-disk">${label} · 读取中<div class="dr-skbar"></div></div>`;
   const known=Number.isFinite(row?.usedBytes)&&Number.isFinite(row?.availableBytes)&&Number.isFinite(row?.totalBytes)&&row.totalBytes>0;
   if(!known)return `<div class="dr-disk unk">${label} · 未知<div class="storage-bar is-unknown"></div></div>`;
   const low=row.availableBytes<64*1024**3,fill=Math.min(100,Math.max(0,row.usedBytes/row.totalBytes*100));
@@ -40,8 +41,8 @@ export function datasetsUI(store,toast){
     const node=card(id),meter=gauge(id),token=turn;if(!node||node.dataset.loading==='true')return;node.dataset.loading='true';
     const current=()=>token===turn&&node.isConnected,find=s=>node.querySelector(s);
     find('[data-storage-refresh]').disabled=true;find('[data-storage-caption]').textContent='读取中…';
-    meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML('SSD');meter.querySelector('[data-volume="datasets"]').hidden=false;meter.querySelector('[data-volume="datasets"]').innerHTML=gaugeDiskHTML('HDD');
-    for(const list of ['projects','datasets'])find(`[data-storage-${list}]`).innerHTML='<p class="storage-empty">读取中…</p>';
+    meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML('SSD',null,{loading:true});meter.querySelector('[data-volume="datasets"]').hidden=false;meter.querySelector('[data-volume="datasets"]').innerHTML=gaugeDiskHTML('HDD',null,{loading:true});
+    for(const list of ['projects','datasets'])find(`[data-storage-${list}]`).innerHTML='<div class="dr-loading"><span class="dr-skrow"></span><span class="dr-skrow"></span><span class="dr-sr">读取中…</span></div>';
     try{
       const result=await store.call('projects.quota',{machine:id});if(!current())return;
       // A server whose workspace and datasets share one filesystem has a single SSD and no HDD.
@@ -49,7 +50,7 @@ export function datasetsUI(store,toast){
       meter.querySelector('[data-volume="workspace"]').innerHTML=shared?gaugeDiskHTML('SSD · 工作区与数据集共用',shared):gaugeDiskHTML('SSD',volume('workspace'));
       datasets.hidden=!!shared;datasets.innerHTML=shared?'':gaugeDiskHTML('HDD',volume('datasets'));fills(meter);
       find('[data-ds-where]').textContent=shared?' · 在 SSD':' · HDD /datasets';
-    }catch{if(current())find('[data-storage-caption]').textContent='容量未知，请刷新重试。';}
+    }catch{if(current()){meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML('SSD');meter.querySelector('[data-volume="datasets"]').innerHTML=gaugeDiskHTML('HDD');find('[data-storage-caption]').textContent='容量未知，请刷新重试。';}}
     if(!current())return;
     // Capacity reads are small; directory scans run one server at a time so
     // browsing does not wait behind scans occupying every remote read lane.
@@ -84,7 +85,7 @@ export function datasetsUI(store,toast){
   function openDataset(dataset){selected=dataset;void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest',behavior:'smooth'});});}
   function build(machines){
     cloud?.reset();
-    section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML('SSD')}</div><div data-volume="datasets">${gaugeDiskHTML('HDD')}</div></button>`).join('')}</div>
+    section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML('SSD',null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML('HDD',null,{loading:true})}</div></button>`).join('')}</div>
       <div class="dr-cards">${machines.map(row=>`<article class="dr-machine" data-storage-machine="${esc(row.id)}" hidden>
         <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · HDD /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
         <div class="dr-rows" data-storage-datasets data-dataset-list></div>
