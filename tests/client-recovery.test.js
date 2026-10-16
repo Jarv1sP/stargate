@@ -16,21 +16,21 @@ for(const operation of ['projects.status','terminal.status','datasets.list','dat
    if(sent.length===1)throw Object.assign(Error('retired socket'),{code:'ECONNRESET'});
    return response(sent.length===2?503:200,sent.length===2?{error:'节点操作结果未确认，不会自动重试'}:{result:{state:'READY'}});
   }},{machine:'fixture-machine',id});
-  assert.equal(out.result.state,'READY');assert.equal(sent.length,3);assert.deepEqual(sent,[sent[0],sent[0],sent[0]]);assert.deepEqual(delays,[200,600]);
+  assert.equal(out.result.state,'READY');assert.equal(sent.length,3);assert.deepEqual(sent,[sent[0],sent[0],sent[0]]);assert.deepEqual(delays,[1000,2000]);
  });
 }
 test('exhausted or busy reads say temporarily unavailable, never unconfirmed',async()=>{
  for(const status of [400,429,502,503,504]){
-  let calls=0;
-  await assert.rejects(request('projects.status',{sleep:async()=>{},fetchImpl:async()=>{calls++;return response(status,{code:'RPC_BUSY',error:'节点操作结果未确认，不会自动重试'});}}),failure=>{
+  let calls=0,elapsed=0;
+  await assert.rejects(request('projects.status',{now:()=>elapsed,sleep:async ms=>{elapsed+=ms;},fetchImpl:async()=>{calls++;return response(status,{code:'RPC_BUSY',error:'节点操作结果未确认，不会自动重试'});}}),failure=>{
    assert.equal(failure.code,'READ_UNAVAILABLE');assert.match(failure.message,/暂时无法读取，请稍后再查/);assert.doesNotMatch(failure.message,/未确认|不会自动重试/);return true;
-  });assert.equal(calls,3);
+  });assert.equal(calls,7);assert.equal(elapsed,60000);
  }
 });
-test('read retries stay inside 10 seconds; writes retain a single 40s deadline',async t=>{
+test('read retries share one minute; writes retain a single 40s deadline',async t=>{
  const budgets=[];t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});
  await request('projects.status',{sleep:async()=>{},fetchImpl:async()=>response(200,{result:{}})});
- assert.deepEqual(budgets,[10000]);budgets.length=0;
+ assert.deepEqual(budgets,[60000]);budgets.length=0;
  for(const operation of ['jobs.submit','projects.create']){
   let calls=0;await assert.rejects(request(operation,{sleep:async()=>assert.fail('raw write retry'),fetchImpl:async()=>{calls++;return response(503,{error:'busy'});}}));assert.equal(calls,1);
  }

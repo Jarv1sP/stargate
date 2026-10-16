@@ -10,22 +10,38 @@ test('read-only 502 during deployment retries and returns the actual status resu
  assert.equal(result.result.state,'READY');assert.equal(f.calls.length,2);assert.equal(f.calls[0][1].redirect,'error');
 });
 test('read-only retries are bounded and preserve HTTP status, never mention a static preview',async()=>{
- const f=fixture(Array.from({length:8},()=>new Response('',{status:502}))),delays=[];
- f.options.sleep=async ms=>{delays.push(ms);};
+ const f=fixture(Array.from({length:8},()=>new Response('',{status:502}))),delays=[];let elapsed=0;
+ f.options.now=()=>elapsed;f.options.sleep=async ms=>{delays.push(ms);elapsed+=ms;};
  await assert.rejects(apiPost(url,'call',{operation:'state'},f.options),e=>e.status===502&&/HTTP 502/.test(e.message)&&!e.message.includes('preview'));
- assert.equal(f.calls.length,3);assert.deepEqual(delays,[200,600]);
- assert.equal(delays.reduce((a,b)=>a+b,0),800);
+ assert.equal(f.calls.length,7);assert.deepEqual(delays,[1000,2000,4000,8000,16000,16000,13000]);
+ assert.equal(delays.reduce((a,b)=>a+b,0),60000);
 });
-test('read-only state keeps one ten-second budget and exactly three reads through a long deployment',async t=>{
+test('read-only state recovers after 45 seconds inside one minute without changing the request',async t=>{
  const budgets=[];t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});
  let elapsed=0;const calls=[],delays=[],body={operation:'state',args:{}};
- await assert.rejects(apiPost(url,'call',body,{
+ const result=await apiPost(url,'call',body,{
+  now:()=>elapsed,
   sleep:async ms=>{delays.push(ms);elapsed+=ms;},
   fetchImpl:async(target,options)=>{calls.push({target,body:JSON.parse(options.body)});return elapsed<45000?new Response('',{status:503}):new Response('{"state":{"ready":true}}');}
- }),failure=>failure.code==='READ_UNAVAILABLE'&&failure.status===503&&/暂时无法读取/.test(failure.message)&&!failure.message.includes('未确认'));
- assert.deepEqual(budgets,[10000]);assert.equal(calls.length,3);assert.equal(elapsed,800);
+ });
+ assert.deepEqual(result,{state:{ready:true}});assert.deepEqual(budgets,[60000]);assert.equal(calls.length,7);assert.equal(elapsed,47000);
  assert.ok(calls.every(call=>JSON.stringify(call.body)===JSON.stringify({...body,client:{name:'gpuctl',protocol:2}})));
- assert.deepEqual(delays,[200,600]);
+ assert.deepEqual(delays,[1000,2000,4000,8000,16000,16000]);
+});
+test('state retries two 503 responses then succeeds on the third original request',async()=>{
+ const f=fixture([new Response('',{status:503}),new Response('',{status:503}),new Response('{"state":{"ready":true}}')]),delays=[];
+ const result=await apiPost(url,'call',{operation:'state',args:{}},{...f.options,sleep:async ms=>delays.push(ms)});
+ assert.equal(result.state.ready,true);assert.equal(f.calls.length,3);assert.deepEqual(delays,[1000,2000]);assert.equal(f.calls[0][1].body,f.calls[2][1].body);
+});
+test('READ_UNAVAILABLE response codes retry reads while permission and missing-path responses remain final',async()=>{
+ for(const status of [400,500]){
+  const f=fixture([new Response('{"error":"read unavailable","code":"READ_UNAVAILABLE"}',{status}),new Response('{"state":{}}')]);
+  await apiPost(url,'call',{operation:'state'},f.options);assert.equal(f.calls.length,2);
+ }
+ for(const status of [401,403,404]){
+  const f=fixture([new Response('{"error":"read unavailable","code":"READ_UNAVAILABLE"}',{status})]);
+  await assert.rejects(apiPost(url,'call',{operation:'state'},f.options),error=>error.status===status);assert.equal(f.calls.length,1);
+ }
 });
 test('caller cancellation aborts the backoff and never makes another request',async()=>{
  const controller=new AbortController();let count=0;
@@ -78,6 +94,12 @@ test('malformed successful JSON and 404 are reported accurately without leaking 
 test('401 JSON error does not retry or lose useful details',async()=>{
  const f=fixture([new Response(JSON.stringify({error:'会话失效'}),{status:401})]);
  await assert.rejects(apiPost(url,'call',{operation:'state'},f.options),/HTTP 401.*会话失效/);assert.equal(f.calls.length,1);
+});
+test('local permission and path failures are not mistaken for transient fetch failures',async()=>{
+ for(const code of ['EACCES','EPERM','ENOENT','ENOTDIR']){
+  const failure=Object.assign(Error('local path denied'),{code});let calls=0;
+  await assert.rejects(apiPost(url,'call',{operation:'files.get'},{fetchImpl:async()=>{calls++;throw failure;},sleep:()=>assert.fail('permanent error retry')}),error=>error===failure);assert.equal(calls,1);
+ }
 });
 test('connection and response body failures retry reads but not mutations',async()=>{
  for(const fail of [new TypeError('fetch failed'),{status:200,ok:true,json:async()=>{throw new TypeError('terminated');}}]){

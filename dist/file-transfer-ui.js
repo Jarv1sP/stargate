@@ -7,7 +7,7 @@ export async function readBrowserFile(call,scope,path,{signal,onProgress=()=>{},
   do{
     signal?.throwIfAborted();
     let bytes,metadata;
-    const portal=async()=>{metadata=await call('files.get',{...scope,path,offset});bytes=Uint8Array.from(atob(metadata.data),c=>c.charCodeAt(0));};
+    const portal=async()=>{metadata=await retryCampusRequest(()=>call('files.get',{...scope,path,offset}),{...retry,signal});bytes=Uint8Array.from(atob(metadata.data),c=>c.charCodeAt(0));};
     if(route.via==='portal')await portal();
     else try{
       ({bytes,metadata}=await retryCampusRequest(async()=>{

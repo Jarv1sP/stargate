@@ -293,7 +293,9 @@ async function main() {
     result = { loggedIn: true, principal: login.principal };
   } else {
     if (!session) fail9("请先登录：gpuctl login");
-    const state = ownerUsername!==undefined||options.job&&!outputDelete?(await call('state',{})).state:outputDelete?{machines:[],users:[]}:await readCLIState(call,command);
+    const pulling=['pull','download'].includes(command);
+    const state = pulling&&options.job?(await call('state',{view:'summary',jobId:options.job})).state
+      :ownerUsername!==undefined||options.job&&!outputDelete?(await call('state',pulling?{view:'summary'}:{})).state:outputDelete?{machines:[],users:[]}:await readCLIState(call,command);
     if(ownerUsername!==undefined){const owner=state.users?.find(user=>user.username===ownerUsername);if(!owner)fail9('没有这个用户名：'+ownerUsername);targetOwnerId=owner.id;}
     if(!(command==='community'&&['announcements','ack'].includes(positionals[1])))await showCLIAnnouncements(call,state.announcements?.pending);
     const machineName = (value) => {

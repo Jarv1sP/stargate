@@ -42,7 +42,8 @@ async function fixture(t){
  const reservation=createTCPServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));const origin='http://127.0.0.1:'+port;
  const {server,service}=await createPortalServer({database:join(dir,'db'),bootstrap,origin,secure:false,bridge:async(host,op,args)=>{
   assert.equal(host,machine);assert.ok(['files.list','files.get'].includes(op),op);calls.push({op,args:structuredClone(args)});const result=await node(op,args);
-  if(paused&&op==='files.get'&&args.offset===1024**2)throw Object.assign(Error('fixture connection interrupted'),{status:503});return result;
+  // Deliberate stop tests manual continuation; transient recovery has its own CLI cases.
+  if(paused&&op==='files.get'&&args.offset===1024**2)throw Object.assign(Error('fixture download deliberately stopped'),{status:400});return result;
  }});for(const key of ['executionTimer','notificationTimer','maintenanceTimer','transferTimer'])clearInterval(service[key]);await new Promise(resolve=>server.listen(port,'127.0.0.1',resolve));
  const admin=await service.login('admin',password);await service.invoke(admin.token,'users.create',{username:'reader',password});const reader=await service.login('reader',password);service.store.jobs.push({id:jobId,key:jobId,userId:'peer',ownerId:'peer',machine,project:'demo',name:'actual outputs',state:'SUCCEEDED',cards:1,spec:{id:jobId,userId:'peer',project:'demo',argv:['true']}});service.save();
  const session=join(dir,'session');await writeFile(session,JSON.stringify({url:origin,token:reader.token,principal:reader.principal}),{mode:0o600});
