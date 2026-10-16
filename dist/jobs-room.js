@@ -38,10 +38,12 @@ export function jobsRoom(store,{toast,machines,getPage}){
   const project=()=>{try{return JSON.parse(localStorage.getItem('sg-last-project')||'null');}catch{return null;}};
   const remember=value=>{try{localStorage.setItem('sg-last-project',JSON.stringify(value));}catch{}};
   function placePill(){const on=host.querySelector('.jr-seg [aria-pressed=true]'),pill=host.querySelector('.jr-pill');if(!on||!on.offsetWidth)return;pill.style.width=on.offsetWidth+'px';pill.style.transform=`translateX(${on.offsetLeft}px)`;}
+  // Running first, then the queue in order, then finished; long lists come in pages.
+  const group=job=>LIVE.includes(job.state)?0:QUEUED.includes(job.state)?1:2,PAGE=50;let limit=PAGE;
   function visible(){
     const me=store.principal?.userId,current=project(),text=search.trim().toLocaleLowerCase();
     return [...store.jobs].filter(job=>(scope==='all'||(scope==='mine'?job.userId===me:!!current&&job.machine===current.machine&&job.project===current.project))&&(!text||[job.id,job.name,job.username,job.project,job.machine,stateWord(job)].some(v=>String(v||'').toLocaleLowerCase().includes(text))))
-      .sort((a,b)=>(seconds(b.createdAt)||0)-(seconds(a.createdAt)||0));
+      .sort((a,b)=>group(a)-group(b)||(group(a)===1?(seconds(a.createdAt)||0)-(seconds(b.createdAt)||0):(seconds(b.createdAt)||0)-(seconds(a.createdAt)||0)));
   }
   function timeText(job){if(QUEUED.includes(job.state))return job.cancelRequested?'正在取消':'排队中';const e=elapsedTraining(job);return e||stateWord(job);}
   function rowHTML(job){
@@ -50,10 +52,10 @@ export function jobsRoom(store,{toast,machines,getPage}){
     return `<button type="button" class="jr-row${fresh&&lastRows?' jr-new':''}" role="listitem" data-job="${esc(job.id)}"><span class="jr-dot ${dotClass(job)}" aria-hidden="true"></span><span class="jr-main"><span class="jr-t">${esc(job.name||'训练')}</span>${running&&readout.percent!==null?`<span class="jr-prog" role="progressbar" aria-label="训练进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${readout.percent}"><b data-w="${readout.percent}"></b></span>`:`<span class="jr-s${job.state==='FAILED'?' fail':''}">${status}</span>`}</span><span class="jr-s jr-hide-m">${esc(job.username||'成员未知')} · ${esc(job.project||'默认项目')}</span><span class="jr-s jr-hide-m mono">${esc(shortServer(job.machine))} · ${Number.isSafeInteger(job.cards)?job.cards+' 张':'—'}${rank(job)!==null?' · P'+rank(job):''}</span><span class="jr-time mono">${esc(timeText(job))}</span></button>`;
   }
   function renderRows(){
-    const rows=visible(),html=rows.length?rows.map(rowHTML).join(''):`<div class="jr-empty">${falcon}<p>${search||scope!=='all'&&store.jobs.length?'没有符合条件的任务。':'发射台是空的。'}<br>新建一个任务，几秒后就会排上。</p><button type="button" class="jr-btn ghost" data-empty-new>新建任务</button></div>`;
+    const rows=visible(),more=rows.length-limit,html=rows.length?rows.slice(0,limit).map(rowHTML).join('')+(more>0?`<button type="button" class="jr-more" data-more>再显示 ${Math.min(more,PAGE)} 个 · 共 ${rows.length} 个</button>`:''):`<div class="jr-empty">${falcon}<p>${search||scope!=='all'&&store.jobs.length?'没有符合条件的任务。':'发射台是空的。'}<br>新建一个任务，几秒后就会排上。</p><button type="button" class="jr-btn ghost" data-empty-new>新建任务</button></div>`;
     // Widths go through CSSOM: the portal CSP blocks inline style attributes.
     if(html!==lastRows){$('.jr-rows').innerHTML=html;lastRows=html;requestAnimationFrame(()=>{for(const bar of $('.jr-rows').querySelectorAll('[data-w]'))bar.style.width=bar.dataset.w+'%';});}
-    for(const job of rows)seen.add(job.id);
+    for(const job of rows.slice(0,limit))seen.add(job.id);
   }
 
   // Drawer: a launch-webcast readout for one task.
@@ -183,11 +185,14 @@ export function jobsRoom(store,{toast,machines,getPage}){
   }
 
   host.addEventListener('click',event=>{
-    const scopeButton=event.target.closest('[data-scope]');if(scopeButton){scope=scopeButton.dataset.scope;for(const b of host.querySelectorAll('[data-scope]'))b.setAttribute('aria-pressed',b===scopeButton);placePill();renderRows();return;}
+    if(event.target.closest('[data-more]')){limit+=PAGE;renderRows();return;}
+    const scopeButton=event.target.closest('[data-scope]');if(scopeButton){scope=scopeButton.dataset.scope;limit=PAGE;for(const b of host.querySelectorAll('[data-scope]'))b.setAttribute('aria-pressed',b===scopeButton);placePill();renderRows();return;}
     const row=event.target.closest('[data-job]');if(row){tab='log';openJob(row.dataset.job);return;}
     if(event.target.closest('[data-empty-new]'))openSheet();
   });
-  $('.jr-search').addEventListener('input',event=>{search=event.target.value;renderRows();});
+  $('.jr-search').addEventListener('input',event=>{search=event.target.value;limit=PAGE;renderRows();});
+  // 本项目 follows the project open in the project room.
+  document.addEventListener('gpuq-workspace-context',event=>{const {machine,project:name,ownerId}=event.detail||{};if(machine&&name)remember({machine,project:name,ownerId});});
   newButton.addEventListener('click',openSheet);
   scrim.addEventListener('click',close);drawer.querySelector('.jr-x').addEventListener('click',close);
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!document.querySelector('dialog[open]')&&(drawer.classList.contains('on')||sheet.classList.contains('on')))close();});
