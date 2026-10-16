@@ -1,5 +1,5 @@
 """Copy concurrency uses real file locks and archive/file transport; OCI is local fixture transport."""
-import base64,concurrent.futures,importlib.util,shutil,subprocess,threading,unittest
+import base64,concurrent.futures,fcntl,importlib.util,os,shutil,subprocess,sys,threading,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -61,6 +61,45 @@ class Runtime(unittest.TestCase):
         self.assertEqual(observed,['old-code','old-code'])
         self.assertEqual((paths['code']/'train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
 
+    def test_busy_auto_job_starts_an_independent_copy_without_waiting_for_the_running_job(self):
+        self.busy_auto('incremental')
+
+    def test_busy_auto_job_with_a_full_bundle_uses_the_original_independent_installer(self):
+        self.busy_auto('full')
+
+    def busy_auto(self,mode):
+        t=self.transport(interrupt=False,mode=mode);paths=self.target(t);exports=[]
+        if mode=='incremental':self.assertFalse(any(args[0] in ('commit','save') for args in t.native))
+        def launch(argv,**kwargs):
+            if '--project-copy-export-worker' in argv:
+                exports.append(argv);self.assertEqual(t.transfers.module('project-copy').ProjectCopy(t.source).export(t.key),0)
+        t.source.e.run=launch
+        ticket={'id':t.key,'token':t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']}
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':ticket,'source':t.ref,
+                        'target':{**t.ref,'mode':mode,'jobId':t.key}})
+        running=threading.Event();release=threading.Event();observed=[]
+        def command(*args,**kwargs):
+            observed.append((paths['code']/'train.py').read_text());running.set();release.wait(10)
+            observed.append((paths['code']/'train.py').read_text());return 0
+        with concurrent.futures.ThreadPoolExecutor(2) as pool,patch.object(t.transfers,'PeerClient',t.peer):
+            consumer=pool.submit(self.consumer,t,command)
+            try:
+                self.assertTrue(running.wait(3));copy=pool.submit(t.target.worker,t.key)
+                self.assertEqual(copy.result(5),0,t.target.status({'id':t.key}))
+                self.assertFalse(release.is_set())
+                row=t.target.status({'id':t.key});self.assertEqual(row['state'],'SUCCEEDED');self.assertFalse(row['installed'])
+                runtime=Path(t.target.config['workspacesRoot'])/'.copies'/t.key
+                self.assertEqual((runtime/'code/train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
+                self.assertEqual((runtime/'home/settings').read_text(),'original-home')
+                self.assertNotEqual(t.target.s.read_json(runtime/'oci.json')['container'],'keep-container')
+                self.assertEqual((paths['code']/'train.py').read_text(),'old-code')
+                self.assertEqual((self.base/'loaded-rootfs/installed-dependency').read_text(),'old-dependency')
+            finally:release.set()
+            self.assertEqual(consumer.result(5),0)
+        self.assertEqual(observed,['old-code','old-code'])
+        self.assertEqual(len(exports),int(mode=='incremental'))
+        self.assertFalse((Path(t.source.config['workspacesRoot'])/'.copy-exports'/t.key).exists())
+
     def test_merge_does_not_hold_the_short_oci_lock_and_new_commands_wait_without_failing(self):
         t=self.transport(interrupt=False,mode='incremental');self.target(t);self.start(t)
         applying=threading.Event();release=threading.Event();started=threading.Event();original=t.target.e.projects
@@ -111,6 +150,11 @@ class Runtime(unittest.TestCase):
         shutil.copy2(t.paths['code']/'run.sh',paths['code']/'run.sh');self.start(t);changed=[False]
         class Peer(t.peer):
             def call(self,action,**fields):
+                if action=='file':
+                    lock=t.target.e.projects().oci('alice').folder/'use-demo.lock'
+                    fd=os.open(lock,os.O_RDWR|os.O_CREAT,0o600)
+                    try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    finally:os.close(fd)
                 if action=='file' and not changed[0]:
                     changed[0]=True;(paths['code']/'run.sh').write_text('edited while the copy downloaded')
                 return super().call(action,**fields)
@@ -140,15 +184,24 @@ class Runtime(unittest.TestCase):
             self.assertEqual(first.result(8),0,t.target.status({'id':t.key}));self.assertEqual(newer.result(8),0,t.target.status({'id':second}))
         self.assertEqual((paths['code']/'train.py').read_text(),'newer-code')
 
-    def test_workspace_command_budget_is_applied_after_waiting_for_the_execution_lease(self):
+    def test_projects_status_times_out_while_a_merge_holds_the_execution_lease(self):
         t=self.transport(interrupt=False,mode='incremental');self.target(t);requests=[]
+        engine=t.target.e.projects().oci('alice');workspace_command=engine.workspace_command
+        engine.workspace_command=lambda *args,**kwargs:workspace_command(*args,timeout=.05,**kwargs)
+        operations=c.f.module('project-ops').ProjectOperations.__new__(c.f.module('project-ops').ProjectOperations)
+        operations.store=t.target_store;operations.oci=lambda owner:engine
+        lock=engine.folder/'use-demo.lock';fd=os.open(lock,os.O_RDWR|os.O_CREAT,0o600)
+        fcntl.flock(fd,fcntl.LOCK_EX)
         def transport(args,**kwargs):
             requests.append(__import__('json').loads(Path(args[-1]).read_text()))
-            self.assertNotIn('timeout',kwargs,'the helper may wait for an active merge before starting the command budget')
-            return subprocess.CompletedProcess(args,0,'done','')
-        with patch.object(t.oci,'subprocess',SimpleNamespace(run=transport)):
-            self.assertEqual(t.target.e.projects().oci('alice').workspace_command('alice','demo',['/bin/true'],timeout=2),'done')
-        self.assertEqual(requests[0]['commandTimeout'],2)
+            self.assertEqual(kwargs.get('timeout'),.05)
+            return subprocess.run([sys.executable,'-c',
+                'import fcntl,sys; f=open(sys.argv[1],"r+"); fcntl.flock(f,fcntl.LOCK_SH)',str(lock)],**kwargs)
+        try:
+            with patch.object(t.oci,'subprocess',SimpleNamespace(run=transport)):
+                with self.assertRaises(subprocess.TimeoutExpired):operations.status('alice','demo')
+        finally:os.close(fd)
+        self.assertEqual(requests[0]['commandTimeout'],.05)
 
 
 if __name__=='__main__':unittest.main()

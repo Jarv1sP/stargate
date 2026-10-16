@@ -153,7 +153,7 @@ class PersonalOCI:
                      'flags':flags,'argv':argv,'commandTimeout':timeout}
             path=self.folder/'tmp'/('git-'+uuid.uuid4().hex+'.json');self.s.atomic_json(path,request)
             try:
-                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True)
+                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=timeout)
                 if result.returncode:raise ValueError('容器git操作失败：'+result.stderr[-1200:])
                 return result.stdout.strip()
             finally:path.unlink(missing_ok=True)

@@ -50,7 +50,7 @@ test('same-node jobs keep their current writable environment without copying',as
  assert.deepEqual(f.calls.map(c=>c.op),['sync']);
 });
 
-test('a task prepared before deployment retains the runtime copy that already contains its environment',async()=>{
+test('an AUTO task prepared while its target is busy starts with its independent runtime copy',async()=>{
  const row=job(),f=fixture(row,{shared:false}),helpers={usage:()=>0,fail:message=>{throw Error(message);}};
  await firstDispatch(f.service,row,helpers);f.complete();
  const attempt=await firstDispatch(f.service,row,helpers);await attempt.response;
