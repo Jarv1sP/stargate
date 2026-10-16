@@ -129,6 +129,8 @@ class TransferJobs:
             row=module('project-copy').ProjectCopy(self).observe(row)
             if row['state']=='PREPARING':return {'state':'PREPARING','entries':[],'nextOffset':0}
             if row['state']=='FAILED':return {'state':'FAILED','error':row['error']}
+            if row.get('mode')=='incremental' and action=='list':
+                return module('project-sync').page(Path(row['root'])/'index.jsonl',int(args.get('offset',0)))
         if action=='list':
             import itertools
             offset=int(args.get('offset',0))
@@ -140,7 +142,7 @@ class TransferJobs:
             return module('dataset-files').process(self.config,'files.get',request,root=row['root'])
         raise ValueError('此传输读取操作不存在。')
 
-    def view(self,row):return {k:row.get(k) for k in ('id','key','state','bytes','totalBytes','error','source','target','createdAt')}
+    def view(self,row):return {k:row.get(k) for k in ('id','key','state','bytes','totalBytes','error','source','target','createdAt','installed')}
 
     def status(self,args):
         try:return self.view(self.s.read_json(self.path(args.get('id',args.get('key')))))
@@ -189,16 +191,16 @@ class TransferJobs:
                 root=self.s.private_dir(copy.target(row)/'received',create=True)
                 # A lost completion reply must not reinstall a successful copy.
                 owner=target.get('ownerId') or target['userId']
-                destination=copy.target(row) if target.get('jobId') else self.e.projects().store.owner_path(owner,create=True)/self.d.name(target['project'])
-                if (destination/'project.json').exists() and self.s.read_json(destination/'project.json').get('copyKey')==key:
+                destination=copy.destination(row)
+                if row.get('installed') or (destination/'project.json').exists() and self.s.read_json(destination/'project.json').get('copyKey')==key:
                     peer.call('complete')
-                    with self.lock(key):row.update(state='SUCCEEDED');self.s.atomic_json(self.path(key),row)
+                    with self.lock(key):row.update(state='SUCCEEDED',installed=True);self.s.atomic_json(self.path(key),row)
                     return 0
             else:root=self.d.dataset_root(self.config,target['dataset'],create=True) if target.get('dataset') else self.root(target)
             uploads=module('data-uploads').Uploads(self.config,target.get('userId','team'),root=root)
             cursor=0;done=0
             while cursor is not None:
-                page=peer.call('list',offset=cursor)
+                page=copy.incremental_page(row,peer,cursor) if copy and target.get('mode')=='incremental' else peer.call('list',offset=cursor)
                 if page.get('state')=='PREPARING':
                     if self.status({'id':key})['state']=='CANCELED':return 0
                     time.sleep(1);continue
@@ -215,7 +217,7 @@ class TransferJobs:
                     begin={'key':upload_key,'path':entry['path'],'totalSize':entry['size'],'executable':entry.get('executable',False),'dataset':target.get('dataset'),'actor':row.get('actor')}
                     status=uploads.process('begin',begin);offset=status['offset'] or 0
                     while offset<entry['size']:
-                        chunk=peer.call('file',path=entry['path'],offset=offset)
+                        chunk=peer.call('file',path=entry.get('remotePath',entry['path']),offset=entry.get('remoteOffset',0)+offset,length=min(1024**2,entry['size']-offset))
                         with self.lock(key):
                             row=self.s.read_json(self.path(key))
                             if row['state']=='CANCELED':return 0
@@ -243,6 +245,7 @@ class TransferJobs:
 
     def process(self,operation,args):
         action=operation.removeprefix('transfers.')
+        if action=='project.mode':return module('project-copy').ProjectCopy(self).mode(args)
         if action=='project.prepare':return self.prepare(args)
         if action=='project.start':return self.start(args)
         if action=='prepare':return self.prepare(args)

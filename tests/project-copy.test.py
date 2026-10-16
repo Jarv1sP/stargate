@@ -11,7 +11,7 @@ class ProjectCopy(unittest.TestCase):
     setUp=f.DirectoryContract.setUp
     key=f.DirectoryContract.key
 
-    def transport(self,interrupt=True):
+    def transport(self,interrupt=True,mode='full'):
         """Replace the external OCI engine only; archives, offsets and files are real."""
         store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config)
         store.create('alice','demo');paths=store.dev_paths('alice','demo')
@@ -26,33 +26,32 @@ class ProjectCopy(unittest.TestCase):
             def workspace_container(self,project):return {'container':'source-dev','image':'source-image'}
             def locked(self,project):return contextlib.nullcontext()
             def load(self,project):
-                path=self.state_folder/'oci.json'
+                path=(self.state_folder or Path(self.config['workspacesRoot'])/'alice'/project)/'oci.json'
                 return json.loads(path.read_text()) if path.exists() else {'container':None}
             def run(self,*args,**kwargs):
                 native.append(args)
-                if args[0] in ('commit','rmi','create'):return 'new-container'
+                if args[0] in ('commit','rmi'):return ''
+                if args[0]=='create':
+                    __import__('shutil').copytree(outer.base/'loaded-image',outer.base/'loaded-rootfs',dirs_exist_ok=True);return 'new-container'
                 if args[0]=='container':return '100 100'
                 if args[:2]==('unshare','/usr/bin/du'):return '1 code\n1 home'
-                if args[0]=='save':
+                if args[0] in ('save','export'):
                     with tarfile.open(args[args.index('--output')+1],'w') as archive:archive.add(rootfs/'installed-dependency',arcname='installed-dependency')
                     return ''
                 if args[0]=='load':
-                    loaded=outer.base/'loaded-rootfs';loaded.mkdir(exist_ok=True)
+                    loaded=outer.base/'loaded-image';loaded.mkdir(exist_ok=True)
                     with tarfile.open(args[args.index('--input')+1]) as archive:archive.extractall(loaded)
                     return ''
                 if args[:2]==('unshare','/usr/bin/tar'):
                     subprocess.run(args[1:],check=True);return ''
                 raise AssertionError(args)
-            def workspace_command(self,owner,project,argv,*,paths,archive,timeout):
-                # Simulate the two bind mounts in an isolated fixture directory.
-                unpack=outer.base/'unpacked';unpack.mkdir(exist_ok=True)
-                subprocess.run(['tar','-xf',str(archive),'-C',str(unpack)],check=True)
-                for name,source in (('code',unpack/'workspace'),('home',unpack/'home/gpuq')):
-                    os.rmdir(paths[name]);os.rename(source,paths[name])
+            def copy_files(self,project,action,*,paths,**kwargs):
+                root=outer.base/('loaded-image' if action=='image' else 'loaded-rootfs')
+                return f.module('project-sync').execute({'action':action,'paths':{k:str(v) for k,v in paths.items()},**kwargs},root)
         executor=SimpleNamespace(CONFIG=self.config,projects=lambda:SimpleNamespace(store=store,oci=lambda owner:OCI(self.config)),run=lambda *a,**kw:None)
         transfers=f.module('transfer-jobs');jobs=transfers.TransferJobs(executor);key=self.key()
         ref={'project':'demo','ownerId':'alice','userId':'bob','environment':True}
-        ticket=jobs.process('transfers.project.prepare',{'id':key,'source':ref})
+        ticket=jobs.process('transfers.project.prepare',{'id':key,'source':ref,'mode':mode})
         self.assertEqual(transfers.module('project-copy').ProjectCopy(jobs).export(key),0)
         target_config={**self.config,**{name:str(self.base/('target-'+name)) for name in ('root','workspacesRoot','datasetsRoot')}}
         for name in ('root','workspacesRoot','datasetsRoot'):Path(target_config[name]).mkdir(mode=0o700)
@@ -69,6 +68,125 @@ class ProjectCopy(unittest.TestCase):
                 return jobs.read({'id':key,'action':action,**fields},ticket['token'])
         return SimpleNamespace(store=store,paths=paths,key=key,source=jobs,target=target,transfers=transfers,peer=Peer,ref=ref,target_store=target_store,native=native)
 
+    def test_existing_container_is_reused_and_only_changed_file_bodies_cross_the_peer(self):
+        t=self.transport(interrupt=False,mode='incremental');t.target_store.create('alice','demo')
+        paths=t.target_store.dev_paths('alice','demo');folder=paths['code'].parent
+        t.target.s.atomic_json(folder/'oci.json',{'image':'target-image','container':'keep-container'})
+        (paths['code']/'target-only').write_text('keep-data')
+        (paths['home']/'target-settings').write_text('keep-settings')
+        (paths['code']/'train.py').write_text('old-code')
+        import shutil
+        shutil.copy2(t.paths['code']/'run.sh',paths['code']/'run.sh')
+        rootfs=self.base/'loaded-rootfs';rootfs.mkdir()
+        (rootfs/'installed-dependency').write_text('dependency-old')
+        (rootfs/'target-only-dependency').write_text('keep-dependency')
+        token=t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':{'id':t.key,'token':token},'source':t.ref,'target':{**t.ref,'mode':'incremental'}})
+        reads=[]
+        class Peer(t.peer):
+            def call(self,action,**fields):
+                if action=='file':reads.append(fields)
+                return super().call(action,**fields)
+        with patch.object(t.transfers,'PeerClient',Peer):self.assertEqual(t.target.worker(t.key),0,t.target.status({'id':t.key}))
+        self.assertEqual(t.target.s.read_json(folder/'oci.json')['container'],'keep-container')
+        self.assertEqual((paths['code']/'train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
+        self.assertEqual((paths['code']/'target-only').read_text(),'keep-data')
+        self.assertEqual((paths['home']/'target-settings').read_text(),'keep-settings')
+        self.assertEqual((rootfs/'installed-dependency').read_text(),'dependency-v1')
+        self.assertEqual((rootfs/'target-only-dependency').read_text(),'keep-dependency')
+        self.assertFalse(any(args[0] in ('commit','save','load','create','rm','restart','stop') for args in t.native))
+        self.assertEqual(t.target.status({'id':t.key})['bytes'],(t.paths['code']/'train.py').stat().st_size+len('dependency-v1')+len('original-home'))
+        self.assertTrue(reads)
+        trash=f.module('project-purge').Trash(t.target.config);trash.restore({'key':t.key})
+        with tarfile.open(paths['code']/'.copy-backups'/(t.key+'.tar')) as saved:
+            self.assertEqual(saved.extractfile('code/train.py').read(),b'old-code')
+            self.assertEqual(saved.extractfile('rootfs/installed-dependency').read(),b'dependency-old')
+        second=self.key();ticket=t.source.prepare({'id':second,'source':t.ref,'mode':'incremental'})
+        self.assertEqual(t.transfers.module('project-copy').ProjectCopy(t.source).export(second),0)
+        class RepeatPeer:
+            def __init__(self,*args):pass
+            def close(self):pass
+            def call(self,action,**fields):
+                if action=='file':raise AssertionError('An unchanged copy must send no file bodies')
+                return t.source.read({'id':second,'action':action,**fields},ticket['token'])
+        t.target.start({'id':second,'sourceMachine':'source','ticket':ticket,'source':t.ref,'target':{**t.ref,'mode':'incremental'}})
+        with patch.object(t.transfers,'PeerClient',RepeatPeer):self.assertEqual(t.target.worker(second),0,t.target.status({'id':second}))
+        self.assertEqual(t.target.status({'id':second})['bytes'],0)
+
+    def test_interrupted_incremental_install_reuses_original_backup_and_resumes_without_recreating_container(self):
+        t=self.transport(mode='incremental');t.target_store.create('alice','demo')
+        paths=t.target_store.dev_paths('alice','demo');folder=paths['code'].parent
+        t.target.s.atomic_json(folder/'oci.json',{'image':'old','container':'keep-container'})
+        rootfs=self.base/'loaded-rootfs';rootfs.mkdir();(rootfs/'installed-dependency').write_text('old-dependency')
+        (paths['code']/'train.py').write_text('old-code');original=t.target.e.projects;interrupted=[False]
+        def projects():
+            result=original();factory=result.oci
+            def oci(owner):
+                engine=factory(owner);apply=engine.copy_files
+                def files(project,action,**kwargs):
+                    value=apply(project,action,**kwargs)
+                    if action=='apply' and not interrupted[0]:interrupted[0]=True;raise ValueError('installation interrupted')
+                    return value
+                engine.copy_files=files;return engine
+            result.oci=oci;return result
+        t.target.e.projects=projects;token=t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':{'id':t.key,'token':token},'source':t.ref,'target':{**t.ref,'mode':'incremental'}})
+        with patch.object(t.transfers,'PeerClient',t.peer):
+            self.assertEqual(t.target.worker(t.key),1)  # interrupted body at its saved offset
+            t.target.resume({'id':t.key});self.assertEqual(t.target.worker(t.key),1)  # after apply, before completion
+            t.target.resume({'id':t.key})
+            with patch('os.fstatvfs',return_value=SimpleNamespace(f_bavail=64*1024**3,f_frsize=1)):
+                self.assertEqual(t.target.worker(t.key),1)  # existing backup cannot bypass the resource floor
+            t.target.resume({'id':t.key});self.assertEqual(t.target.worker(t.key),0,t.target.status({'id':t.key}))
+        self.assertEqual(t.target.s.read_json(folder/'oci.json')['container'],'keep-container')
+        trash=f.module('project-purge').Trash(t.target.config);trash.restore({'key':t.key})
+        with tarfile.open(paths['code']/'.copy-backups'/(t.key+'.tar')) as saved:
+            self.assertEqual(saved.extractfile('code/train.py').read(),b'old-code')
+            self.assertEqual(saved.extractfile('rootfs/installed-dependency').read(),b'old-dependency')
+
+    def test_full_transfer_reuses_a_container_created_while_the_source_was_exporting(self):
+        t=self.transport(interrupt=False);t.target_store.create('alice','demo')
+        paths=t.target_store.dev_paths('alice','demo');folder=paths['code'].parent
+        t.target.s.atomic_json(folder/'oci.json',{'image':'target','container':'created-during-transfer'})
+        rootfs=self.base/'loaded-rootfs';rootfs.mkdir();(rootfs/'installed-dependency').write_text('old-target-dependency')
+        (rootfs/'keep-dependency').write_text('keep');(paths['code']/'keep-data').write_text('keep')
+        token=t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':{'id':t.key,'token':token},'source':t.ref,'target':{**t.ref,'mode':'full'}})
+        with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(t.target.worker(t.key),0,t.target.status({'id':t.key}))
+        self.assertEqual(t.target.s.read_json(folder/'oci.json')['container'],'created-during-transfer')
+        self.assertEqual((rootfs/'installed-dependency').read_text(),'dependency-v1')
+        self.assertEqual((rootfs/'keep-dependency').read_text(),'keep');self.assertEqual((paths['code']/'keep-data').read_text(),'keep')
+        self.assertFalse(any(args[0]=='create' for args in t.native))
+
+    def test_original_key_resume_replans_when_a_new_target_appears_after_staging_was_installed(self):
+        t=self.transport(interrupt=False);original=t.target.e.projects;created=[False]
+        def projects():
+            result=original();factory=result.oci
+            def oci(owner):
+                engine=factory(owner);apply=engine.copy_files
+                def files(project,action,**kwargs):
+                    value=apply(project,action,**kwargs)
+                    if action=='apply' and not created[0]:
+                        created[0]=True;t.target_store.create('alice','demo');paths=t.target_store.dev_paths('alice','demo')
+                        (paths['code']/'train.py').write_text('concurrent-code')
+                        t.target.s.atomic_json(paths['code'].parent/'oci.json',{'image':'concurrent','container':'concurrent-container'})
+                        (self.base/'loaded-rootfs/installed-dependency').write_text('concurrent-dependency')
+                    return value
+                engine.copy_files=files;return engine
+            result.oci=oci;return result
+        t.target.e.projects=projects;token=t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':{'id':t.key,'token':token},'source':t.ref,'target':t.ref})
+        with patch.object(t.transfers,'PeerClient',t.peer):
+            self.assertEqual(t.target.worker(t.key),1);t.target.resume({'id':t.key})
+            self.assertEqual(t.target.worker(t.key),0,t.target.status({'id':t.key}))
+        paths=t.target_store.dev_paths('alice','demo')
+        self.assertEqual(t.target.s.read_json(paths['code'].parent/'oci.json')['container'],'concurrent-container')
+        self.assertEqual((self.base/'loaded-rootfs/installed-dependency').read_text(),'dependency-v1')
+        trash=f.module('project-purge').Trash(t.target.config);trash.restore({'key':t.key})
+        with tarfile.open(paths['code']/'.copy-backups'/(t.key+'.tar')) as saved:
+            self.assertEqual(saved.extractfile('code/train.py').read(),b'concurrent-code')
+            self.assertEqual(saved.extractfile('rootfs/installed-dependency').read(),b'concurrent-dependency')
+
     def test_copy_prepares_a_background_environment_bundle_instead_of_only_workspace_files(self):
         store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config)
         store.create('alice','demo')
@@ -81,7 +199,7 @@ class ProjectCopy(unittest.TestCase):
         self.assertIn('--project-copy-export-worker',commands[0])
         self.assertEqual((store.dev_paths('alice','demo')['code']/'train.py').read_text(),'print("original")')
 
-    def test_task_copy_resumes_real_bytes_and_uses_its_new_environment_without_replacing_a_same_name_project(self):
+    def test_task_copy_resumes_real_bytes_and_merges_into_the_normal_target_project(self):
         t=self.transport();t.target_store.create('alice','demo')
         old=t.target_store.dev_paths('alice','demo');(old['code']/'train.py').write_text('target-original')
         target={**t.ref,'jobId':t.key}
@@ -89,13 +207,16 @@ class ProjectCopy(unittest.TestCase):
         with patch.object(t.transfers,'PeerClient',t.peer):
             self.assertEqual(t.target.worker(t.key),1);self.assertEqual(t.target.status({'id':t.key})['state'],'PAUSED')
             t.target.resume({'id':t.key});self.assertEqual(t.target.worker(t.key),0)
-        paths=t.target_store.runtime_paths({'project':'demo','projectCopy':t.key,'userId':'bob','ownerId':'alice'},t.key)
+        paths=t.target_store.dev_paths('alice','demo')
         self.assertEqual((paths['code']/'train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
         self.assertEqual((paths['code']/'entry').readlink(),Path('run.sh'))
         self.assertTrue((paths['code']/'run.sh').stat().st_mode&0o100);self.assertTrue((paths['code']/'empty').is_dir())
         self.assertEqual((paths['home']/'settings').read_text(),'original-home')
         self.assertEqual((self.base/'loaded-rootfs/installed-dependency').read_text(),'dependency-v1')
-        self.assertEqual((old['code']/'train.py').read_text(),'target-original')
+        trash=f.module('project-purge').Trash(t.target.config)
+        trash.restore({'key':t.key})
+        with tarfile.open(paths['code']/'.copy-backups'/(t.key+'.tar')) as saved:
+            self.assertEqual(saved.extractfile('code/train.py').read(),b'target-original')
         self.assertIn(('commit','--pause=false','--include-volumes=false','source-dev','localhost/gpuq-copy:'+t.key),t.native)
         self.assertFalse(any(args[0] in ('stop','rm','restart') for args in t.native))
         self.assertEqual(t.target.status({'id':t.key})['state'],'SUCCEEDED')
@@ -151,10 +272,12 @@ class ProjectCopy(unittest.TestCase):
         def projects():
             result=original();factory=result.oci
             def oci(owner):
-                engine=factory(owner);extract=engine.workspace_command
+                engine=factory(owner);extract=engine.copy_files
                 def finish(*args,**kwargs):
-                    extract(*args,**kwargs);t.target.cancel({'id':t.key})
-                engine.workspace_command=finish;return engine
+                    result=extract(*args,**kwargs)
+                    if args[1]=='apply':t.target.cancel({'id':t.key})
+                    return result
+                engine.copy_files=finish;return engine
             result.oci=oci;return result
         t.target.e.projects=projects
         token=t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']
@@ -180,6 +303,11 @@ class ProjectCopy(unittest.TestCase):
         with patch('os.fstatvfs',return_value=SimpleNamespace(f_bavail=64*1024**3+250,f_frsize=1)):
             self.assertEqual(transfers.module('project-copy').ProjectCopy(jobs).export(key),1)
         self.assertFalse(any(args[0]=='commit' for args in calls))
+
+    def test_incremental_export_does_not_reserve_full_copy_commit_and_image_staging_layers(self):
+        with patch('os.fstatvfs',return_value=SimpleNamespace(f_bavail=64*1024**3+150,f_frsize=1)):
+            t=self.transport(interrupt=False,mode='incremental')
+        self.assertEqual(t.source.s.read_json(t.source.path(t.key,'.source.json'))['state'],'READY')
 
     def test_target_disk_floor_includes_the_archive_unpacking_space_before_loading(self):
         store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config)
