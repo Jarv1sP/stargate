@@ -2,7 +2,7 @@
 
 功能以[功能清单](FEATURES.md)为准，完整操作集中在[使用指南](USER_GUIDE.md)：
 
-- [项目开发](USER_GUIDE.md#项目开发-development)：创建项目、可选 Git 仓库、跨服务器复制代码和依赖环境、上传下载、容器终端、显示名、分组、归档和磁盘用量。
+- [项目开发](USER_GUIDE.md#项目开发-development)：创建项目、可选 Git 仓库、跨服务器增量同步与容器复用、上传下载、容器终端、显示名、分组、归档和磁盘用量。
 - [提交训练](USER_GUIDE.md#提交训练-training)：当前工作区、自动选机、GPU 交互终端和调度选项。
 - [日志与结果](USER_GUIDE.md#日志与结果-results)：按任务读取输出、容器内复用前序结果、删除与回收站恢复。
 - [常见问题](USER_GUIDE.md#常见问题-troubleshooting)：原编号恢复、网络诊断和维护。

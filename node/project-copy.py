@@ -1,5 +1,5 @@
 """Current project transport: OCI environment, workspace and HOME; no releases."""
-import os,shutil,uuid
+import json,os,shutil,time,uuid
 from pathlib import Path
 
 
@@ -13,6 +13,13 @@ def runtime_folder(config,key):
 
 class ProjectCopy:
     def __init__(self,jobs):self.j,self.s,self.d=jobs,jobs.s,jobs.d
+
+    def mode(self,args):
+        ref=args['target'];store=self.j.e.projects().store
+        folder=store.owner_path(ref.get('ownerId') or ref['userId'],create=True)/self.d.name(ref['project'])
+        try:head=self.s.read_json(folder/'oci.json')
+        except FileNotFoundError:head={}
+        return {'mode':'incremental' if head.get('container') else 'full'}
 
     def observe(self,row):
         if row['state']!='PREPARING':return row
@@ -35,7 +42,7 @@ class ProjectCopy:
             folder=self.s.private_dir(exports/key,create=True)
             bundle=self.s.private_dir(folder/'bundle',create=True)
             row={**(row or {}),'id':key,'token':row['token'] if row else uuid.uuid4().hex,'request':{'source':ref},
-                 'root':str(bundle),'state':'PREPARING','environment':True}
+                 'root':str(bundle),'state':'PREPARING','environment':True,'mode':row.get('mode','full') if row else args.get('mode','full')}
             self.s.atomic_json(file,row)
         try:
             self.j.e.run(['/usr/bin/systemd-run','--user','--collect','--unit=gpuq-project-export-'+key,
@@ -61,54 +68,107 @@ class ProjectCopy:
                 workspace=sum(int(line.split()[0]) for line in engine.run('unshare','/usr/bin/du','-sb',*[str(path) for path in paths.values()]).splitlines())
                 # Commit layer, OCI staging directory and final archive coexist.
                 self.s.require_workspace_space(folder,needed=writable+2*rootfs+workspace)
-                engine.run('commit','--pause=false','--include-volumes=false',head['container'],tag,timeout=3600)
-                engine.run('save','--format=oci-archive','--output',str(folder/'image.tar'),tag,timeout=3600)
+                if row['mode']=='incremental':engine.run('export','--output',str(folder/'rootfs.tar'),head['container'],timeout=3600)
+                else:
+                    engine.run('commit','--pause=false','--include-volumes=false',head['container'],tag,timeout=3600)
+                    engine.run('save','--format=oci-archive','--output',str(folder/'image.tar'),tag,timeout=3600)
                 engine.run('unshare','/usr/bin/tar','--create','--file',str(folder/'workspace.tar'),'--one-file-system',
+                    '--format=pax','--exclude=code/.copy-backups',
                     '--transform=flags=rh;s,^code,workspace,','--transform=flags=rh;s,^home,home/gpuq,',
                     '-C',str(paths['code'].parent),'code','home',timeout=3600)
                 self.s.atomic_json(folder/'manifest.json',{'image':tag,'rootfsBytes':rootfs})
+                if row['mode']=='incremental':self.sync().index(folder,rootfs=True)
                 row.update(state='READY');row.pop('error',None);self.s.atomic_json(file,row);return 0
             except Exception as error:
                 row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(file,row);return 1
             finally:
-                try:engine.run('rmi',tag)
-                except ValueError:pass
+                if row['mode']=='full':
+                    try:engine.run('rmi',tag)
+                    except ValueError:pass
 
     def target(self,row):
         return self.s.private_dir(runtime_folder(self.j.config,row['id']),create=True)
 
+    def sync(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('project_sync',Path(__file__).with_name('project-sync.py'))
+        result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
+
+    def destination(self,row):
+        ref=row['target'];owner=ref.get('ownerId') or ref['userId']
+        return self.j.e.projects().store.owner_path(owner,create=True)/self.d.name(ref['project'])
+
+    def incremental_page(self,row,peer,offset):
+        bundle=self.target(row)/'received';index=bundle/'index.jsonl';plan=bundle/'plan.jsonl'
+        if not plan.exists():
+            cursor=0
+            with open(index.with_suffix('.tmp'),'w') as stream:
+                while cursor is not None:
+                    if self.j.status({'id':row['id']})['state']=='CANCELED':return {'entries':[],'nextOffset':None}
+                    page=peer.call('list',offset=cursor)
+                    if page.get('state')=='PREPARING':time.sleep(1);continue
+                    if page.get('state')=='FAILED':raise ValueError(page['error'])
+                    for entry in page['entries']:stream.write(json.dumps(entry)+'\n')
+                    cursor=page['nextOffset']
+            os.replace(index.with_suffix('.tmp'),index)
+            target=row['target'];owner=target.get('ownerId') or target['userId'];engine=self.j.e.projects().oci(owner)
+            paths=self.j.e.projects().store.dev_paths(owner,target['project'])
+            with engine.locked(target['project']):engine.copy_files(target['project'],'plan',paths=paths,index=str(index),plan=str(plan))
+        page=self.sync().page(plan,offset)
+        page['entries']=[{**entry,'path':entry['body'],'remotePath':entry['archive'],'remoteOffset':entry['offset']} for entry in page['entries'] if entry['type']=='file']
+        return page
+
     def install(self,row):
         key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
-        folder=self.target(row);store=self.j.e.projects().store
-        destination=folder if target.get('jobId') else store.owner_path(owner,create=True)/self.d.name(project)
-        if (destination/'project.json').exists():
-            if self.s.read_json(destination/'project.json').get('copyKey')==key:return
-            raise ValueError('目标项目已存在，原环境和文件已保留；请用 --name 指定新项目名。')
-        bundle=folder/'received';manifest=self.s.read_json(bundle/'manifest.json')
-        # OCI extraction and storage blob cache coexist until load completes.
-        self.s.require_workspace_space(folder,needed=2*(bundle/'image.tar').stat().st_size+manifest['rootfsBytes']+(bundle/'workspace.tar').stat().st_size)
-        paths={name:self.s.private_dir(folder/name,create=True) for name in ('code','home')}
-        engine=self.j.e.projects().oci(owner);engine.state_folder=folder
+        folder=self.target(row);destination=self.destination(row);existing=(destination/'project.json').exists()
+        working=destination if existing else folder;bundle=folder/'received';incremental=target.get('mode')=='incremental'
+        if not incremental:
+            manifest=self.s.read_json(bundle/'manifest.json')
+            # OCI extraction and storage blob cache coexist until load completes.
+            self.s.require_workspace_space(folder,needed=2*(bundle/'image.tar').stat().st_size+manifest['rootfsBytes']+(bundle/'workspace.tar').stat().st_size)
+            self.sync().index(bundle)
+        paths={name:self.s.private_dir(working/name,create=True) for name in ('code','home')}
+        engine=self.j.e.projects().oci(owner);engine.state_folder=working
+        plan=bundle/'plan.jsonl'
         with engine.locked(project):
             head=engine.load(project)
-            if head.get('container') is None:
+            if not incremental and head.get('container') is None:
                 engine.run('load','--input',str(bundle/'image.tar'),timeout=3600)
                 container='gpuq-dev-'+uuid.uuid4().hex
                 engine.run('create','--name',container,'--network=none','--entrypoint','/bin/sh',manifest['image'])
-                self.s.atomic_json(folder/'oci.json',{'image':manifest['image'],'container':container})
-        engine.workspace_command(owner,project,['tar','--extract','--file','/run/gpuq/project-copy.tar','--directory','/'],
-                                 paths=paths,archive=bundle/'workspace.tar',timeout=3600)
-        with self.j.lock(key):
-            if self.j.s.read_json(self.j.path(key))['state']=='CANCELED':return False
-            self.s.atomic_json(folder/'project.json',{'project':project,'ownerId':owner,'userId':owner,'environmentMode':'oci',
-                              'copyKey':key,'name':project,'archived':False,'group':'','repo':None,'createdAt':row['createdAt']})
-            if destination!=folder:
-                try:os.rename(folder,destination)
-                except OSError:
-                    # A target created meanwhile remains intact. Retain this copy to resume.
-                    (folder/'project.json').unlink(missing_ok=True)
-                    raise
-        shutil.rmtree(destination/'received')
+                self.s.atomic_json(working/'oci.json',{'image':manifest['image'],'container':container})
+            elif not incremental:
+                # A terminal/another copy may have initialized it during transport.
+                # Merge the received image's files into that same container.
+                self.s.require_workspace_space(folder,needed=manifest['rootfsBytes'])
+                engine.run('load','--input',str(bundle/'image.tar'),timeout=3600)
+                engine.copy_files(project,'image',paths=paths,image=manifest['image'],bundle=str(bundle))
+                self.sync().index(bundle,rootfs=True)
+                plan.unlink(missing_ok=True)
+            if not plan.exists():engine.copy_files(project,'plan',paths=paths,index=str(bundle/'index.jsonl'),plan=str(plan))
+            trash=self.sync().module('project-purge').Trash(self.j.config)
+            current=self.s.read_json(self.j.path(key))
+            if current.get('backupFor')!=str(working):
+                try:trash.find(key)
+                except FileNotFoundError:
+                    result=engine.copy_files(project,'backup',paths=paths,plan=str(plan),key=key)
+                    if result['files']:trash.delete(paths['code']/'.copy-backups'/(key+'.tar'),key,'output',row.get('actor'))
+                with self.j.lock(key):
+                    current=self.s.read_json(self.j.path(key));current['backupFor']=str(working);self.s.atomic_json(self.j.path(key),current)
+            if self.j.status({'id':key})['state']=='CANCELED':return False
+            engine.copy_files(project,'apply',paths=paths,plan=str(plan),bundle=str(bundle),incremental=incremental)
+            with self.j.lock(key):
+                current=self.s.read_json(self.j.path(key))
+                if current['state']=='CANCELED':return False
+                if not existing:
+                    self.s.atomic_json(folder/'project.json',{'project':project,'ownerId':owner,'userId':owner,'environmentMode':'oci',
+                                      'copyKey':key,'name':project,'archived':False,'group':'','repo':None,'createdAt':row['createdAt']})
+                    try:os.rename(folder,destination)
+                    except OSError:
+                        (folder/'project.json').unlink(missing_ok=True);raise
+                current['installed']=True;self.s.atomic_json(self.j.path(key),current)
+        received=destination/'received' if not existing else bundle
+        shutil.rmtree(received)
         return True
 
     def complete(self,key):

@@ -25,6 +25,7 @@ export async function firstDispatch(service,job,{usage,RANKS,fail}){
       service.save();
     });
     if(result.state!=='SUCCEEDED')return null;
+    await service.enqueue(()=>{delete job.spec.projectCopy;service.save();});
   }
   // Node writers retain the live disk guard. Do not repeat remote reads before dispatch.
   return service.enqueue(()=>{

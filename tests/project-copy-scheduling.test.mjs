@@ -18,6 +18,7 @@ function fixture(row){
   audit(){},db:new DatabaseSync(':memory:'),
   bridge:async(machine,op,args)=>{
    calls.push({machine,op,args});
+   if(op==='transfers.project.mode')return {mode:'incremental'};
    if(op==='transfers.project.prepare')return {id,token:'fixture-ticket'};
    if(op==='transfers.project.start'||op==='transfers.status')return {id,state:copied?'SUCCEEDED':'RUNNING'};
    if(op==='transfers.cancel')return {id,state:'CANCELED'};
@@ -28,7 +29,7 @@ function fixture(row){
  return {service,calls,complete:()=>copied=true};
 }
 
-test('a cross-node job retains its development machine and uses a task-local workspace copy',()=>{
+test('a cross-node job retains its development machine and requests project preparation',()=>{
  const row=job();assert.equal(row.sourceMachine,from);assert.equal(row.spec.projectCopy,id);assert.equal(row.spec.project,'demo');
 });
 
@@ -39,7 +40,8 @@ test('dispatch waits for the original copy operation, then submits once without 
  assert.equal(row.projectPreparation.state,'RUNNING');assert.equal(row.projectPreparation.id,id);
  f.complete();attempt=await firstDispatch(f.service,row,helpers);await attempt.response;
  assert.equal(f.calls.filter(c=>c.op==='sync').length,1);assert.equal(row.dispatchPending,false);
- const submit=f.calls.find(c=>c.op==='sync');assert.equal(submit.args.job.projectCopy,id);assert.equal(submit.args.job.project,'demo');
+ const submit=f.calls.find(c=>c.op==='sync');assert.equal(submit.args.job.projectCopy,undefined);assert.equal(submit.args.job.project,'demo');
+ assert.equal(row.projectPreparation.state,'SUCCEEDED');assert.equal(row.spec.projectCopy,undefined);
 });
 
 test('same-node jobs keep their current writable environment without copying',async()=>{
