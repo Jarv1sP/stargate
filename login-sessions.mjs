@@ -49,9 +49,12 @@ export class LoginSessions{
     return identity;
   }
   principal(token){
-    const hash=tokenHash(token),time=this.now();
+    return this.principalFromHash(tokenHash(token));
+  }
+  principalFromHash(hash){
+    const time=this.now();
     const row=hash?this.db.prepare('SELECT * FROM login_sessions_v2 WHERE token_hash=?').get(hash):null;
-    if(!row||row.expires_at<=time){if(row)this.revoke(token);denied();}
+    if(!row||row.expires_at<=time){if(row)this.db.prepare('DELETE FROM login_sessions_v2 WHERE token_hash=?').run(hash);denied();}
     if(this.identityApp){
       const identity=this.identityAccess(row.user_id);
       const scope=this.db.prepare('SELECT * FROM identity_session_scopes WHERE token_hash=?').get(hash);
@@ -59,7 +62,7 @@ export class LoginSessions{
     }
     const user=this.userById(row.user_id);
     if(!user?.enabled||user.username!==row.username||(user.role||'member')!==row.role){
-      this.revoke(token);denied('账号权限已改变，请重新登录。',403);
+      this.db.prepare('DELETE FROM login_sessions_v2 WHERE token_hash=?').run(hash);denied('账号权限已改变，请重新登录。',403);
     }
     let expires=row.expires_at;
     // Check expiry BEFORE renewal. Avoid a disk write on every keystroke/poll.

@@ -30,9 +30,7 @@ export function installFileCampus(service){
     if(!data||typeof data.ticket!=='string'||data.ticket.length>4096)denied('文件授权无效。');
     const entry=service.fileTickets.get(hash(data.ticket));
     if(!entry||entry.expiresAt<=Date.now()/1000||service.closing)denied('校园文件授权已失效，请核对原操作。');
-    const session=service.db.prepare('SELECT * FROM login_sessions_v2 WHERE token_hash=?').get(entry.sessionHash);
-    const user=service.store.get(entry.principal.userId);
-    if(!session||session.expires_at<=Date.now()||!user.enabled)denied('登录已失效，请重新登录后继续原操作。');
+    service.loginSessions.principalFromHash(entry.sessionHash);
     if(service.maintenanceFor(entry.args.machine))denied('服务器正在维护，请稍后继续原操作。',503);
     return {allowed:true,protocol:FILE_PROTOCOL};
   };
