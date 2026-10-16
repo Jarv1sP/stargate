@@ -108,7 +108,7 @@ export function executionUI(store,refresh,toast){
   let submitDialog,settingsDialog,settingsSource=null,outputPlace=null,focusedJob=null,historyState='',jobHTML='',lastJobs=new Map(),liveJobs=new Set(),deepLinkHandled=false,notes=null,notesJob=null,notesGeneration=0;
   let submitReceipt=null,parsedTarget=null,acceptedDraft=false,managementSubmit=false;
   let projectManagement=null;
-  let quotaKey='',quotaState='idle',quotaResult=null,quotaError='',quotaController;
+  let quotaKey='',quotaState='idle',quotaResult=null,quotaError='',quotaController,quotaAt=0,quotaCheckedAt=null,projectStatusRead=null;
   let uploadRecovery=null;
   let fileReadController=null,fileReadTurn=0,resultFilePath=null;
   const resultAccess=createJobResultAccess({store,changed:()=>{resultAccess.paint();}});
@@ -127,6 +127,7 @@ export function executionUI(store,refresh,toast){
   const diagnostics=createJobDiagnostics(store,()=>log,toast,{drawer:true,header:job=>`<span class="sheet-object">${stateHTML(job,false)}<span>${escape(job.name||'训练详情')}</span></span>`,reveal:(dialog,job,origin)=>{sharedObject(origin||jobHeading(job.id),dialog.querySelector('.sheet-object'));revealSheet(dialog,{drilldown:true});},dismiss:dialog=>dismissSheet(dialog,{drilldown:true,target:jobHeading(focusedJob)}),overview:job=>overviewWithLabels(job,{owned:!!store.principal,schedulingHTML:allocationSummary(job)+placementSummary(job)+`<span>排队优先级：${escape(priorityRankLabel(job))}</span>`+schedulingSummary(job)+`<span>${escape(schedulingContractLabel(job.schedulerPolicy??{yield_policy:job.yieldPolicy,restart_policy:job.restartPolicy}))}</span><span>状态：${escape(job.schedulerState||'未提供')}</span><span>更新于 ${escape(sampleTime(job.schedulerCheckedAt))}</span>`}),output:showOutput,notes:showNotes,onCompletion:(value,job)=>resultAccess.accept(job,value),onView:next=>{if(next!=='notes')notes?.sync(false,true);}});
   const call=(operation,args)=>store.call(operation,{...(projectOwner?{ownerId:projectOwner}:{}),...args}),query=selector=>section?.querySelector(selector)||submitDialog?.querySelector(selector)||settingsDialog?.querySelector(selector)||log?.querySelector(selector);
   const context=()=>({machine,...(project?{project,...(projectOwner?{ownerId:projectOwner}:{})}:{})}),currentProject=()=>catalog.find(item=>item.project===project&&(!projectOwner||item.ownerId===projectOwner));
+  const projectReadKey=()=>JSON.stringify([store.authGeneration,actor,machine,projectOwner,project]);
   const projectMachines=()=>store.principal?(store.data?.machines||[]):[];
   const directoryEntries=()=>projectDirectoryEntries(directory,projectMachines());
   const executionActive=()=>store.production&&!!store.principal&&store.data?.executionEnabled===true;
@@ -151,6 +152,7 @@ export function executionUI(store,refresh,toast){
   const status=(text,error=false)=>{const element=query('#project-status');if(element){element.textContent=text;element.classList.toggle('form-error',error);}};
   function cancelProjectActivity(){
     cancelDiskQuota();
+    if(projectStatusRead?.promise)projectStatusRead=null;
     projectPaused=true;projectActivity.cancel();explicitProjectReads.clear();projectBusy=false;
     if(directoryLoading){directoryOwner='';directoryLoading=false;}
     if(projectOperation){operationBusy=false;projectOperation=false;}
@@ -160,24 +162,28 @@ export function executionUI(store,refresh,toast){
   function cancelDiskQuota(){quotaController?.abort();quotaController=null;if(quotaState==='loading')quotaState='idle';}
   function renderDiskQuota(){
     const panel=query('#project-disk-quota');if(!panel)return;
-    query('#disk-quota-state').textContent=({idle:'',loading:' · 查询中',ready:'',unknown:' · 未知'})[quotaState];
+    query('#disk-quota-state').textContent=({idle:'',loading:' · 读取统计中',ready:quotaCheckedAt?` · 统计于 ${Math.max(0,Math.floor((Date.now()-new Date(quotaCheckedAt).getTime())/60000))} 分钟前`:' · 统计时间未知',unknown:' · 未知'})[quotaState];
     const place=query('#disk-quota-machine');place.textContent=machine||'选择项目后查看';place.title=machine;
     query('#disk-quota-refresh').disabled=!enabled()||quotaState==='loading';
     const result=query('#disk-quota-result');
     if(quotaResult!==null)result.innerHTML=quotaResult;
-    else{result.textContent=quotaState==='unknown'?quotaError||'磁盘用量未知，请稍后刷新。':quotaState==='loading'?'正在查询…':machine?'点击刷新查看项目磁盘用量。':'先选择项目或服务器。';}
+    else{result.textContent=quotaState==='unknown'?quotaError||'磁盘用量未知，请稍后刷新。':quotaState==='loading'?'正在读取统计…':machine?'点击刷新查看项目磁盘用量。':'先选择项目或服务器。';}
   }
   function syncDiskQuota(){
-    const key=currentToken();if(key!==quotaKey){cancelDiskQuota();quotaKey=key;quotaState='idle';quotaResult=null;quotaError='';}
+    const key=projectReadKey();if(key!==quotaKey){cancelDiskQuota();quotaKey=key;quotaState='idle';quotaResult=null;quotaError='';quotaAt=0;quotaCheckedAt=null;}
     renderDiskQuota();if(query('#project-disk-quota')?.open&&projectActive()&&enabled()&&quotaState==='idle')void loadDiskQuota();
   }
-  async function loadDiskQuota(){
+  async function loadDiskQuota(force=false){
     if(!enabled()||!activateProjectActivity()||quotaState==='loading')return;
-    cancelDiskQuota();const token=currentToken(),controller=new AbortController(),target=machine;quotaController=controller;quotaKey=token;quotaState='loading';quotaResult=null;quotaError='';renderDiskQuota();
+    if(!force&&quotaState==='ready'&&Date.now()-quotaAt<30000)return;
+    cancelDiskQuota();const token=currentToken(),controller=new AbortController(),target=machine;quotaController=controller;quotaKey=projectReadKey();quotaState='loading';quotaResult=null;quotaError='';renderDiskQuota();
     const current=()=>!controller.signal.aborted&&token===currentToken()&&query('#project-disk-quota')?.open&&projectActive();
     try{
-      const value=await projectActivity.run(signal=>store.call('projects.quota',{machine:target,...(projectOwner?{ownerId:projectOwner}:{}),...(project?{project}:{})},{signal:AbortSignal.any([signal,controller.signal])}));
-      if(!current())return;quotaResult=projectDiskQuotaHTML(value);quotaState='ready';
+      const value=await projectActivity.run(signal=>store.call('storage.snapshot',{machine:target},{signal:AbortSignal.any([signal,controller.signal])}));
+      if(!current())return;
+      const sample=value.machines?.find(row=>row.machine===target),usage=sample?.projects?.error?null:sample?.projects?.projects?.find(row=>row.project===project&&row.ownerId===(projectOwner||actor));
+      quotaResult=projectDiskQuotaHTML({volumes:sample?.quota?.error?[]:sample?.quota?.volumes,projectUsage:project?{size:usage?.size??null,complete:usage?.complete}:null});
+      quotaCheckedAt=(project?sample?.projects?.checkedAt:sample?.quota?.checkedAt)||null;quotaAt=Date.now();quotaState='ready';
     }catch(error){if(!current()||error.name==='AbortError')return;quotaState='unknown';quotaResult=null;quotaError=error.message||'磁盘用量未知，请稍后刷新。';}
     finally{if(current()){quotaController=null;renderDiskQuota();}}
   }
@@ -236,7 +242,7 @@ export function executionUI(store,refresh,toast){
     room.querySelector('.pr-sheet-in').append(query('.workspace-context-grid'),query('#project-create'));room.querySelector('.pr-sheet-head>div').after(query('#projects-refresh'));
     pane('settings').append(...section.children);section.append(room,jobs);
     const underline=()=>{const on=room.querySelector('.pr-tabs [aria-selected=true]'),line=room.querySelector('.pr-tabs .jr-ul');if(on?.offsetWidth){line.style.width=on.offsetWidth+'px';line.style.transform=`translateX(${on.offsetLeft}px)`;}};
-    room.querySelector('.pr-tabs').addEventListener('click',event=>{const tab=event.target.closest('[data-pt]');if(!tab)return;for(const item of room.querySelectorAll('[data-pt]'))item.setAttribute('aria-selected',item===tab);for(const item of room.querySelectorAll('[data-pp]'))item.hidden=item.dataset.pp!==tab.dataset.pt;underline();if(tab.dataset.pt==='files')listWhenReady();});
+    room.querySelector('.pr-tabs').addEventListener('click',event=>{const tab=event.target.closest('[data-pt]');if(!tab)return;for(const item of room.querySelectorAll('[data-pt]'))item.setAttribute('aria-selected',item===tab);for(const item of room.querySelectorAll('[data-pp]'))item.hidden=item.dataset.pp!==tab.dataset.pt;underline();if(tab.dataset.pt==='files')listWhenReady();if(tab.dataset.pt==='settings'){void loadProjectStatus();if(query('#project-disk-quota').open)void loadDiskQuota();}});
     new ResizeObserver(underline).observe(room.querySelector('.pr-tabs'));
     room.querySelector('#pr-switch').addEventListener('click',()=>openSheet(sheet));room.querySelector('#pr-switch-close').addEventListener('click',()=>closeSheet(sheet));
     sheet.addEventListener('cancel',event=>{event.preventDefault();closeSheet(sheet);});
@@ -253,7 +259,7 @@ export function executionUI(store,refresh,toast){
     for(const id of ['workspace-mode-note','project-status-detail']){const note=query('#'+id);note.classList.remove('ui-info-content');contextCopy.append(note);}contextInfo.append(contextCopy);statusInfo.remove();contextInfo.querySelector('summary').setAttribute('aria-label','项目与 Git 说明');query('.workspace-context-heading>div').append(contextInfo);
     const disk=document.createElement('details');disk.id='project-disk-quota';disk.className='execution-panel';
     disk.innerHTML='<summary>磁盘用量<span id="disk-quota-state"></span></summary><div class="disk-quota-head"><span id="disk-quota-machine" class="server-id mono"></span>'+infoHTML('项目文件用量不分摊共享容器镜像。盘容量包含同盘其他内容；至少表示有目录读不到，未知不代表零用量。','磁盘用量说明')+'<button id="disk-quota-refresh" class="button quiet" type="button">刷新</button></div><div id="disk-quota-result" role="status" aria-live="polite"></div>';
-    query('[data-pp=settings]').append(disk);disk.addEventListener('toggle',()=>{if(disk.open){activateProjectActivity();syncDiskQuota();}else cancelDiskQuota();});query('#disk-quota-refresh').addEventListener('click',()=>void loadDiskQuota());
+    query('[data-pp=settings]').append(disk);disk.addEventListener('toggle',()=>{if(disk.open){activateProjectActivity();syncDiskQuota();}else cancelDiskQuota();});query('#disk-quota-refresh').addEventListener('click',()=>void loadDiskQuota(true));
   }
   const receiptActor=()=>JSON.stringify([store.principal?.userId,store.principal?.role,store.authGeneration]);
   function renderReceipt(){
@@ -397,7 +403,8 @@ export function executionUI(store,refresh,toast){
     const info=currentProject(),environment=query('#project-environment');environment.hidden=!info;environment.textContent=info?'OCI 容器':'';
     const location=query('#project-location');location.hidden=!machine;location.textContent=machine;location.title=machine;
     status(catalogError|| (info?'工作区就绪':directoryLoading?'正在读取项目…':'选择项目，或新建项目'),!!catalogError);
-    query('#project-status-detail').textContent=projectStatusText(info);
+    const read=projectStatusRead?.key===projectReadKey()?projectStatusRead:null;
+    query('#project-status-detail').textContent=projectStatusText(info)+(read?.promise?' · Git 状态读取中…':read?.error?' · Git 状态未知，请刷新项目重试。':'');
     renderRuns();updateControls();updatePreflight();syncDiskQuota();document.dispatchEvent(new Event('gpuq-workspace-rendered'));
   }
   function renderRuns(){
@@ -413,7 +420,7 @@ export function executionUI(store,refresh,toast){
     if(value===focusMachine&&(!project||machine===value))return;
     focusMachine=projectMachines().some(item=>item.id===value)?value:'';
     if(keepContainer&&currentProject()?.environmentMode==='oci'){syncMachineFields();renderProject();notifyContext();return;}
-    cancelProjectActivity();activateProjectActivity();machine=focusMachine;project='';projectOwner='';catalog=directory.get(machine)?.projects||[];catalogError='';epoch++;projectBusy=false;
+    cancelProjectActivity();projectStatusRead=null;activateProjectActivity();machine=focusMachine;project='';projectOwner='';catalog=directory.get(machine)?.projects||[];catalogError='';epoch++;projectBusy=false;
     query('[name=environment-mode]').value='oci';
 
     query('[name=training-target]').value='current';query('[name=training-candidates]').value='';syncMachineFields();clearFileContext();renderProject();notifyContext();submitKey=crypto.randomUUID();if(machine)await explicitProjectRead(loadProjects);
@@ -421,10 +428,10 @@ export function executionUI(store,refresh,toast){
   async function selectProject(value){
     const entry=value?projectDirectorySelection(value,directoryEntries(),machine):null;
     if(value&&!entry){toast('请刷新项目列表后再选择。');return;}
-    if(entry?.machine===machine&&entry?.info.project===project&&(entry?.info.ownerId||'')===projectOwner){activateProjectActivity();if(project)await explicitProjectRead(loadProjectStatus);return;}
-    cancelProjectActivity();activateProjectActivity();machine=entry?.machine||focusMachine;project=entry?.info.project||'';projectOwner=entry?.info.ownerId||'';catalog=directory.get(machine)?.projects||[];
+    if(entry?.machine===machine&&entry?.info.project===project&&(entry?.info.ownerId||'')===projectOwner){activateProjectActivity();if(project)void explicitProjectRead(loadProjectStatus);return;}
+    cancelProjectActivity();projectStatusRead=null;activateProjectActivity();machine=entry?.machine||focusMachine;project=entry?.info.project||'';projectOwner=entry?.info.ownerId||'';catalog=directory.get(machine)?.projects||[];
     if(entry&&entry.info.environmentMode!=='oci')focusMachine=machine;
-    epoch++;projectBusy=false;catalogError='';query('[name=training-target]').value='current';syncMachineFields();clearFileContext();renderProject();notifyContext();submitKey=crypto.randomUUID();if(project)await explicitProjectRead(loadProjectStatus);
+    epoch++;projectBusy=false;catalogError='';query('[name=training-target]').value='current';syncMachineFields();clearFileContext();renderProject();notifyContext();submitKey=crypto.randomUUID();if(project)void explicitProjectRead(loadProjectStatus);
   }
   function ensureDirectory(){
     const owner=JSON.stringify([receiptActor(),projectMachines().map(item=>item.id)]);
@@ -463,11 +470,12 @@ export function executionUI(store,refresh,toast){
     const result=await projectCall('projects.status',target);if(token!==currentToken())return null;
     catalog=catalog.map(item=>item.project===target.project&&(!target.ownerId||item.ownerId===target.ownerId)?{...item,...result}:item);rememberCatalog(target.machine);catalogError='';return result;
   }
-  async function loadProjectStatus(){
-    if(!projectReadable()||!project||!enabled()||projectBusy||operationBusy)return;const token=currentToken(),target=context();projectBusy=true;updateControls();
-    try{await readProjectStatus(target,token);}
-    catch(error){if(token===currentToken()){catalogError=error.message;}}
-    finally{if(token===currentToken()){projectBusy=false;renderProject();}}
+  async function loadProjectStatus(force=false){
+    if(!projectReadable()||!project||!enabled())return;
+    const key=projectReadKey();if(projectStatusRead?.key===key&&(projectStatusRead.promise||!force&&Date.now()-projectStatusRead.at<30000))return projectStatusRead.promise;
+    const token=currentToken(),read={key,at:0,error:'',promise:null};projectStatusRead=read;
+    read.promise=readProjectStatus(context(),token).catch(error=>{if(token===currentToken()&&error.name!=='AbortError')read.error=error.message;}).finally(()=>{read.promise=null;read.at=Date.now();if(token===currentToken())renderProject();});
+    renderProject();return read.promise;
   }
   async function guarded(button,fn,scoped=false){if(operationBusy||scoped&&!activateProjectActivity())return;const owner=receiptActor(),turn=projectActivity.generation,current=()=>owner===receiptActor()&&(!scoped||turn===projectActivity.generation);operationBusy=true;if(scoped)projectOperation=true;button.disabled=true;updateControls();try{await fn();}catch(error){if(current()&&error.name!=='AbortError'){toast(error.message);status(error.message,error.code!=='MAINTENANCE_ACTIVE');}}finally{if(current()){operationBusy=false;if(scoped)projectOperation=false;if(button.isConnected)button.disabled=false;updateControls();renderReceipt();}}}
   function fileContext(){const target=assertContext();const area=query('[name=file-area]').value;if(area==='code')return {...target,area};const runId=query('[name=file-run-id]').value.trim();if(!uuidPattern.test(runId))throw Error('请选择本项目任务，或输入完整任务 ID。');const job=store.jobs.find(job=>job.id===runId);return {...target,...(job?{ownerId:job.ownerId||job.userId}:{}),area:'output',runId};}
@@ -517,7 +525,7 @@ export function executionUI(store,refresh,toast){
       await call('jobs.priority',{jobId,priority});control.dataset.originalPriority=priority;refresh();toast('已请求调整优先级；等待服务器更新状态。');
     });
     if(button.id==='close-job-log')dismissSheet(log,{drilldown:true,target:jobHeading(focusedJob)});
-    if(button.id==='projects-refresh'){activateProjectActivity();loadDirectory();}
+    if(button.id==='projects-refresh'){activateProjectActivity();projectManagement?.invalidate();void loadDirectory().then(()=>loadProjectStatus(true));if(query('#project-disk-quota').open)void loadDiskQuota(true);}
     if(button.id==='project-network-check')guarded(button,async()=>{const target=context(),token=currentToken(),result=await call('projects.status',{...target,diagnoseNetwork:true});if(token!==currentToken())return;query('#project-network-result').hidden=false;query('#project-network-result').textContent=result.network?JSON.stringify(result.network,null,2):'网络状态未知，请稍后重试。';});
     if(button.id==='workspace-list')guarded(button,listFiles);
     if(button.dataset.codePath!==undefined&&button.dataset.codeType==='directory'){query('[name=file-path]').value=button.dataset.codePath;guarded(button,listFiles);return;}
