@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 test('quota CLI renders both disks, partial project bytes and unknown without the old hard-quota shape',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'storage-quota-cli-')),session=join(dir,'session.json'),calls=[];
  let usage={size:3,complete:false};
- const volumes=[{kind:'workspace',usedBytes:100,totalBytes:1000,availableBytes:900},{kind:'datasets',usedBytes:null,totalBytes:null,availableBytes:null}];
+ let volumes=[{kind:'workspace',fs:'1',usedBytes:100,totalBytes:1000,availableBytes:900},{kind:'datasets',fs:null,usedBytes:null,totalBytes:null,availableBytes:null}];
  const server=createServer(async(req,res)=>{
   let text='';for await(const chunk of req)text+=chunk;const request=JSON.parse(text);calls.push(request);res.setHeader('content-type','application/json');
   if(request.operation==='state')return res.end(JSON.stringify({state:{machines:[{id:'fixture-machine'}],jobs:[],users:[]},principal:{userId:'fixture-owner',role:'member'}}));
@@ -23,4 +23,6 @@ test('quota CLI renders both disks, partial project bytes and unknown without th
  const partial=await run(['--project','demo']);assert.equal(partial.code,0,partial.stderr);assert.match(partial.stdout,/项目 demo 文件用量：至少 3 B/);assert.equal(calls.filter(r=>r.operation==='projects.quota').at(-1).args.project,'demo');
  usage={size:null,complete:false};const unknown=await run(['--project','demo']);assert.match(unknown.stdout,/项目 demo 文件用量：未知/);
  const json=await run(['--json']);assert.equal(json.code,0,json.stderr);assert.deepEqual(JSON.parse(json.stdout).data.volumes,volumes);
+ volumes=[{kind:'shared',fs:'9223372036854775815',usedBytes:100,totalBytes:1000,availableBytes:900}];
+ const shared=await run([]);assert.equal(shared.code,0,shared.stderr);assert.equal((shared.stdout.match(/已用 /g)||[]).length,1);assert.match(shared.stdout,/SSD · 工作区与数据集共用/);assert.doesNotMatch(shared.stdout,/HDD|未知/);
 });

@@ -19,17 +19,38 @@ class StorageUsage(unittest.TestCase):
             return original(path,*args,**kwargs)
         return patch('os.open',opened)
 
-    def test_quota_reads_two_filesystems_once_without_directory_scans(self):
-        ops=self.ops();v=SimpleNamespace(f_blocks=1000,f_bfree=400,f_bavail=350,f_frsize=4096)
+    def test_quota_reads_shared_filesystem_once_per_root_without_directory_scans(self):
+        ops=self.ops();v=SimpleNamespace(f_blocks=1000,f_bfree=400,f_bavail=350,f_frsize=4096,f_fsid=2**63+7)
         with patch('os.statvfs',return_value=v) as read,patch('os.scandir',side_effect=AssertionError('quota scanned files')):
             result=ops.process('projects.quota',{'userId':'alice'})
         self.assertEqual([str(c.args[0]) for c in read.call_args_list],[self.config['workspacesRoot'],self.config['datasetsRoot']])
-        self.assertEqual(result,{'volumes':[{'kind':kind,'totalBytes':4096000,'usedBytes':2457600,'availableBytes':1433600} for kind in ('workspace','datasets')]})
+        self.assertEqual(result,{'volumes':[{'kind':'shared','fs':str(v.f_fsid),'totalBytes':4096000,'usedBytes':2457600,'availableBytes':1433600}]})
+
+    def test_equal_capacity_disks_keep_distinct_filesystem_ids(self):
+        ops=self.ops();disks=[SimpleNamespace(f_blocks=100,f_bfree=50,f_bavail=40,f_frsize=4096,f_fsid=fs) for fs in (11,12)]
+        with patch('os.statvfs',side_effect=disks):result=ops.process('projects.quota',{'userId':'alice'})
+        self.assertEqual([row['fs'] for row in result['volumes']],['11','12'])
+        self.assertEqual(result['volumes'][0]['totalBytes'],result['volumes'][1]['totalBytes'])
+
+    def test_real_filesystem_id_is_stable_across_roots_and_queries(self):
+        ops=self.ops();expected=str(os.statvfs(self.config['workspacesRoot']).f_fsid)
+        for _ in range(2):
+            result=ops.process('projects.quota',{'userId':'alice'})
+            self.assertEqual([row['fs'] for row in result['volumes']],[expected])
+            self.assertEqual(result['volumes'][0]['kind'],'shared')
+
+    def test_zero_filesystem_id_is_known_but_failed_readings_are_not_merged(self):
+        ops=self.ops();v=SimpleNamespace(f_blocks=100,f_bfree=50,f_bavail=40,f_frsize=4096,f_fsid=0)
+        with patch('os.statvfs',return_value=v):result=ops.process('projects.quota',{'userId':'alice'})
+        self.assertEqual([(row['kind'],row['fs']) for row in result['volumes']],[('shared','0')])
+        with patch('os.statvfs',side_effect=OSError('offline')):result=ops.process('projects.quota',{'userId':'alice'})
+        self.assertEqual(result['volumes'],[{'kind':kind,'fs':None,'totalBytes':None,'usedBytes':None,'availableBytes':None} for kind in ('workspace','datasets')])
 
     def test_one_unavailable_disk_keeps_the_other_reading(self):
-        ops=self.ops();v=SimpleNamespace(f_blocks=100,f_bfree=50,f_bavail=40,f_frsize=4096)
+        ops=self.ops();v=SimpleNamespace(f_blocks=100,f_bfree=50,f_bavail=40,f_frsize=4096,f_fsid=12)
         with patch('os.statvfs',side_effect=[OSError('offline'),v]):result=ops.process('projects.quota',{'userId':'alice'})
         self.assertIsNone(result['volumes'][0]['usedBytes']);self.assertEqual(result['volumes'][1]['availableBytes'],40*4096)
+        self.assertEqual([row['fs'] for row in result['volumes']],[None,'12'])
 
     def test_unreadable_project_keeps_disk_readings_and_an_unknown_project_size(self):
         ops=self.ops()
@@ -79,5 +100,13 @@ class StorageUsage(unittest.TestCase):
             return original(path)
         with patch.object(Path,'iterdir',listed):
             with self.assertRaises(PermissionError):self.files.datasets(self.config)
+
+    def test_unreadable_container_remains_in_project_list_with_unknown_size(self):
+        ops=self.ops();ops.store.create('alice','unreadable');ops.store.create('bob','healthy')
+        (ops.store.dev_paths('bob','healthy')['code']/'file').write_bytes(b'abc')
+        with self.deny('unreadable'):result=ops.process('projects.list',{'userId':'alice','includeUsage':True})
+        rows={row['project']:row for row in result['projects']}
+        self.assertEqual(rows['unreadable'],{'project':'unreadable','ownerId':'alice','size':None,'complete':False})
+        self.assertFalse(result['complete']);self.assertGreaterEqual(rows['healthy']['size'],3)
 
 if __name__=='__main__':unittest.main()

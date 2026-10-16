@@ -63,10 +63,12 @@ class ProjectOperations:
         if operation=='projects.quota':
             d=module('local-data');result={'volumes':[]}
             for kind,field in (('workspace','workspacesRoot'),('datasets','datasetsRoot')):
-                row={'kind':kind,'usedBytes':None,'availableBytes':None,'totalBytes':None}
+                row={'kind':kind,'fs':None,'usedBytes':None,'availableBytes':None,'totalBytes':None}
                 try:row.update(d.disk_usage(d.root(self.config,field)))
                 except (OSError,ValueError):pass
-                result['volumes'].append(row)
+                shared=next((volume for volume in result['volumes'] if row['fs'] is not None and volume['fs']==row['fs']),None)
+                if shared is None:result['volumes'].append(row)
+                else:shared['kind']='shared'
             if slug:
                 usage={'project':slug,'ownerId':user,'size':None,'complete':False}
                 try:usage.update(d.size(self.store._project(user,slug)[0],partial=True))

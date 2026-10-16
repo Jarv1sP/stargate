@@ -109,10 +109,10 @@ def size(path,*,partial=False):
     return {'size':total if readable else None,'complete':complete} if partial else total
 
 def disk_usage(path):
-    row={'totalBytes':None,'usedBytes':None,'availableBytes':None}
+    row={'fs':None,'totalBytes':None,'usedBytes':None,'availableBytes':None}
     try:
         v=os.statvfs(path)
-        row.update(totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
+        row.update(fs=str(v.f_fsid),totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
     except OSError:pass
     return row
 
