@@ -40,7 +40,7 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
         }
         for(const width of [1440,390,320]){
           await page.setViewportSize({width,height:1000});
-          for(const [label,route,button] of [['resources','resources','[data-nav=resources]'],['projects','work','#pr-switch'],['jobs','jobs','#jobs-room .jr-search'],['datasets','datasets','#dataset-upload-form'],['community','community','[data-nav=community]']]){
+          for(const [label,route,button] of [['resources','resources','[data-nav=resources]'],['projects','work','#pr-switch'],['jobs','jobs','#jobs-room .jr-search'],['datasets','datasets','#page-datasets .dr-gauges'],['community','community','[data-nav=community]']]){
             const title=role+'/'+width+'/'+label;
             try{
               await page.evaluate(hash=>{location.hash='#'+hash;},route);await page.locator('#page-'+route).waitFor({state:'visible'});
