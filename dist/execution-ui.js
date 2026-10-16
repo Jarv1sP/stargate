@@ -62,7 +62,7 @@ export function projectStatusText(info){
 }
 export function trainingProject(project){
   if(!validProject(project?.project))throw Error('请选择项目工作区。');
-  return {project:project.project,...(project.ownerId?{ownerId:project.ownerId}:{})};
+  return {project:project.project,...(project.ownerId?{ownerId:project.ownerId}:{}),...(project.machine?{sourceMachine:project.machine}:{})};
 }
 export function trainingTarget(mode,machine,project,candidates,machines){
   if(mode==='current')return {machine};
@@ -596,7 +596,7 @@ export function executionUI(store,refresh,toast){
       const selection=trainingTarget(form.get('training-target'),target.machine,currentProject(),form.get('training-candidates'),store.data?.machines||[]);
       if(selection.machine==='auto'&&placement)throw Error('跨服务器选机请使用自动分卡；固定卡号或共享请使用当前服务器。');
       const interactive=form.get('interactive')==='on';
-      await submitRequest({...selection,cards:Number(form.get('cards')),minVramGiB:Number(form.get('memory')),name:form.get('name')||'train',description:taskDescription(form.get('task-description')||''),...(scheduling?{scheduling}:priorityAvailable()?{priority}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...(interactive?{interactive:true}:{}),argv:interactive?['/bin/bash','--noprofile','--norc','-i']:['/bin/bash','-c',String(form.get('command'))],key:submitKey,...(project?trainingProject(currentProject()):{})});
+      await submitRequest({...selection,cards:Number(form.get('cards')),minVramGiB:Number(form.get('memory')),name:form.get('name')||'train',description:taskDescription(form.get('task-description')||''),...(scheduling?{scheduling}:priorityAvailable()?{priority}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...(interactive?{interactive:true}:{}),argv:interactive?['/bin/bash','--noprofile','--norc','-i']:['/bin/bash','-c',String(form.get('command'))],key:submitKey,...(project?trainingProject({...currentProject(),machine}):{})});
     });
   });
   document.addEventListener('change',event=>{

@@ -32,6 +32,7 @@ gpuctl state / use MACHINE_ID / jobs / queue
 
 gpuctl project create NAME [--repo GIT_URL]
 gpuctl project list / use NAME / status / quota
+gpuctl project copy NAME --from SOURCE --to TARGET [--name NEW_NAME] [--key UUID] [--detach]
 gpuctl project label NAME --display-name TEXT
 gpuctl project catalog / group UUID --display-name TEXT --members SERVER/PROJECT,...
 gpuctl project archive NAME / unarchive NAME / delete NAME
@@ -421,7 +422,7 @@ async function main() {
         }
       } else fail9('Usage: maintenance status | on all|SERVER --reason TEXT | off all|SERVER');
     } else if(command==='project'){
-      const action=positionals[1],machine=defaultMachine();
+      const action=positionals[1],machine=action==='copy'?options.from:defaultMachine();
       if(action==='trash'){
         const verb=positionals[2];if(!['list','restore','purge','empty'].includes(verb))fail9('Usage: project trash list | restore|purge KEY --kind project|dataset|output');
         if(['purge','empty'].includes(verb)&&session.principal.role!=='admin')fail9('彻底清除只允许管理员。');
@@ -429,6 +430,15 @@ async function main() {
         const args={machine,...(targetOwnerId?{ownerId:targetOwnerId}:{})};
         if(!['list','empty'].includes(verb)){args.key=options.key||positionals[3];args.kind=options.kind;if(!args.key||!['project','dataset','output'].includes(args.kind))fail9('使用回收站原编号及 --kind project|dataset|output。');if(options.project)args.project=options.project;}
         result=(await call('projects.retire.'+verb,args)).result;
+      }else if(action==='copy'){
+        if(positionals.length!==3||!options.from||!options.to||options.machines.length||training.length)fail9('Usage: project copy NAME --from SOURCE --to TARGET [--name NEW_NAME] [--key UUID] [--detach]');
+        const key=options.key||randomUUID7(),project=projectSlug(positionals[2]);
+        process.stderr.write('复制编号：'+key+'；查询或续传使用 transfer status/resume '+key+'\n');
+        result=(await call('transfers.create',{key,kind:'copy',from:machineName(options.from),machine:machineName(options.to),name:projectSlug(options.name||project),reference:{project,ownerId:targetOwnerId||session.principal.userId,environment:true}})).result;
+        if(!options.detach)while(!['SUCCEEDED','FAILED','PAUSED','CANCELED','UNKNOWN','ABSENT'].includes(result.state)){
+          process.stderr.write(transferText(result)+'\n');await new Promise(resolve=>setTimeout(resolve,2000));
+          result=(await call('transfers.status',{id:key})).result;
+        }
       }else if(action==='catalog')result=(await call('projects.catalog',{includeArchived:options.full===true})).result;
       else if(action==='group'){
         const id=positionals[2];if(!id)fail9('Usage: project group UUID [--display-name NAME --members SERVER/PROJECT,...]');
@@ -441,7 +451,7 @@ async function main() {
         else if(action==='delete'||action==='retire'){args.key=options.key||randomUUID7();process.stderr.write('删除编号：'+args.key+'；重试沿用 --key '+args.key+'\n');result=(await call('projects.retire',args)).result;}
         else result=(await call('projects.'+(action==='use'?'status':action),{...args,...(action==='status'?{diagnoseNetwork:true}:{}),...(action==='create'?{...(options.repo?{repo:options.repo}:{})}:{})})).result;
         if(action==='create'||action==='use'){session.projectsByMachine={...session.projectsByMachine,[machine]:project};await saveSession();result={...result,machine,selectedProject:project};}
-      }else fail9('Usage: project create|list|use|status|label|group|catalog|archive|unarchive|delete|quota|trash');
+      }else fail9('Usage: project create|list|use|status|copy|label|group|catalog|archive|unarchive|delete|quota|trash');
     } else if (command === "terminal" && ["status", "close"].includes(positionals[1])) {
       const allowed = ["machines", "url", "session-file", "json", "project"];
       if (positionals.length !== 3 || training.length || Object.keys(options).some((k) => !allowed.includes(k))) fail9("Usage: terminal status|close SESSION [--machine SERVER] [--project NAME]");
@@ -594,7 +604,6 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       const developmentMachine = automatic ? options.sync?selectedMachine():session.machine : positionals[1], context = projectArgs(developmentMachine);
       let candidates = options.candidates?.split(",").map(machineName);
       if (candidates && (!candidates.length || new Set(candidates).size !== candidates.length)) fail9("--candidates must list unique authorized server IDs separated by commas");
-      if(options.sync&&automatic){if(candidates&&!candidates.includes(developmentMachine))fail9("run --sync 的候选服务器需包含当前上传工作区服务器："+developmentMachine);candidates=[developmentMachine];}
           const key = options.key || randomUUID7();
       process.stderr.write(`Submission key: ${key}
 `);
@@ -604,6 +613,7 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       if(options.sync){if(!context.project)fail9('run --sync 请先用 project create/use 选择项目。');await uploadCodeFiles(call,{machine:developmentMachine,context,local:options['sync-dir']||process.cwd(),remote:'.',key,stateDirectory:sessionFile+'.uploads',via:options.via});}
       process.stderr.write('工作区：'+(context.project||'默认 OCI 项目')+' · 数据集 /datasets\n');
       if (options.interactive) context.interactive = true;
+      if(automatic)context.sourceMachine=developmentMachine;
       if (memoryLimitGiB !== void 0) context.memoryLimitGiB = memoryLimitGiB;
       const submission = await submitJobWithReceipt(call, { machine: positionals[1], ...automatic ? { machineSelection: { mode: "auto", ...candidates ? { candidates } : {} } } : {}, cards, minVramGiB: Number(options["min-vram"] || 0), name: options.name || "train", ...options.description !== void 0 ? { description: taskDescription(options.description) } : {}, argv: training, key, ...options.priority ? { priority: options.priority } : {}, ...scheduling ? { scheduling } : {}, ...elastic ? { elastic } : {}, ...placement ? { placement } : {}, ...context },session.principal);
       result=submission.result;if(submission.receiptRecovered)process.stderr.write("按原 key 找回已登记任务："+result.id+"\n");

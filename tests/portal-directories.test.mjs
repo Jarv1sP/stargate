@@ -140,6 +140,33 @@ test('directory copy performs one source authorization and starts the target wit
  assert.equal((await f.call('transfers.create',{key,kind:'copy',machine:target,from:machine,reference:{dataset:'source'},name:'copied'})).state,'RUNNING');
  assert.equal((await f.call('transfers.resume',{id:key},f.alice)).state,'SUCCEEDED');assert.equal(launched,1);
 });
+
+test('project copy keeps the environment and project owner instead of turning the target into a dataset',async t=>{
+ const f=await fixture(t),target=MACHINES[1].id,key=randomUUID();let started;
+ f.setHandler((host,op,args)=>{
+  if(op.endsWith('prepare')){assert.equal(op,'transfers.project.prepare');assert.equal(host,machine);assert.equal(args.source.environment,true);assert.equal(args.source.ownerId,f.aliceUser.id);return {id:key,token:'source-token'};}
+  if(op.endsWith('start')){assert.equal(op,'transfers.project.start');assert.equal(host,target);started=args;return {id:key,state:'PENDING'};}
+ });
+ await f.call('transfers.create',{key,kind:'copy',from:machine,machine:target,name:'project-copy',reference:{project:'sample',ownerId:f.aliceUser.id,environment:true}},f.bob);
+ assert.equal(started.target.project,'project-copy');assert.equal(started.target.ownerId,f.aliceUser.id);assert.equal(started.target.environment,true);
+ assert.equal(started.target.dataset,undefined);assert.equal(started.source.project,'sample');
+});
+
+test('canceling after a lost copy start reply still cancels the original target transfer before GPU dispatch',async t=>{
+ const f=await fixture(t),target=MACHINES[1].id;
+ f.setHandler((host,op,args)=>{
+  if(op==='transfers.project.prepare')return {id:args.id,token:'source-token'};
+  if(op==='transfers.project.start')throw Error('lost response after starting copy');
+  if(op==='transfers.cancel')return {id:args.id,state:'CANCELED'};
+ });
+ const submitted=await f.call('jobs.submit',{machine:target,sourceMachine:machine,project:'sample',cards:1,argv:['true'],key:randomUUID()},f.admin);
+ await f.service.reconcile();const row=f.service.store.jobs.find(job=>job.id===submitted.id);
+ assert.equal(row.projectPreparation,undefined);assert.equal(row.dispatchPending,true);
+ await f.call('jobs.cancel',{jobId:row.id},f.admin);await f.service.reconcile();
+ assert.equal(row.state,'CANCELED');
+ assert.ok(f.calls.some(call=>call.host===target&&call.op==='transfers.cancel'&&call.args.id===row.id));
+ assert.equal(f.calls.filter(call=>call.op==='sync').length,0);
+});
 test('unknown node transfer listings are reported as unknown, rather than an empty successful list',async t=>{
  const f=await fixture(t);f.setHandler(()=>{throw Object.assign(Error('offline'),{code:'NODE_CONNECT_FAILED'});});
  const value=await f.call('transfers.list');assert.equal(value.state,'UNKNOWN');assert.equal(value.transfers,null);assert.equal(value.partial,true);

@@ -103,6 +103,7 @@ class PersonalOCI:
         return result.stdout.strip()
 
     def state_path(self,slug):
+        if getattr(self,'state_folder',None) is not None:return self.state_folder/'oci.json'
         folder,_=self.s.ProjectStore(self.root,config=self.config)._project(self.owner,slug)
         return folder/'oci.json'
 
@@ -134,14 +135,15 @@ class PersonalOCI:
             flags=self.arguments(spec,project,terminal,uuids,mounts,control)
             return self.execute_workspace(spec,flags,dict(self.env))
 
-    def workspace_command(self,user,project,argv):
-        paths=self.s.ProjectStore(self.root,config=self.config).dev_paths(user,project)
+    def workspace_command(self,user,project,argv,*,paths=None,archive=None,timeout=300):
+        paths=paths or self.s.ProjectStore(self.root,config=self.config).dev_paths(user,project)
         with self.s.directory(paths['code']) as fd:
             flags=['--cgroups=disabled','--pid=private','--ipc=private','--uts=private',
                 '--network=slirp4netns:allow_host_loopback=false','--security-opt=no-new-privileges',
                 '--user=0','--workdir=/workspace','--volume',str(paths['code'])+':/workspace:rw',
                 '--volume',str(paths['home'])+':/home/gpuq:rw','--env=HOME=/home/gpuq','--pull=never',
                 *['--env='+k+'='+v for k,v in self.proxy.items()]]
+            if archive is not None:flags+=['--volume',str(self.d.require_data_path(self.config,archive))+':/run/gpuq/project-copy.tar:ro']
             # Git executes in the same writable project rootfs, never as a host command.
             head=self.workspace_container(project)
             request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
@@ -149,7 +151,7 @@ class PersonalOCI:
                      'flags':flags,'argv':argv}
             path=self.folder/'tmp'/('git-'+uuid.uuid4().hex+'.json');self.s.atomic_json(path,request)
             try:
-                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=300)
+                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=timeout)
                 if result.returncode:raise ValueError('容器git操作失败：'+result.stderr[-1200:])
                 return result.stdout.strip()
             finally:path.unlink(missing_ok=True)
@@ -377,6 +379,7 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
                 dataset_fds, datafd=None, runtimefd=None, resourcefd=None, cgroupfd=None, *, stderr_sink=None):
     """Both existing scheduler profiles enter here after allocation/limits."""
     owner = PersonalOCI(config, spec.get('ownerId') or spec['userId'])
+    if spec.get('projectCopy'):owner.state_folder=module('project-copy').runtime_folder(config,spec['projectCopy'])
     owner.stderr_sink = stderr_sink
     mounts = [(workfd, '/workspace', False), (project_fds['home'], '/home/gpuq', False),
               (project_fds['output'], '/outputs', False)]
