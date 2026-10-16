@@ -66,8 +66,9 @@ class ProjectCopy:
                 head=engine.workspace_container(project)
                 writable,rootfs=map(int,engine.run('container','inspect','--size','--format={{.SizeRw}} {{.SizeRootFs}}',head['container']).split())
                 workspace=sum(int(line.split()[0]) for line in engine.run('unshare','/usr/bin/du','-sb',*[str(path) for path in paths.values()]).splitlines())
-                # Commit layer, OCI staging directory and final archive coexist.
-                self.s.require_workspace_space(folder,needed=writable+2*rootfs+workspace)
+                # Incremental export needs no commit layer or saved OCI image.
+                needed=rootfs+workspace if row['mode']=='incremental' else writable+2*rootfs+workspace
+                self.s.require_workspace_space(folder,needed=needed)
                 if row['mode']=='incremental':engine.run('export','--output',str(folder/'rootfs.tar'),head['container'],timeout=3600)
                 else:
                     engine.run('commit','--pause=false','--include-volumes=false',head['container'],tag,timeout=3600)

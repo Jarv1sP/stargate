@@ -304,6 +304,11 @@ class ProjectCopy(unittest.TestCase):
             self.assertEqual(transfers.module('project-copy').ProjectCopy(jobs).export(key),1)
         self.assertFalse(any(args[0]=='commit' for args in calls))
 
+    def test_incremental_export_does_not_reserve_full_copy_commit_and_image_staging_layers(self):
+        with patch('os.fstatvfs',return_value=SimpleNamespace(f_bavail=64*1024**3+150,f_frsize=1)):
+            t=self.transport(interrupt=False,mode='incremental')
+        self.assertEqual(t.source.s.read_json(t.source.path(t.key,'.source.json'))['state'],'READY')
+
     def test_target_disk_floor_includes_the_archive_unpacking_space_before_loading(self):
         store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config)
         calls=[]
