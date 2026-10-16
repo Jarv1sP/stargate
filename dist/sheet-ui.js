@@ -1,4 +1,4 @@
-import {reducedMotion} from './motion-ui.js';
+import {reducedMotion,fadeOutDialog} from './motion-ui.js';
 const spring='cubic-bezier(.34,1.32,.5,1)';
 
 // Centered sheets from the approved design: they spring in and fade out.
@@ -6,11 +6,7 @@ export function openSheet(dialog){
   if(dialog.open)return;dialog.showModal();
   if(!reducedMotion())dialog.animate([{opacity:0,transform:'translateY(4%) scale(.97)'},{opacity:1,transform:'none'}],{duration:450,easing:spring});
 }
-export function closeSheet(dialog){
-  if(!dialog?.open)return;
-  if(reducedMotion()){dialog.close();return;}
-  dialog.animate([{opacity:1},{opacity:0,transform:'translateY(2%) scale(.98)'}],{duration:180,easing:'ease-in'}).finished.then(()=>dialog.close(),()=>dialog.close());
-}
+export function closeSheet(dialog){fadeOutDialog(dialog);}
 
 // One confirm sheet for destructive actions.
 export function confirmSheet({title,body,action,run}){
