@@ -131,7 +131,7 @@ export class PortalService extends DemoService{
     // State uses the collector's local snapshot, never a live per-node RPC.
     // Do not wait behind an unrelated node operation on the mutation tail.
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');
-    args=selectFields(args,['view']);
+    args=selectFields(args,['view','jobId']);
     if(args.view!==undefined&&args.view!=='summary')
       throw Object.assign(Error('无效的状态查询视图。'),{status:400});
     if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
@@ -142,9 +142,15 @@ export class PortalService extends DemoService{
 
       return current;
     };
-    if(args.view!=='summary')await this.refreshGPUQ();
+    if(args.view!=='summary'&&args.jobId===undefined)await this.refreshGPUQ();
     const current=check();
-    return {state:args.view==='summary'?this.stateSummary(current):this.state(current),principal:{username:current.username,role:current.role,userId:current.userId}};
+    const state=args.view==='summary'||args.jobId!==undefined?this.stateSummary(current):this.state(current);
+    if(args.jobId!==undefined){
+      const job=this.store.jobs.find(row=>row.id===args.jobId);
+      if(!job)throw Object.assign(Error('任务不存在。'),{status:404});
+      state.jobs=[{id:job.id,machine:job.machine,project:job.project??job.spec?.project,ownerId:job.ownerId??job.userId,userId:job.userId}];
+    }
+    return {state,principal:{username:current.username,role:current.role,userId:current.userId}};
   }
   async remoteRead(token,operation,args,options={}){
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');

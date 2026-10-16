@@ -202,7 +202,8 @@ test('a disconnected exchange observes STOPPED once without another exchange, op
 });
 
 test('a confirmed shell exit remains ended while the helper is still draining output or status is unavailable',async t=>{
-  for(const [status,reads] of [[args=>({protocol:'terminal-session-status-v1',id:args.id,state:'UNKNOWN',evidence:{confirmed:false}}),1],[()=>{throw Object.assign(Error('status temporarily unavailable'),{status:503});},3]]){
+  // The existing ten-second observation allows reads at 0/1/3/7s; it never replays input.
+  for(const [status,reads] of [[args=>({protocol:'terminal-session-status-v1',id:args.id,state:'UNKNOWN',evidence:{confirmed:false}}),1],[()=>{throw Object.assign(Error('status temporarily unavailable'),{status:503});},4]]){
     const f=await fixture(t,{open:validOpen,status}),result=await f.cli(['ssh']);
     assert.equal(result.code,0,result.stderr);assert.match(result.stderr,/此终端已结束/);
     assert.deepEqual(f.calls.map(call=>call.operation),['terminal.open','terminal.exchange',...Array(reads).fill('terminal.status')]);

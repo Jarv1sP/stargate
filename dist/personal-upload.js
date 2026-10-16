@@ -1,8 +1,8 @@
 const CHUNK=1024*1024;
 export const DATASET_DIRECT_HELP='数据集只走校园网直连，避免挤占 VPS 带宽。请连上校园网后用原命令重试，原 key 会续传。';
 export const CAMPUS_CONNECTION_HELP='校园直连暂时不可用，请用原命令重试，原 key 和偏移已保留。';
-export const campusRetryable=error=>error?.name!=='AbortError'&&(
-  error instanceof TypeError||error?.name==='TimeoutError'||['DNS_FAILED','TCP_TIMEOUT','TCP_REFUSED','CAMPUS_UNAVAILABLE','PHYSICAL_CONNECT_FAILED','PHYSICAL_ROUTE_UNAVAILABLE','NETWORK_CHANGED','ROUTE_UNCONFIRMED','CAMPUS_ADDRESS_REQUIRED','PHYSICAL_BIND_DENIED','NATIVE_START_FAILED','NATIVE_EXITED','ACK_UNCONFIRMED','RESPONSE_INTERRUPTED','CONNECTION_FAILED','CONNECTION_REFUSED','NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET','EPIPE','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','HANDSHAKE_TIMEOUT','HANDSHAKE_EOF'].includes(error?.code)||[429,502,503,504].includes(error?.status));
+export const campusRetryable=error=>error?.name!=='AbortError'&&![401,403,404].includes(error?.status)&&!['EACCES','EPERM','ENOENT','ENOTDIR'].includes(error?.code)&&(
+  error instanceof TypeError||error?.name==='TimeoutError'||error?.code==='READ_UNAVAILABLE'||/暂时无法读取/.test(error?.message??'')||['DNS_FAILED','TCP_TIMEOUT','TCP_REFUSED','CAMPUS_UNAVAILABLE','PHYSICAL_CONNECT_FAILED','PHYSICAL_ROUTE_UNAVAILABLE','NETWORK_CHANGED','ROUTE_UNCONFIRMED','CAMPUS_ADDRESS_REQUIRED','PHYSICAL_BIND_DENIED','NATIVE_START_FAILED','NATIVE_EXITED','ACK_UNCONFIRMED','RESPONSE_INTERRUPTED','CONNECTION_FAILED','CONNECTION_REFUSED','NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET','EPIPE','ECONNREFUSED','ENOTFOUND','EAI_AGAIN','HANDSHAKE_TIMEOUT','HANDSHAKE_EOF'].includes(error?.code)||[429,502,503,504].includes(error?.status));
 export async function retryCampusRequest(send,{signal,now=()=>performance.now(),sleep=(ms)=>new Promise((resolve,reject)=>{const timer=setTimeout(done,ms);function done(){signal?.removeEventListener('abort',abort);resolve();}function abort(){clearTimeout(timer);reject(signal.reason);}signal?.addEventListener('abort',abort,{once:true});})}={}){
   const deadline=now()+60000;let first,delay=1000;
   for(;;){signal?.throwIfAborted();try{return await send();}catch(failure){

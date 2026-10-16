@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {apiPost} from '../client-http.mjs';
-test('external direct-storage reads keep the existing short retry budget and fixed request',async()=>{
+test('external direct-storage reads keep the one-minute retry budget and fixed request',async()=>{
  for(const [operation,args] of [['datasets.list',{machine:'fixture-node'}],['transfers.status',{id:'11111111-1111-4111-8111-111111111111'}],['data.upload.status',{machine:'fixture-node',key:'11111111-1111-4111-8111-111111111111'}]]){
   const calls=[],body={operation,args};
   const result=await apiPost('https://portal.example.test','call',body,{sleep:async()=>{},fetchImpl:async(url,options)=>{
