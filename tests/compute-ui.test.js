@@ -59,9 +59,10 @@ test('compute queue shows only waiting jobs as one row each, with honest empty a
 test('fleet summary totals free, busy and queued independently and preserves unknown observations',async()=>{
   const {resourceTotals,resourceServerView}=await import('../dist/resources-ui.js');
   const snapshot={stale:false,hosts:[{id:machine.id,reachable:true,gpus:[gpu(0,{processes:[{pid:1}]}),gpu(1)],tasks:[{state:'QUEUED'},{state:'PENDING'},{state:'RUNNING'}]}]};
-  const view=resourceServerView(machine,{production:true,snapshot});assert.deepEqual(resourceTotals([view]),{free:1,busy:1,queued:2});
+  const view=resourceServerView(machine,{production:true,snapshot});assert.deepEqual(resourceTotals([view]),{free:1,busy:1,queued:2,missing:[]});
   const partial=resourceServerView(machine,{production:true,snapshot:{...snapshot,hosts:[{...snapshot.hosts[0],gpus:[gpu(0)]}]}});
-  assert.deepEqual(resourceTotals([partial]),{free:null,busy:null,queued:2});
-  assert.deepEqual(resourceTotals([resourceServerView(machine)]),{free:null,busy:null,queued:null});
-  assert.deepEqual(resourceTotals([]),{free:null,busy:null,queued:null});
+  assert.deepEqual(resourceTotals([partial]),{free:null,busy:null,queued:null,missing:[partial.machine.id]});
+  assert.deepEqual(resourceTotals([view,partial]),{free:1,busy:1,queued:2,missing:[partial.machine.id]},'an unread server is named, never counted as idle');
+  assert.deepEqual(resourceTotals([resourceServerView(machine)]),{free:null,busy:null,queued:null,missing:[machine.id]});
+  assert.deepEqual(resourceTotals([]),{free:null,busy:null,queued:null,missing:[]});
 });

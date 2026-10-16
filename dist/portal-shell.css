@@ -100,3 +100,17 @@
 .sb #toast.launch .toast-rocket{animation:toast-launch 1.4s cubic-bezier(.2,.8,.2,1) both}
 @keyframes toast-launch{0%{transform:translateY(4px)}30%{transform:translateY(0)}100%{transform:translateY(-26px);opacity:0}}
 @media (prefers-reduced-motion:reduce){.sb #toast.launch .toast-rocket{animation:none}}
+
+/* Shell from the approved prototype: a 1240px column, the ring mark, the search pill and 指南. */
+@media (min-width:760px){
+  .sb.root{--content:1192px}
+  .sb .topbar{height:64px;padding-inline:max(var(--edge,24px),calc((100vw - 1192px)/2))}
+}
+.sb .brand{display:flex;align-items:center;gap:12px}
+.sb .brand-ring{width:22px;height:22px;flex:none;color:var(--ink)}
+.sb .command-trigger{gap:10px}
+.sb .command-glass{width:14px;height:14px;flex:none}
+.sb .guide-top{display:inline-flex;align-items:center;min-height:44px;padding:0 4px;font-size:13px;color:var(--ink-3);text-decoration:none;transition:color .2s}
+.sb .guide-top:hover{color:var(--ink)}
+.sb #page-title{font-size:44px;font-weight:300;line-height:1.05;letter-spacing:-.01em}
+@media (max-width:759px){.sb .guide-top{display:none}.sb .command-glass{width:16px;height:16px}.sb .command-trigger kbd{display:none}.sb .command-trigger{justify-content:center}.sb #page-title{font-size:32px}}

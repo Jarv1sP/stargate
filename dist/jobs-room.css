@@ -175,3 +175,5 @@
 .sb .jr-empty .jr-f9{width:46px;height:170px;display:block;fill:none;stroke:currentColor;stroke-width:1.2}
 .sb .jr-btn svg{width:14px;height:14px;flex:none}
 .sb .jr-tl .jr-catch{display:block;width:30px;height:30px}
+.sb .jr-more{display:block;width:100%;min-height:52px;background:none;border:0;border-bottom:1px solid var(--line-2);color:var(--ink-3);font:inherit;font-size:13px;cursor:pointer;transition:color .2s,background .25s}
+.sb .jr-more:hover{color:#F2F2EF;background:var(--bg-1)}
