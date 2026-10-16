@@ -8,7 +8,15 @@ import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
 
 async function fixture(t,{central=false}={}){
-  const root=await mkdtemp(join(tmpdir(),'campus-login-')),database=join(root,'business.sqlite'),bootstrap=join(root,'bootstrap');
+  const root=await mkdtemp(join(tmpdir(),'campus-login-')),database=join(root,'business.sqlite'),accounts=join(root,'accounts.sqlite'),bootstrap=join(root,'bootstrap');
+  const environment=Object.fromEntries(['TEAM_ACCOUNTS_DATABASE','TEAM_IDENTITY_CONFIG'].map(name=>[name,process.env[name]]));
+  for(const name of Object.keys(environment))delete process.env[name];
+  let service;
+  t.after(async()=>{
+    service?.close();
+    for(const [name,value] of Object.entries(environment))if(value===undefined)delete process.env[name];else process.env[name]=value;
+    await rm(root,{recursive:true,force:true});
+  });
   await writeFile(bootstrap,JSON.stringify({username:'admin',password:'Synthetic-File-Login-Only-2026!'}));
   const bridge=async(machine,operation,args)=>{
     assert.equal(operation,'files.direct.prepare');
@@ -16,9 +24,8 @@ async function fixture(t,{central=false}={}){
       endpoint:'https://campus.invalid',certificateSha256:'a'.repeat(64),expiresAt:Date.now()/1000+300,
       chunkBytes:1024**2,file:{size:3}};
   };
-  let service=await PortalService.open(database,bootstrap,undefined,bridge);
+  service=await PortalService.open(database,bootstrap,undefined,bridge,undefined,accounts);
   clearInterval(service.executionTimer);
-  t.after(async()=>{service.close();await rm(root,{recursive:true,force:true});});
   const user=service.accounts.byName('admin');
   if(central){
     service.accounts.db.exec(`CREATE TABLE identity_users(id TEXT PRIMARY KEY,epoch TEXT);
@@ -35,7 +42,7 @@ async function fixture(t,{central=false}={}){
       machine:MACHINES[0].id,project:'fixture',area:'code',path:'sample',action,
       ...(action==='put'?{uploadId:randomUUID(),totalSize:3}:{}),
     })).result;},
-    async restart(){service.close();service=await PortalService.open(database,undefined,undefined,bridge);clearInterval(service.executionTimer);},
+    async restart(){service.close();service=await PortalService.open(database,undefined,undefined,bridge,undefined,accounts);clearInterval(service.executionTimer);},
   };
 }
 
@@ -53,7 +60,7 @@ for(const action of ['get','put']){
 }
 
 for(const [label,change,status] of [
-  ['expired login',db=>db.exec('UPDATE login_sessions_v2 SET expires_at=1'),401],
+  ['expired login',db=>db.exec('UPDATE login_sessions_v2 SET expires_at=1,touched_at=1'),401],
   ['disabled account',db=>db.exec('UPDATE accounts SET enabled=0'),403],
   ['changed role',db=>db.exec("UPDATE accounts SET role='member'"),403],
 ])test(`direct files reject ${label} even with a cached user profile`,async t=>{
