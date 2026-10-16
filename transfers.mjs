@@ -64,20 +64,16 @@ export async function transferCall(service,principal,operation,input,check=()=>{
       const status=await call(row.machine,'transfers.status',{id});
       if(terminal.has(status.state)||!['ABSENT','FAILED','PAUSED'].includes(status.state))return view(status);
       if(['FAILED','PAUSED'].includes(status.state)){
-        if(row.reference.environment)await call(row.from,'transfers.project.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine,mode:row.mode});
+        if(row.reference.environment)await call(row.from,'transfers.project.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine});
         return view(await call(row.machine,'transfers.resume',{id}));
       }
     }
     // Only one source authorization, then one target start. Both nodes dedupe
     // this original UUID. Source bytes are never hashed or compared in Portal.
-    const target={...row.reference,...(row.name?{[row.reference.project?'project':'dataset']:row.name}:{}),userId:principal.userId};
-    if(row.reference.environment&&!row.mode){
-      const value=await call(row.machine,'transfers.project.mode',{target});row.mode=value.mode;save(service,row);
-    }
-    const source=await call(row.from,row.reference.environment?'transfers.project.prepare':'transfers.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine,mode:row.mode});
+    const source=await call(row.from,row.reference.environment?'transfers.project.prepare':'transfers.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine});
     if(typeof source?.token!=='string')return view({state:source?.state||'UNKNOWN',message:'来源目录正在读取，请按原编号查询。'});
     row.state='DISPATCHING';save(service,row);
-    const result=await call(row.machine,row.reference.environment?'transfers.project.start':'transfers.start',{id,source:{...row.reference,userId:principal.userId},target:{...target,...(row.mode?{mode:row.mode}:{})},ticket:{id:source.id??id,token:source.token},sourceMachine:row.from});
+    const result=await call(row.machine,row.reference.environment?'transfers.project.start':'transfers.start',{id,source:{...row.reference,userId:principal.userId},target:{...row.reference,...(row.name?{[row.reference.project?'project':'dataset']:row.name}:{}),userId:principal.userId},ticket:{id:source.id??id,token:source.token},sourceMachine:row.from});
     service.audit(principal.username,operation,id,JSON.stringify({from:row.from,machine:row.machine,reference:row.reference}));
     return view(result);
   })().finally(()=>service.transferWrites.delete(id));
