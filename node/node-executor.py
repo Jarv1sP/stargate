@@ -99,10 +99,12 @@ def job_operation(operation,args):
         if node_id is None and operation=='cancel':
             state='CANCEL_REQUESTED' if dispatched.exists() else 'CANCELED'
             atomic_json(canceled,{'state':state})
+            if state=='CANCELED' and job.get('projectCopy'):transfers().finish_runtime(job['projectCopy'])
             return {'state':'UNKNOWN' if state=='CANCEL_REQUESTED' else state,'error':'未知，请按原编号查询。' if state=='CANCEL_REQUESTED' else None}
         if node_id is None and operation=='sync':
             if canceled.exists():
                 state=module('project-store').read_json(canceled)['state']
+                if state=='CANCELED' and job.get('projectCopy'):transfers().finish_runtime(job['projectCopy'])
                 return {'state':'CANCELED' if state=='CANCELED' else 'UNKNOWN','error':'未知，请按原编号查询。' if state!='CANCELED' else None}
             if job.get('interactive'):
                 terminal_folder=module('project-store').private_dir(ROOT/'terminals',create=True)
@@ -126,6 +128,7 @@ def job_operation(operation,args):
             if rank not in PRIORITY_RANKS:raise ValueError('请选择有效的任务优先级。')
             gpu('set-rank',node_id,'P'+str(PRIORITY_RANKS[rank]))
             data=gpu('show',node_id);state=data.get('job',data)
+        if job.get('projectCopy') and scheduler_finished(data):transfers().finish_runtime(job['projectCopy'])
         if operation=='logs':return job_log_result(job,data,run([CONFIG['gpu'],'logs','-n','200',node_id])[-200000:])
         if operation=='diagnostics':return job_diagnostics(job,data)
         if 'metadata' in args:

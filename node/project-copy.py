@@ -119,7 +119,10 @@ class ProjectCopy:
         target=row['target'];owner=target.get('ownerId') or target['userId']
         engine=self.j.e.projects().oci(owner)
         fd=os.open(engine.folder/('copy-'+self.d.name(target['project'])+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
-        try:fcntl.flock(fd,fcntl.LOCK_EX);yield
+        try:
+            try:fcntl.flock(fd,fcntl.LOCK_EX|(fcntl.LOCK_NB if target.get('jobId') else 0))
+            except BlockingIOError:yield False
+            else:yield True
         finally:os.close(fd)
 
     @contextlib.contextmanager
@@ -195,7 +198,7 @@ class ProjectCopy:
                      for entry in self.sync().entries(plan) if entry['type']=='file' and not (bundle/entry['body']).exists())
             if receive(entries) is None:return False
         changed=bool(plan.stat().st_size)
-        with self.idle(row,engine) if changed else contextlib.nullcontext(True) as ready:
+        with self.idle(row,engine) if changed and existing else contextlib.nullcontext(True) as ready:
             if ready and changed:
                 engine.copy_files(project,'backup',paths=paths,plan=str(plan),key=key)
                 if self.j.status({'id':key})['state']=='CANCELED':return False
@@ -232,7 +235,7 @@ class ProjectCopy:
                 container='gpuq-dev-'+uuid.uuid4().hex
                 engine.run('create','--name',container,'--network=none','--entrypoint','/bin/sh',manifest['image'])
                 self.s.atomic_json(folder/'oci.json',{'image':manifest['image'],'container':container})
-        engine.workspace_command(owner,project,['tar','--extract','--file','/run/gpuq/project-copy.tar','--directory','/'],
+        engine.workspace_command(owner,'copy-'+key,['tar','--extract','--file','/run/gpuq/project-copy.tar','--directory','/'],
                                  paths=paths,archive=bundle/'workspace.tar',timeout=3600)
         with self.j.lock(key):
             current=self.s.read_json(self.j.path(key))

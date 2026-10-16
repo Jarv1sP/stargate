@@ -39,7 +39,9 @@ class PeerClient:
             self.connection = connection
     def call(self, action, **fields):
         try:
-            self.connect()
+            timeout=5 if action=='complete' else 25
+            self.connect(timeout=timeout)
+            self.connection.sock.settimeout(timeout)
             payload = json.dumps({'id': self.ticket['id'], 'action': action, **fields}).encode()
             self.connection.request('POST', '/directory', body=payload,
                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+self.ticket['token']})
@@ -149,28 +151,42 @@ class TransferJobs:
     def view(self,row):return {k:row.get(k) for k in ('id','key','state','bytes','totalBytes','error','source','target','createdAt','installed')}
 
     def status(self,args):
-        try:return self.view(self.s.read_json(self.path(args.get('id',args.get('key')))))
+        try:row=self.s.read_json(self.path(args.get('id',args.get('key'))))
         except FileNotFoundError:return {'state':'ABSENT'}
+        if row.get('sourceCompletePending'):self.complete_copy(row)
+        return self.view(row)
 
     def launch(self,key):
         return self.e.run(['/usr/bin/systemd-run','--user','--collect','--unit=gpuq-transfer-'+key,
             '--property=KillMode=control-group','--property=MemoryMax=1G','--property=TasksMax=2048',
             '/usr/bin/python3',str(Path(__file__).with_name('node-executor.py')),'--transfer-worker',key],timeout=18)
 
-    def cleanup_copy(self,row,peer=None):
+    def complete_copy(self,row,peer=None):
         own_peer=peer is None
+        with self.lock(row['id']):
+            current=self.s.read_json(self.path(row['id']));current['sourceCompletePending']=True;self.s.atomic_json(self.path(row['id']),current)
         try:
-            try:
-                module('project-copy').ProjectCopy(self).cleanup(row)
-                uploads=module('data-uploads').Uploads(self.config,row['target'].get('userId','team'))
-                for upload_key in row.get('uploadKeys',{}).values():uploads.record(upload_key).unlink(missing_ok=True)
-                with self.lock(row['id']):
-                    current=self.s.read_json(self.path(row['id']));current.pop('runtime',None);self.s.atomic_json(self.path(row['id']),current)
-            finally:
-                if peer is None:peer=PeerClient(self.config['transferPeers'][row['sourceMachine']],row['ticket'])
-                peer.call('complete')
+            if peer is None:peer=PeerClient(self.config['transferPeers'][row['sourceMachine']],row['ticket'])
+            peer.call('complete')
+        except Exception:pass  # Source staging cleanup never blocks a local terminal result.
+        else:
+            with self.lock(row['id']):
+                current=self.s.read_json(self.path(row['id']));current.pop('sourceCompletePending',None);self.s.atomic_json(self.path(row['id']),current)
         finally:
             if own_peer and peer is not None:peer.close()
+
+    def cleanup_copy(self,row,peer=None):
+        try:
+            module('project-copy').ProjectCopy(self).cleanup(row)
+            uploads=module('data-uploads').Uploads(self.config,row['target'].get('userId','team'))
+            for upload_key in row.get('uploadKeys',{}).values():uploads.record(upload_key).unlink(missing_ok=True)
+            with self.lock(row['id']):
+                current=self.s.read_json(self.path(row['id']));current.pop('runtime',None);self.s.atomic_json(self.path(row['id']),current)
+        finally:self.complete_copy(row,peer)
+
+    def finish_runtime(self,key):
+        row=self.s.read_json(self.path(key))
+        if row.get('runtime'):self.cleanup_copy(row)
 
     def start(self,args):
         key=args.get('key',args.get('id'));request={k:args.get(k) for k in ('source','target','ticket','sourceMachine','route')}
@@ -190,11 +206,12 @@ class TransferJobs:
         with self.lock(key):
             try:row=self.s.read_json(self.path(key))
             except FileNotFoundError:row={'id':key,'key':key,'state':'CANCELED'}
-            if row['state']!='SUCCEEDED':row['state']='CANCELED';self.s.atomic_json(self.path(key),row)
+            if row['state']!='SUCCEEDED' or row.get('runtime'):row['state']='CANCELED';self.s.atomic_json(self.path(key),row)
         if row['state']=='CANCELED' and row.get('target',{}).get('environment'):
             active=self.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value',
                                'gpuq-transfer-'+key+'.service*']).strip()
             if active in ('','inactive','failed'):self.cleanup_copy(row)
+        elif row.get('sourceCompletePending'):self.complete_copy(row)
         return self.view(row)
 
     def resume(self,args):
@@ -203,16 +220,17 @@ class TransferJobs:
             row=self.s.read_json(self.path(key))
             if row['state']=='SUCCEEDED':return self.view(row)
             if row['state']=='FAILED' and row['target'].get('environment'):row['backupKey']=str(uuid.uuid4())
-            row['state']='PENDING';row.pop('error',None);self.s.atomic_json(self.path(key),row)
+            row['state']='PENDING';row.pop('error',None);row.pop('sourceCompletePending',None);self.s.atomic_json(self.path(key),row)
         self.launch(key);return self.status({'key':key})
 
     def worker(self,key):
         row=self.s.read_json(self.path(key))
         if row['target'].get('environment') is True:
-            with module('project-copy').ProjectCopy(self).serialized(row):return self.receive_worker(key)
+            with module('project-copy').ProjectCopy(self).serialized(row) as available:
+                return self.receive_worker(key,independent=not available)
         return self.receive_worker(key)
 
-    def receive_worker(self,key):
+    def receive_worker(self,key,independent=False):
         row=self.s.read_json(self.path(key));ticket=row['ticket']
         peer=None
         try:
@@ -226,17 +244,19 @@ class TransferJobs:
                 created=(destination/'project.json').exists() and self.s.read_json(destination/'project.json').get('copyKey')==key
                 if row.get('installed') or created:
                     copy.cleanup({**row,'createdProject':row.get('createdProject',created)})
-                    peer.call('complete')
+                    self.complete_copy(row,peer)
+                    row=self.s.read_json(self.path(key))
                     with self.lock(key):row.update(state='SUCCEEDED',installed=True);self.s.atomic_json(self.path(key),row)
                     return 0
                 if row.get('runtime'):
-                    peer.call('complete')
+                    self.complete_copy(row,peer)
+                    row=self.s.read_json(self.path(key))
                     with self.lock(key):row.update(state='SUCCEEDED');self.s.atomic_json(self.path(key),row)
                     return 0
                 root=self.s.private_dir(copy.target(row)/'received',create=True)
             else:root=self.d.dataset_root(self.config,target['dataset'],create=True) if target.get('dataset') else self.root(target)
             uploads=module('data-uploads').Uploads(self.config,target.get('userId','team'),root=root)
-            cursor=0;done=0
+            cursor=None if independent and target.get('mode')=='incremental' else 0;done=0
             while cursor is not None:
                 page=copy.incremental_page(row,peer,cursor) if copy and target.get('mode')=='incremental' else peer.call('list',offset=cursor)
                 if page.get('state')=='PREPARING':
@@ -258,8 +278,11 @@ class TransferJobs:
                         if page.get('state')=='FAILED':raise ValueError(page['error'])
                         return refresh(page['entries'])
                     return None
-                if copy.install(row,receive=refresh,receive_full=full) is False:return 0
-                peer.call('complete')
+                if independent:
+                    if target.get('mode')=='incremental' and full() is None:return 0
+                    if copy.install_runtime(row) is False:return 0
+                elif copy.install(row,receive=refresh,receive_full=full) is False:return 0
+                self.complete_copy(row,peer)
             with self.lock(key):
                 row=self.s.read_json(self.path(key))
                 if row['state']!='CANCELED':row.update(state='SUCCEEDED',bytes=done,totalBytes=done);self.s.atomic_json(self.path(key),row)

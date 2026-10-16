@@ -328,10 +328,14 @@ class ProjectCopy(unittest.TestCase):
                 value=super().call(action,**fields)
                 if action=='complete' and not lost[0]:lost[0]=True;raise TimeoutError('lost completion response')
                 return value
-        with patch.object(t.transfers,'PeerClient',Peer):
-            self.assertEqual(t.target.worker(t.key),1);self.assertEqual(t.target.status({'id':t.key})['state'],'PAUSED')
+        copy=t.transfers.module('project-copy')
+        with patch.object(t.transfers,'PeerClient',Peer),patch.object(copy.ProjectCopy,'idle',side_effect=AssertionError('new target has no public consumers')),patch.object(t.transfers,'module',side_effect=lambda name:copy if name=='project-copy' else f.module(name)):
+            self.assertEqual(t.target.worker(t.key),0)
+            self.assertTrue(t.target.s.read_json(t.target.path(t.key))['sourceCompletePending'])
             before=sum(args[0]=='load' for args in t.native)
-            t.target.resume({'id':t.key});self.assertEqual(t.target.worker(t.key),0)
+            self.assertEqual(t.target.status({'id':t.key})['state'],'SUCCEEDED')
+            self.assertFalse(t.target.s.read_json(t.target.path(t.key)).get('sourceCompletePending'))
+            self.assertEqual(t.target.resume({'id':t.key})['state'],'SUCCEEDED')
             self.assertEqual(sum(args[0]=='load' for args in t.native),before)
         paths=t.target_store.dev_paths('alice','new-project')
         self.assertEqual((paths['code']/'train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
@@ -386,6 +390,32 @@ class ProjectCopy(unittest.TestCase):
         self.assertEqual(t.target.s.read_json(paths['code'].parent/'oci.json')['container'],'keep-container')
         f.module('project-purge').Trash(t.target.config).restore({'key':t.key})
         self.assertEqual(backup.read_bytes(),b'restore-these-files')
+
+    def test_offline_source_does_not_block_cancel_and_later_queries_finish_source_cleanup(self):
+        t=self.transport(interrupt=False);token=t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':{'id':t.key,'token':token},'source':t.ref,'target':t.ref})
+        folder=t.transfers.module('project-copy').ProjectCopy(t.target).target({'id':t.key})
+        (folder/'received').mkdir();(folder/'received/image.tar').write_bytes(b'partial')
+        t.target.s.atomic_json(folder/'oci.json',{'container':'gpuq-dev-offline'})
+        row=t.target.s.read_json(t.target.path(t.key));row['state']='PAUSED';t.target.s.atomic_json(t.target.path(t.key),row)
+        offline=[True];completed=[]
+        class Peer(t.peer):
+            def call(self,action,**fields):
+                if offline[0]:raise ConnectionError('source is offline')
+                completed.append(action);return super().call(action,**fields)
+        with patch.object(t.transfers,'PeerClient',Peer):
+            self.assertEqual(t.target.cancel({'id':t.key})['state'],'CANCELED')
+            self.assertFalse(folder.exists());self.assertTrue(t.target.s.read_json(t.target.path(t.key))['sourceCompletePending'])
+            self.assertEqual(t.target.status({'id':t.key})['state'],'CANCELED')
+            self.assertEqual(t.target.resume({'id':t.key})['state'],'PENDING')
+            self.assertFalse(t.target.s.read_json(t.target.path(t.key)).get('sourceCompletePending'))
+            self.assertTrue((Path(t.source.config['workspacesRoot'])/'.copy-exports'/t.key).exists())
+            self.assertEqual(t.target.cancel({'id':t.key})['state'],'CANCELED')
+            offline[0]=False
+            self.assertEqual(t.target.status({'id':t.key})['state'],'CANCELED')
+            self.assertFalse(t.target.s.read_json(t.target.path(t.key)).get('sourceCompletePending'))
+        self.assertEqual(completed,['complete'])
+        self.assertFalse((Path(t.source.config['workspacesRoot'])/'.copy-exports'/t.key).exists())
 
     def test_existing_disk_floor_is_checked_before_the_export_creates_an_image_layer(self):
         store=f.module('project-store').ProjectStore(Path(self.config['root']),config=self.config);store.create('alice','demo')

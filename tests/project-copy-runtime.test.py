@@ -67,6 +67,78 @@ class Runtime(unittest.TestCase):
     def test_busy_auto_job_with_a_full_bundle_uses_the_original_independent_installer(self):
         self.busy_auto('full')
 
+    def test_manual_copy_lock_does_not_make_an_auto_job_wait(self):
+        t=self.transport(interrupt=False,mode='incremental');paths=self.target(t)
+        ticket={'id':t.key,'token':t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']}
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':ticket,'source':t.ref,
+                        'target':{**t.ref,'mode':'incremental','jobId':t.key}})
+        def launch(argv,**kwargs):
+            if '--project-copy-export-worker' in argv:
+                self.assertEqual(t.transfers.module('project-copy').ProjectCopy(t.source).export(t.key),0)
+        t.source.e.run=launch
+        copy=t.transfers.module('project-copy').ProjectCopy(t.target)
+        with concurrent.futures.ThreadPoolExecutor(1) as pool,patch.object(t.transfers,'PeerClient',t.peer):
+            with copy.serialized({'target':t.ref}):
+                worker=pool.submit(t.target.worker,t.key)
+                try:self.assertEqual(worker.result(3),0)
+                except concurrent.futures.TimeoutError:
+                    self.fail('AUTO waited behind the manual project-copy lock')
+        runtime=Path(t.target.config['workspacesRoot'])/'.copies'/t.key
+        self.assertEqual((runtime/'code/train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
+        self.assertEqual((paths['code']/'train.py').read_text(),'old-code')
+
+    def test_runtime_has_its_own_execution_lease_and_is_cleaned_at_job_terminal_states(self):
+        t=self.transport(interrupt=False);self.target(t)
+        ticket={'id':t.key,'token':t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']}
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':ticket,'source':t.ref,
+                        'target':{**t.ref,'mode':'full','jobId':t.key}})
+        copy=t.transfers.module('project-copy').ProjectCopy(t.target)
+        fd=os.open(t.target.e.projects().oci('alice').folder/'use-demo.lock',os.O_RDWR|os.O_CREAT,0o600)
+        try:
+            fcntl.flock(fd,fcntl.LOCK_SH)
+            with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(t.target.worker(t.key),0)
+        finally:os.close(fd)
+        runtime=Path(t.target.config['workspacesRoot'])/'.copies'/t.key
+        engine=t.target.e.projects().oci('alice');engine.state_folder=runtime;requests=[]
+        job={'id':t.key,'userId':'bob','ownerId':'alice','project':'demo','cards':1,'argv':['python','train.py'],'projectCopy':t.key}
+        output=t.target_store.runtime_paths(job,t.key)['output']/'result.txt';output.write_text('keep this result')
+        flags=engine.arguments(job,{},False,[],[])
+        self.assertIn('io.gpuq.project=copy-'+t.key,flags)
+        self.assertNotIn('io.gpuq.project=demo',flags)
+        engine.call=lambda args,**kwargs:requests.append(__import__('json').loads(Path(args[-1]).read_text())) or 0
+        engine.execute_workspace(job,flags,{})
+        self.assertEqual(Path(requests[0]['workspaceLock']).name,'use-copy-'+t.key+'.lock')
+        fd=os.open(requests[0]['workspaceLock'],os.O_RDWR|os.O_CREAT,0o600)
+        try:
+            fcntl.flock(fd,fcntl.LOCK_SH)
+            with copy.idle(t.target.s.read_json(t.target.path(t.key)),engine) as ready:self.assertTrue(ready)
+        finally:os.close(fd)
+        spec=importlib.util.spec_from_file_location('security_fixture',Path(__file__).with_name('project-security.test.py'))
+        security=importlib.util.module_from_spec(spec);spec.loader.exec_module(security)
+        self.config=t.target.config;node=security.ProjectContract.node(self)
+        node.PROJECT_OPS=t.target.e.projects();node.transfers=lambda:t.target;node.native=lambda job:'native-job'
+        observed={'state':'RUNNING'};node.gpu=lambda *args:{'job':observed,'attempts':[]}
+        with patch.object(t.transfers,'PeerClient',t.peer):
+            for state in ('RUNNING','PENDING'):
+                observed['state']=state;self.assertEqual(node.job_operation('watch',{'job':job})['state'],state)
+                self.assertTrue(runtime.exists())
+            saved=self.base/'saved-runtime';shutil.copytree(runtime,saved)
+            for state in ('SUCCEEDED','FAILED','CANCELED','NOT_SUBMITTED','TRANSFER_CANCEL'):
+                with self.subTest(state=state):
+                    if not runtime.exists():shutil.copytree(saved,runtime)
+                    row=t.target.s.read_json(t.target.path(t.key));row['runtime']=True;t.target.s.atomic_json(t.target.path(t.key),row)
+                    node.native=lambda job:None if observed['state']=='NOT_SUBMITTED' else 'native-job'
+                    observed['state']=state
+                    operation='cancel' if state=='NOT_SUBMITTED' else 'watch'
+                    result=t.target.cancel({'id':t.key}) if state=='TRANSFER_CANCEL' else node.job_operation(operation,{'job':job})
+                    self.assertEqual(result['state'],'CANCELED' if state in ('NOT_SUBMITTED','TRANSFER_CANCEL') else state)
+                    self.assertFalse(runtime.exists())
+                    self.assertFalse(t.target.s.read_json(t.target.path(t.key)).get('runtime'))
+        self.assertTrue((t.target_store.dev_paths('alice','demo')['code']/'train.py').exists())
+        self.assertEqual(output.read_text(),'keep this result')
+        self.assertTrue(any(args[0]=='rm' and args[-1].startswith('gpuq-dev-') for args in t.native))
+        self.assertIn(('rmi','localhost/gpuq-copy:'+t.key),t.native)
+
     def busy_auto(self,mode):
         t=self.transport(interrupt=False,mode=mode);paths=self.target(t);exports=[]
         if mode=='incremental':self.assertFalse(any(args[0] in ('commit','save') for args in t.native))
