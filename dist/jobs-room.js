@@ -6,6 +6,7 @@ import {downloadBrowserPath} from './file-transfer-ui.js';
 import {diagnosticsHTML,nativeObservationHTML,completionHTML} from './job-diagnostics-ui.js';
 import {deleteJobOutputs,deletableResultJob,ownResultJob,resultPullCommand} from './job-results-ui.js';
 import {reducedMotion} from './motion-ui.js';
+import {confirmSheet} from './sheet-ui.js';
 
 const QUEUED=['PENDING','QUEUED','SUBMITTING'],LIVE=['RUNNING','STARTING'];
 const dotClass=job=>job.cancelRequested&&!endedJob(job)?'cancel':LIVE.includes(job.state)?'run':QUEUED.includes(job.state)?'queue':job.state==='FAILED'?'fail':'done';
@@ -131,12 +132,6 @@ export function jobsRoom(store,{toast,machines,getPage}){
   }
 
   // Submission sheet: project, command, cards, where, optional GPUs and priority.
-  function confirmSheet(title,body,action,run){
-    sheet.querySelector('.jr-sheet-in').innerHTML=`<div class="jr-confirm-title">${esc(title)}</div><p class="jr-confirm-body">${esc(body)}</p><p class="jr-error" data-confirm-error hidden></p><div class="jr-actions"><button type="button" class="jr-btn ghost" data-confirm-back>算了</button><button type="button" class="jr-btn primary danger" data-confirm-go>${esc(action)}</button></div>`;
-    scrim.classList.add('on');sheet.classList.add('on');const go=sheet.querySelector('[data-confirm-go]');setTimeout(()=>sheet.querySelector('[data-confirm-back]').focus(),50);
-    sheet.querySelector('[data-confirm-back]').addEventListener('click',()=>{sheet.classList.remove('on');if(!drawer.classList.contains('on'))scrim.classList.remove('on');});
-    go.addEventListener('click',async()=>{go.disabled=true;try{await run();sheet.classList.remove('on');}catch(error){const box=sheet.querySelector('[data-confirm-error]');box.textContent=error.message;box.hidden=false;go.disabled=false;}});
-  }
   async function projectsFor(){
     const rows=[];await Promise.all(machines.map(async machine=>{try{const result=await store.call('projects.list',{machine:machine.id});for(const p of result.projects||[])if(!p.archived)rows.push({machine:machine.id,project:p.project,ownerId:p.ownerId||p.userId,ownerName:p.ownerName||''});}catch{}}));
     return rows.sort((a,b)=>a.project.localeCompare(b.project)||a.machine.localeCompare(b.machine));
@@ -195,12 +190,12 @@ export function jobsRoom(store,{toast,machines,getPage}){
   $('.jr-search').addEventListener('input',event=>{search=event.target.value;renderRows();});
   newButton.addEventListener('click',openSheet);
   scrim.addEventListener('click',close);drawer.querySelector('.jr-x').addEventListener('click',close);
-  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&(drawer.classList.contains('on')||sheet.classList.contains('on')))close();});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!document.querySelector('dialog[open]')&&(drawer.classList.contains('on')||sheet.classList.contains('on')))close();});
   drawer.addEventListener('click',async event=>{
     const job=store.jobs.find(item=>item.id===openId);if(!job)return;
     const tabButton=event.target.closest('[data-tab]');if(tabButton){tab=tabButton.dataset.tab;for(const b of drawer.querySelectorAll('[data-tab]'))b.setAttribute('aria-selected',b===tabButton);for(const pane of drawer.querySelectorAll('[data-pane]'))pane.hidden=pane.dataset.pane!==tab;placeTabs();loadTab(job);return;}
     const p=event.target.closest('[data-priority]');if(p&&p.getAttribute('aria-pressed')!=='true'){try{await store.call('jobs.priority',{jobId:job.id,priority:p.dataset.priority});for(const b of drawer.querySelectorAll('[data-priority]'))b.setAttribute('aria-pressed',b===p);placeSeg(p.closest('.jr-seg'));toast('优先级已改为 '+p.dataset.priority);await store.refresh().catch(()=>{});render();}catch(error){toast(error.message);}return;}
-    if(event.target.closest('[data-cancel]')){confirmSheet('取消这个任务？','占用的卡会马上释放，输出保留。','取消任务',async()=>{await store.call('jobs.cancel',{jobId:job.id});toast('已请求取消，占用的卡会释放');await store.refresh().catch(()=>{});render();openJob(job.id);});return;}
+    if(event.target.closest('[data-cancel]')){confirmSheet({title:'取消这个任务？',body:'占用的卡会马上释放，输出保留。',action:'取消任务',run:async()=>{await store.call('jobs.cancel',{jobId:job.id});toast('已请求取消，占用的卡会释放');await store.refresh().catch(()=>{});render();openJob(job.id);}});return;}
     const out=event.target.closest('[data-out-path]');if(out&&out.hasAttribute('data-out-dir')){loadOutputs(job,out.dataset.outPath);return;}
     const copy=event.target.closest('[data-out-copy]');if(copy){try{await navigator.clipboard.writeText(resultPullCommand(job,copy.dataset.outCopy));toast('已复制下载命令，把 LOCAL_FILE 换成本地路径');}catch{toast(resultPullCommand(job,copy.dataset.outCopy));}return;}
     const remove=event.target.closest('[data-out-delete]');if(remove){if(!remove.dataset.confirm){remove.dataset.confirm='1';remove.textContent='确认删除';setTimeout(()=>{if(remove.isConnected){delete remove.dataset.confirm;remove.textContent='删除';}},4000);return;}

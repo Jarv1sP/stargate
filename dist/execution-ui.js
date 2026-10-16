@@ -13,6 +13,7 @@ import {createProjectManagement,projectSelectHTML} from './project-management-ui
 import {escapeUI as escape,workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
 import {trainingStorageMessage,trainingSelectionHTML} from './training-storage-ui.js';
 import {revealSheet,dismissSheet,sharedObject} from './motion-ui.js';
+import {openSheet,closeSheet} from './sheet-ui.js';
 import {createTaskNotesUI} from './task-notes-ui.js';
 import {maintenanceFor,heldDuringMaintenance,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
 const terminal=new Set(['SUCCEEDED','FAILED','CANCELED']);
@@ -234,9 +235,9 @@ export function executionUI(store,refresh,toast){
     const underline=()=>{const on=room.querySelector('.pr-tabs [aria-selected=true]'),line=room.querySelector('.pr-tabs .jr-ul');if(on?.offsetWidth){line.style.width=on.offsetWidth+'px';line.style.transform=`translateX(${on.offsetLeft}px)`;}};
     room.querySelector('.pr-tabs').addEventListener('click',event=>{const tab=event.target.closest('[data-pt]');if(!tab)return;for(const item of room.querySelectorAll('[data-pt]'))item.setAttribute('aria-selected',item===tab);for(const item of room.querySelectorAll('[data-pp]'))item.hidden=item.dataset.pp!==tab.dataset.pt;underline();if(tab.dataset.pt==='files')listWhenReady();});
     new ResizeObserver(underline).observe(room.querySelector('.pr-tabs'));
-    room.querySelector('#pr-switch').addEventListener('click',()=>showSheet(sheet));room.querySelector('#pr-switch-close').addEventListener('click',()=>dismissSheet(sheet));
-    sheet.addEventListener('cancel',event=>{event.preventDefault();dismissSheet(sheet);});
-    query('[name=workspace-project]').addEventListener('change',event=>{if(event.target.value&&sheet.open)dismissSheet(sheet);});
+    room.querySelector('#pr-switch').addEventListener('click',()=>openSheet(sheet));room.querySelector('#pr-switch-close').addEventListener('click',()=>closeSheet(sheet));
+    sheet.addEventListener('cancel',event=>{event.preventDefault();closeSheet(sheet);});
+    query('[name=workspace-project]').addEventListener('change',event=>{if(event.target.value&&sheet.open)closeSheet(sheet);});
     const receipt=document.createElement('section');receipt.id='submission-receipt';receipt.className='wb-receipt';receipt.setAttribute('aria-live','polite');receipt.hidden=true;jobs.prepend(receipt);
     const projectHelp=document.createElement('p');projectHelp.id='project-status-detail';query('#project-status').after(projectHelp);discloseInfo(projectHelp,'项目状态详情');
     const fileRoute=document.createElement('span');fileRoute.id='workspace-upload-route';fileRoute.innerHTML=infoHTML('文件使用校园网 HTTPS 直连；上传失败保留原编号和偏移。','文件传输路线');query('#workspace-files>summary').append(fileRoute);

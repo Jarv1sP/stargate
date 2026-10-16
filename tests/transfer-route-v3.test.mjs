@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {selectTransferRoute} from '../client-transfer-route.mjs';
 import {uploadLocalFile} from '../client-transfers.mjs';
-import {uploadBrowserFile} from '../dist/personal-upload.js';
+import {uploadBrowserFile,BROWSER_DATASET_HELP} from '../dist/personal-upload.js';
 import {readBrowserFile} from '../dist/file-transfer-ui.js';
 import {createPersonalFileTransport} from '../client-personal-file-campus.mjs';
 import {downloadResultFile} from '../client-result-download.mjs';
@@ -37,7 +37,7 @@ for(const action of ['put','get'])test(`offline browser dataset ${action} never 
  t.mock.method(globalThis,'fetch',async()=>{throw TypeError('campus disconnected');});const calls=[];
  const call=async op=>{calls.push(op);if(op==='files.direct-ticket')return grant;if(op==='data.upload.begin')return {offset:0,state:'UPLOADING'};assert.fail(op);};
  const scope={machine:'fixture',area:'dataset',dataset:'images'};
- await assert.rejects(action==='put'?uploadBrowserFile(new Blob(['abc']),{...scope,call,path:'file',key}):readBrowserFile(call,scope,'file'),e=>e.message.includes(help));
+ await assert.rejects(action==='put'?uploadBrowserFile(new Blob(['abc']),{...scope,call,path:'file',key}):readBrowserFile(call,scope,'file'),e=>e.message.includes(BROWSER_DATASET_HELP));
  assert.equal(calls.includes('data.upload.chunk')||calls.includes('files.get'),false);
 });
 test('direct chunk retries reset/timeouts on the same key and offset, then return complete bytes',async()=>{

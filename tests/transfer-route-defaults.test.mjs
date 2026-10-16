@@ -7,7 +7,7 @@ import {randomUUID} from 'node:crypto';
 import {createServer} from 'node:net';
 import {uploadLocalFile,uploadLocalTree} from '../client-transfers.mjs';
 import {downloadResultFile} from '../client-result-download.mjs';
-import {uploadBrowserFile} from '../dist/personal-upload.js';
+import {uploadBrowserFile,BROWSER_DATASET_HELP} from '../dist/personal-upload.js';
 import {readBrowserFile} from '../dist/file-transfer-ui.js';
 import {selectTransferRoute} from '../client-transfer-route.mjs';
 import {tcpCampusReachable} from '../client-campus-endpoints.mjs';
@@ -65,7 +65,7 @@ for(const action of ['upload','download'])test(`browser dataset ${action} failur
  const f=await fixture(t);let portalChunks=0;
  t.mock.method(globalThis,'fetch',async()=>{throw TypeError('Failed to fetch');});
  const call=async(op)=>{if(op==='files.direct-ticket')return {endpoint:'https://campus.invalid',grantId:'fixture',ticket:'fixture',expiresAt:Date.now()/1000+600};if(op==='data.upload.begin'||op==='data.upload.status')return {state:'UPLOADING',offset:0};portalChunks++;assert.fail(op);};
- await assert.rejects(action==='upload'?uploadBrowserFile(new Blob([f.bytes]),{call,machine:f.machine,area:'dataset',dataset:'fixture',path:'file',key:f.key,route:{via:'direct'},retry:retryClock()}):readBrowserFile(call,{machine:f.machine,area:'dataset',dataset:'fixture'},'file',{route:{via:'direct'},retry:retryClock()}),error=>{assert.ok(error.message.includes(help));if(action==='upload')assert.match(error.message,new RegExp(f.key));return true;});assert.equal(portalChunks,0);
+ await assert.rejects(action==='upload'?uploadBrowserFile(new Blob([f.bytes]),{call,machine:f.machine,area:'dataset',dataset:'fixture',path:'file',key:f.key,route:{via:'direct'},retry:retryClock()}):readBrowserFile(call,{machine:f.machine,area:'dataset',dataset:'fixture'},'file',{route:{via:'direct'},retry:retryClock()}),error=>{assert.ok(error.message.includes(BROWSER_DATASET_HELP));if(action==='upload')assert.equal(error.key,f.key);return true;});assert.equal(portalChunks,0);
 });
 for(const action of ['put','get'])test(`dataset ${action} probes once and resumes only the direct route`,async t=>{
  const f=await fixture(t),stateFile=join(f.root,'operation.route.json');let probes=0,tickets=0;

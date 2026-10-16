@@ -4,29 +4,51 @@ import {createTrashUI} from './trash-ui.js';
 import {cloudImportHTML,cloudImportUI} from './cloud-import-ui.js';
 import {transferBytes} from './data-route.js';
 import {copyHelp} from './copy-help-ui.js';
+import {openSheet,closeSheet,confirmSheet} from './sheet-ui.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const short=id=>String(id||'').replace(/^amax-/,'');
+const bytes=n=>!Number.isFinite(n)?'未知':n>=1024**4?(n/1024**4).toFixed(1)+' TiB':n>=1024**3?(n/1024**3).toLocaleString('en-US',{maximumFractionDigits:n>=100*1024**3?0:1})+' GiB':transferBytes(n);
+const when=value=>{if(!value)return '时间未知';const date=new Date(typeof value==='number'?value*1000:value);return Number.isFinite(date.getTime())?date.toLocaleDateString('zh-CN'):'时间未知';};
 export const directoryBytes=row=>!Number.isFinite(row?.size)?'未知':(row.complete===false?'至少 ':'')+transferBytes(row.size);
-export function datasetRows(rows){return rows.map(row=>`<section class="storage-dataset" data-dataset-row="${esc(row.dataset)}"><div class="storage-row-heading"><strong>${esc(row.name||row.dataset)}</strong><span data-directory-size>${directoryBytes(row)}</span></div><p>上传人 ${esc(row.ownerName||row.uploadedBy||'未知')}　修改于 ${esc(row.modifiedAt?new Date(typeof row.modifiedAt==='number'?row.modifiedAt*1000:row.modifiedAt).toLocaleString('zh-CN'):'未知')}</p><div class="file-actions"><button type="button" class="button quiet" data-dataset-open="${esc(row.dataset)}">浏览</button><button type="button" class="button quiet" data-dataset-download="${esc(row.dataset)}">下载</button><button type="button" class="button danger" data-dataset-delete="${esc(row.dataset)}">删除</button></div></section>`).join('');}
-export function storageVolumeHTML(kind,row){
-  const known=Number.isFinite(row?.usedBytes)&&Number.isFinite(row?.availableBytes)&&Number.isFinite(row?.totalBytes),bytes=n=>!Number.isFinite(n)?'未知':n>=1024**4?(n/1024**4).toFixed(1)+' TiB':n>=1024**3?(n/1024**3).toLocaleString('en-US',{maximumFractionDigits:n>=100*1024**3?0:1})+' GiB':transferBytes(n);
-  return `<div class="storage-volume-heading"><h3>${kind==='shared'?'SSD · 工作区与数据集共用':kind==='workspace'?'工作区盘 <small>SSD</small>':'数据集盘 <small>HDD</small>'}</h3><span>${kind==='shared'?'/workspace · /datasets':kind==='workspace'?'/workspace':'/datasets'}</span></div><dl class="storage-figures"><div><dt>已用</dt><dd>${bytes(row?.usedBytes)}</dd></div><div><dt>可用</dt><dd>${bytes(row?.availableBytes)}</dd></div><div><dt>总量</dt><dd>${bytes(row?.totalBytes)}</dd></div></dl><div class="storage-bar${known?'':' is-unknown'}" aria-label="${known?'磁盘已用 '+bytes(row.usedBytes):'磁盘容量未知'}">${known?`<i data-fill="${Math.min(100,Math.max(0,row.totalBytes?row.usedBytes/row.totalBytes*100:0))}"></i>`:''}</div>${Number.isFinite(row?.availableBytes)&&row.availableBytes<64*1024**3?'<p class="storage-warning">空间不足</p>':''}`;
+export function datasetRows(rows){return rows.map(row=>`<div class="dr-row dr-ds" data-dataset-row="${esc(row.dataset)}"><div class="dr-main"><div class="dr-t mono">${esc(row.name||row.dataset)}</div><div class="dr-s">${esc(row.ownerName||row.uploadedBy||'上传人未知')} 上传 · ${esc(when(row.modifiedAt))}</div></div><div class="dr-s dr-hide-m" data-directory-size>${directoryBytes(row)}</div><div class="dr-s dr-hide-m mono">共用 · /datasets/${esc(row.dataset)}</div><div class="dr-acts"><button type="button" class="jr-link" data-dataset-open="${esc(row.dataset)}">浏览</button><button type="button" class="jr-link" data-dataset-download="${esc(row.dataset)}">下载</button><button type="button" class="jr-link danger" data-dataset-delete="${esc(row.dataset)}">删除</button></div></div>`).join('');}
+// One disk line of a server gauge; unknown capacity stays unknown.
+export function gaugeDiskHTML(label,row){
+  const known=Number.isFinite(row?.usedBytes)&&Number.isFinite(row?.availableBytes)&&Number.isFinite(row?.totalBytes)&&row.totalBytes>0;
+  if(!known)return `<div class="dr-disk unk">${label} · 未知<div class="storage-bar is-unknown"></div></div>`;
+  const low=row.availableBytes<64*1024**3,fill=Math.min(100,Math.max(0,row.usedBytes/row.totalBytes*100));
+  return `<div class="dr-disk${low?' warn':''}">${label} · 可用 <span class="num">${bytes(row.availableBytes)}</span>${low?' · <span class="storage-warning">空间不足</span>':''}<div class="storage-bar"><i data-fill="${fill}"></i></div></div>`;
 }
+// Bar widths go through CSSOM: the portal CSP blocks inline style attributes.
+const fills=root=>requestAnimationFrame(()=>{for(const bar of root.querySelectorAll('[data-fill]'))bar.style.width=bar.dataset.fill+'%';});
+const sheetHead=(eyebrow,title)=>`<div class="pr-sheet-head"><div><div class="page-eyebrow">${eyebrow}</div><div class="pr-sheet-title">${title}</div></div><button type="button" class="jr-x" data-sheet-close aria-label="关闭">✕</button></div>`;
+
 export function datasetsUI(store,toast){
   const section=document.querySelector('#page-datasets');let identity='',machineIds='',turn=0,operationTurn=0,active=false,busy=false,selected='',path='.',cursor=null,cloud,trash,directoryReads=Promise.resolve();
   const q=s=>section.querySelector(s),machine=()=>q('[name=dataset-machine]')?.value,scope=()=>({machine:machine(),area:'dataset',dataset:selected});
   const card=id=>[...section.querySelectorAll('[data-storage-machine]')].find(node=>node.dataset.storageMachine===id);
-  const status=text=>{q('[data-dataset-status]').textContent=text;};
-  const controls=()=>{for(const button of section.querySelectorAll('[data-dataset-open],[data-dataset-download],[data-dataset-delete],[data-storage-upload],[data-storage-trash],[data-storage-project],#dataset-upload-form button,[data-file-path],#dataset-file-up,#dataset-file-more'))button.disabled=busy||!store.principal||!machine();cloud?.controls();trash?.update();};
+  const gauge=id=>[...section.querySelectorAll('[data-gauge]')].find(node=>node.dataset.gauge===id);
+  const status=text=>{for(const place of section.querySelectorAll('[data-dataset-status],[data-upload-status]'))place.textContent=text;};
+  const actions=[['dr-import-open','ghost','导入'],['dr-upload-open','primary','上传数据集']].map(([id,kind,label])=>{const button=document.createElement('button');button.type='button';button.id=id;button.className='jr-btn dr-action '+kind;button.textContent=label;button.hidden=true;return button;});
+  document.querySelector('.heading-actions')?.prepend(...actions);
+  for(const action of actions)action.addEventListener('click',event=>{const button=event.currentTarget;if(!q('[name=dataset-machine]'))return;
+    if(button.id==='dr-upload-open'){q('[data-upload-to]').textContent=short(machine());openSheet(q('#dataset-upload'));}
+    if(button.id==='dr-import-open')openSheet(q('#dr-import-sheet'));});
+  const controls=()=>{for(const button of section.querySelectorAll('[data-dataset-open],[data-dataset-download],[data-dataset-delete],[data-storage-trash],[data-storage-project],#dataset-upload-form button[type=submit],[data-file-path],#dataset-file-up,#dataset-file-more'))button.disabled=busy||!store.principal||!machine();cloud?.controls();trash?.update();};
+  function showMachine(){const id=machine();for(const node of section.querySelectorAll('[data-gauge]'))node.setAttribute('aria-pressed',String(node.dataset.gauge===id));for(const node of section.querySelectorAll('[data-storage-machine]'))node.hidden=node.dataset.storageMachine!==id;}
   async function run(action){if(busy)return;const token=operationTurn;busy=true;controls();try{await action(()=>token===operationTurn);}catch(error){if(token===operationTurn){status(error.message);toast(error.message);}}finally{if(token===operationTurn){busy=false;controls();}}}
   async function loadCard(id){
-    const node=card(id),token=turn;if(!node||node.dataset.loading==='true')return;node.dataset.loading='true';
+    const node=card(id),meter=gauge(id),token=turn;if(!node||node.dataset.loading==='true')return;node.dataset.loading='true';
     const current=()=>token===turn&&node.isConnected,find=s=>node.querySelector(s);
     find('[data-storage-refresh]').disabled=true;find('[data-storage-caption]').textContent='读取中…';
-    for(const kind of ['workspace','datasets']){const place=find(`[data-volume="${kind}"]`);place.hidden=false;place.innerHTML=storageVolumeHTML(kind);}
-    for(const list of ['projects','datasets'])find(`[data-storage-${list}]`).textContent='读取中…';
+    meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML('SSD');meter.querySelector('[data-volume="datasets"]').hidden=false;meter.querySelector('[data-volume="datasets"]').innerHTML=gaugeDiskHTML('HDD');
+    for(const list of ['projects','datasets'])find(`[data-storage-${list}]`).innerHTML='<p class="storage-empty">读取中…</p>';
     try{
       const result=await store.call('projects.quota',{machine:id});if(!current())return;
-      for(const kind of ['workspace','datasets']){const place=find(`[data-volume="${kind}"]`),shared=result.volumes?.find(row=>row.kind==='shared'),row=result.volumes?.find(row=>row.kind===kind)||(kind==='workspace'?shared:null);place.hidden=kind==='datasets'&&!!shared;place.innerHTML=storageVolumeHTML(row?.kind||kind,row);const fill=place.querySelector('[data-fill]');if(fill)fill.style.width=fill.dataset.fill+'%';}
+      // A server whose workspace and datasets share one filesystem has a single SSD and no HDD.
+      const volume=kind=>result.volumes?.find(row=>row.kind===kind),shared=volume('shared'),datasets=meter.querySelector('[data-volume="datasets"]');
+      meter.querySelector('[data-volume="workspace"]').innerHTML=shared?gaugeDiskHTML('SSD · 工作区与数据集共用',shared):gaugeDiskHTML('SSD',volume('workspace'));
+      datasets.hidden=!!shared;datasets.innerHTML=shared?'':gaugeDiskHTML('HDD',volume('datasets'));fills(meter);
+      find('[data-ds-where]').textContent=shared?' · 在 SSD':' · HDD /datasets';
     }catch{if(current())find('[data-storage-caption]').textContent='容量未知，请刷新重试。';}
     if(!current())return;
     // Capacity reads are small; directory scans run one server at a time so
@@ -36,20 +58,21 @@ export function datasetsUI(store,toast){
       await Promise.all([
       (async()=>{const place=find('[data-storage-projects]');try{
         const result=await store.call('projects.list',{machine:id,includeUsage:true});if(!current())return;
-        place.innerHTML=(result.projects||[]).map(row=>`<div class="storage-project"><div><strong>${esc(row.displayName||row.name||row.project)}</strong><small>${esc(row.ownerName||row.ownerId||'未知')}</small></div><span>${directoryBytes(row)}</span><button type="button" class="button quiet" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div>`).join('')||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
-        if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');
-      }catch{if(current())place.textContent='项目未知，请刷新重试。';}})(),
+        const rows=(result.projects||[]).slice().sort((a,b)=>(Number.isFinite(b.size)?b.size:-1)-(Number.isFinite(a.size)?a.size:-1)),largest=Math.max(1,...rows.map(row=>Number.isFinite(row.size)?row.size:0));
+        place.innerHTML=rows.map(row=>`<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目</div></div><div class="dr-hide-m">${Number.isFinite(row.size)?`<span class="jr-prog"><b data-fill="${row.size/largest*100}"></b></span>`:'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${directoryBytes(row)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`).join('')||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
+        if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');fills(place);
+      }catch{if(current())place.innerHTML='<p class="storage-empty">项目未知，请刷新重试。</p>';}})(),
       (async()=>{const place=find('[data-storage-datasets]');try{
         const result=await store.call('datasets.list',{machine:id});if(!current())return;
         place.innerHTML=datasetRows(result.datasets||[])||(result.complete===false?'<p class="storage-empty">数据集未知，请刷新重试。</p>':'<p class="storage-empty">还没有数据集，上传文件即可新建。</p>');
         if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');
-      }catch{if(current())place.textContent='数据集未知，请刷新重试。';}})()
+      }catch{if(current())place.innerHTML='<p class="storage-empty">数据集未知，请刷新重试。</p>';}})()
     ]);
     });
     directoryReads=read.catch(()=>{});await read;
     if(current()){node.dataset.loading='false';find('[data-storage-refresh]').disabled=false;if(find('[data-storage-caption]').textContent==='读取中…')find('[data-storage-caption]').textContent='读取于 '+new Date().toLocaleTimeString('zh-CN');controls();}
   }
-  function selectMachine(id){if(id!==machine()){q('[name=dataset-machine]').value=id;q('[name=dataset-machine]').dispatchEvent(new Event('change',{bubbles:true}));}}
+  function selectMachine(id){if(id!==machine()){q('[name=dataset-machine]').value=id;q('[name=dataset-machine]').dispatchEvent(new Event('change',{bubbles:true}));}showMachine();}
   function showDataset(dataset){
     const place=card(machine())?.querySelector('[data-storage-datasets]');if(!place)return;
     const row=[...place.querySelectorAll('[data-dataset-row]')].find(node=>node.dataset.datasetRow===dataset);
@@ -57,39 +80,69 @@ export function datasetsUI(store,toast){
     else{place.querySelector('.storage-empty')?.remove();place.insertAdjacentHTML('beforeend',datasetRows([{dataset,size:null}]));}
     controls();
   }
-  async function browse(target='.',next=false){const token=operationTurn;path=target;q('[data-dataset-current]').textContent=selected+' / '+path;q('[data-dataset-files]').hidden=false;if(!next)q('[data-dataset-file-list]').textContent='读取中…';let page;try{page=await store.call('files.list',{...scope(),path,limit:1000,...(next&&cursor?{cursor}:{})});}catch(error){if(token===operationTurn&&!next)q('[data-dataset-file-list]').textContent='文件列表未知，请重试。';throw error;}if(token!==operationTurn)return;cursor=page.hasMore?page.nextCursor:null;const html=(page.entries||[]).filter(row=>['file','directory'].includes(row.type)).map(row=>`<button type="button" class="button quiet" data-file-path="${esc(filePath(path,row.name))}" data-file-type="${row.type}">${row.type==='directory'?'▱':'□'} ${esc(row.name)} ${row.type==='file'?transferBytes(row.size):''}</button>`).join('');if(next)q('[data-dataset-file-list]').insertAdjacentHTML('beforeend',html);else q('[data-dataset-file-list]').innerHTML=html||'<p>空目录。</p>';q('#dataset-file-more').hidden=!cursor;q('[name=upload-dataset]').value=selected;}
-  function openDataset(dataset){selected=dataset;void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest'});});}
+  async function browse(target='.',next=false){const token=operationTurn;path=target;q('[data-dataset-current]').textContent=selected+(path==='.'?'':' / '+path);q('[data-dataset-files]').hidden=false;if(!next)q('[data-dataset-file-list]').innerHTML='<p class="storage-empty">读取中…</p>';let page;try{page=await store.call('files.list',{...scope(),path,limit:1000,...(next&&cursor?{cursor}:{})});}catch(error){if(token===operationTurn&&!next)q('[data-dataset-file-list]').innerHTML='<p class="storage-empty">文件列表未知，请重试。</p>';throw error;}if(token!==operationTurn)return;cursor=page.hasMore?page.nextCursor:null;const html=(page.entries||[]).filter(row=>['file','directory'].includes(row.type)).map(row=>`<button type="button" class="pr-file dr-file" data-file-path="${esc(filePath(path,row.name))}" data-file-type="${row.type}"><span class="pr-file-name mono">${esc(row.name)}${row.type==='directory'?'/':''}</span><span class="pr-file-size">${row.type==='file'?transferBytes(row.size):'目录'}</span><span class="pr-file-get">${row.type==='file'?'下载':'打开'}</span></button>`).join('');if(next)q('[data-dataset-file-list]').insertAdjacentHTML('beforeend',html);else q('[data-dataset-file-list]').innerHTML=html||'<p class="storage-empty">空目录。</p>';q('#dataset-file-up').hidden=path==='.';q('#dataset-file-more').hidden=!cursor;q('[name=upload-dataset]').value=selected;}
+  function openDataset(dataset){selected=dataset;void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest',behavior:'smooth'});});}
   function build(machines){
-    cloud?.reset();section.innerHTML=`<header class="storage-heading"><p>项目工作区放在 SSD，数据集放在 HDD，仅走校园直连。${copyHelp('容量与目录大小','盘容量包含同盘的其他内容。项目大小统计项目目录，不分摊共享容器镜像；读不到的部分标为至少，完全读不到显示未知。删除可能影响正在运行的任务。')}</p></header><nav class="data-room-tabs"><a href="#datasets" aria-current="page">容量与目录</a><a href="#datasets/transfers">传输与导入</a></nav><div class="storage-cards">${machines.map(row=>`<article class="storage-server" data-storage-machine="${esc(row.id)}"><header><div><h3 title="${esc(row.id)}">${esc(row.id)}</h3><span>${esc(row.model)} · ${esc(row.cards)}张</span></div><div class="storage-server-actions"><small data-storage-caption></small><button type="button" class="button" data-storage-refresh>刷新</button><button type="button" class="button" data-storage-trash>回收站</button></div></header><div class="storage-disks"><section><div data-volume="workspace">${storageVolumeHTML('workspace')}</div><h4>项目</h4><div data-storage-projects></div></section><section><div data-volume="datasets">${storageVolumeHTML('datasets')}</div><div class="storage-list-heading"><h4>数据集</h4><button type="button" class="button" data-storage-upload>上传</button></div><div data-storage-datasets data-dataset-list></div></section></div></article>`).join('')}</div><section class="storage-tools"><label>操作服务器<select name="dataset-machine">${machines.map(row=>`<option value="${esc(row.id)}">${esc(row.id)}</option>`).join('')}</select></label><section data-dataset-files hidden><h3 data-dataset-current></h3><button type="button" class="button quiet" id="dataset-file-up">上一级</button><div class="file-actions" data-dataset-file-list></div><button type="button" class="button" id="dataset-file-more" hidden>下一页</button></section><details class="data-workspace-card" id="dataset-upload"><summary>上传到新建或已有数据集</summary><form id="dataset-upload-form"><label>数据集目录名<input name="upload-dataset" required></label><label>目标相对目录<input name="upload-directory" value="."></label><label>选择文件<input name="upload-files" type="file" multiple></label><label>或选择目录<input name="upload-folder" type="file" webkitdirectory multiple></label><label>续传编号（新上传留空）<input name="upload-key"></label><button type="submit" class="button primary">上传 / 续传</button></form></details><p data-dataset-status role="status"></p><details class="storage-import"><summary>云盘与链接导入</summary>${cloudImportHTML(store.principal?.role==='admin',store.users||store.data?.users||[])}</details></section>`;
-    trash=createTrashUI({call:(...args)=>store.call(...args),getContext:()=>({owner:store.principal?.userId,machine:machine(),enabled:!!store.principal&&!!machine(),isAdmin:store.principal?.role==='admin'}),changed:(row,result)=>{if(row.kind==='dataset'&&result.state==='RESTORED')showDataset(row.dataset||row.originalPath.split('/').pop());status(result.state==='RESTORED'?'已恢复，点击刷新更新目录大小。':result.state==='PURGED'?'已彻底删除。':'结果未知，请按原编号查询：'+row.key);},toast});q('.storage-tools').append(trash.element);cloud ||= cloudImportUI(store,section,toast);
-    q('[name=dataset-machine]').addEventListener('change',()=>{operationTurn++;busy=false;selected='';q('[data-dataset-files]').hidden=true;q('[data-dataset-file-list]').replaceChildren();status('');controls();});
-    section.onclick=event=>{const b=event.target.closest('button');if(!b||b.disabled)return;const target=b.closest('[data-storage-machine]')?.dataset.storageMachine;
+    cloud?.reset();
+    section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML('SSD')}</div><div data-volume="datasets">${gaugeDiskHTML('HDD')}</div></button>`).join('')}</div>
+      <div class="dr-cards">${machines.map(row=>`<article class="dr-machine" data-storage-machine="${esc(row.id)}" hidden>
+        <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · HDD /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
+        <div class="dr-rows" data-storage-datasets data-dataset-list></div>
+        <div class="dr-toolbar dr-gap"><h2>项目容器 · SSD /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 进入页面时统计</span>${copyHelp('容量与目录大小','盘容量包含同盘的其他内容。项目大小统计项目目录，不分摊共享容器镜像；读不到的部分标为至少，完全读不到显示未知。删除可能影响正在运行的任务。')}</div>
+        <div class="dr-rows" data-storage-projects></div>
+      </article>`).join('')}</div>
+      <section class="dr-browse" data-dataset-files hidden><div class="dr-toolbar"><h2 class="mono" data-dataset-current></h2><span class="dr-flex"></span><button type="button" class="jr-link" id="dataset-file-up" hidden>← 上一级</button><button type="button" class="jr-link" data-browse-close>收起</button></div><div class="dr-files" data-dataset-file-list></div><button type="button" class="jr-btn ghost" id="dataset-file-more" hidden>下一页</button></section>
+      <p class="dr-status" data-dataset-status role="status"></p>
+      <dialog class="pr-sheet" id="dataset-upload" aria-label="上传数据集"><div class="pr-sheet-in">${sheetHead('上传数据集','到 <span data-upload-to></span>')}
+        <form id="dataset-upload-form"><label hidden>服务器<select name="dataset-machine">${machines.map(row=>`<option value="${esc(row.id)}">${esc(row.id)}</option>`).join('')}</select></label>
+          <label>数据集名字<input class="mono" name="upload-dataset" required placeholder="新名字，或已有数据集的名字" spellcheck="false" autocomplete="off"></label>
+          <div class="dr-drop" data-upload-drop><span data-upload-picked>把文件或文件夹拖到这里</span><span class="dr-drop-or"><button type="button" class="jr-link" data-pick-files>选择文件</button> · <button type="button" class="jr-link" data-pick-folder>选择文件夹</button></span></div>
+          <input name="upload-files" type="file" multiple hidden><input name="upload-folder" type="file" webkitdirectory multiple hidden>
+          <details class="dr-more"><summary>放到数据集里的子目录（可选）</summary><label>子目录<input class="mono" name="upload-directory" value="." spellcheck="false"></label></details>
+          <p class="jr-hint">只走校园网直连。断网后再选同一批文件上传，会从断点继续。</p><p class="dr-status" data-upload-status role="status"></p>
+          <div class="jr-actions"><button type="button" class="jr-btn ghost" data-sheet-close>取消</button><button type="submit" class="jr-btn primary">上传</button></div></form></div></dialog>
+      <dialog class="pr-sheet dr-wide" id="dr-import-sheet" aria-label="导入"><div class="pr-sheet-in">${sheetHead('导入','从链接或云盘拿数据')}<div class="storage-import">${cloudImportHTML(store.principal?.role==='admin',store.users||store.data?.users||[])}</div></div></dialog>
+      <dialog class="pr-sheet" id="dr-trash-sheet" aria-label="回收站"><div class="pr-sheet-in">${sheetHead('回收站','7 天内可恢复')}</div></dialog>`;
+    trash=createTrashUI({call:(...args)=>store.call(...args),getContext:()=>({owner:store.principal?.userId,machine:machine(),enabled:!!store.principal&&!!machine(),isAdmin:store.principal?.role==='admin'}),changed:(row,result)=>{if(row.kind==='dataset'&&result.state==='RESTORED')showDataset(row.dataset||row.originalPath.split('/').pop());status(result.state==='RESTORED'?'已恢复，点击刷新更新目录大小。':result.state==='PURGED'?'已彻底删除。':'结果未知，请按原编号查询：'+row.key);},toast});
+    q('#dr-trash-sheet .pr-sheet-in').append(trash.element);trash.element.querySelector('summary').hidden=true;cloud ||= cloudImportUI(store,section,toast);
+    q('[name=dataset-machine]').addEventListener('change',()=>{operationTurn++;busy=false;selected='';q('[data-dataset-files]').hidden=true;q('[data-dataset-file-list]').replaceChildren();status('');showMachine();controls();});
+    for(const dialog of section.querySelectorAll('dialog'))dialog.addEventListener('cancel',event=>{event.preventDefault();closeSheet(dialog);});
+    const picked=()=>{const files=[...q('[name=upload-files]').files,...q('[name=upload-folder]').files];q('[data-upload-picked]').textContent=files.length?`已选 ${files.length} 个文件 · ${transferBytes(files.reduce((sum,file)=>sum+file.size,0))}`:'把文件或文件夹拖到这里';};
+    for(const name of ['upload-files','upload-folder'])q(`[name=${name}]`).addEventListener('change',picked);
+    const drop=q('[data-upload-drop]');for(const type of ['dragenter','dragover'])drop.addEventListener(type,event=>{if(!event.dataTransfer?.types?.includes('Files'))return;event.preventDefault();drop.classList.add('over');});
+    drop.addEventListener('dragleave',event=>{if(!drop.contains(event.relatedTarget))drop.classList.remove('over');});
+    drop.addEventListener('drop',event=>{drop.classList.remove('over');if(!event.dataTransfer?.files?.length)return;event.preventDefault();q('[name=upload-folder]').value='';q('[name=upload-files]').files=event.dataTransfer.files;picked();});
+    section.onclick=event=>{const b=event.target.closest('button');if(!b||b.disabled)return;
+      if(b.dataset.gauge)return void selectMachine(b.dataset.gauge);
+      if(b.hasAttribute('data-sheet-close'))return void closeSheet(b.closest('dialog'));
+      if(b.hasAttribute('data-pick-files'))return void q('[name=upload-files]').click();
+      if(b.hasAttribute('data-pick-folder'))return void q('[name=upload-folder]').click();
+      if(b.hasAttribute('data-browse-close')){selected='';q('[data-dataset-files]').hidden=true;return;}
+      const target=b.closest('[data-storage-machine]')?.dataset.storageMachine;
       if(b.hasAttribute('data-storage-refresh'))return void loadCard(target);
-      if(target)selectMachine(target);
-      if(b.hasAttribute('data-storage-trash')){trash.element.open=true;trash.element.scrollIntoView({block:'nearest'});return;}
-      if(b.hasAttribute('data-storage-upload')){q('#dataset-upload').open=true;q('#dataset-upload').scrollIntoView({block:'nearest'});return;}
+      if(b.hasAttribute('data-storage-trash')){openSheet(q('#dr-trash-sheet'));trash.element.open=true;return;}
       if(b.dataset.storageProject)return document.dispatchEvent(new CustomEvent('gpuq-open-project',{detail:{userId:store.principal.userId,authGeneration:store.authGeneration,machine:target,project:b.dataset.storageProject,ownerId:b.dataset.ownerId}}));
       if(b.dataset.datasetOpen)return openDataset(b.dataset.datasetOpen);
       if(b.dataset.datasetDownload)return void run(()=>downloadBrowserPath((...args)=>store.call(...args),{machine:machine(),area:'dataset',dataset:b.dataset.datasetDownload},'.',{directory:true,onRoute:status,onProgress:row=>status(row.path+' · '+row.offset+' / '+row.size)}));
-      if(b.dataset.datasetDelete)return void run(async current=>{const dataset=b.dataset.datasetDelete,cache='dataset-delete:'+store.principal.userId+':'+machine()+':'+dataset,key=sessionStorage.getItem(cache)||crypto.randomUUID();sessionStorage.setItem(cache,key);status('删除编号：'+key);const result=await store.call('datasets.delete',{machine:machine(),dataset,key});if(!current())return;if(result.state==='TRASHED'){sessionStorage.removeItem(cache);b.closest('[data-dataset-row]').remove();if(selected===dataset){selected='';q('[data-dataset-files]').hidden=true;}status('已删除，7 天内可在回收站恢复。');}else status('结果未知，请按原编号查询：'+key);});
+      if(b.dataset.datasetDelete){const dataset=b.dataset.datasetDelete;return void confirmSheet({title:`删除 ${dataset}？`,body:'所有人共用这个数据集。删除后在回收站保留 7 天，正在用它的任务可能受影响。',action:'删除',run:()=>{void run(async current=>{const cache='dataset-delete:'+store.principal.userId+':'+machine()+':'+dataset,key=sessionStorage.getItem(cache)||crypto.randomUUID();sessionStorage.setItem(cache,key);status('正在删除…');const result=await store.call('datasets.delete',{machine:machine(),dataset,key});if(!current())return;if(result.state==='TRASHED'){sessionStorage.removeItem(cache);b.closest('[data-dataset-row]')?.remove();if(selected===dataset){selected='';q('[data-dataset-files]').hidden=true;}status('已删除，7 天内可在回收站恢复。');toast('已移到回收站');}else status('结果未知，请按原编号查询：'+key);});}});}
       if(b.dataset.filePath)return void run(()=>b.dataset.fileType==='directory'?browse(b.dataset.filePath):downloadBrowserPath((...args)=>store.call(...args),scope(),b.dataset.filePath,{onRoute:status,onProgress:row=>status(row.path+' · '+row.offset+' / '+row.size)}));
       if(b.id==='dataset-file-up')return void run(()=>browse(path.includes('/')?path.slice(0,path.lastIndexOf('/')):'.'));
       if(b.id==='dataset-file-more')return void run(()=>browse(path,true));
     };
     q('#dataset-upload-form').addEventListener('submit',event=>{event.preventDefault();void run(async current=>{
       const files=[...q('[name=upload-files]').files,...q('[name=upload-folder]').files].sort((a,b)=>(a.webkitRelativePath||a.name).localeCompare(b.webkitRelativePath||b.name)),dataset=q('[name=upload-dataset]').value.trim(),folder=q('[name=upload-directory]').value.trim()||'.';if(!files.length)throw Error('请选择文件或目录。');
-      const key=q('[name=upload-key]').value.trim()||crypto.randomUUID();q('[name=upload-key]').value=key;
-      const cache='dataset-upload:'+store.principal.userId+':'+key,keys=JSON.parse(localStorage.getItem(cache)||'{}');
-      const route={via:localStorage.getItem(cache+':via'),save:via=>localStorage.setItem(cache+':via',via)};
-      for(const file of files){const relative=file.webkitRelativePath||file.name,target=folder==='.'?relative:folder+'/'+relative;keys[target]||=files.length===1?key:crypto.randomUUID();localStorage.setItem(cache,JSON.stringify(keys));await uploadBrowserFile(file,{call:(...args)=>store.call(...args),machine:machine(),area:'dataset',dataset,path:target,key:keys[target],route,onRoute:message=>{if(current())status(message);},overwrite:true,onProgress:row=>{if(current())status(target+' · '+row.offset+' / '+file.size+' · '+key);}});if(!current())return;}
-      showDataset(dataset);status('上传完成 · '+key+'；点击刷新更新目录大小。');q('[name=upload-key]').value='';
+      // Each file keeps its upload key until it finishes, so choosing the same files again resumes.
+      const cache='dataset-upload:'+store.principal.userId+':'+machine()+':'+dataset+':'+folder,keys=JSON.parse(localStorage.getItem(cache)||'{}');
+      for(const file of files){const relative=file.webkitRelativePath||file.name,target=folder==='.'?relative:folder+'/'+relative,identity=target+'|'+file.size+'|'+file.lastModified;keys[identity]||=crypto.randomUUID();localStorage.setItem(cache,JSON.stringify(keys));const memory=cache+':'+keys[identity]+':via',route={via:localStorage.getItem(memory),save:via=>localStorage.setItem(memory,via)};await uploadBrowserFile(file,{call:(...args)=>store.call(...args),machine:machine(),area:'dataset',dataset,path:target,key:keys[identity],route,onRoute:message=>{if(current())status(message);},overwrite:true,onProgress:row=>{if(current())status(target+' · '+transferBytes(row.offset)+' / '+transferBytes(file.size));}});if(!current())return;delete keys[identity];localStorage.setItem(cache,JSON.stringify(keys));localStorage.removeItem(memory);}
+      localStorage.removeItem(cache);showDataset(dataset);status('上传完成；点击刷新更新目录大小。');toast('上传完成');
+      q('[name=upload-files]').value='';q('[name=upload-folder]').value='';picked();closeSheet(q('#dataset-upload'));
     });});
   }
   document.addEventListener('gpuq-open-dataset',event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||!q('[name=dataset-machine]'))return;if(busy){toast('请等待当前数据操作完成，再打开数据集。');return;}selectMachine(detail.machine);openDataset(detail.dataset);});
   return ()=>{
     const next=JSON.stringify([store.authGeneration,store.principal?.userId]),machines=store.principal?store.data?.machines||[]:[],ids=machines.map(row=>row.id).join(',');
-    if(next!==identity||ids!==machineIds||!q('[name=dataset-machine]')){identity=next;machineIds=ids;turn++;operationTurn++;busy=false;active=false;build(machines);}
-    const visible=!!store.principal&&!section.hidden;
+    if(next!==identity||ids!==machineIds||!q('[name=dataset-machine]')){identity=next;machineIds=ids;turn++;operationTurn++;busy=false;active=false;build(machines);showMachine();}
+    const visible=!!store.principal&&!section.hidden;for(const action of actions)action.hidden=!visible;
     if(visible&&!active){active=true;for(const row of machines)void loadCard(row.id);}
     if(!visible&&active){active=false;turn++;for(const node of section.querySelectorAll('[data-storage-machine]'))node.dataset.loading='false';}
     controls();

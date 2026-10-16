@@ -1,4 +1,4 @@
-import {DATASET_DIRECT_HELP,campusRetryable,retryCampusRequest,selectBrowserTransferRoute} from './personal-upload.js';
+import {BROWSER_DATASET_HELP,campusRetryable,retryCampusRequest,selectBrowserTransferRoute} from './personal-upload.js';
 const join=(parent,name)=>parent==='.'?name:parent+'/'+name;
 export function filePath(parent,name){if(typeof name!=='string'||!name||name.includes('/')||/[\\\x00-\x1f\x7f]/.test(name)||name==='.'||name==='..')throw Error('文件名超出了当前目录。');return join(parent,name);}
 export async function readBrowserFile(call,scope,path,{signal,onProgress=()=>{},route={},onRoute=message=>console.warn(message),retry}={}){
@@ -19,7 +19,7 @@ export async function readBrowserFile(call,scope,path,{signal,onProgress=()=>{},
       },{...retry,signal}));
     }catch(error){
       signal?.throwIfAborted();
-      if(scope.area==='dataset'||!campusRetryable(error)){if(campusRetryable(error))error.message+='\n'+DATASET_DIRECT_HELP;throw error;}
+      if(scope.area==='dataset'||!campusRetryable(error)){if(campusRetryable(error))error.message+='\n'+BROWSER_DATASET_HELP;throw error;}
       route.via='portal';route.save?.('portal');onRoute('校园直连失败，改经 VPS 继续');await portal();
     }
     size??=metadata.size;if(!Number.isSafeInteger(size)||size<0||metadata.size!==size||metadata.offset!==offset||offset+bytes.length>size||!bytes.length&&offset<size)throw Error('下载大小或偏移改变，请续传原下载。');
