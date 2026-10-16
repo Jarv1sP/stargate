@@ -444,7 +444,7 @@ export function executionUI(store,refresh,toast){
     if(project||autoOpened===receiptActor())return;autoOpened=receiptActor();
     let last=null;try{last=JSON.parse(localStorage.getItem('sg-last-project')||'null');}catch{}
     const entries=directoryEntries().filter(row=>row.info.environmentMode==='oci'),pick=entries.find(row=>last&&row.machine===last.machine&&row.info.project===last.project&&(!last.ownerId||row.info.ownerId===last.ownerId))||entries.find(row=>row.info.ownerId===actor);
-    if(pick)setTimeout(()=>void render.openProject({userId:store.principal?.userId,authGeneration:store.authGeneration,machine:pick.machine,project:pick.info.project,ownerId:pick.info.ownerId}),0);
+    if(pick)setTimeout(()=>{if(!project)void render.openProject({userId:store.principal?.userId,authGeneration:store.authGeneration,machine:pick.machine,project:pick.info.project,ownerId:pick.info.ownerId});},0);
   }
   async function loadDirectory(){
     if(!projectReadable()||!executionActive()||projectBusy||operationBusy)return;

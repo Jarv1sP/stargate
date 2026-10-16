@@ -8,8 +8,8 @@ import {chromium} from 'playwright';
 const root=resolve(import.meta.dirname,'../dist'),temporary=await mkdtemp(join(tmpdir(),'project-settings-ui-'));
 const shots=process.env.UI_SCREENSHOTS||temporary;await mkdir(shots,{recursive:true});
 const html=`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-${['styles','fonts','starbase','shell','workspace','workbench','projects-room','copy-help'].map(name=>'<link rel="stylesheet" href="/'+name+'.css">').join('')}
-<body class="sb" data-room="work"><main data-page="work"><div id="execution-host"></div></main>
+${['styles','workspace','fonts','starbase','shell','workbench','jobs-room','projects-room','copy-help','portal-shell'].map(name=>'<link rel="stylesheet" href="/'+name+'.css">').join('')}
+<body class="sb root" data-room="work"><main data-page="work"><div id="execution-host"></div></main>
 <script type="module">
 import {executionUI} from '/execution-ui.js';
 const role=new URL(location.href).searchParams.get('role'),owner='fixture-'+role;
