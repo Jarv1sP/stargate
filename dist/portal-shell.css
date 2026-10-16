@@ -158,3 +158,15 @@
 .sb #page-community :is(.community-meta,.community-tag){font-size:13px}
 .sb #page-community .chat-message .community-body{font-size:15px}
 .sb .toast,.sb #toast.toast{font-size:14px}
+
+/* Polish after comparing with the prototype at 1440px. */
+@media (min-width:760px){.sb #main-content{padding-top:28px}.sb .page-heading{padding-top:0;padding-bottom:26px}}
+.sb .resource-metric-switch>button[aria-pressed=true]{background:none;border-color:transparent}
+.sb .jr-ring span{font-size:11px;letter-spacing:.06em}
+.sb .pr-room .personal-terminal h3{font:13px var(--mono);color:var(--ink-3)}
+.sb .pr-room .personal-terminal :is(.terminal-scope,.ui-info){display:none}
+.sb .pr-room .personal-terminal .pr-gpu-seg{margin-inline:auto}
+.sb .pr-room .personal-terminal .terminal-controls .button{height:44px;min-height:44px;padding:0 4px;border:0;border-radius:0;background:none;color:var(--ink-2);font-size:13px}
+.sb .pr-room .personal-terminal .terminal-controls .button:hover{color:#F2F2EF}
+.sb .pr-room #terminal-open{background:none;color:#F2F2EF;border:0}
+.sb .pr-room .personal-terminal .terminal-controls{gap:16px}

@@ -239,11 +239,10 @@
 .sb .resource-disk-bar i{transform-origin:left center;transition:width 1.1s cubic-bezier(.16,1,.3,1);animation:resource-grow 1.1s cubic-bezier(.16,1,.3,1) both}
 @keyframes resource-grow{from{transform:scaleX(0)}}
 @media (prefers-reduced-motion:reduce){.sb .resource-disk-bar i{animation:none;transition:none}}
-/* Long queues: the next five, then a link to Tasks. Partial totals name what is missing. */
+/* Long queues: the next five, then a link to Tasks. */
 .sb .resource-queue-more{display:inline-flex;align-items:center;min-height:44px;font-size:13px;color:var(--ink-2);text-decoration:none;transition:color .2s}
 .sb .resource-queue-more:hover{color:var(--ink)}
 .sb .resource-summary{flex-wrap:wrap}
-.sb .resource-summary-note{flex-basis:100%;margin:6px 0 0;font-size:11px;color:var(--ink-4);text-align:right}
 /* Details from the approved prototype: pill toggle, a live dot by the status, one-line disks. */
 .sb .resource-metric-switch{display:inline-flex;align-items:center;gap:0;position:relative;isolation:isolate;padding:0 3px}
 .sb .resource-metric-switch::before{content:"";position:absolute;left:0;top:4px;bottom:4px;right:0;border-radius:999px;background:var(--bg-2);z-index:-2}
