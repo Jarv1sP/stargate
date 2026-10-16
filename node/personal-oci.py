@@ -139,6 +139,7 @@ class PersonalOCI:
         paths=paths or self.s.ProjectStore(self.root,config=self.config).dev_paths(user,project)
         with self.s.directory(paths['code']) as fd:
             flags=['--cgroups=disabled','--pid=private','--ipc=private','--uts=private',
+                '--label','io.gpuq.project='+project,
                 '--network=slirp4netns:allow_host_loopback=false','--security-opt=no-new-privileges',
                 '--user=0','--workdir=/workspace','--volume',str(paths['code'])+':/workspace:rw',
                 '--volume',str(paths['home'])+':/home/gpuq:rw','--env=HOME=/home/gpuq','--pull=never',
@@ -148,16 +149,28 @@ class PersonalOCI:
             head=self.workspace_container(project)
             request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
                      'container':head['container'],'execution':'gpuq-git-'+uuid.uuid4().hex,
-                     'flags':flags,'argv':argv}
+                     'workspaceLock':str(self.folder/('use-'+self.d.name(project)+'.lock')),
+                     'flags':flags,'argv':argv,'commandTimeout':timeout}
             path=self.folder/'tmp'/('git-'+uuid.uuid4().hex+'.json');self.s.atomic_json(path,request)
             try:
-                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=timeout)
+                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True)
                 if result.returncode:raise ValueError('容器git操作失败：'+result.stderr[-1200:])
                 return result.stdout.strip()
             finally:path.unlink(missing_ok=True)
 
     def git(self,user,project,argv):
         return self.workspace_command(user,project,['git',*argv])
+
+    def copy_files(self,project,action,*,paths,**fields):
+        # File merges use their separate execution lease, not the short OCI lock.
+        request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
+                 'container':self.load(project)['container'],'copy':{'action':action,'paths':{k:str(v) for k,v in paths.items()},**fields}}
+        path=self.folder/'tmp'/('copy-'+uuid.uuid4().hex+'.json');self.s.atomic_json(path,request)
+        try:
+            result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=3600)
+            if result.returncode:raise ValueError('项目文件同步失败：'+result.stderr[-1200:])
+            return json.loads(result.stdout)
+        finally:path.unlink(missing_ok=True)
 
     def network(self,user,project):
         script="""import json,socket,ssl
@@ -365,6 +378,7 @@ print(json.dumps(result))
         head=self.workspace_container(spec['project'])
         request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
                  'container':head['container'],'owner':self.owner,'project':spec['project'],
+                 'workspaceLock':str(self.folder/('use-'+self.d.name(spec['project'])+'.lock')),
                  'execution':'gpuq-live-'+uuid.uuid4().hex,'flags':flags,'argv':spec['argv'],
                  'threadDefaults':getattr(self,'thread_defaults',{})}
         if spec.get('interactive'):

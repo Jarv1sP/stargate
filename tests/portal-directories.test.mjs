@@ -144,17 +144,20 @@ test('directory copy performs one source authorization and starts the target wit
 test('project copy keeps the environment and project owner instead of turning the target into a dataset',async t=>{
  const f=await fixture(t),target=MACHINES[1].id,key=randomUUID();let started;
  f.setHandler((host,op,args)=>{
-  if(op.endsWith('prepare')){assert.equal(op,'transfers.project.prepare');assert.equal(host,machine);assert.equal(args.source.environment,true);assert.equal(args.source.ownerId,f.aliceUser.id);return {id:key,token:'source-token'};}
+  if(op==='transfers.project.mode'){assert.equal(host,target);return {mode:'incremental'};}
+  if(op.endsWith('prepare')){assert.equal(op,'transfers.project.prepare');assert.equal(host,machine);assert.equal(args.mode,'incremental');assert.equal(args.source.environment,true);assert.equal(args.source.ownerId,f.aliceUser.id);return {id:key,token:'source-token'};}
   if(op.endsWith('start')){assert.equal(op,'transfers.project.start');assert.equal(host,target);started=args;return {id:key,state:'PENDING'};}
  });
  await f.call('transfers.create',{key,kind:'copy',from:machine,machine:target,name:'project-copy',reference:{project:'sample',ownerId:f.aliceUser.id,environment:true}},f.bob);
  assert.equal(started.target.project,'project-copy');assert.equal(started.target.ownerId,f.aliceUser.id);assert.equal(started.target.environment,true);
+ assert.equal(started.target.mode,'incremental');
  assert.equal(started.target.dataset,undefined);assert.equal(started.source.project,'sample');
 });
 
 test('canceling after a lost copy start reply still cancels the original target transfer before GPU dispatch',async t=>{
  const f=await fixture(t),target=MACHINES[1].id;
  f.setHandler((host,op,args)=>{
+  if(op==='transfers.project.mode')return {mode:'full'};
   if(op==='transfers.project.prepare')return {id:args.id,token:'source-token'};
   if(op==='transfers.project.start')throw Error('lost response after starting copy');
   if(op==='transfers.cancel')return {id:args.id,state:'CANCELED'};
