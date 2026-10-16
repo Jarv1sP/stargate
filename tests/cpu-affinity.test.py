@@ -155,7 +155,7 @@ class CpuAllocation(unittest.TestCase):
         rootfs = module('workspace-rootfs')
         graph = self.sysfs / 'graph'; graph.mkdir(); mounted = graph / 'rootfs'; mounted.mkdir()
         request = {'engine': ['/usr/bin/podman'], 'hostUid': 1000, 'container': 'workspace', 'graph': str(graph),
-                   'execution': 'test', 'argv': ['python', 'train.py'],
+                   'execution': 'test', 'argv': ['python', 'train.py'], 'workspaceLock': str(graph/'use-demo.lock'),
                    'threadDefaults': self.resources.thread_defaults({'cpuLimit': 16}),
                    'flags': ['--env', 'MKL_NUM_THREADS=7']}
         def command(argv, **kwargs):

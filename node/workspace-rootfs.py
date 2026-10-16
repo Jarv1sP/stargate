@@ -1,10 +1,11 @@
 """Run in a project's existing writable rootfs, inside Podman's user namespace.
 
-Only the trusted runner invokes this helper. No image commit, export, copy or
-publication occurs. The temporary execution container owns the GPU lease;
-the development container owns the filesystem and is not removed on exit.
+Only the trusted runner invokes this helper. The temporary execution container
+owns the GPU lease; project copies merge files through the same rootless mount.
+The development container owns the filesystem and is not removed on exit.
 """
 import contextlib
+import fcntl
 import ctypes
 import json
 import importlib.util
@@ -62,6 +63,21 @@ def output_mount(flags, folder):
 
 
 def execute(request):
+    if request.get('copy'):return execute_locked(request)
+    # The helper owns the lease through mount, execution and unmount. A pending
+    # merge waits for running consumers; new consumers wait without busy errors.
+    spec=importlib.util.spec_from_file_location('project_store',Path(__file__).with_name('project-store.py'))
+    store=importlib.util.module_from_spec(spec);spec.loader.exec_module(store)
+    lock=Path(request['workspaceLock'])
+    with store.directory(lock.parent) as parent:
+        fd=os.open(lock.name,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=parent)
+        try:
+            fcntl.flock(fd,fcntl.LOCK_SH)
+            return execute_locked(request)
+        finally:os.close(fd)
+
+
+def execute_locked(request):
     prefix=request['engine']
     if not isinstance(prefix,list) or not prefix or prefix[0]!='/usr/bin/podman':
         raise ValueError('Expected the managed local OCI engine')
@@ -77,6 +93,18 @@ def execute(request):
         graph=Path(request['graph']).resolve(strict=True)
         if not root.is_relative_to(graph) or root==graph:
             raise ValueError('Workspace rootfs is outside the managed graph')
+        if request.get('copy'):
+            spec=importlib.util.spec_from_file_location('project_sync',Path(__file__).with_name('project-sync.py'))
+            sync=importlib.util.module_from_spec(spec);spec.loader.exec_module(sync)
+            if request['copy']['action']=='image':
+                image=request['copy']['image']
+                mounted_image=subprocess.run([*prefix,'image','mount',image],check=True,capture_output=True,text=True)
+                try:
+                    source=Path(mounted_image.stdout.strip()).resolve(strict=True)
+                    if not source.is_relative_to(graph) or source==graph:raise ValueError('Project image is outside the managed graph')
+                    print(json.dumps(sync.execute(request['copy'],source)));return 0
+                finally:subprocess.run([*prefix,'image','unmount',image],check=True,capture_output=True)
+            print(json.dumps(sync.execute(request['copy'],root)));return 0
         # No :O suffix: a per-run disposable overlay would discard installs.
         # Image ENV is preserved explicitly because --rootfs has no image config.
         environment=[]
@@ -90,7 +118,7 @@ def execute(request):
                 spec=importlib.util.spec_from_file_location('workspace_shell',Path(__file__).with_name('workspace-shell.py'))
                 shell=importlib.util.module_from_spec(spec);spec.loader.exec_module(shell)
                 return shell.serve(command,request['terminalSocket'])
-            return subprocess.call(command)
+            return subprocess.call(command,timeout=request.get('commandTimeout'))
     finally:
         # Drop only our mount reference. Never commit or delete the workspace.
         result=subprocess.run([*prefix,'unmount',container],capture_output=True)
