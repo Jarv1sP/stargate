@@ -12,7 +12,7 @@ try{
  for(const role of ['member','admin'])for(const width of [1440,390,320]){
   const owner='member-a',peer='member-b',machine='fixture-node-a',jobId='11111111-1111-4111-8111-111111111111';
   let cloudConnected=false,campusReachable=true,probes=0,searchDataset='images';const calls=[],errors=[],requests=[],files=new Map(),uploads=new Map(),grants=new Map(),trash=[];let datasets=[{dataset:'images',name:'images',size:3,ownerId:peer,ownerName:'成员乙',uploadedBy:'成员乙',modifiedAt:1700000000}];
-  const users=[{id:owner,username:'alice',name:'成员甲',role,enabled:true,approvedAt:'2026-10-14T11:00:00.000Z',total:4,limits:{[machine]:4}},{id:peer,username:'bob',name:'成员乙',role:'member',enabled:true,total:4,limits:{[machine]:4}}];
+  const users=[{id:owner,username:'alice',name:'成员甲',role,enabled:true,approvedAt:'2026-10-14T11:00:00.000Z',total:4,limits:{[machine]:4}},{id:peer,username:'bob',name:'成员乙',role:'member',enabled:true,total:2,limits:{[machine]:2}},{id:'pending-member',username:'pending',name:'待审批成员',role:'member',enabled:true,total:0,limits:{}}];
   const projects=[{project:'vision',ownerId:peer,ownerName:'成员乙',displayName:'共享实验',environmentMode:'oci',lifecycle:{state:'ACTIVE'},git:{url:'https://example.test/team/repo.git',branch:'main',commit:'abc123'}}];
   const state={machines:[{id:machine,name:'示例服务器',cards:4,model:'Fixture GPU'}],users,jobs:[{id:jobId,nodeJobId:'J111111111111',machine,userId:peer,ownerId:peer,username:'bob',name:'团队训练',project:'vision',cards:1,state:'RUNNING',priority:'normal',assignedIndices:[0],createdAt:'2026-10-14T11:00:00.000Z',argv:['python','train.py']}],executionEnabled:true,execution:{},gpuq:{stale:false,connected:true,checkedAt:'2026-10-14T11:00:00.000Z',hosts:[{id:machine,reachable:true,checkedAt:'2026-10-14T11:00:00.000Z',gpus:Array.from({length:4},(_,index)=>({index,model:'Fixture GPU',utilization:index?0:80,memoryUsedMiB:index?0:1024,memoryTotalMiB:8192,temperatureC:40,processes:[],processesAvailable:true})),disks:[{mountPoint:'/fixture-data',totalBytes:1000,usedBytes:100,availableBytes:900}],tasks:[],gpuq:{connected:true,health:'ok',observeOnly:false,schedulableIndices:[0,1,2,3]}}]},operationalMaintenance:{global:null,machines:{}},announcements:{pending:[]},transfers:{}};
   const principal={userId:owner,username:'alice',role,enabled:true},resource=args=>JSON.stringify([args.machine,args.area,args.dataset||args.project,args.ownerId,args.path]);
@@ -51,6 +51,8 @@ try{
    if(op==='community.chat.list')return {messages:[{id:'m1',body:'今晚谁要用 4090-8？',author:{id:peer,name:'成员乙'},createdAt:'2026-10-14T10:50:00.000Z'},{id:'m2',body:'我 9 点后跑两张卡，大概三小时。',author:{id:owner,name:'成员甲'},createdAt:'2026-10-14T10:52:00.000Z'}],nextCursor:null};
    if(op==='community.notes.list')return {notes:[],nextCursor:null};
    if(op==='invites.list')return {invites:[]};
+   if(op==='policy.save'){const user=users.find(row=>row.id===args.userId);Object.assign(user,{total:args.total,limits:args.limits,approvedAt:'2026-10-14T11:00:00.000Z',policyVersion:(user.policyVersion||0)+1});return user;}
+   if(op==='policy.full'){const user=users.find(row=>row.id===args.userId);Object.assign(user,{total:4,limits:{[machine]:4},approvedAt:'2026-10-14T11:00:00.000Z'});return user;}
    if(op==='maintenance.set'){if(args.scope==='all')state.operationalMaintenance.global=args.enabled?{reason:args.reason,since:'2026-10-14T11:00:00.000Z'}:null;return state.operationalMaintenance;}
    if(op==='jobs.watch')return {state:'RUNNING',nativeObservation:{state:'RUNNING'}};
    if(op==='jobs.submit')return {id:'22222222-2222-4222-8222-222222222222',state:'PENDING',key:args.key};
@@ -127,18 +129,31 @@ try{
   await page.locator('[data-nav=community]').click();await page.waitForTimeout(50);await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-community.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'no horizontal page overflow at '+width);
   if(role==='admin'){
-   await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();
-   await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-reason').fill('隔离测试维护');
+   await page.evaluate(()=>{location.hash='#admin/members';});await page.locator('[data-adm-user="'+peer+'"]').waitFor();
+   assert.equal(await page.locator('#admin-sections,#page-users,#members-parking').count(),0,'old navigation and member panels are removed');
+   assert.equal(await page.locator('#admin-content>.adm-sec').count(),2,'members and maintenance are mounted together');
+   assert.equal(await page.locator('#admin-content>.admin-gpu-tasks').count(),1,'GPU and task controls remain mounted');
+   assert.equal(await page.locator('[data-adm-user]').first().getAttribute('data-adm-user'),'pending-member');
+   const peerRow=page.locator('[data-adm-user="'+peer+'"]');await peerRow.locator('[data-adm-step="1"]').click();
+   await page.waitForFunction(()=>document.querySelector('[data-adm-user="member-b"] .adm-stepper span')?.textContent==='3');
+   const stepped=calls.filter(row=>row.op==='policy.save');assert.equal(stepped.length,1);assert.equal(stepped[0].args.userId,peer);assert.equal(stepped[0].args.total,3);assert.equal(users.find(row=>row.id===peer).total,3);
+   await peerRow.locator('[data-adm-edit]').click();const quotaSheet=page.locator('dialog.adm-sheet[aria-label="服务器额度"]');await quotaSheet.waitFor();
+   await quotaSheet.locator('[data-adm-limit]').fill('1');await quotaSheet.locator('[data-adm-total]').fill('2');await quotaSheet.locator('[data-adm-save]').click();await quotaSheet.waitFor({state:'hidden'});
+   const edited=calls.filter(row=>row.op==='policy.save').at(-1).args;assert.equal(edited.total,2);assert.deepEqual(edited.limits,{[machine]:1});assert.equal(users.find(row=>row.id===peer).limits[machine],1);
+   await page.locator('[data-adm-user=pending-member] [data-adm-full]').click();await page.locator('.sg-confirm [data-confirm-go]').click();await page.locator('.sg-confirm').waitFor({state:'detached'});
+   assert.equal(calls.filter(row=>row.op==='policy.full').length,1);assert.equal(users.find(row=>row.id==='pending-member').total,4);await page.locator('[data-adm-user=pending-member] [data-adm-full]').waitFor({state:'detached'});
+   await page.evaluate(()=>{location.hash='#admin/maintenance';});const globalToggle=page.locator('[data-adm-scope=all] [data-maintenance-settings]');await globalToggle.waitFor();
+   await globalToggle.click();await page.locator('#maintenance-settings-reason').fill('隔离测试维护');
    await page.locator('#maintenance-settings-dialog [type=submit]').click();await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});
-   assert.equal(state.operationalMaintenance.global.reason,'隔离测试维护');
-   await page.locator('[data-maintenance-settings]').click();await page.locator('#maintenance-settings-dialog [data-maintenance-resume]').click();
-   await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});assert.equal(state.operationalMaintenance.global,null);
-   assert.equal(await page.locator('[data-maintenance-settings]').evaluate(node=>document.activeElement===node),true);
-   await page.locator('[data-maintenance-settings]').click();await page.evaluate(()=>{location.hash='#resources';});
+   assert.equal(state.operationalMaintenance.global.reason,'隔离测试维护');assert.equal(await globalToggle.getAttribute('aria-checked'),'true');
+   await globalToggle.click();await page.locator('.sg-confirm [data-confirm-go]').click();await page.locator('.sg-confirm').waitFor({state:'detached'});assert.equal(state.operationalMaintenance.global,null);
+   assert.equal(await globalToggle.getAttribute('aria-checked'),'false');assert.equal(await globalToggle.evaluate(node=>document.activeElement===node),true);
+   assert.equal(await page.locator('#admin-host-diagnostics').count(),1);assert.equal(await page.locator('#admin-maintenance-console').count(),1);
+   await globalToggle.click();await page.evaluate(()=>{location.hash='#resources';});
    await page.locator('#maintenance-settings-dialog').waitFor({state:'detached'});assert.equal(await page.locator('[data-nav=resources][aria-current=page]').count(),1,'leaving admin also closes and removes its maintenance dialog');
-   await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();
+   await page.evaluate(()=>{location.hash='#admin/maintenance';});await globalToggle.waitFor();await globalToggle.click();await page.locator('#maintenance-settings-dialog [data-sheet-close]').first().click();await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});
    await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});
-   for(const room of ['members','gpu']){await page.evaluate(room=>{location.hash='#admin/'+room;},room);await page.waitForTimeout(400);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin-'+room+'.png'),fullPage:true});}
+   for(const room of ['members','tasks']){await page.evaluate(room=>{location.hash='#admin/'+room;},room);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin-'+room+'.png'),fullPage:true});}
   }
   await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
   await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});

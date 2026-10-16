@@ -39,7 +39,7 @@ export function registerGpuTasksAdmin(register){
       }
       fitResourceNames(fleet);
       q('[data-admin-submit]').disabled=!selected||store.data?.executionEnabled!==true||!!maintenanceFor(store.data?.operationalMaintenance,selected);
-      const approvals=controlSnapshot(store).approvals;q('.admin-task-approvals').hidden=!approvals.length;q('.admin-task-approvals').innerHTML=`<span>待审批 ${approvals.length} 人</span><a class="button quiet" href="${document.querySelector('[data-admin-section=members]')?'#admin/members':'#users'}">去审批</a>`;
+      const approvals=controlSnapshot(store).approvals;q('.admin-task-approvals').hidden=!approvals.length;q('.admin-task-approvals').innerHTML=`<span>待审批 ${approvals.length} 人</span><a class="button quiet" href="#admin/members">去审批</a>`;
       const jobs=adminTasks(store,{owner:owner.value,machine:machine.value,state:state.value});q('[data-admin-job-count]').textContent=jobs.length+' 项';
       renderTaskTable(q('#all-jobs'),jobs,{admin:true,userId:actor});
     }

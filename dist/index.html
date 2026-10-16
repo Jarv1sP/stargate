@@ -31,6 +31,7 @@
   <link rel="stylesheet" href="./members.css" />
   <link rel="stylesheet" href="./copy-help.css" />
   <link rel="stylesheet" href="./admin.css" />
+  <link rel="stylesheet" href="./admin-room.css" />
   <link rel="stylesheet" href="./admin-gpu-tasks.css" />
   <link rel="stylesheet" href="./portal-shell.css" />
   <link rel="preload" href="./vendor/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin />
@@ -66,7 +67,6 @@
 <section data-page="admin" id="page-admin" hidden>
   <div id="admin-denied" class="admin-denied hero-frame"><h2>需要管理员权限</h2><a href="#work" class="button quiet admin-return">返回工作台</a></div>
   <div id="admin-frame" class="admin-frame" hidden>
-    <nav id="admin-sections" class="admin-navigation" aria-label="后台管理区块"></nav>
     <div class="admin-content-column"><div id="admin-content"></div></div>
   </div>
 </section>
@@ -77,13 +77,6 @@
 <div class="help-links copy-caption" aria-label="使用帮助"><span>首次使用</span><span>从第一次登录，到一次完整训练。</span></div>
 <footer class="sky-footer"><span class="wordmark footer-wordmark" role="img" aria-label="STARGATE">STARGATE</span><div class="sky-readouts"><time id="sky-utc" aria-label="UTC 时间"></time><span class="sky-moon" title="近似月相"><svg viewBox="-7 -7 14 14" aria-hidden="true"><circle r="6"/><path id="sky-moon-path"/></svg><span id="sky-moon-label"></span></span><span id="sky-mars" title="按约 780 天的地火会合周期估算"></span></div></footer>
 </main>
-  </div>
-  <div id="members-parking" hidden inert>
-<section id="page-users" aria-label="成员与额度" hidden>
-<div class="management-toolbar"><div class="filter-tabs"><button id="filter-pending" aria-pressed="true">待处理 0</button><button id="filter-all" aria-pressed="false">全部账号</button></div></div>
-<div class="authorization-layout"><div class="member-editor hero-frame" id="editor"></div><aside class="user-panel" aria-label="成员账号"><div id="user-list" class="user-list"></div></aside></div>
-
-</section>
   </div>
   <dialog id="mission-control" class="mc" aria-labelledby="mission-control-title"><div id="mission-control-content"></div></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
