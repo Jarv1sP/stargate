@@ -35,59 +35,49 @@ export function adminSectionForRoute(route){
 export const adminHashForRoute=route=>String(route??'').replace(/^#/,'')==='admin'?'#admin':'#admin/'+adminSectionForRoute(route);
 
 export function createAdminUI(store,{getPage,navigate,toast},sections=registry){
-  const q=selector=>document.querySelector(selector),root=q('#page-admin'),frame=q('#admin-frame'),denied=q('#admin-denied'),
-    navigation=q('#admin-sections'),content=q('#admin-content');
-  let mounted=null,navSignature='',selectedSection=null;
+  const q=selector=>document.querySelector(selector),root=q('#page-admin'),frame=q('#admin-frame'),denied=q('#admin-denied'),content=q('#admin-content');
+  const mounted=new Map();let selectedSection=null,scrolledRoute=null;
   const identity=()=>JSON.stringify([store.principal?.userId,store.principal?.role,store.authGeneration]);
   const permitted=()=>!!store.principal&&store.principal.role==='admin'&&!store.authPending;
-  function stop(){
-    const previous=mounted;if(!previous)return;mounted=null;
-    previous.controller.abort(new DOMException('后台区块已关闭','AbortError'));
-    previous.listeners.clear();
+  function stop(id){
+    const previous=mounted.get(id);if(!previous)return;mounted.delete(id);
+    previous.controller.abort(new DOMException('后台区块已关闭','AbortError'));previous.listeners.clear();
     try{previous.definition.unmount?.();}catch{console.warn('后台区块卸载未完成');}
     previous.el.remove();
   }
-  function renderNavigation(id){
-    const rows=sections.list(),signature=JSON.stringify(rows.map(({id,title,order})=>({id,title,order})));
-    if(signature!==navSignature){
-      navSignature=signature;navigation.replaceChildren();
-      for(const [index,row] of rows.entries()){
-        const link=document.createElement('a');link.href='#admin/'+row.id;link.dataset.adminSection=row.id;
-        const number=document.createElement('span');number.className='admin-section-number';number.setAttribute('aria-hidden','true');number.textContent=String(index+1).padStart(2,'0');
-        const title=document.createElement('span');title.textContent=row.title;link.append(number,title);navigation.append(link);
-      }
-    }
-    for(const link of navigation.children){const current=link.dataset.adminSection===id;link.classList.toggle('active',current);if(current)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');}
-  }
-  function update(){
-    const active=getPage()==='admin',allowed=permitted();
-    if(!active||!allowed){stop();content.replaceChildren();}
-    const rows=sections.list();frame.hidden=!allowed||!rows.length;denied.hidden=allowed;
-    if(!active||!allowed)return;
-    if(!rows.length){stop();navigation.replaceChildren();navSignature='';navigate('work');return;}
-    const requested=adminSectionForRoute(location.hash),id=sections.get(requested)?requested:rows[0].id,definition=sections.get(id),key=identity();selectedSection=id;
-    if(location.hash!=='#admin/'+id)history.replaceState(null,'','#admin/'+id);
-    renderNavigation(id);root.dataset.adminCurrentSection=id;
-    if(mounted?.key===key&&mounted.definition===definition){for(const listener of mounted.listeners){try{listener();}catch{console.warn('后台区块更新未完成');}}return;}
-    stop();content.replaceChildren();
-    const controller=new AbortController(),el=document.createElement('div'),listeners=new Set();el.className='admin-section-host';content.append(el);
-    const entry={definition,key,controller,el,listeners};mounted=entry;
-    const current=()=>mounted===entry&&!controller.signal.aborted&&permitted()&&getPage()==='admin'&&identity()===key;
+  function stopAll(){for(const id of [...mounted.keys()])stop(id);selectedSection=null;scrolledRoute=null;}
+  function mount(definition,key,index){
+    const controller=new AbortController(),el=document.createElement('section'),listeners=new Set();el.className='admin-section-host';el.id='admin-section-'+definition.id;el.dataset.adminSection=definition.id;
+    content.insertBefore(el,content.children[index]||null);
+    const entry={definition,key,controller,el,listeners};mounted.set(definition.id,entry);
+    const current=()=>mounted.get(definition.id)===entry&&!controller.signal.aborted&&permitted()&&getPage()==='admin'&&identity()===key;
     const ctx=Object.freeze({store,signal:controller.signal,principal:Object.freeze({...store.principal}),
-      toast:message=>{if(current())toast(message);},
-      navigate:route=>{if(current())navigate(route);},
+      toast:message=>{if(current())toast(message);},navigate:route=>{if(current())navigate(route);},
       subscribe(listener){if(typeof listener!=='function')throw new TypeError('需要更新函数');if(!current())return()=>{};listeners.add(listener);listener();return()=>listeners.delete(listener);},
     });
     const failed=()=>{if(!current())return;const message=document.createElement('p'),retry=document.createElement('button');
       message.textContent='暂时无法显示这个区块。';retry.type='button';retry.className='button quiet';retry.textContent='重新打开';
-      retry.addEventListener('click',()=>{if(current()){stop();update();}});el.replaceChildren(message,retry);};
-    try{
-      const pending=definition.mount(el,ctx);
-      Promise.resolve(pending).catch(failed);
-    }catch{failed();}
+      retry.addEventListener('click',()=>{if(current()){stop(definition.id);update();}});el.replaceChildren(message,retry);};
+    try{Promise.resolve(definition.mount(el,ctx)).catch(failed);}catch{failed();}
   }
-  const onClick=event=>{const link=event.target.closest('[data-admin-section]');if(!link||!navigation.contains(link))return;event.preventDefault();navigate(link.getAttribute('href'));};
-  navigation.addEventListener('click',onClick);
-  const unsubscribe=sections.subscribe(update),authCleanup=store.onAuthChange?.(()=>{stop();frame.hidden=true;denied.hidden=false;});
-  return {update,dispose(){stop();unsubscribe();authCleanup?.();navigation.removeEventListener('click',onClick);},currentSection:()=>selectedSection};
+  function update(){
+    const active=getPage()==='admin',allowed=permitted(),rows=sections.list();
+    if(!active||!allowed){stopAll();content.replaceChildren();}
+    frame.hidden=!allowed||!rows.length;denied.hidden=allowed;
+    if(!active||!allowed)return;
+    if(!rows.length){stopAll();navigate('work');return;}
+    const key=identity();
+    for(const [id,entry] of mounted)if(entry.key!==key||sections.get(id)!==entry.definition)stop(id);
+    for(const [index,definition] of rows.entries()){
+      const entry=mounted.get(definition.id);
+      if(!entry){mount(definition,key,index);continue;}
+      if(content.children[index]!==entry.el)content.insertBefore(entry.el,content.children[index]||null);
+      for(const listener of entry.listeners){try{listener();}catch{console.warn('后台区块更新未完成');}}
+    }
+    const requested=location.hash==='#admin'?null:adminSectionForRoute(location.hash),id=sections.get(requested)?requested:rows[0].id;selectedSection=id;root.dataset.adminCurrentSection=id;
+    if(requested&&!sections.get(requested))history.replaceState(null,'','#admin/'+id);
+    if(!root.hidden&&scrolledRoute!==location.hash){scrolledRoute=location.hash;mounted.get(id)?.el.scrollIntoView({block:'start',behavior:'instant'});}
+  }
+  const unsubscribe=sections.subscribe(update),authCleanup=store.onAuthChange?.(()=>{stopAll();frame.hidden=true;denied.hidden=false;});
+  return {update,dispose(){stopAll();unsubscribe();authCleanup?.();},currentSection:()=>selectedSection};
 }

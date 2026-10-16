@@ -9,7 +9,7 @@ export const STARBASE_ASSETS = Object.fromEntries([
   'task-display-ui.js',
   'job-results-ui.js', 'time-format.js', 'trash-ui.js', 'file-transfer-ui.js',
   'maintenance-state.js', 'maintenance-experience.js', 'maintenance-experience.css',
-  'admin-ui.js', 'admin.css', 'admin-members-ui.js', 'admin-gpu-tasks.js', 'admin-gpu-tasks.css', 'admin-maintenance-ui.js', 'host-diagnostics-ui.js',
+  'admin-ui.js', 'admin.css', 'admin-room.js', 'admin-room.css', 'admin-gpu-tasks.js', 'admin-gpu-tasks.css', 'host-diagnostics-ui.js',
   'vendor/fonts/Archivo-Variable.woff2',
   'vendor/fonts/Geist-Variable.woff2',
   'vendor/fonts/GeistMono-Variable.woff2',

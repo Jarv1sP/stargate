@@ -9,12 +9,16 @@ export function openSheet(dialog){
 export function closeSheet(dialog){fadeOutDialog(dialog);}
 
 // One confirm sheet for destructive actions.
-export function confirmSheet({title,body,action,run}){
+export function confirmSheet({title,body,action,run,signal,onClose}){
+  if(signal?.aborted)return;
   const dialog=document.createElement('dialog');dialog.className='pr-sheet sg-confirm';dialog.setAttribute('aria-label',title);
   dialog.innerHTML='<div class="pr-sheet-in"><div class="jr-confirm-title"></div><p class="jr-confirm-body"></p><p class="jr-error" hidden></p><div class="jr-actions"><button type="button" class="jr-btn ghost" data-confirm-back>算了</button><button type="button" class="jr-btn primary danger" data-confirm-go></button></div></div>';
   const q=selector=>dialog.querySelector(selector),go=q('[data-confirm-go]'),close=()=>{closeSheet(dialog);dialog.addEventListener('close',()=>dialog.remove(),{once:true});};
   q('.jr-confirm-title').textContent=title;q('.jr-confirm-body').textContent=body;go.textContent=action;
   q('[data-confirm-back]').addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
   go.addEventListener('click',async()=>{go.disabled=true;try{await run();close();}catch(error){q('.jr-error').textContent=error.message;q('.jr-error').hidden=false;go.disabled=false;}});
+  const abort=()=>{dialog.close();dialog.remove();};
+  signal?.addEventListener('abort',abort,{once:true});
+  dialog.addEventListener('close',()=>{signal?.removeEventListener('abort',abort);if(!signal?.aborted)onClose?.();},{once:true});
   document.body.append(dialog);openSheet(dialog);q('[data-confirm-back]').focus();
 }
