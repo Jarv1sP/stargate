@@ -28,20 +28,25 @@ function queuedTasks(view){
   if(!rows||rows.some(row=>!row.state||row.state==='UNKNOWN'))return null;
   return rows.filter(row=>waitingStates.has(row.state));
 }
+// Totals cover the servers observed right now. A server that is offline or not
+// fully read is named in \`missing\` instead of being counted as idle.
 export function resourceTotals(views){
-  const observed=views.length>0&&views.every(view=>view.processesComplete),queues=views.map(queuedTasks);
-  return {free:observed?views.reduce((sum,view)=>sum+view.count-view.busy,0):null,busy:observed?views.reduce((sum,view)=>sum+view.busy,0):null,
-    queued:views.length>0&&queues.every(rows=>rows!==null)?queues.reduce((sum,rows)=>sum+rows.length,0):null};
+  const seen=views.filter(view=>view.processesComplete),queues=seen.map(queuedTasks);
+  return {free:seen.length?seen.reduce((sum,view)=>sum+view.count-view.busy,0):null,busy:seen.length?seen.reduce((sum,view)=>sum+view.busy,0):null,
+    queued:seen.length&&queues.every(rows=>rows!==null)?queues.reduce((sum,rows)=>sum+rows.length,0):null,missing:views.filter(view=>!view.processesComplete).map(view=>view.machine.id)};
 }
+const QUEUE_PREVIEW=5;
 function queue(view){
   if(view.maintenance)return '<p class="muted">维护中，不接新任务。</p>';
   const rows=queuedTasks(view);
   if(rows===null)return '<p class="muted hatch">队列读数未知</p>';
   if(!rows.length)return `<p class="muted">${view.host.gpuq?.connected===true&&view.host.gpuq?.observeOnly!==true&&view.host.gpuq?.health!=='degraded'?'没有排队，提交即开始。':'没有排队任务。'}</p>`;
-  return `<ol class="resource-queue-list">${rows.map((task,index)=>{
+  // The full queue lives in Tasks; here only the next few are shown.
+  const more=rows.length-QUEUE_PREVIEW;
+  return `<ol class="resource-queue-list">${rows.slice(0,QUEUE_PREVIEW).map((task,index)=>{
     const rank=Number.isInteger(task.priority)?task.priority:({idle:0,P1:1,normal:2,P3:3,high:4})[task.priority],cards=task.gpuCount??task.gpu_count??task.cards;
     return `<li class="resource-queue-row" data-resource-queue-row><span>${index+1}. ${esc(task.name||task.id||'未命名任务')}</span><span>${rank==null?'优先级未知':'P'+rank} · ${known(cards)?cards:'未知'} 张</span></li>`;
-  }).join('')}</ol>`;
+  }).join('')}</ol>${more>0?`<a class="resource-queue-more" href="#jobs">还有 ${more} 个排队 · 在任务里看全部</a>`:''}`;
 }
 // Monitoring, process evidence and scheduler admission are independent. A
 // measured memory level never proves that the scheduler can start a task.
@@ -211,7 +216,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
   const updateOrbit=resourceOrbits(orbit,()=>!!store.principal&&getPage()==='resources');
   document.querySelector('#resource-summary').hidden=true;document.querySelector('#monitor-status').hidden=true;
   const summary=document.createElement('dl');summary.className='resource-summary';summary.hidden=true;summary.setAttribute('aria-label','平台显卡与排队任务');
-  summary.innerHTML=[['free','空闲','张'],['busy','使用中','张'],['queued','排队任务','个']].map(([key,label,unit])=>`<div><dt>${label}</dt><dd><span data-summary="${key}">未知</span> <small>${unit}</small></dd></div>`).join('');
+  summary.innerHTML=[['free','空闲','张'],['busy','使用中','张'],['queued','排队任务','个']].map(([key,label,unit])=>`<div><dt>${label}</dt><dd><span data-summary="${key}">未知</span> <small>${unit}</small></dd></div>`).join('')+'<p class="resource-summary-note" data-summary-note hidden></p>';
   document.querySelector('.heading-actions').append(summary);
   const sheet=document.createElement('dialog');sheet.className='work-sheet resource-sheet';sheet.id='resource-sheet';sheet.setAttribute('aria-labelledby','resource-sheet-title');
   sheet.innerHTML='<header class="sheet-header glass"><h2 id="resource-sheet-title">服务器详情</h2><select data-resource-gpu-picker aria-label="选择显卡"></select><button type="button" class="button quiet" data-resource-back>返回算力</button></header><div class="sheet-scroll"></div>';
@@ -272,6 +277,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
     if(sheet.open){const detail=grid.querySelector('.resource-detail');if(detail)sheet.querySelector('.sheet-scroll').replaceChildren(detail);sheet.querySelector('#resource-sheet-title').textContent=selected;sheet.querySelector('#resource-sheet-title').title=selected;}
     summary.hidden=!store.principal||getPage()!=='resources';
     const totals=resourceTotals(views);for(const number of summary.querySelectorAll('[data-summary]')){const value=totals[number.dataset.summary];rollNumber(number,value);number.classList.toggle('hatch',value===null);}
+    const note=summary.querySelector('[data-summary-note]');note.textContent=totals.missing.length&&totals.missing.length<views.length?'不含 '+totals.missing.join('、')+'（读不到）':'';note.hidden=!note.textContent;
     const picker=sheet.querySelector('[data-resource-gpu-picker]');picker.innerHTML=Array.from({length:view?.count||0},(_,number)=>`<option value="${number}">GPU ${number}</option>`).join('');picker.value=String(index);
     for(const root of [grid,sheet])for(const detail of root.querySelectorAll('details[data-resource-detail],details[data-resource-info]')){const key=detail.dataset.resourceDetail||'info:'+detail.dataset.resourceInfo;if(expanded.has(key))detail.open=expanded.get(key);if(focusDetail&&focusDetail===detail.dataset.resourceDetail||focusInfo&&focusInfo===detail.dataset.resourceInfo)detail.querySelector('summary')?.focus({preventScroll:true});}
     for(const root of [grid,sheet])for(const region of root.querySelectorAll('.gpu-table-scroll,.process-content')){
