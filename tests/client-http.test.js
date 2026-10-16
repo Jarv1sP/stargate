@@ -1,8 +1,56 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {apiPost} from '../client-http.mjs';
+import {apiPost,commandPost} from '../client-http.mjs';
 import {DemoClient} from '../dist/client.js';
 const url='https://portal.example';
+test('all reads in one CLI command share sixty seconds including request and backoff time',async t=>{
+ let elapsed=0,calls=0;const budgets=[];
+ t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});
+ const post=commandPost(url,{now:()=>elapsed,sleep:async ms=>{elapsed+=ms;},fetchImpl:async()=>{
+  calls++;
+  if(calls===1){elapsed+=45000;return new Response('{"state":{}}');}
+  return new Response('',{status:503});
+ }});
+ await post('call',{operation:'state'});
+ await assert.rejects(post('call',{operation:'community.announcements.pending'}),e=>e.code==='READ_UNAVAILABLE'&&/暂时无法读取/.test(e.message));
+ assert.equal(elapsed,60000);assert.deepEqual(budgets,[60000,15000]);
+ const before=calls;
+ await assert.rejects(post('call',{operation:'jobs.watch'}),e=>e.code==='READ_UNAVAILABLE');
+ assert.equal(calls,before,'an exhausted command must not open another request');
+});
+test('a hanging response body is aborted at the remaining command deadline',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let elapsed=0;
+ // AbortSignal.timeout uses its own timer; connect it to the simulated clock.
+ t.mock.method(AbortSignal,'timeout',ms=>{const c=new AbortController();setTimeout(()=>c.abort(new DOMException('timed out','TimeoutError')),ms);return c.signal;});
+ const post=commandPost(url,{now:()=>elapsed,fetchImpl:async(url,{signal})=>({status:200,ok:true,json:()=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))})});
+ const pending=post('call',{operation:'state'}),rejected=assert.rejects(pending,e=>e.code==='READ_UNAVAILABLE'&&/暂时无法读取/.test(e.message));
+ await new Promise(setImmediate);elapsed=60000;t.mock.timers.tick(60000);await rejected;
+});
+test('slow reads and interactive waits never shorten a write below its original forty seconds',async t=>{
+ let elapsed=0;const budgets=[],sent=[];
+ t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});
+ const post=commandPost(url,{now:()=>elapsed,fetchImpl:async(url,options)=>{
+  const body=JSON.parse(options.body);sent.push(body);
+  if(body.operation==='state')elapsed=59999;
+  return new Response('{"result":{}}');
+ }});
+ await post('call',{operation:'state'});
+ for(const operation of ['jobs.submit','projects.retire.purge','users.create','users.reset']){
+  elapsed+=120000;
+  await post('call',{operation,args:{key:'11111111-1111-4111-8111-111111111111'}});
+ }
+ assert.deepEqual(budgets,[60000,40000,40000,40000,40000]);assert.equal(sent.length,5);
+ await assert.rejects(post('call',{operation:'state'}),e=>e.code==='READ_UNAVAILABLE');
+ assert.equal(sent.length,5);
+});
+test('long transfers and attached sessions retain their existing per-request budget',async t=>{
+ let elapsed=0;const budgets=[];
+ t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});
+ const post=commandPost(url,{continuous:true,now:()=>elapsed,fetchImpl:async()=>new Response('{"result":{}}')});
+ await post('call',{operation:'data.upload.status'});elapsed=120000;
+ await post('call',{operation:'data.upload.status'});
+ assert.deepEqual(budgets,[60000,60000]);
+});
 function fixture(responses){const calls=[];return {calls,options:{sleep:async()=>{},fetchImpl:async(...args)=>{calls.push(args);const item=responses.shift();if(item instanceof Error)throw item;return item;}}};}
 test('read-only 502 during deployment retries and returns the actual status result',async()=>{
  const f=fixture([new Response('<html>Bad Gateway</html>',{status:502}),new Response(JSON.stringify({result:{state:'READY'}}))]);

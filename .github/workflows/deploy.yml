@@ -60,10 +60,13 @@ jobs:
             previous ||= process.env.DEPLOY_INITIAL_SHA;
             if (!previous) throw new Error('Set DEPLOY_INITIAL_SHA to the existing live revision once');
             const revision = process.env.STARGATE_RELEASE_REVISION;
-            const changed = execFileSync('git', ['diff', '--name-only', previous, revision, '--', 'node/', 'gpuq/'], {encoding: 'utf8'});
+            const scope = JSON.parse(execFileSync('python3', ['deploy/release/scope.py', previous, revision], {encoding: 'utf8'}));
             fs.mkdirSync('bundle', {recursive: true});
-            fs.writeFileSync('bundle/release.json', JSON.stringify({revision, previous, nodesChanged: Boolean(changed.trim())}));
-            core.setOutput('nodes', Boolean(changed.trim()));
+            fs.writeFileSync('bundle/release.json', JSON.stringify({revision, previous, ...scope}));
+            core.setOutput('nodes', scope.nodesChanged);
+            core.setOutput('portal', scope.portalChanged);
+            core.setOutput('deploy', scope.deploy);
+            if (!scope.deploy) { core.info('Deployment skipped for this commit; gray passed'); return; }
             const {data: deployment} = await github.rest.repos.createDeployment({
               ...context.repo, ref: revision, environment: 'production', auto_merge: false,
               required_contexts: [], payload: {stargate: true},
@@ -75,8 +78,11 @@ jobs:
               log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
       - run: npm ci
+        if: steps.release.outputs.deploy == 'true'
       - run: npm run build:release
+        if: steps.release.outputs.deploy == 'true'
       - name: Build Portal and CLI
+        if: steps.release.outputs.deploy == 'true'
         run: >-
           docker build -f deploy/Dockerfile
           --build-arg STARGATE_RELEASE_REVISION="$STARGATE_RELEASE_REVISION"
@@ -99,10 +105,12 @@ jobs:
           subprocess.run(['cp', 'deploy/node/install.py', 'bundle/install.py'], check=True)
           PYTHON
       - name: Prepare one offline stream
+        if: steps.release.outputs.deploy == 'true'
         run: |
           cp -R deploy/release bundle/release
           docker save "stargate:auto-$STARGATE_RELEASE_REVISION" | gzip > bundle/image.tar.gz
       - name: Release through restricted SSH command
+        if: steps.release.outputs.deploy == 'true'
         shell: bash
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}

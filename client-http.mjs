@@ -49,10 +49,22 @@ export async function recoverOriginalWrite(send,{query,classify,canReplay=false,
   throw pending;
 }
 
-export async function apiPost(base,path,body,{token,signal,fetchImpl=fetch,sleep=wait,now}={}){
+export function commandPost(base,{continuous=false,...options}={}){
+  const now=options.now||(()=>performance.now());
+  let deadlineAt;
+  return (path,body,signal)=>{
+    if(!continuous)deadlineAt??=now()+60000;
+    return apiPost(base,path,body,{...options,signal,now,deadlineAt});
+  };
+}
+
+export async function apiPost(base,path,body,{token,signal,fetchImpl=fetch,sleep=wait,now=()=>performance.now(),deadlineAt}={}){
   const target=new URL(`/api/${path}`,base),operation=path==='call'?body?.operation:path;
   const read=path==='call'&&(READS.has(operation)||operation==='outputs.delete'&&body.args?.dryRun===true),payload=JSON.stringify({...body,client:{name:'gpuctl',protocol:2}});
-  const deadline=AbortSignal.timeout(read?60000:40000);
+  signal?.throwIfAborted();
+  const timeout=read?(deadlineAt===undefined?60000:Math.min(60000,Math.ceil(deadlineAt-now()))):40000;
+  if(timeout<=0)throw error('暂时无法读取，请稍后再查。',undefined,'READ_UNAVAILABLE');
+  const deadline=AbortSignal.timeout(timeout);
   const combined=signal?AbortSignal.any([signal,deadline]):deadline;
   let lastReadFailure;
   const send=async()=>{
@@ -80,6 +92,6 @@ export async function apiPost(base,path,body,{token,signal,fetchImpl=fetch,sleep
     if(!decoded)throw error(`${safe(operation)}：HTTP ${response.status}，API 未返回有效 JSON。请检查服务地址或网关；不能据此判定数据或操作失败。`,read?response.status:undefined);
     return data;
   };
-  try{return read?await retryCampusRequest(send,{signal:combined,sleep:ms=>sleep(ms,combined),now}):await send();}
+  try{return read?await retryCampusRequest(send,{signal:combined,sleep:ms=>sleep(ms,combined),now,timeoutMs:timeout}):await send();}
   catch(failure){signal?.throwIfAborted();if(read&&combined.aborted&&lastReadFailure)throw lastReadFailure;throw failure;}
 }

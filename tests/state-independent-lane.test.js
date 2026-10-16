@@ -5,6 +5,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
+import {readCLIState} from '../client-state.mjs';
+import {DemoClient} from '../dist/client.js';
+import {resourceServerView} from '../dist/resources-ui.js';
 
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 async function fixture(t,{role='admin'}={}){
@@ -32,16 +35,13 @@ test('state returns account/job records with one unavailable node while a mutati
   assert.equal(f.service.pending,1);assert.equal(writes,1);assert.equal(f.bridgeCalls(),0);assert.equal(f.bridgeCalls(),0);
  }finally{held.resolve();await write;}
 });
-for(const change of ['logout','disable','role','closing'])test('state revalidates '+change+' after asynchronous snapshot read',async t=>{
- const f=await fixture(t,{role:change==='role'?'admin':'member'}),held=deferred(),started=deferred();
- f.service.refreshGPUQ=async()=>{started.resolve();await held.promise;};
- const pending=f.service.invoke(f.token,'state',{}),denied=assert.rejects(pending,e=>[401,403,503].includes(e.status));await started.promise;
+for(const change of ['logout','disable','closing'])test('state rejects '+change+' before returning a cached snapshot',async t=>{
+ const f=await fixture(t);
  if(change==='logout')f.service.revokeSession(f.token);
  if(change==='disable')f.service.accounts.db.prepare('UPDATE accounts SET enabled=0 WHERE id=?').run(f.user.id);
- if(change==='role')f.service.accounts.db.prepare("UPDATE accounts SET role='member' WHERE id=?").run(f.user.id);
- if(change==='machine')f.user.limits[MACHINES[0].id]=0;
  if(change==='closing')f.service.close();
- held.resolve();await denied;assert.equal(f.bridgeCalls(),0);
+ await assert.rejects(f.service.invoke(f.token,'state',{}),e=>[401,403,503].includes(e.status));
+ assert.equal(f.bridgeCalls(),0);
 });
 test('concurrent state reads share the local snapshot without rejecting a ninth observer',async t=>{
  const f=await fixture(t),held=deferred();f.service.refreshGPUQ=()=>held.promise;
@@ -49,19 +49,43 @@ test('concurrent state reads share the local snapshot without rejecting a ninth 
  assert.equal(f.service.pending,0);
  held.resolve();await Promise.all(reads);assert.equal(f.bridgeCalls(),0);
 });
-test('stalled snapshot read returns stale last-good hosts within two seconds and retains one underlying read',async t=>{
+test('an idle first state query picks up the current collector snapshot within its short wait',async t=>{
+ const f=await fixture(t),old=new Date(Date.now()-60000).toISOString();
+ f.service.gpuq.checkedAt=old;
+ const start=performance.now(),reply=await f.service.invoke(f.token,'state',{});
+ assert.ok(performance.now()-start<1000);
+ assert.equal(reply.state.gpuq.checkedAt,f.snapshot.checkedAt);
+ assert.equal(reply.state.gpuq.stale,false);assert.notEqual(reply.state.gpuq.checkedAt,old);
+ assert.equal(f.bridgeCalls(),0);
+});
+test('full state waits at most half a second then shows expired hosts as the last sample',async t=>{
  const f=await fixture(t),held=deferred();f.service.gpuqReadWork=held.promise;
- t.mock.timers.enable({apis:['setTimeout']});
- const queries=Array.from({length:3},()=>f.service.invoke(f.token,'state',{}));
- t.mock.timers.tick(2001);const replies=await Promise.all(queries);
- assert.ok(replies.every(r=>r.state.gpuq.stale===true&&r.state.gpuq.hosts.length===MACHINES.length&&Array.isArray(r.state.jobs)));
- for(const reply of replies){
-  assert.equal(reply.state.gpuq.checkedAt,f.snapshot.checkedAt);
-  assert.ok(reply.state.gpuq.hosts.every(host=>host.samplingStale===true&&host.hostCommand===undefined));
- }
- assert.equal(f.service.gpuqReadWork,held.promise);assert.equal(f.bridgeCalls(),0);
- held.resolve({checkedAt:new Date().toISOString(),stale:false,hosts:[]});await new Promise(setImmediate);
- assert.equal(f.service.gpuq.stale,true,'late file completion must not publish a fresh snapshot after timeout');
+ f.service.gpuq.checkedAt=new Date(Date.now()-181000).toISOString();
+ const checkedAt=f.service.gpuq.checkedAt;
+ const start=performance.now(),reply=await Promise.race([f.service.invoke(f.token,'state',{}),
+  new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('state waited for refresh')),1000);timer.unref();})]);
+ assert.ok(performance.now()-start<1000);assert.equal(reply.state.gpuq.stale,true);
+ assert.equal(reply.state.gpuq.checkedAt,checkedAt);assert.equal(reply.state.gpuq.hosts.length,MACHINES.length);
+ assert.ok(reply.state.gpuq.hosts.every(host=>host.samplingStale===true));
+ const view=resourceServerView(MACHINES[0],{snapshot:reply.state.gpuq,production:true});
+ assert.equal(view.observed,true);assert.match(view.status,/^上次采样/);
+ assert.ok(reply.state.gpuq.hosts[0].reachable);assert.equal(f.service.gpuqReadWork,held.promise);assert.equal(f.bridgeCalls(),0);
+ held.resolve({checkedAt:f.snapshot.checkedAt,stale:false,hosts:f.service.gpuq.hosts});await new Promise(setImmediate);
+ assert.equal(f.service.gpuq.checkedAt,f.snapshot.checkedAt,'the next query can use the background result');
+});
+test('CLI jobs and browser refresh both return cached state without waiting for nodes',async t=>{
+ const f=await fixture(t),held=deferred();f.service.refreshGPUQ=()=>held.promise;
+ f.service.gpuq.stale=true;
+ const client=new DemoClient();client.remote=true;client.token=f.token;
+ client.transport=async(path,body,token)=>f.service.invoke(token,body.operation,body.args);
+ try{
+  const [jobs]=await Promise.race([
+   Promise.all([readCLIState((op,args)=>f.service.invoke(f.token,op,args),'jobs'),client.refresh()]),
+   new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('client waited for node refresh')),1000);timer.unref();})]);
+  assert.equal(jobs.gpuq.stale,true);assert.equal(client.data.gpuq.stale,true);
+  assert.equal(jobs.gpuq.checkedAt,f.snapshot.checkedAt);assert.equal(client.data.gpuq.checkedAt,f.snapshot.checkedAt);
+  assert.equal(f.bridgeCalls(),0);
+ }finally{held.resolve();}
 });
 test('state rejects invalid args and cannot expose an admin snapshot to a member',async t=>{
  const f=await fixture(t,{role:'member'});f.user.limits={[MACHINES[0].id]:1};

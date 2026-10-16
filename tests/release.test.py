@@ -20,7 +20,7 @@ def load(name):
     value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 
 
-deploy=load('deploy');entry=load('entry');docker_backend=load('docker_backend')
+deploy=load('deploy');entry=load('entry');docker_backend=load('docker_backend');scope=load('scope')
 
 
 class Containers:
@@ -71,6 +71,80 @@ class Containers:
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
+
+    def test_documentation_and_tests_skip_deployment(self):
+        self.assertEqual(scope.release_scope(['docs/FEATURES.md', 'README.md', 'tests/release.test.py',
+                         'native/campus-http/main_test.go', '.github/workflows/gray.yml']),
+                         dict(deploy=False, nodesChanged=False, portalChanged=False))
+
+    def test_public_guide_and_mixed_documentation_runtime_changes_deploy_portal(self):
+        for paths in [['docs/USER_GUIDE.md'],['README.md','portal-service.mjs'],
+                      ['docs/USER_GUIDE.md','tests/release.test.py']]:
+            self.assertEqual(scope.release_scope(paths),dict(deploy=True,nodesChanged=False,portalChanged=True))
+
+    def git(self,*args):
+        return subprocess.check_output(['git','-C',str(self.root),*args],text=True).strip()
+
+    def git_fixture(self):
+        self.git('init','-q');self.git('config','user.name','Release Fixture')
+        self.git('config','user.email','fixture@example.invalid')
+
+    def git_scope(self,previous,revision):
+        result=subprocess.check_output([sys.executable,str(SOURCE/'scope.py'),previous,revision],cwd=self.root,text=True)
+        return json.loads(result)
+
+    def test_runtime_components_are_selected_independently(self):
+        for path in ['node/node-executor.py', 'gpuq/scheduler.py', 'deploy/node/install.py',
+                     'scripts/build-node-release.py', 'scripts/build-cloud-files-node.mjs']:
+            with self.subTest(path=path):
+                self.assertEqual(scope.release_scope([path]),dict(deploy=True,nodesChanged=True,portalChanged=False))
+        for path in ['portal-service.mjs', 'dist/client.js', 'client-http.mjs', 'accounts/portal.mjs',
+                     'native/campus-http/main.go', 'scripts/build-client.mjs', 'deploy/release/deploy.py']:
+            with self.subTest(path=path):
+                self.assertEqual(scope.release_scope([path]),dict(deploy=True,nodesChanged=False,portalChanged=True))
+        self.assertEqual(scope.release_scope(['package-lock.json']),dict(deploy=True,nodesChanged=True,portalChanged=True))
+
+    def test_scope_uses_file_difference_from_last_successful_commit(self):
+        self.git_fixture();git=self.git
+        (self.root/'portal.mjs').write_text('original');git('add','.');git('commit','-qm','live')
+        live=git('rev-parse','HEAD')
+        (self.root/'README.md').write_text('help');git('add','.');git('commit','-qm','docs')
+        result=subprocess.check_output([sys.executable,str(SOURCE/'scope.py'),live,'HEAD'],cwd=self.root,text=True)
+        self.assertFalse(json.loads(result)['deploy'])
+        (self.root/'portal.mjs').write_text('updated');git('add','.');git('commit','-qm','portal')
+        result=subprocess.check_output([sys.executable,str(SOURCE/'scope.py'),live,'HEAD'],cwd=self.root,text=True)
+        self.assertEqual(json.loads(result),dict(deploy=True,nodesChanged=False,portalChanged=True))
+
+    def test_late_ancestor_and_already_deployed_commits_skip(self):
+        self.git_fixture()
+        (self.root/'portal.mjs').write_text('old');self.git('add','.');self.git('commit','-qm','old')
+        old=self.git('rev-parse','HEAD')
+        (self.root/'portal.mjs').write_text('current');self.git('add','.');self.git('commit','-qm','current')
+        current=self.git('rev-parse','HEAD')
+        self.assertFalse(self.git_scope(current,old)['deploy'])
+        self.assertFalse(self.git_scope(current,current)['deploy'])
+
+    def test_missing_previous_commit_selects_full_deployment(self):
+        self.git_fixture()
+        (self.root/'README.md').write_text('help');self.git('add','.');self.git('commit','-qm','current')
+        self.assertEqual(self.git_scope('f'*40,'HEAD'),dict(deploy=True,nodesChanged=True,portalChanged=True))
+
+    def test_move_out_of_node_directory_still_installs_nodes(self):
+        self.git_fixture();(self.root/'node').mkdir()
+        (self.root/'node/executor.py').write_text('runtime\n'*20)
+        self.git('add','.');self.git('commit','-qm','node');old=self.git('rev-parse','HEAD')
+        self.git('mv','node/executor.py','moved.py');self.git('commit','-qm','move')
+        self.assertEqual(self.git_scope(old,'HEAD'),dict(deploy=True,nodesChanged=True,portalChanged=False))
+
+    def test_node_only_release_leaves_running_portal_untouched(self):
+        run=self.root/'runs'/'candidate';run.mkdir(parents=True)
+        (run/'release.json').write_text(json.dumps(dict(nodesChanged=True,portalChanged=False)))
+        with patch.object(deploy,'DockerBackend') as backend,patch.object(deploy,'ResourceGuard'), \
+             patch.object(deploy,'install_nodes') as install:
+            deploy.main(run,'a'*40)
+        install.assert_called_once();backend.assert_not_called()
+        self.assertEqual((self.root/'deployed-sha').read_text().strip(),'a'*40)
+        self.assertEqual(json.loads((run/'result.json').read_text())['portalChanged'],False)
 
     def switch(self,failure=None):
         backend=Containers(failure)
