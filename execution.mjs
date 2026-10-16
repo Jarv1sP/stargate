@@ -156,7 +156,7 @@ export function installExecution(service,bridge){
     current.promise=new Promise((resolve,reject)=>{current.resolve=resolve;current.reject=reject;});
     cycle=current;service.reconciling=true;pump();return current.promise;
   };
-  if(bridge){service.executionTimer=setInterval(()=>service.reconcile().catch(()=>{}),15000);service.executionTimer.unref();}
+  if(bridge){service.executionTimer=setInterval(()=>{service.reconcile().catch(()=>{});service.refreshStorage?.(true).catch(()=>{});},15000);service.executionTimer.unref();}
 }
 export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
 // Presentation only: never persist these deductions or use them for admission.

@@ -65,13 +65,13 @@ test('project upload status retry keeps the exact identity and does not send fil
  assert.deepEqual(JSON.parse(f.calls[0][1].body),{...body,client:{name:'gpuctl',protocol:2}});assert.deepEqual(JSON.parse(f.calls[1][1].body),{...body,client:{name:'gpuctl',protocol:2}});
 });
 test('unregister and job submission are never replayed on ambiguous gateway failure',async()=>{
- for(const operation of ['datasets.delete','jobs.submit','data.upload.finish','data.upload.chunk','data.upload.cancel','projects.create','terminal.exchange','login']){
+ for(const operation of ['datasets.delete','jobs.submit','data.upload.finish','data.upload.chunk','data.upload.cancel','projects.create','storage.refresh','terminal.exchange','login']){
   const f=fixture([new Response('',{status:502})]);
   await assert.rejects(apiPost(url,'call',{operation},f.options),/操作结果尚未确认/);assert.equal(f.calls.length,1);
  }
 });
 test('upload status and directory listing retry reads without changing the request',async()=>{
- for(const operation of ['data.upload.status','files.list']){
+ for(const operation of ['data.upload.status','files.list','storage.snapshot']){
   const body={operation,args:{machine:'node-a',project:'code',key:'11111111-1111-4111-8111-111111111111'}};
   const f=fixture([new Response('',{status:502}),new Response('{"result":{}}')]);
   await apiPost(url,'call',body,f.options);assert.equal(f.calls.length,2);

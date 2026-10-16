@@ -54,7 +54,7 @@ function compactTerminalStateJob(job,users){
 export class PortalService extends DemoService{
   static async open(path,bootstrapPath,statusPath,bridge,notificationConfig,accountsPath=process.env.TEAM_ACCOUNTS_DATABASE||path+'.accounts.sqlite'){
     await mkdir(dirname(path),{recursive:true,mode:0o700});
-    const service=new PortalService();service.production=true;service.tail=Promise.resolve();service.pending=0;
+    const service=new PortalService();service.production=true;service.tail=Promise.resolve();service.pending=0;service.storageSnapshots={};
     service.terminalLanes=new Map();service.terminalPending=0;
     service.db=new DatabaseSync(path);await chmod(path,0o600);
     service.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS portal_state_v2 (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, time TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL, subject TEXT, outcome TEXT NOT NULL);');
@@ -84,15 +84,73 @@ export class PortalService extends DemoService{
     service.statusPath=statusPath;await service.refreshGPUQ();installExecution(service,bridge);installMaintenance(service);installJobNotifications(service,notificationConfig);
     maintainTaskNotes(service);
     installTransfers(service);installFileCampus(service);
+    const now=Date.now();service.storageQueue=new Map();
+    service.storageDue=new Map(MACHINES.map((machine,index)=>[machine.id,{
+      usage:service.storageSnapshots[machine.id]?.scannedAt?Date.parse(service.storageSnapshots[machine.id].scannedAt)+1800000:now+index*1800000/MACHINES.length,
+      quota:service.storageSnapshots[machine.id]?.quota?.checkedAt?Date.parse(service.storageSnapshots[machine.id].quota.checkedAt)+300000:now+index*300000/MACHINES.length
+    }]));
     return service;
   }
-  export(){return {schema:2,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),jobs:this.store.jobs,sequence:this.store.sequence};}
+  export(){return {schema:2,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),jobs:this.store.jobs,sequence:this.store.sequence,storage:this.storageSnapshots};}
   restore(data){
     this.store.users=data.users;this.store.jobs=data.jobs;this.store.sequence=data.sequence;
+    this.storageSnapshots=data.storage||{};
     if(data.credentials)this.legacyCredentials=new Map(data.credentials.map(([name,r])=>[name,{salt:new Uint8Array(Buffer.from(r.salt,'base64')),hash:new Uint8Array(Buffer.from(r.hash,'base64')),iterations:r.iterations}]));
     this.refreshAccounts?.();
   }
   save(){this.db.prepare('INSERT INTO portal_state_v2(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(this.export()));}
+  storageSnapshot(machine){
+    return structuredClone({machines:MACHINES.filter(row=>machine===undefined||row.id===machine).map(({id})=>{
+      const row=this.storageSnapshots[id]||{},name=owner=>this.store.users.find(user=>user.id===owner)?.name??null;
+      return {machine:id,checkedAt:row.checkedAt??null,refreshing:this.storageQueue.has(id)||this.storageCurrent?.machine===id,
+        quota:{volumes:[],checkedAt:null,...row.quota},
+        datasets:{datasets:[],complete:false,checkedAt:null,...row.datasets,datasets:(row.datasets?.datasets||[]).map(value=>{
+          const owner=value.ownerId??(typeof value.uploadedBy==='string'?value.uploadedBy:value.uploadedBy?.userId);
+          return {...value,ownerId:owner,ownerName:name(owner)??value.ownerName};
+        })},
+        projects:{projects:[],complete:false,checkedAt:null,...row.projects,projects:(row.projects?.projects||[]).map(value=>({
+          ...this.projectPresentation(value.ownerId,id,value),ownerId:value.ownerId,ownerName:name(value.ownerId)
+        }))}};
+    })});
+  }
+  scheduleStorageRefresh(machine,delay=30000){
+    if(!this.storageDue.has(machine))return;
+    const now=Date.now(),queued=this.storageQueue.get(machine);
+    this.storageQueue.set(machine,{at:queued?.at<=now?queued.at:now+delay,usage:true});
+  }
+  requestStorageRefresh(machine){
+    if(!(this.storageCurrent?.machine===machine&&this.storageCurrent?.usage)&&!(Date.now()-Date.parse(this.storageSnapshots[machine]?.scannedAt)<300000)){
+      this.scheduleStorageRefresh(machine,0);void this.refreshStorage().catch(()=>{});
+    }
+    return this.storageSnapshot(machine);
+  }
+  refreshStorage(periodic=false){
+    const now=Date.now();
+    if(periodic)for(const [machine,due] of this.storageDue){
+      if(this.storageCurrent?.machine!==machine&&!this.storageQueue.has(machine)&&(due.usage<=now||due.quota<=now))this.storageQueue.set(machine,{at:now,usage:due.usage<=now});
+    }
+    if(this.storageWork)return this.storageWork;
+    this.storageWork=(async()=>{
+      while(!this.closing&&this.bridge){
+        const next=[...this.storageQueue].find(([,row])=>row.at<=Date.now());if(!next)break;
+        const [machine,request]=next;this.storageQueue.delete(machine);this.storageCurrent={machine,usage:request.usage};
+        const row=this.storageSnapshots[machine]??={},due=this.storageDue.get(machine);
+        const read=async(part,operation,args={})=>{
+          if(this.closing)return false;
+          try{const value=await this.bridge(machine,operation,args);row[part]={...value,checkedAt:new Date(Date.now()).toISOString()};return true;}
+          catch{row[part]={...row[part],error:'暂时读不到，请稍后刷新。'};return false;}
+        };
+        await read('quota','projects.quota');due.quota=Date.now()+300000;
+        if(request.usage&&!this.closing){
+          const datasets=await read('datasets','datasets.list'),projects=await read('projects','projects.list',{includeUsage:true});
+          row.scannedAt=new Date(Date.now()).toISOString();due.usage=Date.now()+1800000;
+          if(datasets&&projects)row.checkedAt=row.scannedAt;
+        }
+        if(!this.closing)this.save();this.storageCurrent=null;
+      }
+    })().finally(()=>{this.storageCurrent=null;this.storageWork=null;});
+    return this.storageWork;
+  }
   issueSession(principal){return this.loginSessions.issue(principal);}
   principal(token){const principal=this.loginSessions.principal(token);this.refreshAccounts();return principal;}
   revokeSession(token){this.loginSessions.revoke(token);}
@@ -271,6 +329,10 @@ export class PortalService extends DemoService{
   async invoke(token,operation,args={},options={}){
     if(!args||typeof args!=='object'||Array.isArray(args))return Promise.reject(Object.assign(Error('参数格式错误。'),{status:400}));
     if(operation==='state')return this.readState(token,args);
+    if(operation==='storage.snapshot'||operation==='storage.refresh'){
+      const principal=this.principal(token);
+      return {result:operation==='storage.snapshot'?this.storageSnapshot(args.machine):this.requestStorageRefresh(args.machine),principal};
+    }
     if(['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation))return this.jobRead(token,operation,args,options);
     if(operation==='terminal.exchange')return this.terminalExchange(token,args);
     if(operation==='files.direct-ticket')return fileTicket(this,token,args);
@@ -295,6 +357,8 @@ export class PortalService extends DemoService{
     }
     if(operation.startsWith('jobs.')||operation.startsWith('projects.')||operation.startsWith('files.')||operation.startsWith('terminal.')||operation.startsWith('data.upload.')||operation==='datasets.delete'||operation==='outputs.delete'){
       const run=async()=>{const principal=this.principal(token),result=await executionCall(this,principal,operation,args);this.principal(token);
+        if(operation==='projects.create'||operation==='data.upload.finish'&&args.dataset&&result.state==='COMPLETE'||
+          ['datasets.delete','projects.retire'].includes(operation)&&result.state==='TRASHED'||operation==='projects.retire.restore'&&result.state==='RESTORED')this.scheduleStorageRefresh(args.machine);
         return {result,...(operation==='jobs.submit'&&options.omitResponseState!==true?{state:this.state(principal)}:{}),principal};};
       return operation==='jobs.submit'?this.enqueue(run):run();
     }

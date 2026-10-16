@@ -109,4 +109,24 @@ class StorageUsage(unittest.TestCase):
         self.assertEqual(rows['unreadable'],{'project':'unreadable','ownerId':'alice','size':None,'complete':False})
         self.assertFalse(result['complete']);self.assertGreaterEqual(rows['healthy']['size'],3)
 
+    def test_scan_processes_use_idle_io_and_nice_19_without_lowering_ordinary_reads(self):
+        import json,subprocess,sys
+        program=r'''
+import importlib.util,json,os,runpy,subprocess,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('priority_fixture',Path(sys.argv[1])/'tests/project-security.test.py')
+f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
+case=f.ProjectContract();case.setUp()
+try:
+    node=case.node();sys.argv=[str(node.HERE/'node-executor.py')]
+    runpy.run_path(sys.argv[0],run_name='__main__')
+    print(json.dumps({'nice':os.getpriority(os.PRIO_PROCESS,0),'io':subprocess.run(['/usr/bin/ionice','-p',str(os.getpid())],capture_output=True,text=True,check=True).stdout.strip()}))
+finally:case.doCleanups()
+'''
+        for operation,args,scan in [('datasets.list',{},True),('projects.list',{'includeUsage':True},True),('projects.list',{},False)]:
+            result=subprocess.run([sys.executable,'-c',program,str(Path(__file__).parents[1])],input=json.dumps({'operation':operation,'args':args}),capture_output=True,text=True,check=True)
+            reply,priority=map(json.loads,result.stdout.splitlines());self.assertTrue(reply['ok'],reply)
+            self.assertEqual(priority['nice'],19 if scan else os.getpriority(os.PRIO_PROCESS,0))
+            if scan:self.assertEqual(priority['io'],'idle')
+
 if __name__=='__main__':unittest.main()
