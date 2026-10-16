@@ -49,7 +49,7 @@ gpuctl pull-status LOCAL_DIRECTORY
 gpuctl ssh [--reconnect SESSION_ID] [--takeover]
 gpuctl run -g 1 [--rank P0..P4] -- python train.py --data /datasets/images --output /outputs （P4 最优先，P0 最低）
 gpuctl run --sync [--sync-dir LOCAL_DIR] -g 1 -- python train.py
---sync 与 AUTO 同用时，只在本次上传的工作区服务器运行。
+--sync 先上传到当前工作区；AUTO 选到其他服务器时自动复制代码和容器环境。
 gpuctl run --machine auto [--candidates SERVER,SERVER] -g 1 -- python train.py
 gpuctl run -g 1 --interactive / ssh --job JOB_ID
 gpuctl run --gpu 0 -g 1 --memory-limit-gib 60 -- python train.py
