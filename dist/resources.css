@@ -248,9 +248,7 @@
 .sb .resource-metric-switch{display:inline-flex;align-items:center;gap:0;position:relative;isolation:isolate;padding:0 3px}
 .sb .resource-metric-switch::before{content:"";position:absolute;left:0;top:4px;bottom:4px;right:0;border-radius:999px;background:var(--bg-2);z-index:-2}
 .sb .resource-metric-switch>button{position:relative;height:44px;min-height:44px;padding:0 14px;border:0;background:none;color:var(--ink-3);font-size:13px;transition:color .2s}
-.sb .resource-metric-switch>button::before{content:"";position:absolute;inset:7px 0;border-radius:999px;background:transparent;z-index:-1;transition:background .3s cubic-bezier(.34,1.32,.5,1)}
 .sb .resource-metric-switch>button[aria-pressed="true"]{color:var(--ink)}
-.sb .resource-metric-switch>button[aria-pressed="true"]::before{background:var(--bg-4)}
 .sb .resource-metric-switch>:is(.ui-info,details){position:absolute;left:calc(100% + 8px);top:50%;transform:translateY(-50%);margin:0}
 .sb .resource-status{display:inline-flex;align-items:center;gap:8px}
 .sb .resource-disk-label{display:block;font-size:12px;color:var(--ink-3)}

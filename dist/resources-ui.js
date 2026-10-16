@@ -1,5 +1,5 @@
 import {priorityLabel,taskIdentityHTML,nativeOwnerLabel} from './execution-ui.js';
-import {revealSheet,dismissSheet,reducedMotion,captureObject,sharedObject} from './motion-ui.js';
+import {revealSheet,dismissSheet,reducedMotion,captureObject,sharedObject,segPill} from './motion-ui.js';
 import {resourceOrbits} from './resource-orbits.js';
 import {transferBytes} from './data-route.js';
 import {maintenanceFor,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
@@ -273,6 +273,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
     const remembered=selectedGPUs.get(selected),index=Number.isSafeInteger(remembered)&&remembered>=0&&remembered<view?.count?remembered:0;
     const html=resourceCards({machines,...options,management:admin,selectedMachine:selected,selectedGPU:index,metricMode,userId:store.principal?.userId,jobs:store.jobs});
     if(html!==resourceHTML){resourceHTML=html;grid.innerHTML=html;grid.querySelector('.resource-orbit')?.replaceWith(orbit);}
+    segPill(grid.querySelector('.resource-metric-switch'),'resource-metric');
     updateOrbit();
     if(sheet.open){const detail=grid.querySelector('.resource-detail');if(detail)sheet.querySelector('.sheet-scroll').replaceChildren(detail);sheet.querySelector('#resource-sheet-title').textContent=selected;sheet.querySelector('#resource-sheet-title').title=selected;}
     summary.hidden=!store.principal||getPage()!=='resources';
