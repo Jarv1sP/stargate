@@ -47,8 +47,8 @@ try{
    if(op==='cloud.import.list')return {imports:[]};
    if(op==='cloud.import.start')return {operationId:args.key,state:'QUEUED'};
    if(op==='transfers.list')return {transfers:[],nextCursor:null};
-   if(op==='community.posts.list')return {posts:[],nextCursor:null};
-   if(op==='community.chat.list')return {messages:[],nextCursor:null};
+   if(op==='community.posts.list')return {posts:[{id:'post-pinned',kind:'discussion',pinned:true,title:'今晚 23:00 起 3090 下线维护',body:'新任务会自动排到其他三台。',author:{id:peer,name:'成员乙'},createdAt:'2026-10-14T10:40:00.000Z',commentCount:2},{id:'post-a',kind:'feedback',status:'open',title:'5090 上 tensorboard 端口怎么映射？',body:'求助',author:{id:owner,name:'成员甲'},createdAt:'2026-10-14T09:00:00.000Z',commentCount:0}],nextCursor:null};
+   if(op==='community.chat.list')return {messages:[{id:'m1',body:'今晚谁要用 4090-8？',author:{id:peer,name:'成员乙'},createdAt:'2026-10-14T10:50:00.000Z'},{id:'m2',body:'我 9 点后跑两张卡，大概三小时。',author:{id:owner,name:'成员甲'},createdAt:'2026-10-14T10:52:00.000Z'}],nextCursor:null};
    if(op==='community.notes.list')return {notes:[],nextCursor:null};
    if(op==='invites.list')return {invites:[]};
    if(op==='maintenance.set'){if(args.scope==='all')state.operationalMaintenance.global=args.enabled?{reason:args.reason,since:'2026-10-14T11:00:00.000Z'}:null;return state.operationalMaintenance;}
