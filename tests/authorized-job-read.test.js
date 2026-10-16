@@ -45,12 +45,12 @@ test('project status uses the same narrowed authorization across its nested read
   assert.equal((await pending).result.state,'READY');
 });
 test('browser retries job observation network failures once and never replays writes or authorization failures',async()=>{
-  for(const operation of [...operations,'state','data.upload.status','datasets.list']){
+  for(const operation of [...operations,'state','storage.snapshot','data.upload.status','datasets.list']){
     const client=new DemoClient();client.remote=true;let count=0;
     client.transport=async()=>{if(!count++)throw new TypeError('offline');return {result:{text:'retained'}};};
     assert.equal((await client.invoke(operation,{jobId:id},'original-token')).result.text,'retained');assert.equal(count,2);
   }
-  for(const [operation,error] of [['jobs.cancel',new TypeError('offline')],['jobs.logs',Object.assign(Error('forbidden'),{status:403})],['datasets.list',Object.assign(Error('expired'),{status:401})]]){
+  for(const [operation,error] of [['jobs.cancel',new TypeError('offline')],['storage.refresh',new TypeError('offline')],['jobs.logs',Object.assign(Error('forbidden'),{status:403})],['datasets.list',Object.assign(Error('expired'),{status:401})]]){
     const client=new DemoClient();client.remote=true;let count=0;client.transport=async()=>{count++;throw error;};
     await assert.rejects(client.invoke(operation,{jobId:id},'token'),e=>e===error);assert.equal(count,1);
   }

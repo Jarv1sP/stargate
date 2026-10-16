@@ -1,7 +1,7 @@
 import {campusRetryable,retryCampusRequest} from './dist/personal-upload.js';
 // Reads share one minute retry budget. Writes are sent once here; recovery of
 // an owner-bound original key is handled by recoverOriginalWrite below.
-const READS=new Set(['data.upload.status','state','datasets.list','projects.list','projects.status','projects.quota','projects.label.get','projects.group.get','projects.catalog','projects.retire.list','files.get','files.list','terminal.status','jobs.logs','jobs.watch','jobs.diagnostics','jobs.completion','transfers.list','transfers.status','cloud.info','cloud.import.list','cloud.import.status','cloud.files.list','cloud.files.status','community.posts.list','community.posts.get','community.comments.list']);
+const READS=new Set(['data.upload.status','state','storage.snapshot','datasets.list','projects.list','projects.status','projects.quota','projects.label.get','projects.group.get','projects.catalog','projects.retire.list','files.get','files.list','terminal.status','jobs.logs','jobs.watch','jobs.diagnostics','jobs.completion','transfers.list','transfers.status','cloud.info','cloud.import.list','cloud.import.status','cloud.files.list','cloud.files.status','community.posts.list','community.posts.get','community.comments.list']);
 const TRANSIENT=new Set([502,503,504]);
 READS.add('community.announcements.pending');
 const safe=value=>String(value).replace(/[\p{Cc}\p{Cf}]/gu,' ').slice(0,600);

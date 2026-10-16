@@ -1,4 +1,4 @@
-const readOperation=operation=>operation==='state'||/\.(?:get|list|status|plan|capabilities|overview|catalog|quota|info|logs|watch|completion|diagnostics|routes)$/.test(operation);
+const readOperation=operation=>operation==='state'||operation==='storage.snapshot'||/\.(?:get|list|status|plan|capabilities|overview|catalog|quota|info|logs|watch|completion|diagnostics|routes)$/.test(operation);
 export class DemoClient{
   constructor(){this.authGeneration=0;this.authPending=0;this.authTail=Promise.resolve();this.inflight=new Set();this.authListeners=new Set();this.sessionToken=null;this.requestTimeoutMs=45000;}
   static async create(){const client=new DemoClient();client.remote=globalThis.GPUQ_LOCAL_API===true;client.production=globalThis.GPUQ_PRODUCTION===true;if(!client.remote){const {DemoService,DEMO_ADMIN}=await import('./service.js');client.service=await DemoService.create();await client.login(DEMO_ADMIN.username,DEMO_ADMIN.password);}else if(client.production&&globalThis.GPUQ_HAS_SESSION!==false){try{await client.refresh();}catch(e){if(e.status!==401)throw e;}}return client;}

@@ -349,5 +349,9 @@ if __name__=='__main__':
         if isinstance(header,dict) and header.get('protocol')==TERMINAL_STREAM_PROTOCOL:
             serve_terminal_stream(header,reader,write_rpc_line)
         else:
-            request=json.loads(reader.rest(first,1600000));print(json.dumps({'ok':True,'result':process(request['operation'],request['args'])}))
+            request=json.loads(reader.rest(first,1600000))
+            if request['operation']=='datasets.list' or request['operation']=='projects.list' and request['args'].get('includeUsage') is True:
+                os.setpriority(os.PRIO_PROCESS,0,19)
+                subprocess.run(['/usr/bin/ionice','-c3','-p',str(os.getpid())],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            print(json.dumps({'ok':True,'result':process(request['operation'],request['args'])}))
     except Exception as error:print(json.dumps({'ok':False,'error':str(error)[:400]}))

@@ -25,6 +25,7 @@ try{
    if(op==='cloud.auth.disconnect'){cloudConnected=false;return {disconnected:true};}
    if(op==='state')return {principal,state};
    if(op==='logout')return {loggedOut:true};
+   if(op==='storage.snapshot'||op==='storage.refresh'){const checkedAt=new Date().toISOString();return {machines:[{machine,checkedAt,refreshing:false,quota:{volumes:[{kind:'workspace',usedBytes:12,totalBytes:1000,availableBytes:988},{kind:'datasets',usedBytes:20,totalBytes:2000,availableBytes:1980}],checkedAt},datasets:{datasets,checkedAt},projects:{projects,checkedAt}}]};}
    if(op==='projects.list')return {projects,environmentModes:['oci']};
    if(op==='projects.status'&&args.diagnoseNetwork)return {network:{dns:'ok',https:'ok'}};
    if(op==='projects.status')return projects.find(row=>row.project===args.project&&(!args.ownerId||row.ownerId===args.ownerId))||{};
