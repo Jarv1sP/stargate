@@ -17,7 +17,7 @@ try{
       return route.fulfill({contentType:extname(url.pathname)==='.js'?'text/javascript':extname(url.pathname)==='.css'?'text/css':'application/octet-stream',body:await readFile(resolve(root,'.'+url.pathname))});
     });
     await page.goto(origin);await page.waitForFunction(()=>typeof window.start==='function');await page.evaluate(()=>document.fonts.ready);
-    // Freeze the original 650ms lifecycle while inspecting the animation midpoint.
+    // Freeze the opening (600ms ignition, hold, 450ms exit) while inspecting the midpoint.
     await page.clock.install({time:new Date('2026-10-15T18:00:00Z')});await page.clock.pauseAt(new Date('2026-10-15T18:00:01Z'));
     await page.evaluate(()=>window.start());
     if(reducedMotion==='reduce'){
@@ -28,7 +28,7 @@ try{
       assert.equal(timing.duration,600);assert.equal(timing.easing,'cubic-bezier(0.2, 0.8, 0.2, 1)');
       assert.equal(await page.locator('#startup-wordmark circle').count(),0,'original A ignition has no prototype gate rings');
       if(scenario==='normal')await page.screenshot({path:join(shots,'startup-1440.png')});
-      if(scenario==='skip')await page.locator('#startup-wordmark').click();else if(scenario==='reduce-change')await page.emulateMedia({reducedMotion:'reduce'});else await page.clock.runFor(650);
+      if(scenario==='skip')await page.locator('#startup-wordmark').click();else if(scenario==='reduce-change')await page.emulateMedia({reducedMotion:'reduce'});else await page.clock.runFor(1600);
       assert.equal(await page.locator('#startup-wordmark').isVisible(),false);
     }
     await page.reload();await page.waitForFunction(()=>typeof window.start==='function');await page.evaluate(()=>window.start());assert.equal(await page.locator('#startup-wordmark').isVisible(),false,'same browser session does not replay');

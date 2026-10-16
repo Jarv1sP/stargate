@@ -46,6 +46,13 @@
 .sb #startup-wordmark .auth-r5-wordmark{display:block;width:min(560px,calc(100vw - 48px));max-width:none;height:auto;aspect-ratio:9753/711;fill:var(--ink);stroke:none;stroke-width:0;overflow:visible;background:none;-webkit-mask:none;mask:none;text-indent:0;line-height:normal}
 .sb #startup-wordmark .auth-r5-wordmark path{display:inline;fill:var(--ink);stroke:none}
 .sb #startup-wordmark.wordmark-ignition .auth-lambda{animation:auth-lambda-ignite 600ms cubic-bezier(.2,.8,.2,1) both}
+/* Opening: the cover waits from the first paint; after the ignition it opens. If the script never runs it still steps aside. */
+.sb #startup-wordmark:not(.wordmark-ignition){animation:startup-fallback .3s 4s forwards}
+@keyframes startup-fallback{to{opacity:0;visibility:hidden}}
+.sb #startup-wordmark.wordmark-leaving{animation:startup-open .45s cubic-bezier(.4,0,1,1) forwards}
+.sb #startup-wordmark.wordmark-leaving .auth-r5-wordmark{animation:startup-open-mark .45s cubic-bezier(.4,0,1,1) forwards}
+@keyframes startup-open{to{opacity:0}}
+@keyframes startup-open-mark{to{transform:scale(1.12);opacity:0}}
 @keyframes auth-lambda-ignite{from{opacity:.12;clip-path:inset(100% 0 0 0)}to{opacity:1;clip-path:inset(0)}}
 .sb #mission-control{position:fixed;inset:14vh auto auto 50%;margin:0;translate:-50% 0;width:min(640px,calc(100% - 32px));height:auto;max-height:72dvh;padding:0;border:1px solid var(--line-2);border-radius:14px;background:color-mix(in srgb,var(--bg-1) 94%,transparent);color:var(--ink);box-shadow:var(--shadow);backdrop-filter:blur(24px);overflow:hidden;container-type:normal}
 .sb #mission-control::backdrop{background:var(--scrim);backdrop-filter:blur(6px)}
@@ -133,3 +140,21 @@
   .sb .jr-drawer.on{transform:none}
 }
 @media (prefers-reduced-motion:reduce){.sb .seg-pill,.sb #app-topbar,.sb .button,.sb #app-topbar .av{transition:none}.sb #account-menu[open] .account-popover{animation:none}}
+
+/* Typography (user feedback 2026-10-16: too thin and small). Brighter secondary text,
+   regular weight below display sizes, small labels one step up, normal smoothing. */
+.sb.root{--ink-2:#BBBDC2;--ink-3:#9C9EA5;--ink-4:#7A7C83;-webkit-font-smoothing:auto;-moz-osx-font-smoothing:auto}
+.sb{font-size:15px;line-height:1.6}
+.sb #page-title,.sb .pr-room .pr-name,.sb .jr-dr-name,.sb .jr-sheet-title,.sb .pr-sheet-title{font-weight:400}
+.sb .page-eyebrow,.sb .jr-eyebrow{font-size:12px;letter-spacing:.12em;color:var(--ink-3)}
+.sb #room-nav .nav-item{font-size:15px}
+.sb .jr-t,.sb .dr-t,.sb .pr-file-name{font-size:15px}
+.sb :is(.jr-s,.dr-s,.jr-hint,.pr-files-hint,.dr-disk,.dr-status,.jr-time,.pr-file-size,.pr-file-get){font-size:13px}
+.sb #page-resources :is(.resource-spec,.resource-fleet-state,.resource-disk-label,.resource-disk-label span,.resource-queue-row,.resource-gpuline-who){font-size:13px}
+.sb .resource-baylabels{font-size:12px}
+.sb .resource-mini h2,.sb .dr-nm,.sb .jr-ring b,.sb .resource-summary dd,.sb .jr-confirm-title{font-weight:400}
+.sb .resource-summary dt,.sb .jr-ring span{font-size:13px}
+.sb #page-community .community-post-open h3{font-weight:500}
+.sb #page-community :is(.community-meta,.community-tag){font-size:13px}
+.sb #page-community .chat-message .community-body{font-size:15px}
+.sb .toast,.sb #toast.toast{font-size:14px}
