@@ -19,3 +19,13 @@
 .sb .admin-task-approvals{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;font-size:14px}
 .sb .admin-gpu-tasks .resource-card{border:0;border-radius:0;background:none;padding:0;margin:0;min-width:0;box-shadow:none}
 .sb .admin-gpu-fleet .resource-fleet-actions>span{white-space:normal;flex-wrap:wrap}
+
+/* The admin task table in the dark shell, styled like the approved design's tables. */
+.sb #all-jobs :is(.live-table-wrap,.task-table-wrap){background:none;border:0;border-radius:0;box-shadow:none}
+.sb #all-jobs .task-table{width:100%;border-collapse:collapse;background:none}
+.sb #all-jobs .task-table thead th{position:static;background:none;color:var(--ink-3);font-size:12px;font-weight:400;letter-spacing:0;text-transform:none;text-align:left;padding:10px 8px;border:0;border-bottom:1px solid var(--line-2)}
+.sb #all-jobs .task-table tr{background:transparent;border-color:var(--line-2);box-shadow:none}
+.sb #all-jobs .task-table td{background:none;color:var(--ink-2);padding:14px 8px;border:0;border-bottom:1px solid var(--line-2);vertical-align:top}
+.sb #all-jobs .task-table td:first-child{color:#F2F2EF}
+.sb #all-jobs .task-table tbody tr{transition:background .25s}
+.sb #all-jobs .task-table tbody tr:hover{background:var(--bg-1)}

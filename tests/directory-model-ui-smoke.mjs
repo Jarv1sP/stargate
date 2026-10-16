@@ -138,6 +138,7 @@ try{
    await page.locator('#maintenance-settings-dialog').waitFor({state:'detached'});assert.equal(await page.locator('[data-nav=resources][aria-current=page]').count(),1,'leaving admin also closes and removes its maintenance dialog');
    await page.evaluate(()=>{location.hash='#admin/maintenance';});await page.locator('[data-maintenance-settings]').waitFor();
    await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});
+   for(const room of ['members','gpu']){await page.evaluate(room=>{location.hash='#admin/'+room;},room);await page.waitForTimeout(400);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin-'+room+'.png'),fullPage:true});}
   }
   await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
   await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});
