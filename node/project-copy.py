@@ -37,21 +37,34 @@ class ProjectCopy:
         with self.j.lock(key):
             file=self.j.path(key,'.source.json')
             row=self.s.read_json(file) if file.exists() else None
-            if row and row['state'] not in ('FAILED',):return {k:row[k] for k in ('id','token','state')}
+            if row and row['state'] not in ('FAILED','COMPLETE'):return {k:row[k] for k in ('id','token','state')}
             exports=self.s.private_dir(self.d.root(self.j.config,'workspacesRoot')/'.copy-exports',create=True)
             folder=self.s.private_dir(exports/key,create=True)
             bundle=self.s.private_dir(folder/'bundle',create=True)
             row={**(row or {}),'id':key,'token':row['token'] if row else uuid.uuid4().hex,'request':{'source':ref},
-                 'root':str(bundle),'state':'PREPARING','environment':True,'mode':row.get('mode','full') if row else args.get('mode','full')}
+                 'root':str(bundle),'state':'PREPARING','environment':True,'fullImage':False,'mode':row.get('mode','full') if row else args.get('mode','full')}
             self.s.atomic_json(file,row)
+        self.launch_export(key,row)
+        return {k:row[k] for k in ('id','token','state')}
+
+    def launch_export(self,key,row):
         try:
             self.j.e.run(['/usr/bin/systemd-run','--user','--collect','--unit=gpuq-project-export-'+key,
                 '--property=KillMode=control-group','--property=MemoryMax=1G','--property=TasksMax=2048',
                 '/usr/bin/python3',str(Path(__file__).with_name('node-executor.py')),'--project-copy-export-worker',key])
         except Exception as error:
-            with self.j.lock(key):row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(file,row)
+            with self.j.lock(key):row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(self.j.path(key,'.source.json'),row)
             raise
-        return {k:row[k] for k in ('id','token','state')}
+
+    def full(self,row):
+        if not row.get('fullImage'):
+            with self.j.lock(row['id']):
+                file=self.j.path(row['id'],'.source.json');row=self.s.read_json(file)
+                row.update(fullImage=True,state='PREPARING');self.s.atomic_json(file,row)
+            self.launch_export(row['id'],row)
+            return {'state':'PREPARING'}
+        return {'state':'READY','entries':[entry for entry in self.j.entries(row)
+                    if entry['path'] in ('image.tar','workspace.tar','manifest.json')],'nextOffset':None}
 
     def export(self,key):
         # One worker owns this original operation. Never pause or replace the source.
@@ -60,30 +73,32 @@ class ProjectCopy:
             if row['state'] in ('READY','COMPLETE'):return 0
             ref=row['request']['source'];owner=ref.get('ownerId') or ref['userId'];project=ref['project']
             engine=self.j.e.projects().oci(owner);folder=Path(row['root']);tag='localhost/gpuq-copy:'+key
+            image_only=row.get('fullImage') and row['mode']=='incremental'
             try:
                 paths=self.j.e.projects().store.dev_paths(owner,project)
                 self.s.require_workspace_space(folder,needed=1)
                 head=engine.workspace_container(project)
                 writable,rootfs=map(int,engine.run('container','inspect','--size','--format={{.SizeRw}} {{.SizeRootFs}}',head['container']).split())
-                workspace=sum(int(line.split()[0]) for line in engine.run('unshare','/usr/bin/du','-sb',*[str(path) for path in paths.values()]).splitlines())
+                workspace=0 if image_only else sum(int(line.split()[0]) for line in engine.run('unshare','/usr/bin/du','-sb',*[str(path) for path in paths.values()]).splitlines())
                 # Incremental export needs no commit layer or saved OCI image.
-                needed=rootfs+workspace if row['mode']=='incremental' else writable+2*rootfs+workspace
+                needed=writable+2*rootfs if image_only else rootfs+workspace if row['mode']=='incremental' else writable+2*rootfs+workspace
                 self.s.require_workspace_space(folder,needed=needed)
-                if row['mode']=='incremental':engine.run('export','--output',str(folder/'rootfs.tar'),head['container'],timeout=3600)
+                if row['mode']=='incremental' and not image_only:engine.run('export','--output',str(folder/'rootfs.tar'),head['container'],timeout=3600)
                 else:
                     engine.run('commit','--pause=false','--include-volumes=false',head['container'],tag,timeout=3600)
                     engine.run('save','--format=oci-archive','--output',str(folder/'image.tar'),tag,timeout=3600)
-                engine.run('unshare','/usr/bin/tar','--create','--file',str(folder/'workspace.tar'),'--one-file-system',
-                    '--format=pax','--exclude=code/.copy-backups',
-                    '--transform=flags=rh;s,^code,workspace,','--transform=flags=rh;s,^home,home/gpuq,',
-                    '-C',str(paths['code'].parent),'code','home',timeout=3600)
+                if not image_only:
+                    engine.run('unshare','/usr/bin/tar','--create','--file',str(folder/'workspace.tar'),'--one-file-system',
+                        '--format=pax','--exclude=code/.copy-backups',
+                        '--transform=flags=rh;s,^code,workspace,','--transform=flags=rh;s,^home,home/gpuq,',
+                        '-C',str(paths['code'].parent),'code','home',timeout=3600)
                 self.s.atomic_json(folder/'manifest.json',{'image':tag,'rootfsBytes':rootfs})
-                if row['mode']=='incremental':self.sync().index(folder,rootfs=True)
+                if row['mode']=='incremental' and not image_only:self.sync().index(folder,rootfs=True)
                 row.update(state='READY');row.pop('error',None);self.s.atomic_json(file,row);return 0
             except Exception as error:
                 row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(file,row);return 1
             finally:
-                if row['mode']=='full':
+                if row['mode']=='full' or image_only:
                     try:engine.run('rmi',tag)
                     except ValueError:pass
 
@@ -104,7 +119,10 @@ class ProjectCopy:
         target=row['target'];owner=target.get('ownerId') or target['userId']
         engine=self.j.e.projects().oci(owner)
         fd=os.open(engine.folder/('copy-'+self.d.name(target['project'])+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
-        try:fcntl.flock(fd,fcntl.LOCK_EX);yield
+        try:
+            try:fcntl.flock(fd,fcntl.LOCK_EX|(fcntl.LOCK_NB if target.get('jobId') else 0))
+            except BlockingIOError:yield False
+            else:yield True
         finally:os.close(fd)
 
     @contextlib.contextmanager
@@ -122,6 +140,7 @@ class ProjectCopy:
                     if not busy:busy=engine.run('ps','--quiet','--filter','volume='+str(self.destination(row)/'code'))
                     if not busy:yield True;return
                     fcntl.flock(fd,fcntl.LOCK_UN)
+                if row['target'].get('jobId'):break
                 time.sleep(.2)
             yield False
         finally:os.close(fd)
@@ -146,7 +165,7 @@ class ProjectCopy:
         page['entries']=[{**entry,'path':entry['body'],'remotePath':entry['archive'],'remoteOffset':entry['offset']} for entry in page['entries'] if entry['type']=='file']
         return page
 
-    def install(self,row,receive=None):
+    def install(self,row,receive=None,receive_full=None):
         key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
         folder=self.target(row);destination=self.destination(row);bundle=folder/'received';incremental=target.get('mode')=='incremental'
         engine=self.j.e.projects().oci(owner)
@@ -157,67 +176,105 @@ class ProjectCopy:
             self.sync().index(bundle)
             engine.run('load','--input',str(bundle/'image.tar'),timeout=3600)
         plan=bundle/'plan.jsonl'
-        with self.idle(row,engine) as ready:
-            if not ready:return False
-            existing=(destination/'project.json').exists();working=destination if existing else folder
-            paths={name:self.s.private_dir(working/name,create=True) for name in ('code','home')}
-            engine.state_folder=working
-            with engine.locked(project):
-                head=engine.load(project)
-                if not incremental and head.get('container') is None:
-                    container='gpuq-dev-'+uuid.uuid4().hex
-                    engine.run('create','--name',container,'--network=none','--entrypoint','/bin/sh',manifest['image'])
-                    self.s.atomic_json(working/'oci.json',{'image':manifest['image'],'container':container})
-            if not incremental and head.get('container') is not None:
-                # A terminal/another copy may have initialized it during transport.
-                # Merge the received image's files into that same container.
-                self.s.require_workspace_space(folder,needed=manifest['rootfsBytes'])
-                engine.copy_files(project,'image',paths=paths,image=manifest['image'],bundle=str(bundle))
-                self.sync().index(bundle,rootfs=True)
-            # Re-plan against the now-idle target. Downloaded bodies retain
-            # their original names; newly changed files are received only now.
-            engine.copy_files(project,'plan',paths=paths,index=str(bundle/'index.jsonl'),plan=str(plan))
-            if incremental and receive is not None:
-                entries=({**entry,'path':entry['body'],'remotePath':entry['archive'],'remoteOffset':entry['offset']}
-                         for entry in self.sync().entries(plan) if entry['type']=='file' and not (bundle/entry['body']).exists())
-                if receive(entries) is None:return False
-            engine.copy_files(project,'backup',paths=paths,plan=str(plan),key=key)
+        existing=(destination/'project.json').exists();working=destination if existing else folder
+        paths={name:self.s.private_dir(working/name,create=True) for name in ('code','home')}
+        engine.state_folder=working
+        with engine.locked(project):
+            head=engine.load(project)
+            if not incremental and head.get('container') is None:
+                container='gpuq-dev-'+uuid.uuid4().hex
+                engine.run('create','--name',container,'--network=none','--entrypoint','/bin/sh',manifest['image'])
+                self.s.atomic_json(working/'oci.json',{'image':manifest['image'],'container':container})
+        if not incremental and head.get('container') is not None:
+            # A terminal/another copy may have initialized it during transport.
+            self.s.require_workspace_space(folder,needed=manifest['rootfsBytes'])
+            engine.copy_files(project,'image',paths=paths,image=manifest['image'],bundle=str(bundle))
+            self.sync().index(bundle,rootfs=True)
+        # Receive late changes before holding the execution lease. The lease
+        # covers only local backup/apply; unchanged projects need no exclusion.
+        engine.copy_files(project,'plan',paths=paths,index=str(bundle/'index.jsonl'),plan=str(plan))
+        if incremental and receive is not None:
+            entries=({**entry,'path':entry['body'],'remotePath':entry['archive'],'remoteOffset':entry['offset']}
+                     for entry in self.sync().entries(plan) if entry['type']=='file' and not (bundle/entry['body']).exists())
+            if receive(entries) is None:return False
+        changed=bool(plan.stat().st_size)
+        with self.idle(row,engine) if changed and existing else contextlib.nullcontext(True) as ready:
+            if ready and changed:
+                engine.copy_files(project,'backup',paths=paths,plan=str(plan),key=key)
+                if self.j.status({'id':key})['state']=='CANCELED':return False
+                engine.copy_files(project,'apply',paths=paths,plan=str(plan),bundle=str(bundle),incremental=incremental)
+            if ready:
+                with self.j.lock(key):
+                    current=self.s.read_json(self.j.path(key))
+                    if current['state']=='CANCELED':return False
+                    if not existing:
+                        self.s.atomic_json(folder/'project.json',{'project':project,'ownerId':owner,'userId':owner,'environmentMode':'oci',
+                                          'copyKey':key,'name':project,'archived':False,'group':'','repo':None,'createdAt':row['createdAt']})
+                        try:os.rename(folder,destination)
+                        except OSError:
+                            (folder/'project.json').unlink(missing_ok=True);raise
+                    current.update(installed=True,createdProject=not existing);self.s.atomic_json(self.j.path(key),current)
+        if not ready:
             if self.j.status({'id':key})['state']=='CANCELED':return False
-            engine.copy_files(project,'apply',paths=paths,plan=str(plan),bundle=str(bundle),incremental=incremental)
-            with self.j.lock(key):
-                current=self.s.read_json(self.j.path(key))
-                if current['state']=='CANCELED':return False
-                if not existing:
-                    self.s.atomic_json(folder/'project.json',{'project':project,'ownerId':owner,'userId':owner,'environmentMode':'oci',
-                                      'copyKey':key,'name':project,'archived':False,'group':'','repo':None,'createdAt':row['createdAt']})
-                    try:os.rename(folder,destination)
-                    except OSError:
-                        (folder/'project.json').unlink(missing_ok=True);raise
-                current.update(installed=True,createdProject=not existing);self.s.atomic_json(self.j.path(key),current)
+            if incremental and receive_full() is None:return False
+            return self.install_runtime(row)
         self.cleanup(self.s.read_json(self.j.path(key)))
+        return True
+
+    def install_runtime(self,row):
+        # The original task-copy installer: keep a busy project's files untouched.
+        key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
+        folder=self.target(row);bundle=folder/'received';manifest=self.s.read_json(bundle/'manifest.json')
+        self.s.require_workspace_space(folder,needed=2*(bundle/'image.tar').stat().st_size+manifest['rootfsBytes']+(bundle/'workspace.tar').stat().st_size)
+        paths={name:self.s.private_dir(folder/name,create=True) for name in ('code','home')}
+        engine=self.j.e.projects().oci(owner);engine.state_folder=folder
+        with engine.locked(project):
+            head=engine.load(project)
+            if head.get('container') is None:
+                engine.run('load','--input',str(bundle/'image.tar'),timeout=3600)
+                container='gpuq-dev-'+uuid.uuid4().hex
+                engine.run('create','--name',container,'--network=none','--entrypoint','/bin/sh',manifest['image'])
+                self.s.atomic_json(folder/'oci.json',{'image':manifest['image'],'container':container})
+        engine.workspace_command(owner,'copy-'+key,['tar','--extract','--file','/run/gpuq/project-copy.tar','--directory','/'],
+                                 paths=paths,archive=bundle/'workspace.tar',timeout=3600)
+        with self.j.lock(key):
+            current=self.s.read_json(self.j.path(key))
+            if current['state']=='CANCELED':return False
+            self.s.atomic_json(folder/'project.json',{'project':project,'ownerId':owner,'userId':owner,'environmentMode':'oci',
+                              'copyKey':key,'name':project,'archived':False,'group':'','repo':None,'createdAt':row['createdAt']})
+            current.update(runtime=True);self.s.atomic_json(self.j.path(key),current)
+        shutil.rmtree(bundle)
         return True
 
     def cleanup(self,row):
         key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
         destination=self.destination(row);folder=runtime_folder(self.j.config,key)
         backup=destination/'code'/'.copy-backups'/(key+'.tar')
-        if backup.exists():self.sync().module('project-purge').Trash(self.j.config).delete(backup,key,'output',row.get('actor'))
+        if backup.exists():self.sync().module('project-purge').Trash(self.j.config).delete(backup,row.get('backupKey',key),'output',row.get('actor'))
         engine=self.j.e.projects().oci(owner);engine.state_folder=destination;head=engine.load(project)
         try:staged=self.s.read_json(folder/'oci.json')
         except FileNotFoundError:staged={}
         if staged.get('container') and staged['container']!=head.get('container'):engine.run('rm','--ignore',staged['container'])
         image='localhost/gpuq-copy:'+key
-        if target.get('mode')!='incremental' and head.get('image')!=image:
+        if head.get('image')!=image:
             if engine.run('images','--quiet','--filter','reference='+image):engine.run('rmi',image)
         if folder.exists():shutil.rmtree(self.s.private_dir(folder))
         received=destination/'received'
         if row.get('createdProject') and received.exists():shutil.rmtree(self.s.private_dir(received))
 
     def complete(self,key):
+        file=self.j.path(key,'.source.json');row=self.s.read_json(file)
+        if row['state']=='PREPARING':
+            # Cancel only this operation's exporter before removing its staging.
+            try:self.j.e.run(['/usr/bin/systemctl','--user','stop','gpuq-project-export-'+key+'.service'])
+            except ValueError:pass
         with self.j.lock(key):
-            file=self.j.path(key,'.source.json');row=self.s.read_json(file)
+            row=self.s.read_json(file)
             # This directory contains only this operation's generated transport files.
-            if row['state']=='READY':
-                if Path(row['root']).exists():shutil.rmtree(self.s.private_dir(Path(row['root'])))
-                row['state']='COMPLETE';self.s.atomic_json(file,row)
+            if row['state']=='PREPARING':
+                ref=row['request']['source'];engine=self.j.e.projects().oci(ref.get('ownerId') or ref['userId'])
+                engine.run('rmi','--ignore','localhost/gpuq-copy:'+key)
+            folder=Path(row['root']).parent
+            if folder.exists():shutil.rmtree(self.s.private_dir(folder))
+            row['state']='COMPLETE';self.s.atomic_json(file,row)
         return {'state':row['state']}

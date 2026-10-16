@@ -153,7 +153,7 @@ class PersonalOCI:
                      'flags':flags,'argv':argv,'commandTimeout':timeout}
             path=self.folder/'tmp'/('git-'+uuid.uuid4().hex+'.json');self.s.atomic_json(path,request)
             try:
-                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True)
+                result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=timeout)
                 if result.returncode:raise ValueError('容器git操作失败：'+result.stderr[-1200:])
                 return result.stdout.strip()
             finally:path.unlink(missing_ok=True)
@@ -251,7 +251,7 @@ print(json.dumps(result))
                 # engine's small default shm forces disk-backed object storage.
                 # tmpfs pages remain charged to the existing parent MemoryMax.
                 '--log-driver=none', '--pids-limit=-1', '--shm-size=8g', '--workdir=/workspace',
-                '--label', 'io.gpuq.owner='+self.owner, '--label', 'io.gpuq.project='+spec['project'],
+                '--label', 'io.gpuq.owner='+self.owner, '--label', 'io.gpuq.project='+('copy-'+spec['projectCopy'] if spec.get('projectCopy') else spec['project']),
                 '--env=HOME=/home/gpuq', '--env=XDG_CACHE_HOME=/home/gpuq/.cache',
                 '--env=GPUQ_OUTPUT_DIR=/outputs', '--env=GPUQ_PROJECT='+spec['project'],
                 '--env=GPUQ_PROJECT_ENV_MODE=oci', '--env=GPUQ_OFFLINE_ASSETS=/workspace/offline',
@@ -378,7 +378,7 @@ print(json.dumps(result))
         head=self.workspace_container(spec['project'])
         request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
                  'container':head['container'],'owner':self.owner,'project':spec['project'],
-                 'workspaceLock':str(self.folder/('use-'+self.d.name(spec['project'])+'.lock')),
+                 'workspaceLock':str(self.folder/('use-'+('copy-'+spec['projectCopy'] if spec.get('projectCopy') else self.d.name(spec['project']))+'.lock')),
                  'execution':'gpuq-live-'+uuid.uuid4().hex,'flags':flags,'argv':spec['argv'],
                  'threadDefaults':getattr(self,'thread_defaults',{})}
         if spec.get('interactive'):
