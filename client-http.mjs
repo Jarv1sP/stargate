@@ -62,7 +62,7 @@ export async function apiPost(base,path,body,{token,signal,fetchImpl=fetch,sleep
   const target=new URL(`/api/${path}`,base),operation=path==='call'?body?.operation:path;
   const read=path==='call'&&(READS.has(operation)||operation==='outputs.delete'&&body.args?.dryRun===true),payload=JSON.stringify({...body,client:{name:'gpuctl',protocol:2}});
   signal?.throwIfAborted();
-  const timeout=deadlineAt===undefined?(read?60000:40000):Math.min(read?60000:40000,Math.ceil(deadlineAt-now()));
+  const timeout=read?(deadlineAt===undefined?60000:Math.min(60000,Math.ceil(deadlineAt-now()))):40000;
   if(timeout<=0)throw error('暂时无法读取，请稍后再查。',undefined,'READ_UNAVAILABLE');
   const deadline=AbortSignal.timeout(timeout);
   const combined=signal?AbortSignal.any([signal,deadline]):deadline;

@@ -66,7 +66,7 @@ jobs:
             core.setOutput('nodes', scope.nodesChanged);
             core.setOutput('portal', scope.portalChanged);
             core.setOutput('deploy', scope.deploy);
-            if (!scope.deploy) { core.info('No runtime changes; gray passed, deployment skipped'); return; }
+            if (!scope.deploy) { core.info('Deployment skipped for this commit; gray passed'); return; }
             const {data: deployment} = await github.rest.repos.createDeployment({
               ...context.repo, ref: revision, environment: 'production', auto_merge: false,
               required_contexts: [], payload: {stargate: true},

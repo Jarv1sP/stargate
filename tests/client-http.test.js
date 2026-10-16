@@ -26,6 +26,23 @@ test('a hanging response body is aborted at the remaining command deadline',asyn
  const pending=post('call',{operation:'state'}),rejected=assert.rejects(pending,e=>e.code==='READ_UNAVAILABLE'&&/暂时无法读取/.test(e.message));
  await new Promise(setImmediate);elapsed=60000;t.mock.timers.tick(60000);await rejected;
 });
+test('slow reads and interactive waits never shorten a write below its original forty seconds',async t=>{
+ let elapsed=0;const budgets=[],sent=[];
+ t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});
+ const post=commandPost(url,{now:()=>elapsed,fetchImpl:async(url,options)=>{
+  const body=JSON.parse(options.body);sent.push(body);
+  if(body.operation==='state')elapsed=59999;
+  return new Response('{"result":{}}');
+ }});
+ await post('call',{operation:'state'});
+ for(const operation of ['jobs.submit','projects.retire.purge','users.create','users.reset']){
+  elapsed+=120000;
+  await post('call',{operation,args:{key:'11111111-1111-4111-8111-111111111111'}});
+ }
+ assert.deepEqual(budgets,[60000,40000,40000,40000,40000]);assert.equal(sent.length,5);
+ await assert.rejects(post('call',{operation:'state'}),e=>e.code==='READ_UNAVAILABLE');
+ assert.equal(sent.length,5);
+});
 test('long transfers and attached sessions retain their existing per-request budget',async t=>{
  let elapsed=0;const budgets=[];
  t.mock.method(AbortSignal,'timeout',ms=>{budgets.push(ms);return new AbortController().signal;});

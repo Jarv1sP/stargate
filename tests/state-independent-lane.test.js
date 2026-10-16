@@ -7,6 +7,7 @@ import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
 import {readCLIState} from '../client-state.mjs';
 import {DemoClient} from '../dist/client.js';
+import {resourceServerView} from '../dist/resources-ui.js';
 
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 async function fixture(t,{role='admin'}={}){
@@ -48,7 +49,16 @@ test('concurrent state reads share the local snapshot without rejecting a ninth 
  assert.equal(f.service.pending,0);
  held.resolve();await Promise.all(reads);assert.equal(f.bridgeCalls(),0);
 });
-test('full state returns the last snapshot within one second while refresh is stalled',async t=>{
+test('an idle first state query picks up the current collector snapshot within its short wait',async t=>{
+ const f=await fixture(t),old=new Date(Date.now()-60000).toISOString();
+ f.service.gpuq.checkedAt=old;
+ const start=performance.now(),reply=await f.service.invoke(f.token,'state',{});
+ assert.ok(performance.now()-start<1000);
+ assert.equal(reply.state.gpuq.checkedAt,f.snapshot.checkedAt);
+ assert.equal(reply.state.gpuq.stale,false);assert.notEqual(reply.state.gpuq.checkedAt,old);
+ assert.equal(f.bridgeCalls(),0);
+});
+test('full state waits at most half a second then shows expired hosts as the last sample',async t=>{
  const f=await fixture(t),held=deferred();f.service.gpuqReadWork=held.promise;
  f.service.gpuq.checkedAt=new Date(Date.now()-181000).toISOString();
  const checkedAt=f.service.gpuq.checkedAt;
@@ -56,6 +66,9 @@ test('full state returns the last snapshot within one second while refresh is st
   new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('state waited for refresh')),1000);timer.unref();})]);
  assert.ok(performance.now()-start<1000);assert.equal(reply.state.gpuq.stale,true);
  assert.equal(reply.state.gpuq.checkedAt,checkedAt);assert.equal(reply.state.gpuq.hosts.length,MACHINES.length);
+ assert.ok(reply.state.gpuq.hosts.every(host=>host.samplingStale===true));
+ const view=resourceServerView(MACHINES[0],{snapshot:reply.state.gpuq,production:true});
+ assert.equal(view.observed,true);assert.match(view.status,/^上次采样/);
  assert.ok(reply.state.gpuq.hosts[0].reachable);assert.equal(f.service.gpuqReadWork,held.promise);assert.equal(f.bridgeCalls(),0);
  held.resolve({checkedAt:f.snapshot.checkedAt,stale:false,hosts:f.service.gpuq.hosts});await new Promise(setImmediate);
  assert.equal(f.service.gpuq.checkedAt,f.snapshot.checkedAt,'the next query can use the background result');

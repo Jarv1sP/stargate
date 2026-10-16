@@ -11,7 +11,8 @@ production environment 只允许 main，提供一个 secret `DEPLOY_SSH_KEY`，
 以及变量 `DEPLOY_HOST`、`DEPLOY_KNOWN_HOSTS`、`DEPLOY_INITIAL_SHA`
 （首次启用时的现役提交）、`DEPLOY_MACHINES`（空格分隔的私有节点 ID）。部署密钥不提供交互 shell、
 PTY、端口转发或 agent 转发。GitHub environment 和 Actions 记录此次发布；
-VPS 的 `deployed-sha` 记录实际生效提交。所有实际地址、机器清单和凭据留在私有配置中。
+VPS 的 `deployed-sha` 记录最近一次成功发布的提交，用于下一次文件差异。
+节点单独发布也会更新它，门户镜像仍保留上次门户发布的版本。所有实际地址、机器清单和凭据留在私有配置中。
 
 ## VPS 一次性接线
 
@@ -22,7 +23,7 @@ VPS 的 `deployed-sha` 记录实际生效提交。所有实际地址、机器清
 3. 将现役容器的 `/app/dist/machines.js` 保存在
    `/opt/stargate-release/private/machines.js`，属主 root、容器使用的 node 组，权限 0640。新容器只读挂载此文件，
    不用公开仓库的示例清单替换生产配置。
-4. `/opt/stargate-release/deployed-sha` 初始写入现役门户的提交；这不表示节点已经更新。
+4. `/opt/stargate-release/deployed-sha` 初始写入接管时的发布基线；它不表示各组件同时更新到了同一版本。
 5. 为新生成的专用 ed25519 公钥追加 authorized_keys 条目：
 
    ```text
@@ -35,7 +36,8 @@ entry 只接受一个完整提交参数，接收并解包 stdin，执行 docker 
 Actions 根据最近成功的发布记录计算节点改动；首次使用 DEPLOY_INITIAL_SHA。
 发布记录使用实际检出的提交，避免 workflow_run 的默认分支指针前进后记错版本。
 文件差异由 `scope.py` 分别选择门户和节点：只有文档、测试或 Markdown 改动时，
-灰测照跑，跳过上线；只有门户改动时不安装节点，只有节点改动时不切门户。
+灰测照跑，跳过上线；公开 `/guide` 使用的 `docs/USER_GUIDE.md` 除外，它会更新门户。
+只有门户改动时不安装节点，只有节点改动时不切门户。晚到的祖先提交跳过；旧发布提交已不存在时按全量发布处理。
 节点包源码、构建器、安装器和打包依赖有变化才安装节点。节点单独更新仍携带镜像
 以复用现有离线接收入口，但不创建或重启门户容器。
 

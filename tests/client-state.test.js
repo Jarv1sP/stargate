@@ -34,3 +34,30 @@ test('cold source CLI sends only the intended operation and honors immediate ser
   assert.equal(intended.length,1,argv.join(' ')+': '+result.stderr);assert.equal(intended[0].operation,({'project create':'projects.create','push':'data.upload.begin','run':'jobs.submit'})[argv.slice(0,argv[0]==='project'?2:1).join(' ')]);assert.match(result.stderr,/Isolated test stops before mutation/);
  }
 });
+test('push-status and upload-status finish a per-file scan that crosses one minute',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'cli-upload-status-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const local=await mkdtemp(join(dir,'files-')),clock=join(dir,'clock'),preload=join(dir,'clock.mjs');
+ await writeFile(join(local,'a.txt'),'a');await writeFile(join(local,'b.txt'),'b');
+ await writeFile(preload,"import {readFileSync} from 'node:fs';globalThis.performance.now=()=>Number(readFileSync("+JSON.stringify(clock)+",'utf8'));\n");
+ const operations=[];
+ const server=createServer(async(req,res)=>{
+  let raw='';for await(const part of req)raw+=part;const body=JSON.parse(raw);operations.push(body.operation);
+  if(body.operation==='data.upload.status')await writeFile(clock,'70000');
+  res.setHeader('content-type','application/json');
+  res.end(JSON.stringify({result:body.operation==='community.announcements.pending'?{posts:[]}:{state:'COMPLETE',offset:1,totalSize:1}}));
+ });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
+ const url='http://127.0.0.1:'+server.address().port,session=join(dir,'session.json');
+ await writeFile(session,JSON.stringify({url,token:'fixture-token',principal:{userId:'fixture'},machine:'gpu-0',projectsByMachine:{'gpu-0':'fixture'}}));
+ for(const command of ['push-status','upload-status']){
+  operations.length=0;await writeFile(clock,'0');
+  const argv=[command,...(command==='upload-status'?['gpu-0']:[]),local,'.','--key','11111111-1111-4111-8111-111111111111'];
+  const result=await new Promise((resolve,reject)=>{
+   const child=spawn(process.execPath,['--import',preload,fileURLToPath(new URL('../cli.mjs',import.meta.url)),...argv,'--url',url,'--session-file',session,'--json'],{stdio:['ignore','pipe','pipe']});
+   let out='',err='';child.stdout.on('data',part=>out+=part);child.stderr.on('data',part=>err+=part);
+   child.on('error',reject);child.on('close',code=>resolve({code,out,err}));
+  });
+  assert.equal(result.code,0,result.err+result.out);assert.equal(JSON.parse(result.out).data.files.length,2);
+  assert.deepEqual(operations,['community.announcements.pending','data.upload.status','data.upload.status']);
+ }
+});

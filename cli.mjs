@@ -254,7 +254,7 @@ async function main() {
   try {
   // Transfers and attached sessions intentionally outlive a one-shot query.
   const [verb,action]=positionals;
-  const continuous=['push','upload','pull','download','ssh','shell','watch'].includes(verb)||
+  const continuous=['push','upload','push-status','upload-status','pull','download','ssh','shell','watch'].includes(verb)||
     ['project','transfer'].includes(verb)&&['copy','upload','download','watch'].includes(action)||
     verb==='data'&&['upload','put','get','download','import','cloud'].includes(action)||
     verb==='run'&&(options.sync||options.interactive);
