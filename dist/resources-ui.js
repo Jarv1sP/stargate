@@ -1,5 +1,5 @@
 import {priorityLabel,taskIdentityHTML,nativeOwnerLabel} from './execution-ui.js';
-import {revealSheet,dismissSheet,reducedMotion,captureObject,sharedObject} from './motion-ui.js';
+import {revealSheet,dismissSheet,reducedMotion,captureObject,sharedObject,segPill} from './motion-ui.js';
 import {resourceOrbits} from './resource-orbits.js';
 import {transferBytes} from './data-route.js';
 import {maintenanceFor,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
@@ -231,7 +231,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
     if(!sheet.open)return;
     if(animate)dismissSheet(sheet,{drilldown:true});else sheet.close();
     restoreDetail();
-    const target=returnFocus?.card!==undefined?grid.querySelector(`${returnFocus.row?'.resource-gpu-row':'.resource-chassis-bays .resource-tower'}[data-resource-card="${CSS.escape(returnFocus.card)}"]`):grid.querySelector(`[data-resource-select="${CSS.escape(selected||'')}"]`);target?.focus({preventScroll:true});
+    const target=returnFocus?.card!==undefined?grid.querySelector(`.resource-chassis-bays .resource-tower[data-resource-card="${CSS.escape(returnFocus.card)}"]`):grid.querySelector(`[data-resource-select="${CSS.escape(selected||'')}"]`);target?.focus({preventScroll:true});
   }
   function applyMeasurements(){
     const nextLevels=new Map(),nextReadings=new Map(),visible=getPage()==='resources'&&!document.hidden;
@@ -259,7 +259,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
   function render(){
     if(actor!==identity()){actor=identity();selected=null;metricMode='memory';levels.clear();readings.clear();expanded.clear();selectedGPUs.clear();close(false);}
     if(sheet.open&&getPage()!=='resources')close(false);
-    const focused=document.activeElement,focusDetail=focused?.closest('details[data-resource-detail]')?.dataset.resourceDetail,focusInfo=focused?.closest('details[data-resource-info]')?.dataset.resourceInfo,focusSelect=focused?.dataset.resourceSelect,focusCard=focused?.dataset.resourceCard,focusMetric=focused?.dataset.resourceMetric,focusRow=focused?.classList.contains('resource-gpu-row'),scrollPositions=new Map();
+    const focused=document.activeElement,focusDetail=focused?.closest('details[data-resource-detail]')?.dataset.resourceDetail,focusInfo=focused?.closest('details[data-resource-info]')?.dataset.resourceInfo,focusSelect=focused?.dataset.resourceSelect,focusCard=focused?.dataset.resourceCard,focusMetric=focused?.dataset.resourceMetric,scrollPositions=new Map();
     const regionKey=region=>region.closest('[data-resource-detail]')?.dataset.resourceDetail||region.closest('[data-resource-machine]')?.dataset.resourceMachine+':chassis';
     for(const root of [grid,sheet])for(const region of root.querySelectorAll('.gpu-table-scroll,.process-content')){
       const key=regionKey(region);
@@ -273,6 +273,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
     const remembered=selectedGPUs.get(selected),index=Number.isSafeInteger(remembered)&&remembered>=0&&remembered<view?.count?remembered:0;
     const html=resourceCards({machines,...options,management:admin,selectedMachine:selected,selectedGPU:index,metricMode,userId:store.principal?.userId,jobs:store.jobs});
     if(html!==resourceHTML){resourceHTML=html;grid.innerHTML=html;grid.querySelector('.resource-orbit')?.replaceWith(orbit);}
+    segPill(grid.querySelector('.resource-metric-switch'),'resource-metric');
     updateOrbit();
     if(sheet.open){const detail=grid.querySelector('.resource-detail');if(detail)sheet.querySelector('.sheet-scroll').replaceChildren(detail);sheet.querySelector('#resource-sheet-title').textContent=selected;sheet.querySelector('#resource-sheet-title').title=selected;}
     summary.hidden=!store.principal||getPage()!=='resources';
@@ -286,7 +287,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
     }
     if(focusMetric)grid.querySelector(`[data-resource-metric="${focusMetric}"]`)?.focus({preventScroll:true});
     if(!sheet.open&&focusSelect)grid.querySelector(`[data-resource-select="${CSS.escape(focusSelect)}"]`)?.focus({preventScroll:true});
-    if(!sheet.open&&focusCard!==undefined)grid.querySelector(`${focusRow?'.resource-gpu-row':'.resource-chassis-bays .resource-tower'}[data-resource-card="${CSS.escape(focusCard)}"]`)?.focus({preventScroll:true});
+    if(!sheet.open&&focusCard!==undefined)grid.querySelector(`.resource-chassis-bays .resource-tower[data-resource-card="${CSS.escape(focusCard)}"]`)?.focus({preventScroll:true});
     fitIdentity();applyMeasurements();
   }
   function select(id,drilldown=true,fromControl=false){
@@ -307,7 +308,7 @@ export function resourcesUI(store,{machines,getPage,navigate}){
   document.addEventListener('click',event=>{
     const button=event.target.closest('button');if(!button||button.disabled||!grid.contains(button)&&!sheet.contains(button))return;
     if(button.dataset.resourceSelect){returnFocus={};select(button.dataset.resourceSelect,!button.hasAttribute('data-resource-swap'));}
-    if(button.hasAttribute('data-resource-card')&&button.dataset.resourceServer===selected){returnFocus={card:button.dataset.resourceCard,row:button.classList.contains('resource-gpu-row')};selectedGPUs.set(selected,Number(button.dataset.resourceCard));select(selected);}
+    if(button.hasAttribute('data-resource-card')&&button.dataset.resourceServer===selected){returnFocus={card:button.dataset.resourceCard};selectedGPUs.set(selected,Number(button.dataset.resourceCard));select(selected);}
     if(button.dataset.resourceMetric&&button.dataset.resourceMetric!==metricMode){
       const before=new Map([...grid.querySelectorAll('[data-resource-confirmed=true]')].map(fill=>[fill.dataset.resourceFillKey.split(':').slice(0,-1).join(':'),Number(fill.dataset.resourceLevel)]));
       metricMode=button.dataset.resourceMetric;render();

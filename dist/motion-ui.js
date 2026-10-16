@@ -66,6 +66,17 @@ export function dismissSheet(dialog,{drilldown=false,target=null}={}){
   back?.();const reduce=reducedMotion();retire(layer,clone.animate(reduce?[{opacity:1},{opacity:0}]:[{transform:'none',opacity:1},{transform:phone()&&!drilldown?'translateY(100%)':'translateX(100%)',opacity:0}],{duration:reduce?0:phone()&&drilldown?350:220,easing:'cubic-bezier(.4,0,1,1)'}));
 }
 // Centered sheets close at once; a visual copy fades out above the page.
+// The design's segmented controls: one pill slides to the pressed option. A
+// key remembers where it was, so a control rebuilt by a render still slides.
+const pillMemory=new Map();
+export function segPill(group,key){
+  if(!group)return;
+  let pill=group.querySelector(':scope>.seg-pill');if(!pill){pill=document.createElement('span');pill.className='seg-pill';pill.setAttribute('aria-hidden','true');group.prepend(pill);}
+  const on=group.querySelector(':scope>[aria-pressed=true]');if(!on||!on.offsetWidth)return;
+  const to={x:on.offsetLeft,w:on.offsetWidth},from=key?pillMemory.get(key):null;if(key)pillMemory.set(key,to);
+  if(from&&(from.x!==to.x||from.w!==to.w)&&!pill.style.width&&!reducedMotion()){pill.style.transition='none';pill.style.width=from.w+'px';pill.style.transform=`translateX(${from.x}px)`;pill.getBoundingClientRect();pill.style.transition='';}
+  pill.style.width=to.w+'px';pill.style.transform=`translateX(${to.x}px)`;
+}
 export function fadeOutDialog(dialog){
   if(!dialog?.open)return null;
   if(reducedMotion()){dialog.close();return null;}

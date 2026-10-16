@@ -12,7 +12,8 @@ export function shellUI(store,{navigate,getPage,toast}){
   const scrolls=new Map();let entrance=[],underline;
   function updateIndicator(){
     const selected=nav.querySelector('[aria-current=page]');indicator.hidden=!selected||matchMedia('(max-width:759px)').matches;if(indicator.hidden)return;
-    const box=selected.getBoundingClientRect(),parent=nav.getBoundingClientRect();indicator.style.width=box.width+'px';indicator.style.transform=`translateX(${box.left-parent.left}px)`;
+    // As in the approved design the bar is as wide as the label, not the whole item.
+    const box=selected.getBoundingClientRect(),parent=nav.getBoundingClientRect(),inset=parseFloat(getComputedStyle(selected).paddingLeft)||0;indicator.style.width=Math.max(0,box.width-inset*2)+'px';indicator.style.transform=`translateX(${box.left-parent.left+inset}px)`;
   }
   function update(){
     const page=getPage(),room=roomForPage(page);document.body.dataset.room=room;
@@ -44,6 +45,7 @@ export function shellUI(store,{navigate,getPage,toast}){
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&account.open){account.open=false;q('#account-menu-toggle').focus();}});
   function sky(){const reading=skyReading();q('#sky-utc').textContent=reading.utc;q('#sky-utc').dateTime=new Date().toISOString();q('#sky-moon-label').textContent=reading.moon;q('#sky-moon-path').setAttribute('d',reading.path);q('#sky-mars').textContent=reading.mars;}
   sky();setInterval(()=>{if(!document.hidden)sky();},1000);
+  addEventListener('scroll',()=>q('#app-topbar')?.classList.toggle('scrolled',scrollY>4),{passive:true});
   if(store.principal)installWordmark();new ResizeObserver(updateIndicator).observe(nav);addEventListener('resize',()=>{for(const animation of entrance)animation.cancel();underline?.cancel();updateIndicator();});document.fonts?.ready.then(updateIndicator);
   matchMedia('(prefers-reduced-motion:reduce)').addEventListener('change',event=>{if(event.matches){for(const animation of document.getAnimations())if(Number.isFinite(animation.effect?.getComputedTiming().endTime))animation.finish();q('#startup-wordmark').hidden=true;}});
   store.onAuthChange(()=>{control.close();account.open=false;scrolls.clear();});

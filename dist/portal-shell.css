@@ -114,3 +114,22 @@
 .sb .guide-top:hover{color:var(--ink)}
 .sb #page-title{font-size:44px;font-weight:300;line-height:1.05;letter-spacing:-.01em}
 @media (max-width:759px){.sb .guide-top{display:none}.sb .command-glass{width:16px;height:16px}.sb .command-trigger kbd{display:none}.sb .command-trigger{justify-content:center}.sb #page-title{font-size:32px}}
+
+/* Motion copied from the approved prototype. */
+.sb .seg-pill{position:absolute;top:7px;bottom:7px;left:0;width:0;border-radius:999px;background:var(--bg-4);z-index:-1;pointer-events:none;transition:transform .45s cubic-bezier(.34,1.32,.5,1),width .45s cubic-bezier(.34,1.32,.5,1)}
+.sb #app-topbar{background:rgba(10,11,13,.72);border-bottom:1px solid transparent;transition:border-color .3s cubic-bezier(.2,.8,.2,1)}
+.sb #app-topbar.scrolled{border-bottom-color:var(--line-2)}
+.sb #room-nav .nav-indicator{bottom:-1px}
+.sb .button{transition:transform .18s cubic-bezier(.34,1.32,.5,1),background .2s,border-color .2s,color .2s}
+.sb .button:active:not(:disabled){transform:scale(.96)}
+.sb #app-topbar .av{transition:transform .3s cubic-bezier(.34,1.32,.5,1)}
+.sb #account-menu-toggle:hover .av{transform:scale(1.06)}
+.sb #account-menu[open] .account-popover{transform-origin:top right;animation:sg-menu .35s cubic-bezier(.34,1.32,.5,1)}
+@keyframes sg-menu{from{transform:scale(.94) translateY(-6px);opacity:0}}
+@media (max-width:759px){
+  .sb #room-nav .nav-item svg{transition:transform .35s cubic-bezier(.34,1.32,.5,1)}
+  .sb #room-nav .nav-item[aria-current=page] svg{transform:translateY(-2px)}
+  .sb .jr-drawer{top:auto;left:0;width:100%;height:90%;border-left:0;border-top:1px solid var(--line-2);border-radius:20px 20px 0 0;transform:translateY(104%)}
+  .sb .jr-drawer.on{transform:none}
+}
+@media (prefers-reduced-motion:reduce){.sb .seg-pill,.sb #app-topbar,.sb .button,.sb #app-topbar .av{transition:none}.sb #account-menu[open] .account-popover{animation:none}}

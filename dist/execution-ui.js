@@ -10,9 +10,9 @@ import {elasticFields,elasticFromForm,allocationSummary,placementFields,placemen
 import {taskDescription} from './task-metadata.js';
 import {installTaskLabelEditor,taskLabelEditorHTML} from './task-display-ui.js';
 import {createProjectManagement,projectSelectHTML} from './project-management-ui.js';
-import {escapeUI as escape,workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
+import {escapeUI as escape,stateWord,workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
 import {trainingStorageMessage,trainingSelectionHTML} from './training-storage-ui.js';
-import {revealSheet,dismissSheet,sharedObject} from './motion-ui.js';
+import {revealSheet,dismissSheet,sharedObject,segPill} from './motion-ui.js';
 import {openSheet,closeSheet} from './sheet-ui.js';
 import {createTaskNotesUI} from './task-notes-ui.js';
 import {maintenanceFor,heldDuringMaintenance,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
@@ -126,6 +126,22 @@ export function executionUI(store,refresh,toast){
   const overviewWithLabels=(job,options)=>resultAccess.markup(job)+jobOverviewHTML(job,options)+taskLabelEditorHTML(job,store.principal);
   const diagnostics=createJobDiagnostics(store,()=>log,toast,{drawer:true,header:job=>`<span class="sheet-object">${stateHTML(job,false)}<span>${escape(job.name||'训练详情')}</span></span>`,reveal:(dialog,job,origin)=>{sharedObject(origin||jobHeading(job.id),dialog.querySelector('.sheet-object'));revealSheet(dialog,{drilldown:true});},dismiss:dialog=>dismissSheet(dialog,{drilldown:true,target:jobHeading(focusedJob)}),overview:job=>overviewWithLabels(job,{owned:!!store.principal,schedulingHTML:allocationSummary(job)+placementSummary(job)+`<span>排队优先级：${escape(priorityRankLabel(job))}</span>`+schedulingSummary(job)+`<span>${escape(schedulingContractLabel(job.schedulerPolicy??{yield_policy:job.yieldPolicy,restart_policy:job.restartPolicy}))}</span><span>状态：${escape(job.schedulerState||'未提供')}</span><span>更新于 ${escape(sampleTime(job.schedulerCheckedAt))}</span>`}),output:showOutput,notes:showNotes,onCompletion:(value,job)=>resultAccess.accept(job,value),onView:next=>{if(next!=='notes')notes?.sync(false,true);}});
   const call=(operation,args)=>store.call(operation,{...(projectOwner?{ownerId:projectOwner}:{}),...args}),query=selector=>section?.querySelector(selector)||submitDialog?.querySelector(selector)||settingsDialog?.querySelector(selector)||log?.querySelector(selector);
+  let gpuShell=null;
+  async function startGpuShell(button){
+    const target=context(),me=store.principal?.userId;if(!target.project){toast('先选择项目。');return;}
+    const seg=button.closest('.pr-gpu-seg');for(const b of seg.querySelectorAll('[data-shell-gpu]'))b.setAttribute('aria-pressed',String(b===button));segPill(seg);
+    const running=store.jobs.find(job=>job.interactive&&job.userId===me&&job.machine===target.machine&&job.project===target.project&&!['SUCCEEDED','FAILED','CANCELED'].includes(job.state));
+    if(running){gpuShell={id:running.id};watchGpuShell();return;}
+    button.disabled=true;
+    try{const job=await store.call('jobs.submit',{...target,cards:1,minVramGiB:0,name:'GPU 交互终端',priority:'normal',interactive:true,argv:['/bin/bash','--noprofile','--norc','-i'],key:crypto.randomUUID()});gpuShell={id:job.id};toast('已申请 1 张卡，排上后终端会自动接上',{launch:true});await refresh();}
+    catch(error){toast(error.message);for(const b of seg.querySelectorAll('[data-shell-gpu]'))b.setAttribute('aria-pressed',String(b.dataset.shellGpu==='0'));segPill(seg);}
+    finally{button.disabled=false;}
+  }
+  function watchGpuShell(){
+    if(!gpuShell)return;const job=store.jobs.find(row=>row.id===gpuShell.id),attach=query('.pr-gpu-seg [data-gpu-shell]');
+    if(job?.state==='RUNNING'&&attach){attach.dataset.gpuShell=job.id;gpuShell=null;attach.click();}
+    else if(job&&['FAILED','CANCELED','SUCCEEDED'].includes(job.state)){gpuShell=null;toast('GPU 交互终端没有启动：'+stateWord(job));}
+  }
   const context=()=>({machine,...(project?{project,...(projectOwner?{ownerId:projectOwner}:{})}:{})}),currentProject=()=>catalog.find(item=>item.project===project&&(!projectOwner||item.ownerId===projectOwner));
   const projectMachines=()=>store.principal?(store.data?.machines||[]):[];
   const directoryEntries=()=>projectDirectoryEntries(directory,projectMachines());
@@ -222,9 +238,17 @@ export function executionUI(store,refresh,toast){
       +'<dialog class="pr-sheet" id="pr-switch-sheet" aria-labelledby="pr-switch-title"><div class="pr-sheet-in"><div class="pr-sheet-head"><div><div class="page-eyebrow">切换项目</div><div class="pr-sheet-title" id="pr-switch-title">选择服务器和项目</div></div><button type="button" class="jr-x" id="pr-switch-close" aria-label="关闭">✕</button></div></div></dialog>';
     const pane=key=>room.querySelector(`[data-pp=${key}]`),sheet=room.querySelector('#pr-switch-sheet'),files=query('#workspace-files');
     pane('term').prepend(query('.personal-terminal'));
+    // 不占卡 / 带 1 张卡 from the approved design: the second asks for one card as a
+    // GPU interactive terminal in this project and attaches once it is running.
+    const gpuSeg=document.createElement('div');gpuSeg.className='pr-gpu-seg';gpuSeg.setAttribute('role','group');gpuSeg.setAttribute('aria-label','终端是否占卡');
+    gpuSeg.innerHTML='<button type="button" data-shell-gpu="0" aria-pressed="true">不占卡</button><button type="button" data-shell-gpu="1" aria-pressed="false">带 1 张卡</button><button type="button" data-gpu-shell hidden></button>';
+    pane('term').querySelector('.terminal-heading').after(gpuSeg);
+    gpuSeg.addEventListener('click',event=>{const choice=event.target.closest('[data-shell-gpu]');if(!choice||choice.disabled)return;if(choice.dataset.shellGpu==='1')void startGpuShell(choice);else{for(const b of gpuSeg.querySelectorAll('[data-shell-gpu]'))b.setAttribute('aria-pressed',String(b===choice));gpuShell=null;}segPill(gpuSeg);});
+    new ResizeObserver(()=>segPill(gpuSeg)).observe(gpuSeg);
     files.open=true;files.querySelector('summary').hidden=true;pane('files').append(files);
     // Files tab: rows with download, a pick button and drag-in upload reuse the resumable upload above.
     const picker=files.querySelector('[name=files]'),upload=files.querySelector('#workspace-upload'),pick=document.createElement('button');pick.type='button';pick.id='pr-upload-pick';pick.className='button';pick.textContent='上传文件';upload.before(pick);
+    const uploadBar=document.createElement('div');uploadBar.className='pr-up';uploadBar.id='pr-upload-bar';uploadBar.hidden=true;uploadBar.innerHTML='<b></b>';files.querySelector('#workspace-result').after(uploadBar);
     const hint=document.createElement('p');hint.className='pr-files-hint';hint.textContent='拖进来就上传。断网后再拖同一个文件，会从断点继续。';files.append(hint);
     pick.addEventListener('click',()=>picker.click());picker.addEventListener('change',()=>{if(picker.files.length)upload.click();});
     const drop=pane('files');for(const type of ['dragenter','dragover'])drop.addEventListener(type,event=>{if(!event.dataTransfer?.types?.includes('Files'))return;event.preventDefault();drop.classList.add('over');});
@@ -426,7 +450,15 @@ export function executionUI(store,refresh,toast){
   function ensureDirectory(){
     const owner=JSON.stringify([receiptActor(),projectMachines().map(item=>item.id)]);
     if(!executionActive()||!projectMachines().length||!isVisible()||!pageActive||directoryOwner===owner||projectBusy||operationBusy)return;
-    directoryOwner=owner;projectPaused=false;directoryRead=loadDirectory();
+    directoryOwner=owner;projectPaused=false;directoryRead=loadDirectory();directoryRead.then(autoOpenProject,()=>{});
+  }
+  // As in the approved design, the room opens on a project: the last one used, else your first.
+  let autoOpened='';
+  function autoOpenProject(){
+    if(project||autoOpened===receiptActor())return;autoOpened=receiptActor();
+    let last=null;try{last=JSON.parse(localStorage.getItem('sg-last-project')||'null');}catch{}
+    const entries=directoryEntries().filter(row=>row.info.environmentMode==='oci'),pick=entries.find(row=>last&&row.machine===last.machine&&row.info.project===last.project&&(!last.ownerId||row.info.ownerId===last.ownerId))||entries.find(row=>row.info.ownerId===actor);
+    if(pick)setTimeout(()=>void render.openProject({userId:store.principal?.userId,authGeneration:store.authGeneration,machine:pick.machine,project:pick.info.project,ownerId:pick.info.ownerId}),0);
   }
   async function loadDirectory(){
     if(!projectReadable()||!executionActive()||projectBusy||operationBusy)return;
@@ -515,12 +547,12 @@ export function executionUI(store,refresh,toast){
       const target=fileContext(),token=currentToken(),dir=query('[name=file-path]').value||'.',files=[...query('[name=files]').files];if(target.area==='output')throw Error('任务输出只支持查看和下载。');if(!files.length)throw Error('先选择文件。');
       query('#workspace-result').textContent='正在上传…';
       const keys=uploadRecovery?.scope===uploadScope()?uploadRecovery.keys||new Map():new Map(),route=uploadRecovery?.scope===uploadScope()?uploadRecovery.route||{}:{};uploadRecovery={scope:uploadScope(),supported:true,keys,route};
-      for(const file of files){const path=dir==='.'?file.name:dir+'/'+file.name,progress=(offset,total,info)=>{if(info?.key)keys.set(path,info.key);if(token===currentToken())query('#workspace-result').textContent=`${info?.resumed?'接着上传':'正在上传'} ${file.name}：${offset} / ${total??file.size} B`;};
+      for(const file of files){const path=dir==='.'?file.name:dir+'/'+file.name,progress=(offset,total,info)=>{if(info?.key)keys.set(path,info.key);if(token===currentToken())query('#workspace-result').textContent=`${info?.resumed?'接着上传':'正在上传'} ${file.name}：${offset} / ${total??file.size} B`;const bar=query('#pr-upload-bar');if(bar&&token===currentToken()){bar.hidden=false;bar.firstChild.style.width=Math.min(100,offset/((total??file.size)||1)*100)+'%';}};
           try{await projectActivity.run(signal=>uploadProjectFile(file,{...target,path},(operation,args)=>store.call(operation,{...(projectOwner&&args?.project===project?{ownerId:projectOwner}:{}),...args},{signal}),progress,{signal,key:keys.get(path),route,onRoute:toast,current:()=>token===currentToken(),onRecoverySupport:supported=>{if(token===currentToken()){uploadRecovery={scope:uploadScope(),supported,keys,route};updateControls();}}}));}
           catch(error){if(token===currentToken())query('#workspace-result').textContent=error.message;throw error;}
       }
       if(token!==currentToken())return;
-      keys.clear();query('[name=files]').value='';renderProject();toast('文件上传完成。');await listFiles().catch(()=>{});query('#workspace-result').textContent=`已上传 ${files.length} 个文件，可直接运行。`;
+      keys.clear();query('[name=files]').value='';const bar=query('#pr-upload-bar');if(bar)bar.hidden=true;renderProject();toast('文件上传完成。');await listFiles().catch(()=>{});query('#workspace-result').textContent=`已上传 ${files.length} 个文件，可直接运行。`;
     },true);
     if(button.hasAttribute('data-result-delete')||button.id==='workspace-delete-outputs'){
       const job=outputSelectionJob();if(!deletableResultJob(store,job))return;
@@ -639,7 +671,7 @@ export function executionUI(store,refresh,toast){
   if(workRoom)new MutationObserver(visibilityChanged).observe(workRoom,{attributes:true,attributeFilter:['hidden']});
   const render=()=>{
     if(!section){section=document.createElement('section');section.id='execution-workspace';section.className='execution-workspace';document.querySelector('#execution-host').append(section);log=document.createElement('dialog');log.className='job-log-dialog';log.setAttribute('aria-labelledby','job-log-title');log.innerHTML='<div class="modal-head"><h2 id="job-log-title">训练日志 · 最近 200 行</h2><button class="button" id="close-job-log">关闭</button></div><pre></pre>';document.body.append(log);diagnostics.install();}
-    diagnostics.sync();mission.sync();renderReceipt();section.hidden=!store.principal;if(section.hidden){diagnostics.reset();submitDialog?.close();settingsDialog?.close();submitReceipt=null;parsedTarget=null;acceptedDraft=false;actor=null;machine='';project='';catalog=[];catalogError='';epoch++;section.innerHTML='';notifyContext();return;}
+    diagnostics.sync();mission.sync();renderReceipt();watchGpuShell();section.hidden=!store.principal;if(section.hidden){diagnostics.reset();submitDialog?.close();settingsDialog?.close();submitReceipt=null;parsedTarget=null;acceptedDraft=false;actor=null;machine='';project='';catalog=[];catalogError='';epoch++;section.innerHTML='';notifyContext();return;}
     if(actor!==store.principal.userId){
       diagnostics.reset();
       submitDialog?.close();submitDialog?.remove();settingsDialog?.close();settingsDialog?.remove();submitDialog=null;settingsDialog=null;settingsSource=null;jobHTML='';lastJobs.clear();liveJobs.clear();focusedJob=null;historyState='';deepLinkHandled=false;
