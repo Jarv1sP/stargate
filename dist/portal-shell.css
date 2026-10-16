@@ -108,11 +108,13 @@
 @keyframes toast-launch{0%{transform:translateY(4px)}30%{transform:translateY(0)}100%{transform:translateY(-26px);opacity:0}}
 @media (prefers-reduced-motion:reduce){.sb #toast.launch .toast-rocket{animation:none}}
 
-/* Shell from the approved prototype: a 1240px column, the ring mark, the search pill and 指南. */
+/* Shell from the approved prototype: the ring mark, the search pill and 指南. The column follows the
+   window: gutters grow with it and the content stops at 1800px, so a full-screen desktop is not two empty bands. */
 @media (min-width:760px){
-  .sb.root{--content:1192px}
-  .sb .topbar{height:64px;padding-inline:max(var(--edge,24px),calc((100vw - 1192px)/2))}
+  .sb.root{--gutter:clamp(32px,3.4vw,72px);--content:1800px}
+  .sb .topbar{height:64px}
 }
+@media (min-width:1500px){.sb .resource-hardware-layout{grid-template-columns:minmax(0,1fr) 340px;gap:64px}}
 .sb .brand{display:flex;align-items:center;gap:12px}
 .sb .brand-ring{width:22px;height:22px;flex:none;color:var(--ink)}
 .sb .command-trigger{gap:10px}
