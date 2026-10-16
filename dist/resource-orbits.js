@@ -18,18 +18,25 @@ export function resourceOrbits(canvas,visible){
     context.clearRect(0,0,width,height);
     const still=motion.matches,cx=width*.62,cy=height*.5;
     for(const [x,y,glow] of stars){
-      context.fillStyle=`rgba(242,242,239,${((.05+glow*.2)*(still?1:.75+.25*Math.sin(time/900+x*40))).toFixed(3)})`;
+      context.fillStyle=`rgba(242,242,239,${((.08+glow*.28)*(still?1:.75+.25*Math.sin(time/900+x*40))).toFixed(3)})`;
       context.fillRect(x*width,y*height,1,1);
     }
     for(const [index,shell] of shells.entries()){
       context.save();context.translate(cx,cy);context.rotate(shell.angle);
-      context.strokeStyle='rgba(242,242,239,.06)';context.lineWidth=1;context.beginPath();context.ellipse(0,0,width*shell.rx,height*shell.ry,0,0,Math.PI*2);context.stroke();
+      context.strokeStyle='rgba(242,242,239,.12)';context.lineWidth=1;context.beginPath();context.ellipse(0,0,width*shell.rx,height*shell.ry,0,0,Math.PI*2);context.stroke();
       for(let point=0;point<shell.count;point++){
-        const angle=point/shell.count*Math.PI*2+index*.7+time*shell.speed,front=Math.sin(angle)>0,size=front?1.8:1.2;
-        context.fillStyle=front?'rgba(242,242,239,.7)':'rgba(242,242,239,.18)';
+        const angle=point/shell.count*Math.PI*2+index*.7+time*shell.speed,front=Math.sin(angle)>0,size=front?2.4:1.4;
+        context.fillStyle=front?'rgba(242,242,239,.9)':'rgba(242,242,239,.3)';
         context.fillRect(Math.cos(angle)*width*shell.rx-size/2,Math.sin(angle)*height*shell.ry-size/2,size,size);
       }
       context.restore();
+    }
+    // A Starlink train crosses every 18s: a string of evenly spaced lights on a slow diagonal.
+    const phase=still?-1:(time%18000)/7000;
+    if(phase>=0&&phase<1)for(let car=0;car<12;car++){
+      const p=phase*1.35-car*.022;if(p<0||p>1)continue;
+      context.fillStyle=`rgba(242,242,239,${(.85*Math.sin(Math.PI*p)).toFixed(3)})`;
+      context.fillRect(width*(-.05+1.1*p),height*(.86-.62*p),2,2);
     }
   }
   const shown=()=>!!context&&canvas.isConnected&&visible()&&!document.hidden;

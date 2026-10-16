@@ -29,8 +29,11 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
             await motionPage.goto(ctx.stack.origin);await motionPage.locator('#startup-wordmark').waitFor({state:'visible'});await motionPage.evaluate(()=>document.fonts.ready);
             await motionPage.locator('.auth-lambda').evaluate(node=>{const animation=node.getAnimations()[0];animation.pause();animation.currentTime=300;});
             await motionPage.screenshot({path:join(screens,'startup-1440.png')});await motionPage.locator('#startup-wordmark').click();
-            const skipped=await motionPage.locator('#startup-wordmark').isHidden();await motionPage.reload();await motionPage.locator('[data-nav=resources][aria-current=page]').waitFor();
-            const replayed=await motionPage.locator('#startup-wordmark').isVisible();checks.push(['原 R5 字标开场',async()=>{ctx.check('开场可跳过',skipped);ctx.check('同会话不重播且进入算力',!replayed);}]);
+            // The opening is the loading screen: skippable, shown on every load, and it opens by itself once played and loaded.
+            await motionPage.clock.resume();const cover=motionPage.locator('#startup-wordmark'),hidden=timeout=>cover.waitFor({state:'hidden',timeout}).then(()=>true,()=>false);
+            const skipped=await hidden(3000);await motionPage.reload({waitUntil:'commit'});const replayed=await cover.waitFor({state:'visible',timeout:5000}).then(()=>true,()=>false);
+            await motionPage.locator('[data-nav=resources][aria-current=page]').waitFor();const opened=await hidden(20000);
+            checks.push(['开场 Λ 升空',async()=>{ctx.check('开场可跳过',skipped);ctx.check('每次打开都播放',replayed);ctx.check('播完且加载完后进入算力',opened);}]);
           }finally{await motionContext.close();}
         }
         if(role==='member'){

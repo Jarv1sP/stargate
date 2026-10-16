@@ -33,6 +33,8 @@
 .sb #project-terminal-host .terminal-dialog.inline .button:hover{color:#F2F2EF}
 .sb #project-terminal-host .terminal-dialog.inline #terminal-stop{color:var(--err)}
 .sb #project-terminal-host #terminal-screen{flex:none;height:min(56vh,460px);padding:14px 18px;border:0;border-radius:0}
+/* On desktop the terminal takes the rest of the window instead of a fixed strip. */
+@media (min-width:760px){.sb #project-terminal-host #terminal-screen{height:max(320px,calc(100dvh - 400px))}.sb #project-terminal-host:empty{min-height:max(320px,calc(100dvh - 352px))}}
 
 /* 文件: one path line, actions on the right, a list you can drop files onto. */
 .sb .pr-pane[data-pp=files]{position:relative}
