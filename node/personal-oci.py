@@ -159,17 +159,6 @@ class PersonalOCI:
     def git(self,user,project,argv):
         return self.workspace_command(user,project,['git',*argv])
 
-    def copy_files(self,project,action,*,paths,**fields):
-        # Caller holds the existing project lock for backup + merge + completion.
-        request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
-                 'container':self.load(project)['container'],'copy':{'action':action,'paths':{k:str(v) for k,v in paths.items()},**fields}}
-        path=self.folder/'tmp'/('copy-'+uuid.uuid4().hex+'.json');self.s.atomic_json(path,request)
-        try:
-            result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=3600)
-            if result.returncode:raise ValueError('项目文件同步失败：'+result.stderr[-1200:])
-            return json.loads(result.stdout)
-        finally:path.unlink(missing_ok=True)
-
     def network(self,user,project):
         script="""import json,socket,ssl
 result={}

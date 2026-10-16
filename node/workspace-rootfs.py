@@ -1,8 +1,8 @@
 """Run in a project's existing writable rootfs, inside Podman's user namespace.
 
-Only the trusted runner invokes this helper. The temporary execution container
-owns the GPU lease; project copies merge files through the same rootless mount.
-The development container owns the filesystem and is not removed on exit.
+Only the trusted runner invokes this helper. No image commit, export, copy or
+publication occurs. The temporary execution container owns the GPU lease;
+the development container owns the filesystem and is not removed on exit.
 """
 import contextlib
 import ctypes
@@ -68,18 +68,6 @@ def execute(request):
         graph=Path(request['graph']).resolve(strict=True)
         if not root.is_relative_to(graph) or root==graph:
             raise ValueError('Workspace rootfs is outside the managed graph')
-        if request.get('copy'):
-            spec=importlib.util.spec_from_file_location('project_sync',Path(__file__).with_name('project-sync.py'))
-            sync=importlib.util.module_from_spec(spec);spec.loader.exec_module(sync)
-            if request['copy']['action']=='image':
-                image=request['copy']['image']
-                mounted_image=subprocess.run([*prefix,'image','mount',image],check=True,capture_output=True,text=True)
-                try:
-                    source=Path(mounted_image.stdout.strip()).resolve(strict=True)
-                    if not source.is_relative_to(graph) or source==graph:raise ValueError('Project image is outside the managed graph')
-                    print(json.dumps(sync.execute(request['copy'],source)));return 0
-                finally:subprocess.run([*prefix,'image','unmount',image],check=True,capture_output=True)
-            print(json.dumps(sync.execute(request['copy'],root)));return 0
         # No :O suffix: a per-run disposable overlay would discard installs.
         # Image ENV is preserved explicitly because --rootfs has no image config.
         environment=[]

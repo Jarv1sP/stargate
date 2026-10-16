@@ -12,15 +12,14 @@ function job(){
  const request=normalizeJobSubmission({machine:to,sourceMachine:from,project:'demo',cards:1,argv:['python','train.py'],key:id},user);
  return createSubmittedJob(request,user,true,{id});
 }
-function fixture(row,{shared=true}={}){
+function fixture(row){
  let copied=false;const calls=[];
  const service={store:{jobs:[row],get:()=>user},save(){},enqueue:fn=>Promise.resolve().then(fn),
   audit(){},db:new DatabaseSync(':memory:'),
   bridge:async(machine,op,args)=>{
    calls.push({machine,op,args});
-   if(op==='transfers.project.mode')return {mode:'incremental'};
    if(op==='transfers.project.prepare')return {id,token:'fixture-ticket'};
-   if(op==='transfers.project.start'||op==='transfers.status')return {id,state:copied?'SUCCEEDED':'RUNNING',...(shared?{installed:copied}:{})};
+   if(op==='transfers.project.start'||op==='transfers.status')return {id,state:copied?'SUCCEEDED':'RUNNING'};
    if(op==='transfers.cancel')return {id,state:'CANCELED'};
    if(op==='sync')return {state:'PENDING'};
    throw Error('Unexpected '+op);
@@ -29,7 +28,7 @@ function fixture(row,{shared=true}={}){
  return {service,calls,complete:()=>copied=true};
 }
 
-test('a cross-node job retains its development machine and requests project preparation',()=>{
+test('a cross-node job retains its development machine and uses a task-local workspace copy',()=>{
  const row=job();assert.equal(row.sourceMachine,from);assert.equal(row.spec.projectCopy,id);assert.equal(row.spec.project,'demo');
 });
 
@@ -40,20 +39,11 @@ test('dispatch waits for the original copy operation, then submits once without 
  assert.equal(row.projectPreparation.state,'RUNNING');assert.equal(row.projectPreparation.id,id);
  f.complete();attempt=await firstDispatch(f.service,row,helpers);await attempt.response;
  assert.equal(f.calls.filter(c=>c.op==='sync').length,1);assert.equal(row.dispatchPending,false);
- const submit=f.calls.find(c=>c.op==='sync');assert.equal(submit.args.job.projectCopy,undefined);assert.equal(submit.args.job.project,'demo');
- assert.equal(row.projectPreparation.state,'SUCCEEDED');assert.equal(row.spec.projectCopy,undefined);
+ const submit=f.calls.find(c=>c.op==='sync');assert.equal(submit.args.job.projectCopy,id);assert.equal(submit.args.job.project,'demo');
 });
 
 test('same-node jobs keep their current writable environment without copying',async()=>{
  const row=job();row.sourceMachine=to;delete row.spec.projectCopy;
  const f=fixture(row),attempt=await firstDispatch(f.service,row,{usage:()=>0,fail:message=>{throw Error(message);}});await attempt.response;
  assert.deepEqual(f.calls.map(c=>c.op),['sync']);
-});
-
-test('a task prepared before deployment retains the runtime copy that already contains its environment',async()=>{
- const row=job(),f=fixture(row,{shared:false}),helpers={usage:()=>0,fail:message=>{throw Error(message);}};
- await firstDispatch(f.service,row,helpers);f.complete();
- const attempt=await firstDispatch(f.service,row,helpers);await attempt.response;
- const submit=f.calls.find(c=>c.op==='sync');assert.equal(submit.args.job.projectCopy,id);
- assert.equal(submit.args.job.project,'demo');
 });
