@@ -24,6 +24,7 @@ if kind != '--query-gpu':
     print(f'gray-sim: unsupported query {kind}', file=sys.stderr)
     raise SystemExit(2)
 values = {'index': lambda g: g['index'], 'uuid': lambda g: g['uuid'], 'name': lambda g: g['name'],
+          'pci.bus_id': lambda g: g['pci'],
           'memory.total': lambda g: 8192, 'memory.used': lambda g: 0, 'memory.free': lambda g: 8192,
           'utilization.gpu': lambda g: 0, 'temperature.gpu': lambda g: 30, 'power.draw': lambda g: 10.0,
           'power.limit': lambda g: 100.0}

@@ -47,9 +47,15 @@ try:
     gpus = [line.strip() for line in out.stdout.splitlines() if line.strip()]
 except (OSError, subprocess.SubprocessError):
     gpus = None
+cpu_environment = {k: v for k, v in os.environ.items() if k not in ('OMP_NUM_THREADS', 'OMP_THREAD_LIMIT')}
+affinity = sorted(os.sched_getaffinity(0))
+cpu = {'affinity': affinity, 'nproc': int(subprocess.check_output(['nproc'], env=cpu_environment)),
+       'quota': json.loads(Path('/run/gpuq/resources.json').read_text())['cpuLimit'],
+       'threads': {key: os.environ.get(key) for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                  'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'TORCHINDUCTOR_COMPILE_THREADS')}}
 result = json.dumps({'dataset': root.name, 'bytes': total_bytes, 'files': len(names), 'loss': losses,
                      'accuracy': round(correct / len(samples), 4), 'visibleGpuUuids': gpus,
-                     'cudaVisibleDevices': os.environ.get('CUDA_VISIBLE_DEVICES')}, sort_keys=True).encode()
+                     'cudaVisibleDevices': os.environ.get('CUDA_VISIBLE_DEVICES'), 'cpu': cpu}, sort_keys=True).encode()
 os.makedirs('/outputs', exist_ok=True)
 Path('/outputs/result.json').write_bytes(result)
 print('GRAY-TRAIN ' + result.decode(), flush=True)

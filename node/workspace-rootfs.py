@@ -17,6 +17,15 @@ import sys
 import tempfile
 
 
+def thread_environment(image_env, defaults):
+    # Defaults precede the workspace image ENV; explicit runner flags follow
+    # both. User image settings and per-command `env KEY=value` win unchanged.
+    environment = dict(defaults)
+    environment.update(value.split('=', 1) for value in image_env
+                       if isinstance(value, str) and '=' in value and '\x00' not in value)
+    return environment
+
+
 @contextlib.contextmanager
 def output_mount(flags, folder):
     index=next((i for i,value in enumerate(flags) if value.endswith(':/outputs:rw')),None)
@@ -83,9 +92,8 @@ def execute(request):
         # No :O suffix: a per-run disposable overlay would discard installs.
         # Image ENV is preserved explicitly because --rootfs has no image config.
         environment=[]
-        for value in rows[0].get('Config',{}).get('Env',[]) or []:
-            if isinstance(value,str) and '=' in value and '\x00' not in value:
-                environment+=['--env',value]
+        for key,value in thread_environment(rows[0].get('Config',{}).get('Env',[]) or [],request.get('threadDefaults',{})).items():
+            environment+=['--env',key+'='+value]
         flags=[value for value in request['flags'] if value!='--pull=never']
         with output_mount(flags,graph.parent/'tmp') as flags:
             command=[*prefix,'run','--rm','--name',request['execution'],

@@ -1,18 +1,80 @@
 #!/usr/bin/python3
-"""Discover the enforced job budget; opt-in, unprivileged Ray conveniences.
+"""Enforced budgets, GPU-local CPU sets, thread defaults and opt-in Ray helpers.
 
 The cgroup remains the security boundary. Ray's logical resources and the JSON
 snapshot are admission/discovery aids, not an additional resource reservation.
 """
+import csv
+import io
 import json
 import math
 import os
 from pathlib import Path, PurePosixPath
+import subprocess
 import sys
 
 GIB = 1024 ** 3
 RESOURCE_FILE = '/run/gpuq/resources.json'
 RAY_SPILL_DIR = '/tmp/gpuq-ray-spill'
+THREAD_VARIABLES = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                    'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'TORCHINDUCTOR_COMPILE_THREADS')
+
+
+def thread_defaults(budget):
+    return dict.fromkeys(THREAD_VARIABLES, str(max(1, math.floor(budget['cpuLimit']))))
+
+
+def _cpu_list(value):
+    result = set()
+    for part in value.strip().split(','):
+        ends = list(map(int, part.split('-')))
+        result.update(range(ends[0], ends[-1] + 1))
+    return result
+
+
+def gpu_cpu_layout(gpus, cpus, sysfs=Path('/sys')):
+    """Fixed, disjoint segments per physical GPU, local to its NUMA node."""
+    cpus = sorted(cpus)
+    groups = {}
+    try:
+        for gpu in gpus:
+            node = int((sysfs / 'bus/pci/devices' / gpu['pci'] / 'numa_node').read_text())
+            local = sorted(_cpu_list((sysfs / 'devices/system/node' / ('node' + str(node)) / 'cpulist').read_text()) & set(cpus))
+            if not local: raise ValueError('NUMA locality unavailable')
+            groups.setdefault(node, (local, []))[1].append(gpu)
+    except (OSError, ValueError, KeyError):
+        groups = {None: (cpus, list(gpus))}
+    result = {}
+    for local, cards in groups.values():
+        cards = sorted(cards, key=lambda gpu: gpu['index'])
+        width, extra = divmod(len(local), len(cards))
+        start = 0
+        for position, gpu in enumerate(cards):
+            end = start + width + (position < extra)
+            # Very small simulated hosts may have fewer CPUs than GPUs.
+            result[gpu['uuid']] = local[start:end] or [local[position % len(local)]]
+            start = end
+    return result
+
+
+def allocated_cpus(uuids, config):
+    cpus = sorted(os.sched_getaffinity(0))
+    try:
+        raw = subprocess.run(['/usr/bin/nvidia-smi', '--query-gpu=index,uuid,pci.bus_id',
+                              '--format=csv,noheader,nounits'], check=True, capture_output=True,
+                             text=True, timeout=5).stdout
+        gpus = [{'index': int(row[0]), 'uuid': row[1].strip(),
+                 'pci': row[2].strip().lower()[-12:]} for row in csv.reader(io.StringIO(raw)) if row]
+        if not set(uuids) <= {gpu['uuid'] for gpu in gpus}: raise ValueError('GPU topology unavailable')
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        assigned = os.environ.get('GPUQ_ASSIGNED_GPU_INDICES', '').split(',')
+        indices = [int(i) for i in assigned if i.isdigit()]
+        if len(indices) != len(uuids): indices = list(range(len(uuids)))
+        by_index = dict(zip(indices, uuids))
+        count = max(config.get('cards', 0), max(indices, default=0) + 1)
+        gpus = [{'index': i, 'uuid': by_index.get(i), 'pci': ''} for i in range(count)]
+    layout = gpu_cpu_layout(gpus, cpus)
+    return sorted({cpu for uuid in uuids for cpu in layout.get(uuid, cpus)})
 
 
 def memory_pool(config):
@@ -200,7 +262,7 @@ def ray_environment(budget, environ):
     result['RAY_prestart_worker_first_driver'] = 'false'
     for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
                 'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
-        result[key] = '1'
+        result.setdefault(key, '1')
     # An explicit opt-in profile must not inherit Ray's host-CPU bypass or a
     # stale external-cluster address. The job-local cgroup view is authoritative.
     result.pop('RAY_USE_MULTIPROCESSING_CPU_COUNT', None)

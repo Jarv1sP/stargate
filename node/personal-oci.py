@@ -267,6 +267,7 @@ print(json.dumps(result))
             args += ['--interactive', '--tty', '--env=TERM=xterm-256color']
         if uuids:
             for device in cdi_selection(self.config,uuids):args += ['--device',device]
+            args += ['--cpuset-cpus='+','.join(map(str,module('job-resources').allocated_cpus(uuids,self.config)))]
         if not terminal and spec.get('interactive'):args+=['--interactive','--tty','--env=TERM=xterm-256color']
         args += translate_control(list(control), getattr(self, '_mount_sources', {}))
         return args
@@ -375,7 +376,8 @@ print(json.dumps(result))
         head=self.workspace_container(spec['project'])
         request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
                  'container':head['container'],'owner':self.owner,'project':spec['project'],
-                 'execution':'gpuq-live-'+uuid.uuid4().hex,'flags':flags,'argv':spec['argv']}
+                 'execution':'gpuq-live-'+uuid.uuid4().hex,'flags':flags,'argv':spec['argv'],
+                 'threadDefaults':getattr(self,'thread_defaults',{})}
         if spec.get('interactive'):
             request['terminalSocket']=str(self.root/'terminals'/(spec['id']+'.sock'))
         path=self.folder/'tmp'/('live-'+uuid.uuid4().hex+'.json')
@@ -416,6 +418,9 @@ def run_project(config, spec, project, terminal, uuids, workfd, project_fds,
             budget = json.loads(os.pread(resourcefd, 65536, 0))
             for key, value in module('job-resources').resource_environment(budget).items():
                 control += ['--setenv', key, value]
+            owner.thread_defaults = module('job-resources').thread_defaults(budget)
+            for key in owner.thread_defaults:
+                if key in os.environ: control += ['--setenv', key, os.environ[key]]
         if runtimefd is not None:
             for key, value in {'RAY_TMPDIR':'/run/gpuq/runtime','GPUQ_RAY_TEMP_DIR':'/run/gpuq/runtime/ray',
                                'RAY_object_spilling_directory':'/tmp/gpuq-ray-spill'}.items():

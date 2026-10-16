@@ -334,6 +334,18 @@ gpuctl reconcile-resources JOB_ID --json
 
 `watch` 默认每 5 秒查询，`--interval 1` 可调整；Ctrl+C 不取消任务。日志和诊断用于排查 CPU、内存、OOM 和 worker；`completion` 查完成情况，`reconcile-resources` 收尾已结束任务的资源，不重跑训练。进度需要代码接入 `gpuq.progress.ProgressReporter`；未上报不填假进度，上报 100% 也不等于进程已结束。
 
+任务容器按实际分到的 GPU 绑定 CPU：每张卡固定分一段 NUMA 就近的可用逻辑核，无法读取 NUMA 时按 GPU 编号顺序均分。例如 128 个可用逻辑核、8 张卡通常每卡 16 核，2 卡任务可见约 32 核；弹性任务按当前卡数，共享同一张卡的任务使用该卡同一段 CPU。原 CPU 时间配额不变，普通开发终端仍为 2 核配额、不绑定 CPU。
+
+`OMP_NUM_THREADS`、`MKL_NUM_THREADS`、`OPENBLAS_NUM_THREADS`、`NUMEXPR_NUM_THREADS`、`VECLIB_MAXIMUM_THREADS` 和 `TORCHINDUCTOR_COMPILE_THREADS` 默认等于实际 CPU 配额向下取整、至少 1；开发终端通常为 2。工作区镜像已有的设置、显式传入的环境变量和脚本中的设置保留。可在终端或启动命令里覆盖，例如：
+
+```sh container
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 python train.py
+python -c 'import os; print(sorted(os.sched_getaffinity(0)))'
+env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc
+```
+
+GNU `nproc` 会受 OMP 环境变量影响；上面的清变量命令查看实际亲和性的核数，`GPUQ_CPU_LIMIT` 查看时间配额。`gpuctl jobs` 和 `gpuctl diagnostics JOB_ID --json` 的 `gpuMetrics` 包含每张分配卡的利用率、当前显存和本次运行采到的显存峰值（MiB）。这些是整张卡的采样，共享卡会包含其他进程；峰值按每次运行重新记录，短于采样间隔的瞬时峰值可能未采到。未采到的为未知；任务结束或采样超过 30 秒后当前值为未知，已采到的峰值保留。
+
 ### 浏览、下载与删除输出
 
 ```sh local

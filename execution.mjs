@@ -37,6 +37,7 @@ export function schedulerResult(job,result){
   job.queueReason=typeof result.queueReason==='string'?result.queueReason.slice(0,400):null;
   job.schedulerCheckedAt=job.checkedAt;
   job.schedulerPriority=Number.isInteger(result.schedulerPriority)?result.schedulerPriority:null;
+  job.gpuMetrics=result.gpuMetrics??null;
   job.priority=typeof result.priority==='string'&&Object.hasOwn(RANKS,result.priority)?result.priority:null;
   job.schedulerPolicy=result.schedulerPolicy||null;
   job.priorityMutable=result.priorityMutable===true;
@@ -214,7 +215,13 @@ export function pendingJobReason(service,job,now=Date.now()){
   }
   return '等待调度器分配，原因未上报';
 }
-export function publicJob(job,users=[]){const {spec,schedulerPolicy,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,
+function publicGpuMetrics(job){
+  const metrics=job.gpuMetrics;
+  if(!metrics)return null;
+  const fresh=!TERMINAL.has(job.state)&&job.state!=='UNKNOWN'&&Number.isFinite(metrics.sampledAt)&&Date.now()/1000-metrics.sampledAt<=30;
+  return {...metrics,gpus:(metrics.gpus||[]).map(gpu=>fresh?{...gpu}:{...gpu,utilization:null,memoryUsedMiB:null})};
+}
+export function publicJob(job,users=[]){const {spec,schedulerPolicy,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,gpuMetrics:publicGpuMetrics(job),
   ...(job.state==='SUBMITTING'&&dispatchPending!==true?{submissionState:submissionReconciliation?.state||'CHECKING',
     canRetryDispatch:false,error:submissionError(job)}:{}),
   ...projectProgress(job),...jobTiming(job),...taskIdentity(job,users),ownerId:job.ownerId??job.userId,ownerName:users.find(user=>user.id===job.userId)?.name??null,command:spec.argv,
