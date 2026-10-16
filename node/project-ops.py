@@ -51,7 +51,9 @@ class ProjectOperations:
                 except Exception:value.update(cloneState='UNKNOWN');module('project-store').atomic_json(path/'project.json',value)
             return self.status(user,slug)
         if operation in ('projects.status','projects.workspace'):
-            value=self.status(user,slug)
+            try:value=self.status(user,slug)
+            except FileNotFoundError:
+                raise ValueError(f'这台服务器上没有项目 {slug}。请先用 gpuctl project list 确认服务器和项目名；确实没有就用 gpuctl project create {slug} 新建。') from None
             if args.get('diagnoseNetwork') is True:
                 try:value['network']=self.oci(user).network(user,slug)
                 except (ValueError,OSError):value['network']={'state':'UNKNOWN','error':'容器网络暂未响应，请稍后重试。'}
