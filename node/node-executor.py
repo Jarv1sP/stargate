@@ -60,12 +60,9 @@ def scheduler_finished(data):
     # Native state already reflects GPUQ process cleanup; no second completion check.
     return data.get('job',data).get('state') in ('SUCCEEDED','FAILED','CANCELED','LOST')
 
-def validate_job(job,readonly=False):
+def validate_job(job):
     if not isinstance(job,dict) or not isinstance(job.get('id'),str) or not UUID.fullmatch(job['id']):raise ValueError('任务编号无效。')
     module('local-data').name(job['userId']);module('local-data').name(job['project'])
-    if not readonly:
-        if job.get('projectCopy'):module('project-store').read_json(module('project-copy').runtime_folder(CONFIG,job['projectCopy'])/'project.json')
-        else:projects().store.admit(job.get('ownerId') or job['userId'],job['project'])
     if type(job.get('cards')) is not int or not 1<=job['cards']<=CONFIG['cards']:raise ValueError('GPU数量超出节点额度。')
     if not isinstance(job.get('argv'),list) or not job['argv'] or any(not isinstance(a,str) or '\0' in a for a in job['argv']):raise ValueError('命令参数无效。')
     if sum(len(a.encode())+1 for a in job['argv'])>1024**2:raise ValueError('命令参数不能超过1MiB。')
@@ -82,7 +79,7 @@ def job_operation(operation,args):
     supplied={k:v for k,v in args['job'].items() if k in fields}
     for k,keys in {'scheduling':{'rank','yieldPolicy','restartPolicy','checkpointable','mode'},'placement':{'gpuIndices','shared','vramMiB','smPercent','hami'},'elastic':{'minCards','globalBatch','microBatch','autoExpand'}}.items():
         if isinstance(supplied.get(k),dict):supplied[k]={n:v for n,v in supplied[k].items() if n in keys}
-    validate_job(supplied,readonly=operation!='sync');jid=supplied['id']
+    validate_job(supplied);jid=supplied['id']
     folder=module('project-store').private_dir(ROOT/'jobs',create=True)
     lock=os.open(folder/(jid+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
@@ -93,7 +90,10 @@ def job_operation(operation,args):
             if operation=='sync' and job!=supplied:raise ValueError('原任务编号已用于不同请求，请恢复原请求。')
         else:
             job=supplied
-            if operation=='sync':atomic_json(file,job)
+            if operation=='sync':
+                if job.get('projectCopy'):module('project-store').read_json(module('project-copy').runtime_folder(CONFIG,job['projectCopy'])/'project.json')
+                else:projects().store.admit(job.get('ownerId') or job['userId'],job['project'])
+            if operation in ('sync','cancel'):atomic_json(file,job)
         node_id=native(job)
         dispatched=folder/(jid+'.dispatch.json');canceled=folder/(jid+'.canceled.json')
         if node_id is None and operation=='cancel':
@@ -345,6 +345,10 @@ if __name__=='__main__':
             if action=='--project-init-worker':raise SystemExit(projects().initialize(sys.argv[2],sys.argv[3]))
             if action=='--transfer-worker':raise SystemExit(transfers().worker(sys.argv[2]))
             if action=='--project-copy-export-worker':raise SystemExit(module('project-copy').ProjectCopy(transfers()).export(sys.argv[2]))
+            if action=='--project-copy-cleanup-worker':
+                try:transfers().cleanup_runtime(sys.argv[2])
+                except Exception as error:raise SystemExit(str(error)[:400])
+                raise SystemExit(0)
             if action=='--transfer-peer-daemon':module('transfer-peer').serve(sys.modules[__name__],transfers());raise SystemExit(0)
             if action=='--direct-upload-daemon':module('direct-upload').serve(sys.modules[__name__]);raise SystemExit(0)
             if action=='--storage-collect':print(json.dumps(module('project-purge').Trash(CONFIG).collect()));raise SystemExit(0)

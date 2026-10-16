@@ -1,5 +1,5 @@
 """Copy concurrency uses real file locks and archive/file transport; OCI is local fixture transport."""
-import base64,concurrent.futures,fcntl,importlib.util,os,shutil,subprocess,sys,threading,unittest
+import base64,concurrent.futures,fcntl,importlib.util,os,shutil,sqlite3,subprocess,sys,threading,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -87,6 +87,58 @@ class Runtime(unittest.TestCase):
         self.assertEqual((runtime/'code/train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
         self.assertEqual((paths['code']/'train.py').read_text(),'old-code')
 
+    def runtime_job(self):
+        t=self.transport(interrupt=False);self.target(t)
+        ticket={'id':t.key,'token':t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']}
+        t.target.start({'id':t.key,'sourceMachine':'source','ticket':ticket,'source':t.ref,
+                        'target':{**t.ref,'mode':'full','jobId':t.key}})
+        fd=os.open(t.target.e.projects().oci('alice').folder/'use-demo.lock',os.O_RDWR|os.O_CREAT,0o600)
+        try:
+            fcntl.flock(fd,fcntl.LOCK_SH)
+            with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(t.target.worker(t.key),0)
+        finally:os.close(fd)
+        spec=importlib.util.spec_from_file_location('security_fixture',Path(__file__).with_name('project-security.test.py'))
+        security=importlib.util.module_from_spec(spec);spec.loader.exec_module(security)
+        self.config=t.target.config;node=security.ProjectContract.node(self)
+        node.PROJECT_OPS=t.target.e.projects();node.transfers=lambda:t.target;t.target.e.native=node.native
+        job={'id':t.key,'userId':'bob','ownerId':'alice','project':'demo','cards':1,'argv':['python','train.py'],'projectCopy':t.key}
+        return t,node,job,Path(t.target.config['workspacesRoot'])/'.copies'/t.key
+
+    def test_sync_keeps_returning_terminal_state_after_async_runtime_cleanup_and_a_lost_reply(self):
+        t,node,job,runtime=self.runtime_job();state=['SUCCEEDED'];launched=[]
+        def gpu(*args):
+            if args[0]=='submit':
+                with sqlite3.connect(node.CONFIG['database']) as db:db.execute('INSERT INTO jobs VALUES (?,?)',('J000000000001',job['id']))
+                return {'job_id':'J000000000001'}
+            return {'job':{'state':state[0]},'attempts':[]}
+        node.gpu=gpu;t.target.e.run=lambda args,**kwargs:launched.append(args) or ''
+        with patch.object(t.target,'cleanup_copy',side_effect=AssertionError('cleanup blocked the sync reply')):
+            # Discard the first terminal response, as if the connection was lost.
+            node.job_operation('sync',{'job':job})
+        self.assertTrue(runtime.exists());self.assertEqual(len(launched),1)
+        self.assertIn('--no-block',launched[0]);self.assertIn('--project-copy-cleanup-worker',launched[0])
+        with patch.object(t.transfers,'PeerClient',t.peer):t.target.cleanup_runtime(job['projectCopy'])
+        self.assertFalse(runtime.exists())
+        for value in ('SUCCEEDED','FAILED','CANCELED','LOST'):
+            with self.subTest(state=value):
+                state[0]=value;self.assertEqual(node.job_operation('sync',{'job':job})['state'],value)
+        self.assertEqual(len(launched),1)
+
+    def test_transfer_cancel_preserves_a_runtime_already_handed_to_gpuq(self):
+        t,node,job,runtime=self.runtime_job()
+        with sqlite3.connect(node.CONFIG['database']) as db:
+            db.execute('ALTER TABLE jobs ADD COLUMN state TEXT')
+            db.execute('INSERT INTO jobs VALUES (?,?,?)',('J000000000001',job['id'],'PENDING'))
+        code=(runtime/'code/train.py').read_bytes();home=(runtime/'home/settings').read_bytes()
+        with patch.object(t.target,'cleanup_copy',side_effect=AssertionError('transfer cancel deleted a scheduled runtime')):
+            for state in ('PENDING','RUNNING'):
+                with self.subTest(state=state):
+                    with sqlite3.connect(node.CONFIG['database']) as db:db.execute('UPDATE jobs SET state=?',(state,))
+                    self.assertEqual(t.target.cancel({'id':t.key})['state'],'SUCCEEDED')
+                    self.assertEqual((runtime/'code/train.py').read_bytes(),code)
+                    self.assertEqual((runtime/'home/settings').read_bytes(),home)
+                    self.assertTrue(t.target.s.read_json(t.target.path(t.key))['runtime'])
+
     def test_runtime_has_its_own_execution_lease_and_is_cleaned_at_job_terminal_states(self):
         t=self.transport(interrupt=False);self.target(t)
         ticket={'id':t.key,'token':t.source.s.read_json(t.source.path(t.key,'.source.json'))['token']}
@@ -132,8 +184,11 @@ class Runtime(unittest.TestCase):
                     operation='cancel' if state=='NOT_SUBMITTED' else 'watch'
                     result=t.target.cancel({'id':t.key}) if state=='TRANSFER_CANCEL' else node.job_operation(operation,{'job':job})
                     self.assertEqual(result['state'],'CANCELED' if state in ('NOT_SUBMITTED','TRANSFER_CANCEL') else state)
+                    if state!='TRANSFER_CANCEL':
+                        self.assertTrue(runtime.exists());t.target.cleanup_runtime(t.key)
                     self.assertFalse(runtime.exists())
                     self.assertFalse(t.target.s.read_json(t.target.path(t.key)).get('runtime'))
+                    if state=='NOT_SUBMITTED':self.assertEqual(node.job_operation('sync',{'job':job})['state'],'CANCELED')
         self.assertTrue((t.target_store.dev_paths('alice','demo')['code']/'train.py').exists())
         self.assertEqual(output.read_text(),'keep this result')
         self.assertTrue(any(args[0]=='rm' and args[-1].startswith('gpuq-dev-') for args in t.native))

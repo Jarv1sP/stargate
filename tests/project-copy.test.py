@@ -71,7 +71,7 @@ class ProjectCopy(unittest.TestCase):
         active=set()
         def systemctl(argv,**kwargs):
             if 'show' in argv:return 'active' if argv[-1].removeprefix('gpuq-transfer-').removesuffix('.service*') in active else ''
-        target_executor=SimpleNamespace(CONFIG=target_config,projects=lambda:SimpleNamespace(store=target_store,oci=lambda owner:OCI(target_config)),run=systemctl)
+        target_executor=SimpleNamespace(CONFIG=target_config,projects=lambda:SimpleNamespace(store=target_store,oci=lambda owner:OCI(target_config)),run=systemctl,native=lambda job:None)
         target=transfers.TransferJobs(target_executor);target.config['transferPeers']={'source':{}}
         worker=target.worker
         def running(key):

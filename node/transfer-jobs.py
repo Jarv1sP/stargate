@@ -185,6 +185,15 @@ class TransferJobs:
         finally:self.complete_copy(row,peer)
 
     def finish_runtime(self,key):
+        try:
+            row=self.s.read_json(self.path(key))
+            if row.get('runtime'):
+                self.e.run(['/usr/bin/systemd-run','--user','--no-block','--collect','--unit=gpuq-copy-cleanup-'+key,
+                    '--property=MemoryMax=1G','--property=TasksMax=2048',
+                    '/usr/bin/python3',str(Path(__file__).with_name('node-executor.py')),'--project-copy-cleanup-worker',key],timeout=5)
+        except Exception:pass  # A later terminal query can retry; cleanup cannot change the job result.
+
+    def cleanup_runtime(self,key):
         row=self.s.read_json(self.path(key))
         if row.get('runtime'):self.cleanup_copy(row)
 
@@ -206,7 +215,8 @@ class TransferJobs:
         with self.lock(key):
             try:row=self.s.read_json(self.path(key))
             except FileNotFoundError:row={'id':key,'key':key,'state':'CANCELED'}
-            if row['state']!='SUCCEEDED' or row.get('runtime'):row['state']='CANCELED';self.s.atomic_json(self.path(key),row)
+            if row['state']!='SUCCEEDED' or row.get('runtime') and self.e.native({'id':key}) is None:
+                row['state']='CANCELED';self.s.atomic_json(self.path(key),row)
         if row['state']=='CANCELED' and row.get('target',{}).get('environment'):
             active=self.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value',
                                'gpuq-transfer-'+key+'.service*']).strip()
