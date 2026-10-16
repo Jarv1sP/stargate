@@ -214,7 +214,8 @@ class Installer:
         return json.dumps(str(value)).replace('%', '%%').replace('$', '$$')
 
     def bindings(self, manifest):
-        files = {}
+        delegation = self.system_units / f'user@{self.owner[0]}.service.d/50-stargate-cpuset.conf'
+        files = {str(delegation): (b'[Service]\nDelegate=cpu cpuset io memory pids\n', 0o644, (0, 0))}
         unit_dir = self.home / '.config/systemd/user'
         gpu_spec = {**self.config.get('gpuqService', {}), 'gpuq': True}
         specs = [{**gpu_spec, 'name': gpu_spec.get('name', 'gpuq.service'), 'scope': 'user'},
@@ -305,7 +306,7 @@ class Installer:
         return dict(previous=os.readlink(self.current) if self.current.is_symlink() else None, files=saved, units=states)
 
     def reload(self, units):
-        for scope in sorted({u['scope'] for u in units}):
+        for scope in sorted({'system', *[u['scope'] for u in units]}):
             self.systemctl(scope, 'daemon-reload')
 
     def stop(self, units):

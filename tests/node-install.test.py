@@ -205,6 +205,28 @@ class InstallationTests(unittest.TestCase):
         self.assertIn('--profile FGK', keys)
         self.assertIn('STARGATE_CORE_PROFILE=FGK', keys)
 
+    def test_installer_delegates_cpuset_only_to_its_account_without_restarting_user_manager(self):
+        self.config['services'] = []
+        self.host.install(self.package)
+        delegation = self.host.system_units / f'user@{self.host.owner[0]}.service.d/50-stargate-cpuset.conf'
+        self.assertEqual(delegation.read_text(), '[Service]\nDelegate=cpu cpuset io memory pids\n')
+        self.assertEqual(stat.S_IMODE(delegation.stat().st_mode), 0o644)
+        self.assertFalse((self.host.system_units / 'user@.service.d').exists())
+        self.assertIn(('system', ['daemon-reload']), self.host.calls)
+        manager = f'user@{self.host.owner[0]}.service'
+        self.assertFalse(any(manager in args and any(action in args for action in ('stop', 'restart')) for _, args in self.host.calls))
+
+    def test_install_failure_restores_previous_controller_delegation(self):
+        delegation = self.host.system_units / f'user@{self.host.owner[0]}.service.d/50-stargate-cpuset.conf'
+        delegation.parent.mkdir(parents=True)
+        previous = '[Service]\nDelegate=cpu memory pids\n'
+        delegation.write_text(previous)
+        self.host.gpu_only_release = self.base / 'uninstalled'
+        with self.assertRaises(RuntimeError):
+            self.host.install(self.package)
+        self.assertEqual(delegation.read_text(), previous)
+        self.assertFalse(self.host.current.exists())
+
     def test_missing_key_profile_never_defaults_to_a_different_channel(self):
         self.host.install(self.package)
         first = self.selected()
