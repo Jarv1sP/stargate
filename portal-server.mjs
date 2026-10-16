@@ -78,10 +78,12 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
         // Only our private reverse proxy can reach this server; it overwrites this header.
         const ip=req.headers['x-real-ip']||req.socket.remoteAddress;
         const kind=path==='/api/register'?'register':path==='/api/login'?'login':path==='/api/files/direct-check'?'file-control':'api';
-        const key=`${ip}:${kind}`;const limit=kind==='register'?5:kind==='login'?20:kind==='file-control'?24000:1200;
-        if(rate.size>5000)for(const [k,v] of rate)if(v.until<Date.now())rate.delete(k);
-        let bucket=rate.get(key);if(!bucket||bucket.until<Date.now()){bucket={count:0,until:Date.now()+60000};rate.set(key,bucket);}
-        if(++bucket.count>limit)return json(429,{error:'请求过多，请稍后重试。'},{'Retry-After':'60'});
+        if(path!=='/api/call'){
+          const key=`${ip}:${kind}`;const limit=kind==='register'?5:kind==='login'?20:kind==='file-control'?24000:1200;
+          if(rate.size>5000)for(const [k,v] of rate)if(v.until<Date.now())rate.delete(k);
+          let bucket=rate.get(key);if(!bucket||bucket.until<Date.now()){bucket={count:0,until:Date.now()+60000};rate.set(key,bucket);}
+          if(++bucket.count>limit)return json(429,{error:'请求过多，请稍后重试。'},{'Retry-After':'60'});
+        }
         let raw='';for await(const part of req){raw+=part;if(Buffer.byteLength(raw)>(kind==='file-control'?8192:1500000))return json(413,{error:'Request too large'});}
         let data;try{data=JSON.parse(raw);}catch{return json(400,{error:'Invalid JSON'});}
         if(!data||typeof data!=='object'||Array.isArray(data))return json(400,{error:'Invalid JSON object'});
