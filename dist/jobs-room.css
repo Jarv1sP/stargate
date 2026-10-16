@@ -38,15 +38,18 @@
 .sb .jr-prog b::after{content:"";position:absolute;right:0;top:-2px;width:18px;height:7px;background:radial-gradient(closest-side,rgba(255,255,255,.9),transparent);filter:blur(1px)}
 .sb .jr-time{font-size:12px;color:var(--ink-3);text-align:right;white-space:nowrap}
 .sb .jr-dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
-.sb .jr-dot.run{background:var(--run);animation:jr-ping 2.4s var(--jr-ease) infinite}
+.sb .jr-dot.run{position:relative;background:var(--run)}
+.sb .jr-dot.run::after,.sb .jr-tl .now i::after{content:"";position:absolute;inset:0;border-radius:50%;background:rgba(61,214,140,.45);animation:jr-ping 2.4s var(--jr-ease) infinite}
 .sb .jr-dot.queue{background:var(--queue)}
 .sb .jr-dot.done,.sb .jr-dot.cancel{background:var(--ink-4)}
 .sb .jr-dot.fail{background:var(--err)}
-@keyframes jr-ping{0%{box-shadow:0 0 0 0 rgba(61,214,140,.45)}70%,100%{box-shadow:0 0 0 7px rgba(61,214,140,0)}}
+/* The halo grows 7px past the dot and fades, drawn as a disc so it stays off the main thread. */
+@keyframes jr-ping{0%{transform:none;opacity:1}70%,100%{transform:scale(var(--ping,3));opacity:0}}
 .sb .jr-empty{display:grid;justify-items:center;gap:14px;padding:48px 0 32px;color:var(--ink-3);text-align:center}
 .sb .jr-empty p{color:var(--ink-2);margin:0;font-size:14px;line-height:1.6}
-.sb .jr-f9 .jr-plume{opacity:.2;transform-origin:30px 186px;animation:jr-plume 1.6s ease-in-out infinite alternate}
-.sb .jr-empty:hover .jr-f9 .jr-plume{animation-duration:.6s}
+.sb .jr-f9-pad{position:relative;display:block}
+.sb .jr-f9.jr-plume{position:absolute;top:0;left:0;opacity:.2;transform-origin:23px 143px;animation:jr-plume 1.6s ease-in-out infinite alternate}
+.sb .jr-empty:hover .jr-plume{animation-duration:.6s}
 @keyframes jr-plume{from{opacity:.2;transform:scaleY(.6)}to{opacity:.7;transform:scaleY(1)}}
 
 .sb .jr-chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:12px;color:var(--ink-2);background:var(--bg-2);white-space:nowrap}
@@ -113,7 +116,8 @@
 .sb .jr-tl div{position:relative;text-align:center;font-size:12px;color:var(--ink-3);display:grid;justify-items:center}
 .sb .jr-tl i{display:block;width:13px;height:13px;border-radius:50%;margin:8px 0 10px;background:var(--bg-1);border:1px solid var(--line-3);position:relative;z-index:1;transition:background .4s,border-color .4s}
 .sb .jr-tl .past i{background:#F2F2EF;border-color:#F2F2EF}
-.sb .jr-tl .now i{background:var(--run);border-color:var(--run);animation:jr-ping 2.4s infinite}
+.sb .jr-tl .now i{background:var(--run);border-color:var(--run)}
+.sb .jr-tl .now i::after{inset:-1px;--ping:2.08;animation-timing-function:ease}
 .sb .jr-tl .now,.sb .jr-tl .past{color:var(--ink-2)}
 .sb .jr-tl .now{color:#F2F2EF}
 .sb .jr-tl small{font-family:var(--mono);font-size:10px;color:var(--ink-4);margin-top:2px}
@@ -159,7 +163,8 @@
   .sb .jr-search{max-width:none}
 }
 @media (prefers-reduced-motion:reduce){
-  .sb .jr-row.jr-new,.sb .jr-log>div,.sb .jr-drawer.on .jr-dr-b>*,.sb .jr-dot.run,.sb .jr-tl .now i{animation:none}
+  .sb .jr-row.jr-new,.sb .jr-log>div,.sb .jr-drawer.on .jr-dr-b>*{animation:none}
+  .sb .jr-dot.run::after,.sb .jr-tl .now i::after{display:none}
   .sb .jr-drawer,.sb .jr-sheet,.sb .jr-pill,.sb .jr-ul,.sb .jr-ring .val,.sb .jr-done-line,.sb .jr-catch *{transition:none}
 }
 .sb .jr-file-acts{display:flex;gap:14px}

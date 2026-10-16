@@ -64,13 +64,15 @@
 .sb .pr-sheet .storage-import .data-workspace-card{border:0;padding:0;background:none}
 
 /* Loading skeletons shimmer, as in the approved design; unknown keeps its hatch. */
-.sb .dr-skbar,.sb .dr-skrow{display:block;background:linear-gradient(90deg,var(--bg-2) 0,var(--bg-3) 40%,var(--bg-2) 80%);background-size:200% 100%;animation:dr-sh 1.4s linear infinite;border-radius:3px}
+.sb .dr-skbar,.sb .dr-skrow{position:relative;display:block;overflow:hidden;background:var(--bg-2);border-radius:3px}
+.sb .dr-skbar::after,.sb .dr-skrow::after{content:"";position:absolute;top:0;bottom:0;left:0;width:400%;background:linear-gradient(90deg,var(--bg-2) 0,var(--bg-3) 40%,var(--bg-2) 80%) 0 0/50% 100%;animation:dr-sh 1.4s linear infinite}
 .sb .dr-skbar{height:5px;margin-top:6px}
 .sb .dr-loading{display:grid;gap:10px;padding:16px 4px}
 .sb .dr-skrow{height:34px;border-radius:10px}
 .sb .dr-skrow+.dr-skrow{width:72%}
 .sb .dr-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-@keyframes dr-sh{to{background-position:-200% 0}}
+/* The gradient strip slides (transform), so the shimmer keeps moving while the page is busy loading. */
+@keyframes dr-sh{from{transform:translateX(-50%)}to{transform:translateX(0)}}
 @media (max-width:1099px){.sb .dr-gauges{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:760px){
   .sb .dr-gauges{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
@@ -82,4 +84,4 @@
   .sb .dr-acts{opacity:1;transform:none}
   .sb .heading-actions .dr-action{flex:1;justify-content:center;height:44px}
 }
-@media (prefers-reduced-motion:reduce){.sb .dr-skbar,.sb .dr-skrow,.sb .dr-row,.sb .dr-browse,.sb .dr-drop.over{animation:none}.sb .dr-gauge,.sb .dr-acts,.sb .dr-disk .storage-bar i{transition:none}}
+@media (prefers-reduced-motion:reduce){.sb .dr-skbar::after,.sb .dr-skrow::after,.sb .dr-row,.sb .dr-browse,.sb .dr-drop.over{animation:none}.sb .dr-gauge,.sb .dr-acts,.sb .dr-disk .storage-bar i{transition:none}}
