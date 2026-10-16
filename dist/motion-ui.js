@@ -65,6 +65,14 @@ export function dismissSheet(dialog,{drilldown=false,target=null}={}){
   dialog.close();
   back?.();const reduce=reducedMotion();retire(layer,clone.animate(reduce?[{opacity:1},{opacity:0}]:[{transform:'none',opacity:1},{transform:phone()&&!drilldown?'translateY(100%)':'translateX(100%)',opacity:0}],{duration:reduce?0:phone()&&drilldown?350:220,easing:'cubic-bezier(.4,0,1,1)'}));
 }
+// Centered sheets close at once; a visual copy fades out above the page.
+export function fadeOutDialog(dialog){
+  if(!dialog?.open)return null;
+  if(reducedMotion()){dialog.close();return null;}
+  const rect=dialog.getBoundingClientRect(),clone=cleanClone(dialog),layer=animationLayer();
+  clone.style.position='absolute';clone.style.left=rect.left+'px';clone.style.top=rect.top+'px';clone.style.width=rect.width+'px';clone.style.height=rect.height+'px';clone.style.margin='0';layer.append(clone);dialog.close();
+  const animation=clone.animate([{opacity:1},{opacity:0,transform:'translateY(2%) scale(.98)'}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'});retire(layer,animation);return animation;
+}
 export function dismissReveal(dialog,element=dialog){
   if(!dialog?.open)return null;
   const rect=element.getBoundingClientRect(),clone=cleanClone(element),layer=animationLayer();

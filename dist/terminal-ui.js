@@ -225,6 +225,13 @@ export function terminalUI(store,toast){
     }finally{busy=false;if(turn!==generation&&session&&!closing)schedule(0);}
     if(turn===generation&&session&&!closing&&delay!==null)schedule(delay);
   }
+  // In the project room the terminal sits inline under 终端; elsewhere it opens as a sheet.
+  function present(){
+    const host=document.querySelector('#project-terminal-host'),inline=!!host&&!host.closest('[hidden]');
+    dialog.classList.toggle('inline',inline);
+    if(inline){if(dialog.parentElement!==host)host.append(dialog);dialog.show();}
+    else{if(dialog.parentElement!==document.body)document.body.append(dialog);dialog.showModal();revealMotion();}
+  }
   function ensureDialog(){
     if(dialog)return;dialog=document.createElement('dialog');dialog.className='terminal-dialog';dialog.setAttribute('aria-labelledby','terminal-title');
     dialog.innerHTML='<div class="modal-head"><h2 id="terminal-title"></h2><div><button class="button quiet" id="terminal-collapse">收起</button><button class="button" id="terminal-interrupt">Ctrl+C</button> <button class="button" id="terminal-disconnect">断开</button> <button class="button danger" id="terminal-stop">结束终端</button></div></div><p id="terminal-maintenance-note" class="terminal-maintenance-note" role="status" hidden></p><div id="terminal-screen"></div><div class="terminal-recovery"><span id="terminal-connection-note" role="status" hidden></span><button class="button quiet" id="terminal-query" hidden>重新查询</button><button class="button" id="terminal-retry" hidden>重连</button><button class="button" id="terminal-new" hidden>新建终端</button></div><div class="terminal-footer"><p id="terminal-session-note" class="muted"></p>'+copyHelp('断开和结束','断开保留终端和已有命令；结束终端会停止其中的命令。输入未确认时不会自动重发，请重连后检查输出。','/guide/development')+'</div>';
@@ -269,7 +276,7 @@ export function terminalUI(store,toast){
       const machineLabel=target.machine.length<=8?'<span class="server-id terminal-server-id" title="'+escapeUI(target.machine)+'">'+escapeUI(target.machine)+'</span>':serverIdHTML(target.machine,'terminal-server-id');
       title.innerHTML=machineLabel+'<span> · '+escapeUI((target.project?target.project+' · ':'')+label)+'</span><code class="terminal-session-id" title="'+escapeUI(retained.id)+'">'+escapeUI(retained.id)+'</code>';
       document.querySelector('#terminal-session-note').textContent='容器终端 · 无 GPU';
-      connectionNote();dialog.showModal();revealMotion();term?.dispose();document.querySelector('#terminal-screen').replaceChildren();
+      connectionNote();if(!dialog.open)present();term?.dispose();document.querySelector('#terminal-screen').replaceChildren();
       term=new globalThis.Terminal({documentOverride:terminalDocument,cursorBlink:false,fontFamily:'Geist Mono, monospace',fontSize:14,scrollback:3000,theme:{background:'#060607',foreground:'#D8D9D4'},allowProposedApi:false});
       fit=new globalThis.FitAddon.FitAddon();term.loadAddon(fit);withNonceStyles(()=>{term.open(document.querySelector('#terminal-screen'));fit.fit();});
       term.onData(data=>{if(enqueue(data))sendSoon();});syncMaintenance();term.focus();exchange();
@@ -283,7 +290,7 @@ export function terminalUI(store,toast){
   }
   document.addEventListener('gpuq-terminal-reveal',event=>{
     const {id,userId}=event.detail||{},known=sessions.get(id);if(userId!==store.principal?.userId||known?.userId!==userId)return;
-    if(session?.id===id){ensureDialog();if(!dialog.open){dialog.showModal();revealMotion();}fit?.fit();term?.focus();return;}
+    if(session?.id===id){ensureDialog();if(!dialog.open)present();fit?.fit();term?.focus();return;}
     openTerminal({id:'terminal-reconnect',disabled:false},known);
   });
   document.addEventListener('click',event=>{

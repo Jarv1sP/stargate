@@ -1,6 +1,7 @@
 import {discloseInfo,serverIdHTML,personalQuotaReadout,escapeUI as esc} from './workbench-ui.js';
 import {DemoClient} from './client.js';
 import {executionUI} from './execution-ui.js';
+import {jobsRoom} from './jobs-room.js';
 import {registerGpuTasksAdmin} from './admin-gpu-tasks.js';
 import {terminalUI} from './terminal-ui.js';
 import {resourcesUI,monitorSummary} from './resources-ui.js';
@@ -39,6 +40,7 @@ const renderOperationalMaintenance=operationalMaintenanceUI(store,toast,()=>rend
 const renderMaintenanceExperience=maintenanceExperienceUI(store,toast,{getPage:()=>page,refresh:()=>render(true)});
 const renderTransfers=transfersUI(store,toast);
 const renderResourceView=resourcesUI(store,{machines:MACHINES,getPage:()=>page,navigate:choosePage});
+const renderJobsRoom=jobsRoom(store,{toast,machines:MACHINES,getPage:()=>page});
 terminalUI(store,toast);
 const isAdmin=()=>store.principal?.role==='admin';
 const own=()=>store.users.find(u=>u.id===store.principal?.userId);
@@ -48,7 +50,8 @@ const pendingUsers=()=>store.users.filter(pending);
 const label=u=>!u.enabled?'已暂停':u.role==='admin'?'管理员':pending(u)?'待处理':u.total?'已授权':'零额度';
 const dirty=()=>members?.active()&&draft&&store.users.some(u=>u.id===selected)&&(JSON.stringify(draft.limits)!==JSON.stringify(store.get(selected).limits)||draft.total!==store.get(selected).total);
 const placeToast=toastPosition($('#toast'));
-function toast(message){clearTimeout(toastTimer);const target=$('#toast'),shown=target.classList.contains('visible');target.textContent=message;target.classList.add('visible');placeToast();if(!shown&&!reducedMotion())target.animate([{opacity:0},{opacity:1}],{duration:220,easing:'cubic-bezier(.4,0,.2,1)'});toastTimer=setTimeout(()=>target.classList.remove('visible'),3500);}
+const rocket='<svg class="toast-rocket" width="12" height="18" viewBox="0 0 12 18" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M6 1c2.2 2 3 4.5 3 7v5H3V8c0-2.5.8-5 3-7z"/><path d="M3 13l-2 3M9 13l2 3M6 13v4"/></svg>';
+function toast(message,{launch=false}={}){clearTimeout(toastTimer);const target=$('#toast'),shown=target.classList.contains('visible');target.innerHTML=(launch?rocket:'')+'<span></span>';target.lastChild.textContent=message;target.classList.toggle('launch',launch);target.classList.add('visible');placeToast();if(!shown&&!reducedMotion())target.animate([{opacity:0,transform:'translateY(20px)'},{opacity:1,transform:'none'}],{duration:450,easing:'cubic-bezier(.34,1.32,.5,1)'});toastTimer=setTimeout(()=>target.classList.remove('visible'),3500);}
 function report(error){toast(error.message);if(error.status===401){store.principal=null;store.data=null;MACHINES.length=0;capacity=0;draft=null;render();openLogin();}}
 const identityPortal=globalThis.GPUQ_CENTRAL_IDENTITY?.portal||'https://www.j4rv1s.xyz';
 function openLogin(){location.replace('/auth/login');}
@@ -59,7 +62,7 @@ function render(preserve=false){
   if(logged)for(const node of document.querySelectorAll('[data-public-maintenance]')){node.textContent=store.data?.operationalMaintenance?.global?.reason||'';node.hidden=!node.textContent;}
   document.body.classList.toggle('not-admin',!admin);
   for(const el of document.querySelectorAll('[data-admin-only]'))el.hidden=!admin||el.hasAttribute('data-admin-entry')&&!hasAdminSections();
-  for(const el of document.querySelectorAll('[data-page]'))el.hidden=el.dataset.page!==page&&!(el.dataset.page==='work'&&page==='jobs');
+  for(const el of document.querySelectorAll('[data-page]'))el.hidden=el.dataset.page!==page;
   for(const el of document.querySelectorAll('[data-nav]')){el.classList.toggle('active',el.dataset.nav===page);el.setAttribute('aria-current',el.dataset.nav===page?'page':'false');}
   $('#current-account').innerHTML=logged?`<span class="current-account-name">${esc(store.principal.username)}</span><span class="current-account-role">${admin?'管理员':'普通用户'}</span>`:'尚未登录';
   $('#profile-name').textContent=logged?u?.name||store.principal.username:'未登录';$('#profile-role').textContent=admin?'管理员':'个人工作空间';
@@ -86,8 +89,8 @@ function render(preserve=false){
   }else $('#mode-note').textContent=[note,monitorNotice].filter(Boolean).join(' ');
   $('.demo-note').hidden=!note&&!monitorNotice;
   renderOperationalMaintenance();
-  renderTransfers(page==='transfers');renderResources();renderExecution();renderDatasets();renderCommunity(page==='community');renderAnnouncements();
-  $('#open-submit').hidden=page!=='jobs'||!logged||!store.production||store.data?.executionEnabled!==true;$('#open-submit').disabled=false;
+  renderTransfers(page==='transfers');renderResources();renderExecution();renderJobsRoom();renderDatasets();renderCommunity(page==='community');renderAnnouncements();
+  $('#open-submit').hidden=true;
   shell.update();
   adminConsole.update();
   renderMaintenanceExperience();

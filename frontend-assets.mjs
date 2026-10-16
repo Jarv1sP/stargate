@@ -3,7 +3,7 @@
 export const STARBASE_ASSETS = Object.fromEntries([
   'starbase-tokens.css', 'starbase-shell.css', 'starbase-controls.css', 'starbase-status.css', 'starbase-surfaces.css', 'starbase-overlays.css', 'starbase-responsive.css', 'starbase-motion.css', 'starbase-navigation-glass.css',
   'announcement-ui.js','announcement-appearance.js','announcements.css',
-  'fonts.css', 'starbase.css', 'shell.css', 'workbench.css', 'terminal.css', 'resources.css', 'apple-touch-icon.png', 'members.css', 'copy-help.css',
+  'fonts.css', 'starbase.css', 'shell.css', 'workbench.css', 'terminal.css', 'resources.css', 'jobs-room.css', 'projects-room.css', 'data-room.css', 'collab-room.css', 'jobs-room.js', 'sheet-ui.js', 'apple-touch-icon.png', 'members.css', 'copy-help.css',
   'resource-orbits.js', 'shell-ui.js', 'control-ui.js', 'attention-state.js', 'workbench-ui.js', 'training-storage-ui.js', 'motion-ui.js', 'copy-help-ui.js', 'startup-ui.js', 'sky-ui.js', 'portal-shell.css', 'navigation.js', 'toast-ui.js',
   'favicon.svg', 'favicon.ico', 'mask-icon.svg',
   'task-display-ui.js',

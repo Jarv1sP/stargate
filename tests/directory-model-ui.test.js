@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {projectStatusText,trainingTarget,projectDiskQuotaHTML} from '../dist/execution-ui.js';
-import {datasetRows,directoryBytes,storageVolumeHTML} from '../dist/datasets-ui.js';
+import {datasetRows,directoryBytes,gaugeDiskHTML} from '../dist/datasets-ui.js';
 import {trashReference,trashLabel} from '../dist/trash-ui.js';
 import {uploadPersonalFile} from '../dist/personal-upload.js';
 import {resourceServerView,resourceCards} from '../dist/resources-ui.js';
@@ -48,13 +48,13 @@ test('zero GPU quota does not hide shared server readings or the workspace entry
 
 test('storage distinguishes lower bounds, unknown and real zero without filling an unknown bar',()=>{
  assert.equal(directoryBytes({size:null,complete:false}),'未知');assert.equal(directoryBytes({size:0,complete:true}),'0 B');assert.equal(directoryBytes({size:3,complete:false}),'至少 3 B');
- const unknown=storageVolumeHTML('workspace',{usedBytes:null,totalBytes:null,availableBytes:null});assert.match(unknown,/is-unknown/);assert.doesNotMatch(unknown,/<i |空间不足/);
- const low=storageVolumeHTML('datasets',{usedBytes:100,totalBytes:200,availableBytes:50});assert.match(low,/空间不足/);assert.match(low,/data-fill="50"/);
+ const unknown=gaugeDiskHTML('SSD',{usedBytes:null,totalBytes:null,availableBytes:null});assert.match(unknown,/is-unknown/);assert.match(unknown,/未知/);assert.doesNotMatch(unknown,/<i |空间不足/);
+ const low=gaugeDiskHTML('HDD',{usedBytes:100,totalBytes:200,availableBytes:50});assert.match(low,/空间不足/);assert.match(low,/data-fill="50"/);
 });
 
 test('shared SSD quota renders once without a phantom HDD',()=>{
  const volume={kind:'shared',fs:'9223372036854775815',usedBytes:100,totalBytes:200,availableBytes:100};
  const html=projectDiskQuotaHTML({volumes:[volume],projectUsage:{size:null,complete:false}});
  assert.equal((html.match(/<li>/g)||[]).length,1);assert.match(html,/SSD · 工作区与数据集共用/);assert.match(html,/项目文件用量：未知/);assert.doesNotMatch(html,/HDD/);
- const card=storageVolumeHTML(volume.kind,volume);assert.match(card,/SSD · 工作区与数据集共用/);assert.match(card,/\/workspace · \/datasets/);assert.doesNotMatch(card,/HDD/);
+ const gauge=gaugeDiskHTML('SSD · 工作区与数据集共用',volume);assert.match(gauge,/SSD · 工作区与数据集共用/);assert.match(gauge,/data-fill="50"/);assert.doesNotMatch(gauge,/HDD/);
 });

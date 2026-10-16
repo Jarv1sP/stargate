@@ -13,6 +13,7 @@ import {createProjectManagement,projectSelectHTML} from './project-management-ui
 import {escapeUI as escape,workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
 import {trainingStorageMessage,trainingSelectionHTML} from './training-storage-ui.js';
 import {revealSheet,dismissSheet,sharedObject} from './motion-ui.js';
+import {openSheet,closeSheet} from './sheet-ui.js';
 import {createTaskNotesUI} from './task-notes-ui.js';
 import {maintenanceFor,heldDuringMaintenance,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
 const terminal=new Set(['SUCCEEDED','FAILED','CANCELED']);
@@ -211,21 +212,45 @@ export function executionUI(store,refresh,toast){
     settingsDialog=document.createElement('dialog');settingsDialog.id='work-submit-panel';settingsDialog.className='work-sheet settings-sheet';settingsDialog.setAttribute('aria-labelledby','submit-panel-title');settingsDialog.innerHTML='<header class="sheet-header glass"><h2 id="submit-panel-title">提交设置</h2><button class="button quiet" id="close-submit-panel" type="button">返回提交</button></header><div class="sheet-scroll"></div>';document.body.append(settingsDialog);
     settingsDialog.addEventListener('cancel',event=>{event.preventDefault();dismissSheet(settingsDialog,{drilldown:true});closeSettings();});settingsDialog.addEventListener('close',()=>{if(!settingsDialog.open)closeSettings();});
     for(const detail of train.querySelectorAll('.training-advanced>details'))detail.querySelector('summary').addEventListener('click',event=>{event.preventDefault();settings(detail);});
-    const layout=document.createElement('div');layout.className='wb-layout';const jobs=document.createElement('section');jobs.className='wb-jobs';jobs.setAttribute('aria-label','我的训练');const rail=document.createElement('aside');rail.className='wb-rail';rail.setAttribute('aria-label','项目、开发终端与文件');
-    const table=query('#my-job-table'),kicker=section.querySelector('.section-kicker'),explanation=kicker.nextElementSibling;explanation.className='wb-job-explanation muted';jobs.append(table,kicker,explanation);rail.append(...section.children);layout.append(jobs,rail);section.append(layout);
+    const jobs=document.createElement('section');jobs.className='wb-jobs';jobs.hidden=true;jobs.setAttribute('aria-label','我的训练');
+    const table=query('#my-job-table'),kicker=section.querySelector('.section-kicker'),explanation=kicker.nextElementSibling;explanation.className='wb-job-explanation muted';jobs.append(table,kicker,explanation);
+    // Approved project room: the project name and switch on top, then 终端 / 文件 / 设置.
+    const room=document.createElement('div');room.className='pr-room';
+    room.innerHTML='<div class="pr-head"><div><div class="page-eyebrow">容器工作区 · /workspace</div><h2 class="pr-name" id="pr-name">选择项目</h2></div><button type="button" class="pr-switch" id="pr-switch"><span class="pr-srv mono" id="pr-srv"></span><span>切换项目</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>'
+      +'<div class="jr-tabs pr-tabs" role="tablist" aria-label="项目"><button type="button" role="tab" data-pt="term" aria-selected="true">终端</button><button type="button" role="tab" data-pt="files" aria-selected="false">文件</button><button type="button" role="tab" data-pt="settings" aria-selected="false">设置</button><span class="jr-ul" aria-hidden="true"></span></div>'
+      +'<div class="pr-pane" data-pp="term"><div id="project-terminal-host"></div></div><div class="pr-pane" data-pp="files" hidden></div><div class="pr-pane" data-pp="settings" hidden></div>'
+      +'<dialog class="pr-sheet" id="pr-switch-sheet" aria-labelledby="pr-switch-title"><div class="pr-sheet-in"><div class="pr-sheet-head"><div><div class="page-eyebrow">切换项目</div><div class="pr-sheet-title" id="pr-switch-title">选择服务器和项目</div></div><button type="button" class="jr-x" id="pr-switch-close" aria-label="关闭">✕</button></div></div></dialog>';
+    const pane=key=>room.querySelector(`[data-pp=${key}]`),sheet=room.querySelector('#pr-switch-sheet'),files=query('#workspace-files');
+    pane('term').prepend(query('.personal-terminal'));
+    files.open=true;files.querySelector('summary').hidden=true;pane('files').append(files);
+    // Files tab: rows with download, a pick button and drag-in upload reuse the resumable upload above.
+    const picker=files.querySelector('[name=files]'),upload=files.querySelector('#workspace-upload'),pick=document.createElement('button');pick.type='button';pick.id='pr-upload-pick';pick.className='button';pick.textContent='上传文件';upload.before(pick);
+    const hint=document.createElement('p');hint.className='pr-files-hint';hint.textContent='拖进来就上传。断网后再拖同一个文件，会从断点继续。';files.append(hint);
+    pick.addEventListener('click',()=>picker.click());picker.addEventListener('change',()=>{if(picker.files.length)upload.click();});
+    const drop=pane('files');for(const type of ['dragenter','dragover'])drop.addEventListener(type,event=>{if(!event.dataTransfer?.types?.includes('Files'))return;event.preventDefault();drop.classList.add('over');});
+    drop.addEventListener('dragleave',event=>{if(!drop.contains(event.relatedTarget))drop.classList.remove('over');});
+    drop.addEventListener('drop',event=>{drop.classList.remove('over');if(!event.dataTransfer?.files?.length)return;event.preventDefault();picker.files=event.dataTransfer.files;picker.dispatchEvent(new Event('change'));});
+    room.querySelector('.pr-sheet-in').append(query('.workspace-context-grid'),query('#project-create'));room.querySelector('.pr-sheet-head>div').after(query('#projects-refresh'));
+    pane('settings').append(...section.children);section.append(room,jobs);
+    const underline=()=>{const on=room.querySelector('.pr-tabs [aria-selected=true]'),line=room.querySelector('.pr-tabs .jr-ul');if(on?.offsetWidth){line.style.width=on.offsetWidth+'px';line.style.transform=`translateX(${on.offsetLeft}px)`;}};
+    room.querySelector('.pr-tabs').addEventListener('click',event=>{const tab=event.target.closest('[data-pt]');if(!tab)return;for(const item of room.querySelectorAll('[data-pt]'))item.setAttribute('aria-selected',item===tab);for(const item of room.querySelectorAll('[data-pp]'))item.hidden=item.dataset.pp!==tab.dataset.pt;underline();if(tab.dataset.pt==='files')listWhenReady();});
+    new ResizeObserver(underline).observe(room.querySelector('.pr-tabs'));
+    room.querySelector('#pr-switch').addEventListener('click',()=>openSheet(sheet));room.querySelector('#pr-switch-close').addEventListener('click',()=>closeSheet(sheet));
+    sheet.addEventListener('cancel',event=>{event.preventDefault();closeSheet(sheet);});
+    query('[name=workspace-project]').addEventListener('change',event=>{if(event.target.value&&sheet.open)closeSheet(sheet);});
     const receipt=document.createElement('section');receipt.id='submission-receipt';receipt.className='wb-receipt';receipt.setAttribute('aria-live','polite');receipt.hidden=true;jobs.prepend(receipt);
     const projectHelp=document.createElement('p');projectHelp.id='project-status-detail';query('#project-status').after(projectHelp);discloseInfo(projectHelp,'项目状态详情');
     const fileRoute=document.createElement('span');fileRoute.id='workspace-upload-route';fileRoute.innerHTML=infoHTML('文件使用校园网 HTTPS 直连；上传失败保留原编号和偏移。','文件传输路线');query('#workspace-files>summary').append(fileRoute);
     const prefill=document.createElement('div');prefill.id='submit-prefill';prefill.className='submit-prefill';prefill.hidden=true;scroll.prepend(prefill);
     for(const [id,label] of [['workspace-mode-note','代码与环境说明'],['terminal-mode-note','开发终端说明'],['training-target-note','训练位置说明'],['priority-note','优先级说明'],['custom-policy-note','排队与让位说明'],['elastic-note','弹性显卡说明'],['placement-note','共享显卡说明']])discloseInfo(query('#'+id),label);
-    for(const text of section.querySelectorAll('.wb-rail p.muted,.wb-rail .project-actions>span'))discloseInfo(text,'工作区说明');
+    for(const text of section.querySelectorAll('.pr-room p.muted,.pr-room .project-actions>span'))discloseInfo(text,'工作区说明');
     for(const text of train.querySelectorAll('p.muted,label>small'))if(!text.closest('.submit-cli,.sheet-footer'))discloseInfo(text,'训练配置说明');
     discloseInfo(explanation,'任务额度说明');
     const contextInfo=query('#workspace-mode-note').closest('.ui-info'),statusInfo=query('#project-status-detail').closest('.ui-info'),contextCopy=document.createElement('div');contextCopy.className='ui-info-content';
     for(const id of ['workspace-mode-note','project-status-detail']){const note=query('#'+id);note.classList.remove('ui-info-content');contextCopy.append(note);}contextInfo.append(contextCopy);statusInfo.remove();contextInfo.querySelector('summary').setAttribute('aria-label','项目与 Git 说明');query('.workspace-context-heading>div').append(contextInfo);
     const disk=document.createElement('details');disk.id='project-disk-quota';disk.className='execution-panel';
     disk.innerHTML='<summary>磁盘用量<span id="disk-quota-state"></span></summary><div class="disk-quota-head"><span id="disk-quota-machine" class="server-id mono"></span>'+infoHTML('项目文件用量不分摊共享容器镜像。盘容量包含同盘其他内容；至少表示有目录读不到，未知不代表零用量。','磁盘用量说明')+'<button id="disk-quota-refresh" class="button quiet" type="button">刷新</button></div><div id="disk-quota-result" role="status" aria-live="polite"></div>';
-    query('#workspace-files').before(disk);disk.addEventListener('toggle',()=>{if(disk.open){activateProjectActivity();syncDiskQuota();}else cancelDiskQuota();});query('#disk-quota-refresh').addEventListener('click',()=>void loadDiskQuota());
+    query('[data-pp=settings]').append(disk);disk.addEventListener('toggle',()=>{if(disk.open){activateProjectActivity();syncDiskQuota();}else cancelDiskQuota();});query('#disk-quota-refresh').addEventListener('click',()=>void loadDiskQuota());
   }
   const receiptActor=()=>JSON.stringify([store.principal?.userId,store.principal?.role,store.authGeneration]);
   function renderReceipt(){
@@ -344,7 +369,7 @@ export function executionUI(store,refresh,toast){
     const output=query('[name=file-area]').value==='output';
     const deleteOutputs=query('#workspace-delete-outputs');deleteOutputs.hidden=!output||!deletableResultJob(store,outputSelectionJob());deleteOutputs.disabled=locked||!available;
     const resultCopy=query('#workspace-pull-command');resultCopy.hidden=!output||!resultJob();resultCopy.disabled=!resultFilePath||query('[name=file-path]').value!==resultFilePath||locked||!available;
-    if(!output)query('#workspace-output-files').hidden=true;
+    if(!output&&query('#workspace-output-files .job-result-file'))query('#workspace-output-files').hidden=true;
     for(const id of ['workspace-list','workspace-download'])query('#'+id).disabled=!available||locked;
     query('#workspace-upload').textContent=project&&uploadRecovery?.scope===uploadScope()&&uploadRecovery.keys?.size?'续传原上传':'上传';
     query('#workspace-upload').disabled=!available||locked||output;query('[name=files]').disabled=!available||locked||output;
@@ -363,6 +388,7 @@ export function executionUI(store,refresh,toast){
     if(!section||!actor)return;
     const entries=directoryEntries(),selected=entries.find(item=>item.machine===machine&&item.info.project===project&&(!projectOwner||item.info.ownerId===projectOwner));
     const value=selected?projectDirectoryValue(selected,entries,machine):'';
+    const title=query('#pr-name');if(title){title.textContent=selected?(selected.info.displayName||selected.info.project):'选择项目';query('#pr-srv').textContent=selected?selected.machine.replace(/^amax-/,''):'';}
     query('[name=workspace-project]').innerHTML=projectSelectHTML(entries.map(entry=>({...entry.info,machine:entry.machine,selectionValue:projectDirectoryValue(entry,entries,machine)})),value,projectManagement?.includeArchived(),projectEnvironmentLabel);
     query('[name=workspace-project]').value=value;
     const info=currentProject(),environment=query('#project-environment');environment.hidden=!info;environment.textContent=info?'OCI 容器':'';
@@ -376,7 +402,9 @@ export function executionUI(store,refresh,toast){
     select.innerHTML='<option value="">选择任务，或输入任务 ID</option>'+jobs.map(job=>`<option value="${escape(job.id)}">${escape(job.name)} · ${escape(job.id.slice(0,8))} · ${escape(job.state)}</option>`).join('');
     if(jobs.some(job=>job.id===previous))select.value=previous;
   }
-  function clearFileContext(){stopFileRead();query('#project-network-result').hidden=true;query('#project-network-result').textContent='';query('[name=file-path]').value='.';query('[name=file-area]').value='code';query('[name=file-run-id]').value='';query('[name=file-run]').value='';query('[name=files]').value='';query('#workspace-result').textContent='选择目录或文件。';}
+  function clearFileContext(){stopFileRead();query('#project-network-result').hidden=true;query('#project-network-result').textContent='';query('[name=file-path]').value='.';query('[name=file-area]').value='code';query('[name=file-run-id]').value='';query('[name=file-run]').value='';query('[name=files]').value='';query('#workspace-result').textContent='选择目录或文件。';const list=query('#workspace-output-files');if(list){list.hidden=true;list.replaceChildren();}if(query('[data-pp=files]')&&!query('[data-pp=files]').hidden)listWhenReady();}
+  // Opens the listing as soon as the project allows file reads (it may still be loading or busy).
+  function listWhenReady(attempt=0){const button=query('#workspace-list');if(!button||query('[data-pp=files]')?.hidden)return;if(!button.disabled){button.click();return;}if(attempt<40)setTimeout(()=>listWhenReady(attempt+1),250);}
   function syncMachineFields(){for(const name of ['workspace-machine','machine','terminal-machine','file-machine']){const field=query(`[name=${name}]`),selected=name==='workspace-machine'?focusMachine:machine;field.value=selected;field.title=selected;}const selected=(store.data?.machines||[]).find(item=>item.id===machine);query('[name=cards]').max=String(selected?.cards||1);}
   async function selectMachine(value,{keepContainer=false}={}){
     if(value===focusMachine&&(!project||machine===value))return;
@@ -435,12 +463,19 @@ export function executionUI(store,refresh,toast){
   function resultJob(){const id=query('[name=file-run-id]')?.value,job=ownJobs().find(row=>row.id===id&&row.machine===machine&&row.project===project);return resultAccess.allowed(job)?job:null;}
   function outputSelectionJob(){const id=query('[name=file-run-id]')?.value;return ownJobs().find(row=>row.id===id&&row.machine===machine&&row.project===project);}
   function stopFileRead(){fileReadTurn++;fileReadController?.abort();fileReadController=null;resultFilePath=null;const tree=query('#workspace-output-files');if(tree){tree.hidden=true;tree.replaceChildren();}const copy=query('#workspace-pull-command');if(copy)copy.hidden=true;const result=query('#workspace-result');if(result)result.hidden=false;}
+  function codeFilesHTML(entries,directory){
+    const size=value=>Number.isSafeInteger(value)&&value>=0?(value>=1024**2?(value/1024**2).toFixed(1)+' MB':value>=1024?(value/1024).toFixed(1)+' KB':value+' B'):'未知';
+    const rows=entries.filter(row=>['file','directory'].includes(row?.type)).map(row=>{const path=directory==='.'?row.name:directory+'/'+row.name,folder=row.type==='directory';
+      return `<div class="pr-file"><button type="button" class="pr-file-name mono" data-code-path="${escape(path)}" data-code-type="${folder?'directory':'file'}">${escape(row.name)}${folder?'/':''}</button><span class="pr-file-size">${folder?'目录':size(row.size)}</span>${folder?'<span></span>':`<button type="button" class="pr-file-get" data-code-download="${escape(path)}">下载</button>`}</div>`;});
+    if(directory!=='.')rows.unshift(`<div class="pr-file"><button type="button" class="pr-file-name mono" data-code-path="${escape(directory.includes('/')?directory.slice(0,directory.lastIndexOf('/')):'.')}" data-code-type="directory">← 上一级</button><span></span><span></span></div>`);
+    return rows.join('')||'<p class="pr-file-empty">目录是空的。把文件拖进来就上传。</p>';
+  }
   async function listFiles(){
     stopFileRead();const target=fileContext(),path=query('[name=file-path]').value||'.',token=currentToken(),turn=fileReadTurn,controller=new AbortController();fileReadController=controller;
     const result=await store.call('files.list',{...target,path},{signal:controller.signal});
     if(controller.signal.aborted||turn!==fileReadTurn||token!==currentToken()||target.area==='output'&&query('[name=file-run-id]').value!==target.runId)return;
     if(target.area==='output'&&(resultJob()||deletableResultJob(store,outputSelectionJob()))){query('#workspace-output-files').innerHTML=resultFilesHTML(result.entries,path,{deletable:deletableResultJob(store,outputSelectionJob())});query('#workspace-output-files').hidden=false;query('#workspace-result').textContent='';query('#workspace-result').hidden=true;query('#workspace-pull-command').hidden=!resultJob();query('#workspace-pull-command').disabled=true;}
-    else query('#workspace-result').textContent=result.entries.map(file=>`${file.type==='directory'?'[目录]':'[文件]'} ${file.name}  ${file.type==='file'?file.size+' B':''}`).join('\n')||'目录为空';
+    else{query('#workspace-output-files').innerHTML=codeFilesHTML(result.entries,path);query('#workspace-output-files').hidden=false;query('#workspace-result').hidden=false;query('#workspace-result').textContent=(path==='.'?'/workspace':'/workspace/'+path)+' · '+result.entries.length+' 项';}
   }
   document.addEventListener('click',event=>{
     const button=event.target.closest('button');if(!button||button.disabled)return;
@@ -474,6 +509,8 @@ export function executionUI(store,refresh,toast){
     if(button.id==='projects-refresh'){activateProjectActivity();loadDirectory();}
     if(button.id==='project-network-check')guarded(button,async()=>{const target=context(),token=currentToken(),result=await call('projects.status',{...target,diagnoseNetwork:true});if(token!==currentToken())return;query('#project-network-result').hidden=false;query('#project-network-result').textContent=result.network?JSON.stringify(result.network,null,2):'网络状态未知，请稍后重试。';});
     if(button.id==='workspace-list')guarded(button,listFiles);
+    if(button.dataset.codePath!==undefined&&button.dataset.codeType==='directory'){query('[name=file-path]').value=button.dataset.codePath;guarded(button,listFiles);return;}
+    if(button.dataset.codeDownload!==undefined){const input=query('[name=file-path]'),directory=input.value;input.value=button.dataset.codeDownload;query('#workspace-download').click();input.value=directory;return;}
     if(button.id==='workspace-upload')guarded(button,async()=>{
       const target=fileContext(),token=currentToken(),dir=query('[name=file-path]').value||'.',files=[...query('[name=files]').files];if(target.area==='output')throw Error('任务输出只支持查看和下载。');if(!files.length)throw Error('先选择文件。');
       query('#workspace-result').textContent='正在上传…';
@@ -483,7 +520,7 @@ export function executionUI(store,refresh,toast){
           catch(error){if(token===currentToken())query('#workspace-result').textContent=error.message;throw error;}
       }
       if(token!==currentToken())return;
-      keys.clear();query('#workspace-result').textContent=`已上传 ${files.length} 个文件，可直接运行。`;renderProject();toast('文件上传完成。');
+      keys.clear();query('[name=files]').value='';renderProject();toast('文件上传完成。');await listFiles().catch(()=>{});query('#workspace-result').textContent=`已上传 ${files.length} 个文件，可直接运行。`;
     },true);
     if(button.hasAttribute('data-result-delete')||button.id==='workspace-delete-outputs'){
       const job=outputSelectionJob();if(!deletableResultJob(store,job))return;
