@@ -10,9 +10,9 @@ import {elasticFields,elasticFromForm,allocationSummary,placementFields,placemen
 import {taskDescription} from './task-metadata.js';
 import {installTaskLabelEditor,taskLabelEditorHTML} from './task-display-ui.js';
 import {createProjectManagement,projectSelectHTML} from './project-management-ui.js';
-import {escapeUI as escape,stateWord,workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
+import {escapeUI as escape,workbenchCards,jobOverviewHTML,endedJob,stateHTML,stateClass,trainingReadout,personalQuotaReadout,boundarySweep,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
 import {trainingStorageMessage,trainingSelectionHTML} from './training-storage-ui.js';
-import {revealSheet,dismissSheet,sharedObject,segPill} from './motion-ui.js';
+import {revealSheet,dismissSheet,sharedObject} from './motion-ui.js';
 import {openSheet,closeSheet} from './sheet-ui.js';
 import {createTaskNotesUI} from './task-notes-ui.js';
 import {maintenanceFor,heldDuringMaintenance,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
@@ -126,22 +126,6 @@ export function executionUI(store,refresh,toast){
   const overviewWithLabels=(job,options)=>resultAccess.markup(job)+jobOverviewHTML(job,options)+taskLabelEditorHTML(job,store.principal);
   const diagnostics=createJobDiagnostics(store,()=>log,toast,{drawer:true,header:job=>`<span class="sheet-object">${stateHTML(job,false)}<span>${escape(job.name||'训练详情')}</span></span>`,reveal:(dialog,job,origin)=>{sharedObject(origin||jobHeading(job.id),dialog.querySelector('.sheet-object'));revealSheet(dialog,{drilldown:true});},dismiss:dialog=>dismissSheet(dialog,{drilldown:true,target:jobHeading(focusedJob)}),overview:job=>overviewWithLabels(job,{owned:!!store.principal,schedulingHTML:allocationSummary(job)+placementSummary(job)+`<span>排队优先级：${escape(priorityRankLabel(job))}</span>`+schedulingSummary(job)+`<span>${escape(schedulingContractLabel(job.schedulerPolicy??{yield_policy:job.yieldPolicy,restart_policy:job.restartPolicy}))}</span><span>状态：${escape(job.schedulerState||'未提供')}</span><span>更新于 ${escape(sampleTime(job.schedulerCheckedAt))}</span>`}),output:showOutput,notes:showNotes,onCompletion:(value,job)=>resultAccess.accept(job,value),onView:next=>{if(next!=='notes')notes?.sync(false,true);}});
   const call=(operation,args)=>store.call(operation,{...(projectOwner?{ownerId:projectOwner}:{}),...args}),query=selector=>section?.querySelector(selector)||submitDialog?.querySelector(selector)||settingsDialog?.querySelector(selector)||log?.querySelector(selector);
-  let gpuShell=null;
-  async function startGpuShell(button){
-    const target=context(),me=store.principal?.userId;if(!target.project){toast('先选择项目。');return;}
-    const seg=button.closest('.pr-gpu-seg');for(const b of seg.querySelectorAll('[data-shell-gpu]'))b.setAttribute('aria-pressed',String(b===button));segPill(seg);
-    const running=store.jobs.find(job=>job.interactive&&job.userId===me&&job.machine===target.machine&&job.project===target.project&&!['SUCCEEDED','FAILED','CANCELED'].includes(job.state));
-    if(running){gpuShell={id:running.id};watchGpuShell();return;}
-    button.disabled=true;
-    try{const job=await store.call('jobs.submit',{...target,cards:1,minVramGiB:0,name:'GPU 交互终端',priority:'normal',interactive:true,argv:['/bin/bash','--noprofile','--norc','-i'],key:crypto.randomUUID()});gpuShell={id:job.id};toast('已申请 1 张卡，排上后终端会自动接上',{launch:true});await refresh();}
-    catch(error){toast(error.message);for(const b of seg.querySelectorAll('[data-shell-gpu]'))b.setAttribute('aria-pressed',String(b.dataset.shellGpu==='0'));segPill(seg);}
-    finally{button.disabled=false;}
-  }
-  function watchGpuShell(){
-    if(!gpuShell)return;const job=store.jobs.find(row=>row.id===gpuShell.id),attach=query('.pr-gpu-seg [data-gpu-shell]');
-    if(job?.state==='RUNNING'&&attach){attach.dataset.gpuShell=job.id;gpuShell=null;attach.click();}
-    else if(job&&['FAILED','CANCELED','SUCCEEDED'].includes(job.state)){gpuShell=null;toast('GPU 交互终端没有启动：'+stateWord(job));}
-  }
   const context=()=>({machine,...(project?{project,...(projectOwner?{ownerId:projectOwner}:{})}:{})}),currentProject=()=>catalog.find(item=>item.project===project&&(!projectOwner||item.ownerId===projectOwner));
   const projectMachines=()=>store.principal?(store.data?.machines||[]):[];
   const directoryEntries=()=>projectDirectoryEntries(directory,projectMachines());
@@ -240,13 +224,6 @@ export function executionUI(store,refresh,toast){
     pane('term').prepend(query('.personal-terminal'));
     // Terminal header as in the approved design: where it runs, then plain links.
     pane('term').querySelector('#terminal-open').textContent='连接终端';pane('term').querySelector('#terminal-reconnect').textContent='重新连接';
-    // 不占卡 / 带 1 张卡 from the approved design: the second asks for one card as a
-    // GPU interactive terminal in this project and attaches once it is running.
-    const gpuSeg=document.createElement('div');gpuSeg.className='pr-gpu-seg';gpuSeg.setAttribute('role','group');gpuSeg.setAttribute('aria-label','终端是否占卡');
-    gpuSeg.innerHTML='<button type="button" data-shell-gpu="0" aria-pressed="true">不占卡</button><button type="button" data-shell-gpu="1" aria-pressed="false">带 1 张卡</button><button type="button" data-gpu-shell hidden></button>';
-    pane('term').querySelector('.terminal-heading').after(gpuSeg);
-    gpuSeg.addEventListener('click',event=>{const choice=event.target.closest('[data-shell-gpu]');if(!choice||choice.disabled)return;if(choice.dataset.shellGpu==='1')void startGpuShell(choice);else{for(const b of gpuSeg.querySelectorAll('[data-shell-gpu]'))b.setAttribute('aria-pressed',String(b===choice));gpuShell=null;}segPill(gpuSeg);});
-    new ResizeObserver(()=>segPill(gpuSeg)).observe(gpuSeg);
     files.open=true;files.querySelector('summary').hidden=true;pane('files').append(files);
     // Files tab: rows with download, a pick button and drag-in upload reuse the resumable upload above.
     const picker=files.querySelector('[name=files]'),upload=files.querySelector('#workspace-upload'),pick=document.createElement('button');pick.type='button';pick.id='pr-upload-pick';pick.className='button';pick.textContent='上传文件';upload.before(pick);
@@ -673,7 +650,7 @@ export function executionUI(store,refresh,toast){
   if(workRoom)new MutationObserver(visibilityChanged).observe(workRoom,{attributes:true,attributeFilter:['hidden']});
   const render=()=>{
     if(!section){section=document.createElement('section');section.id='execution-workspace';section.className='execution-workspace';document.querySelector('#execution-host').append(section);log=document.createElement('dialog');log.className='job-log-dialog';log.setAttribute('aria-labelledby','job-log-title');log.innerHTML='<div class="modal-head"><h2 id="job-log-title">训练日志 · 最近 200 行</h2><button class="button" id="close-job-log">关闭</button></div><pre></pre>';document.body.append(log);diagnostics.install();}
-    diagnostics.sync();mission.sync();renderReceipt();watchGpuShell();section.hidden=!store.principal;if(section.hidden){diagnostics.reset();submitDialog?.close();settingsDialog?.close();submitReceipt=null;parsedTarget=null;acceptedDraft=false;actor=null;machine='';project='';catalog=[];catalogError='';epoch++;section.innerHTML='';notifyContext();return;}
+    diagnostics.sync();mission.sync();renderReceipt();section.hidden=!store.principal;if(section.hidden){diagnostics.reset();submitDialog?.close();settingsDialog?.close();submitReceipt=null;parsedTarget=null;acceptedDraft=false;actor=null;machine='';project='';catalog=[];catalogError='';epoch++;section.innerHTML='';notifyContext();return;}
     if(actor!==store.principal.userId){
       diagnostics.reset();
       submitDialog?.close();submitDialog?.remove();settingsDialog?.close();settingsDialog?.remove();submitDialog=null;settingsDialog=null;settingsSource=null;jobHTML='';lastJobs.clear();liveJobs.clear();focusedJob=null;historyState='';deepLinkHandled=false;

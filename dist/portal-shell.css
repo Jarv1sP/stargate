@@ -165,7 +165,6 @@
 .sb .jr-ring span{font-size:11px;letter-spacing:.06em}
 .sb .pr-room .personal-terminal h3{font:13px var(--mono);color:var(--ink-3)}
 .sb .pr-room .personal-terminal :is(.terminal-scope,.ui-info){display:none}
-.sb .pr-room .personal-terminal .pr-gpu-seg{margin-inline:auto}
 .sb .pr-room .personal-terminal .terminal-controls .button{height:44px;min-height:44px;padding:0 4px;border:0;border-radius:0;background:none;color:var(--ink-2);font-size:13px}
 .sb .pr-room .personal-terminal .terminal-controls .button:hover{color:#F2F2EF}
 .sb .pr-room #terminal-open{background:none;color:#F2F2EF;border:0}
