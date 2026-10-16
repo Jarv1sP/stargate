@@ -7,7 +7,9 @@ const root=resolve(import.meta.dirname,'../dist'),origin='https://startup-offlin
 const shots=process.env.UI_SCREENSHOTS||temporary;await mkdir(shots,{recursive:true});
 // The cover exactly as the platform page ships it; window.start stands in for the app finishing its first render.
 const index=await readFile(resolve(root,'index.html'),'utf8'),cover=index.match(/<button id="startup-wordmark"[\s\S]*?<\/button>/)[0];
-const page_=`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/splash.css"><body class="sb root">${cover}<script type="module">import {installWordmark} from '/startup-ui.js';window.start=installWordmark;</script>`;
+// With every platform stylesheet behind it, as shipped, so app rules that would hide or restyle the opening show up here.
+const sheets=[...index.matchAll(/<link rel="stylesheet" href="\.\/([^"]+\.css)" \/>/g)].map(match=>match[1]).filter(name=>name!=='splash.css');
+const page_=`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/splash.css"><body class="sb root">${cover}${sheets.map(name=>'<link rel="stylesheet" href="/'+name+'">').join('')}<script type="module">import {installWordmark} from '/startup-ui.js';window.start=installWordmark;</script>`;
 const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
 try{
   for(const scenario of ['normal','slow','skip','reduce']){
