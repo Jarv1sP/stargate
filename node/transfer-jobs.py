@@ -142,7 +142,7 @@ class TransferJobs:
             return module('dataset-files').process(self.config,'files.get',request,root=row['root'])
         raise ValueError('此传输读取操作不存在。')
 
-    def view(self,row):return {k:row.get(k) for k in ('id','key','state','bytes','totalBytes','error','source','target','createdAt')}
+    def view(self,row):return {k:row.get(k) for k in ('id','key','state','bytes','totalBytes','error','source','target','createdAt','installed')}
 
     def status(self,args):
         try:return self.view(self.s.read_json(self.path(args.get('id',args.get('key')))))
@@ -194,7 +194,7 @@ class TransferJobs:
                 destination=copy.destination(row)
                 if row.get('installed') or (destination/'project.json').exists() and self.s.read_json(destination/'project.json').get('copyKey')==key:
                     peer.call('complete')
-                    with self.lock(key):row.update(state='SUCCEEDED');self.s.atomic_json(self.path(key),row)
+                    with self.lock(key):row.update(state='SUCCEEDED',installed=True);self.s.atomic_json(self.path(key),row)
                     return 0
             else:root=self.d.dataset_root(self.config,target['dataset'],create=True) if target.get('dataset') else self.root(target)
             uploads=module('data-uploads').Uploads(self.config,target.get('userId','team'),root=root)
