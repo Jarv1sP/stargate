@@ -8,6 +8,53 @@ function render({gpus=[gpu(0),gpu(1)],disks=[],host={},metricMode='memory',...op
   return resourceCards({machines:[machine],production:true,userId:'member-a',jobs:[{id:'mine',userId:'member-a'}],metricMode,
     snapshot:{stale:false,hosts:[{id:machine.id,reachable:true,checkedAt:'2026-10-15T18:00:00Z',gpuq:{connected:true},tasks:[],gpus,disks,...host}]},...options});
 }
+
+const progressJob=()=>({id:'peer-job',name:'训练 <demo>',userId:'member-b',state:'RUNNING',latestAttempt:{ordinal:1,startedAt:1000},
+  progress:{reported:true,stale:false,error:null,snapshot:{phase:'train',stepsCompleted:30,stepsTotal:100,
+    epochsCompleted:null,epochsTotal:null,etaSeconds:1500,updatedAt:1600,severity:'info',message:null}}});
+const progressTable=(job,options={})=>render({jobs:[job],gpus:[gpu(0,{processes:[{pid:101,memoryUsedMiB:1024,
+  task:{source:'portal',id:job.id,name:job.name}}]}),gpu(1)],...options});
+
+test('GPU process progress shows another member task and reported or estimated remaining time',()=>{
+  for(const admin of [false,true]){
+    const job=progressJob(),html=progressTable(job,{admin});
+    assert.match(html,/<progress max="100" value="30" aria-label="训练 &lt;demo&gt; 的训练进度">30%<\/progress>/);
+    assert.match(html,/30% · 预计剩余 25 分钟/);assert.doesNotMatch(html.match(/<div class="resource-process-progress">.*?<\/div>/)[0],/估算/);
+    job.progress.snapshot.etaSeconds=null;
+    assert.match(progressTable(job,{admin}),/30% · 预计剩余 24 分钟（按已用时间估算）/);
+    job.latestAttempt.ordinal=2;
+    assert.match(progressTable(job,{admin}),/30% · 剩余时间未知/);
+    job.latestAttempt.ordinal=1;job.progress.snapshot.stepsCompleted=0;
+    assert.match(progressTable(job,{admin}),/0% · 剩余时间未知/);
+  }
+});
+
+test('GPU process progress leaves unreported and invalid training unknown',()=>{
+  for(const progress of [null,{reported:false},{reported:true,error:'invalid progress snapshot'},
+    {reported:true,snapshot:{phase:'train',stepsTotal:null,epochsTotal:null}}]){
+    const job=progressJob();job.progress=progress;const html=progressTable(job);
+    assert.match(html,/<small class="muted">进度未上报<\/small>/);assert.doesNotMatch(html,/<progress/);
+  }
+});
+
+test('GPU process stale and expired snapshots show the original explanation without ETA',()=>{
+  for(const observationStale of [false,true]){
+    const job=progressJob();job.progress.stale=true;job.progress.observationStale=observationStale;
+    const before=structuredClone(job),html=progressTable(job);
+    assert.match(html,observationStale?/进度快照已过期（节点核验未更新）/:/进度停滞（训练上报超时）/);
+    assert.doesNotMatch(html,/预计剩余|<progress/);assert.deepEqual(job,before);
+  }
+});
+
+test('GPU processes without a live portal task do not gain training progress',()=>{
+  for(const task of [undefined,{source:'portal',id:'missing'},{source:'native',id:'peer-job'}]){
+    const html=render({jobs:[progressJob()],gpus:[gpu(0,{processes:[{pid:102,task}]}),gpu(1)]});
+    assert.doesNotMatch(html,/resource-process-progress|<progress|进度未上报/);
+  }
+  for(const state of ['SUCCEEDED','FAILED','CANCELED']){
+    const html=progressTable({...progressJob(),state});assert.doesNotMatch(html,/resource-process-progress|<progress|进度未上报/);
+  }
+});
 test('metric switch uses separate measured values and never turns unavailable readings into idle',()=>{
   const memory=render(),util=render({metricMode:'utilization'});
   assert.match(memory,/data-resource-level="50"/);assert.match(util,/data-resource-level="75"/);
