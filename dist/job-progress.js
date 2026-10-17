@@ -71,10 +71,37 @@ export function jobTimingText(job){
     '门户确认终态：'+(timing.terminalObservedAt||'未记录')].join(' · ');
 }
 
+function progressCounts(s){
+  return {completed:s.stepsTotal?s.stepsCompleted:s.epochsCompleted,total:s.stepsTotal||s.epochsTotal};
+}
+
 export function progressPercent(progress){
   const s=progress?.snapshot;if(!progress?.reported||!s)return null;
-  const completed=s.stepsTotal?s.stepsCompleted:s.epochsCompleted,total=s.stepsTotal||s.epochsTotal;
+  const {completed,total}=progressCounts(s);
   return Number.isFinite(total)&&total>0?Math.floor(100*completed/total):null;
+}
+
+export function remainingTime(job){
+  const progress=job.progress,s=progress?.snapshot;
+  if(progress?.reported!==true||progress.error||progress.stale===true||JOB_TERMINAL.has(job.state)||!s)return null;
+  if(finite(s.etaSeconds)&&s.etaSeconds>=0)return {seconds:s.etaSeconds,source:'reported'};
+  const {completed,total}=progressCounts(s),startedAt=job.latestAttempt?.startedAt,updatedAt=s.updatedAt;
+  if(!(total>0&&completed>0&&completed<total)||job.latestAttempt?.ordinal!==1||
+    !finite(startedAt)||!finite(updatedAt)||updatedAt<=startedAt)return null;
+  return {seconds:(updatedAt-startedAt)*(total-completed)/completed,source:'estimated'};
+}
+
+export function remainingText(value){
+  if(!value)return '剩余时间未知';
+  const {seconds,source}=value;
+  let text;
+  if(seconds<60)text='预计不到 1 分钟';
+  else if(seconds<3600)text=`预计剩余 ${Math.ceil(seconds/60)} 分钟`;
+  else{
+    const minutes=Math.ceil(seconds/60),hours=Math.floor(minutes/60),rest=minutes%60;
+    text=`预计剩余 ${hours} 小时${rest?` ${rest} 分钟`:''}`;
+  }
+  return text+(source==='estimated'?'（按已用时间估算）':'');
 }
 
 export function progressText(progress){

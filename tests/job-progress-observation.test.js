@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {publicJob,schedulerResult,usage} from '../execution.mjs';
-import {normalizeProgress,progressText} from '../dist/job-progress.js';
+import {normalizeProgress,progressText,progressPercent,remainingTime,remainingText} from '../dist/job-progress.js';
 import {trainingReadout,workbenchCards} from '../dist/workbench-ui.js';
 
 const now=Date.parse('2026-10-09T15:50:00Z');
@@ -11,6 +11,49 @@ const raw={reported:true,stale:false,heartbeat_age_seconds:1,progress_age_second
 const fixture=()=>({id:'11111111-1111-4111-8111-111111111111',userId:'fixture-owner',machine:'gpu-1',cards:1,state:'RUNNING',
   spec:{argv:['true']},schedulerCheckedAt:new Date(now-300000).toISOString(),checkedAt:new Date(now-300000).toISOString(),
   progress:normalizeProgress(raw)});
+
+const remainingJob=()=>({state:'RUNNING',latestAttempt:{ordinal:1,startedAt:1000},
+  progress:normalizeProgress({...raw,snapshot:{...raw.snapshot,steps_completed:30,steps_total:100,updated_at:1600}})});
+
+test('remaining time prefers SDK ETA, including resumed attempts and zero seconds',()=>{
+  const job=remainingJob();job.latestAttempt.ordinal=2;job.progress.snapshot.etaSeconds=1500;
+  assert.deepEqual(remainingTime(job),{seconds:1500,source:'reported'});
+  assert.equal(remainingText(remainingTime(job)),'预计剩余 25 分钟');
+  job.progress.snapshot.etaSeconds=0;
+  assert.deepEqual(remainingTime(job),{seconds:0,source:'reported'});
+  assert.equal(remainingText(remainingTime(job)),'预计不到 1 分钟');
+});
+
+test('remaining time estimates from node elapsed time using the same steps or epochs as percent',()=>{
+  const job=remainingJob();job.progress.snapshot.epochsCompleted=1;job.progress.snapshot.epochsTotal=2;
+  assert.equal(progressPercent(job.progress),30);
+  assert.deepEqual(remainingTime(job),{seconds:1400,source:'estimated'});
+  assert.equal(remainingText(remainingTime(job)),'预计剩余 24 分钟（按已用时间估算）');
+  job.progress.snapshot.stepsCompleted=null;job.progress.snapshot.stepsTotal=null;
+  assert.equal(progressPercent(job.progress),50);
+  assert.deepEqual(remainingTime(job),{seconds:600,source:'estimated'});
+});
+
+test('remaining time stays unknown for resumed, missing, stale, invalid or terminal progress',()=>{
+  const changes=[
+    job=>{job.latestAttempt.ordinal=2;},job=>{job.latestAttempt=null;},
+    job=>{job.progress.snapshot.stepsCompleted=0;},job=>{job.progress.snapshot.stepsCompleted=100;},
+    job=>{job.progress.snapshot.stepsTotal=null;},job=>{job.progress.snapshot.updatedAt=1000;},
+    job=>{job.progress.snapshot.updatedAt=900;},job=>{job.progress.snapshot.updatedAt=NaN;},
+    job=>{job.latestAttempt.startedAt=null;},job=>{job.latestAttempt.startedAt=Infinity;},
+    job=>{job.progress=null;},job=>{job.progress.snapshot=null;},job=>{job.progress.reported=false;},
+    job=>{job.progress.error='invalid progress snapshot';job.progress.snapshot.etaSeconds=1500;},
+    job=>{job.progress.stale=true;job.progress.snapshot.etaSeconds=1500;},
+    ...['SUCCEEDED','FAILED','CANCELED'].map(state=>job=>{job.state=state;job.progress.snapshot.etaSeconds=1500;})
+  ];
+  for(const change of changes){const job=remainingJob();change(job);assert.equal(remainingTime(job),null);assert.equal(remainingText(remainingTime(job)),'剩余时间未知');}
+});
+
+test('remaining time text rounds minutes up and carries full hours',()=>{
+  for(const [seconds,text] of [[59,'预计不到 1 分钟'],[60,'预计剩余 1 分钟'],[61,'预计剩余 2 分钟'],
+    [3599,'预计剩余 60 分钟'],[3600,'预计剩余 1 小时'],[3700,'预计剩余 1 小时 2 分钟'],
+    [7199,'预计剩余 2 小时'],[10800,'预计剩余 3 小时']])assert.equal(remainingText({seconds,source:'reported'}),text);
+});
 
 test('old cached progress is explicitly stale without changing its report, durable job or reservation',t=>{
   t.mock.method(Date,'now',()=>now);const job=fixture(),before=structuredClone(job),view=publicJob(job);

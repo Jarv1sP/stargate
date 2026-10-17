@@ -8,8 +8,11 @@ const root=resolve(import.meta.dirname,'../dist'),origin='https://compute-fixtur
 const temporary=await mkdtemp(join(tmpdir(),'compute-ui-')),shots=process.env.UI_SCREENSHOTS||temporary;
 await mkdir(shots,{recursive:true});
 const machines=[{id:'fixture-node-eight',cards:8,model:'Fixture GPU'},{id:'fixture-node-six',cards:6,model:'Fixture GPU'},{id:'fixture-node-unknown',cards:1,model:'Fixture GPU'}];
-const task=(id,name,username)=>({id,name,submitter:{name:username,username}});
+const task=(id,name,username)=>({id,name,source:'portal',submitter:{name:username,username}});
 const own=task('own-job','我的训练','成员甲'),peer=task('peer-job','团队训练','成员乙');
+const training=(identity,userId,etaSeconds)=>({...identity,userId,state:'RUNNING',latestAttempt:{ordinal:1,startedAt:1000},
+  progress:{reported:true,stale:false,error:null,snapshot:{phase:'train',stepsCompleted:30,stepsTotal:100,
+    epochsCompleted:null,epochsTotal:null,etaSeconds,updatedAt:1600,severity:'info',message:null}}});
 function host(machine,index){
   return {id:machine.id,reachable:index!==2,checkedAt:'2026-10-15T18:00:00Z',gpuq:{connected:true,health:'ok'},
     gpus:Array.from({length:machine.cards},(_,index)=>({index,model:'Fixture GPU',memoryUsedMiB:index<3?4096:0,memoryTotalMiB:8192,utilization:index<3?75:0,temperatureC:42,powerDrawW:100,powerLimitW:350,processesAvailable:index!==3,
@@ -22,7 +25,7 @@ try{
   for(const role of ['member','admin'])for(const width of [1440,390,320]){
     const context=await browser.newContext({viewport:{width,height:1000},reducedMotion:'reduce'}),page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));page.setDefaultTimeout(10000);
-    const data={machines,principal:{userId:'member-a',role},users:[{id:'member-a',role,limits:{},total:0}],jobs:[{id:'own-job',userId:'member-a'}],gpuq:{stale:false,checkedAt:'2026-10-15T18:00:00Z',hosts:machines.map(host)}};
+    const data={machines,principal:{userId:'member-a',role},users:[{id:'member-a',role,limits:{},total:0}],jobs:[training(own,'member-a',1500),training(peer,'member-b',null)],gpuq:{stale:false,checkedAt:'2026-10-15T18:00:00Z',hosts:machines.map(host)}};
     await page.route('**/*',async route=>{
       const url=new URL(route.request().url());assert.equal(url.origin,origin);
       if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',headers:{'Content-Security-Policy':"style-src 'self'"},body:`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">${['styles.css','fonts.css','starbase.css','shell.css','workspace.css','workbench.css','maintenance-experience.css','resources.css','portal-shell.css'].map(name=>'<link rel="stylesheet" href="/'+name+'">').join('')}</head><body class="sb"><main id="main-content"><div class="heading-actions"></div><section id="page-resources"><span id="resource-summary"></span><p id="monitor-status"></p><div id="machine-grid"></div></section></main><script type="module">
@@ -65,8 +68,38 @@ try{
       assert.equal(await page.locator('.resource-chassis-bays [data-resource-level]').first().getAttribute('data-resource-level'),'75');
       await page.locator('.resource-chassis-bays [data-resource-card="1"]').click();await page.locator('#resource-sheet[open]').waitFor();
       assert.equal(await page.locator('#resource-sheet [data-resource-gpu]').getAttribute('data-resource-gpu'),'1');assert.match(await page.locator('#resource-sheet').innerText(),/我的训练/);assert.match(await page.locator('#resource-sheet').innerText(),/团队训练/);
+      assert.equal(await page.locator('#resource-sheet progress').count(),2);
+      assert.equal(await page.getByRole('progressbar',{name:'团队训练 的训练进度',exact:true}).isVisible(),true);
+      assert.match(await page.locator('#resource-sheet .resource-process-progress').last().innerText(),/30% · 预计剩余 24 分钟（按已用时间估算）/);
       await page.locator('[data-resource-gpu-picker]').selectOption('0');assert.equal(await page.locator('#resource-sheet [data-resource-gpu]').getAttribute('data-resource-gpu'),'0');
       assert.equal((await page.locator('#resource-sheet').innerText()).includes('fixture-user'),role==='admin');
+      const bar=page.getByRole('progressbar',{name:'我的训练 的训练进度',exact:true});
+      assert.equal(await bar.isVisible(),true);assert.equal(await bar.getAttribute('value'),'30');
+      assert.equal(await page.locator('#resource-sheet .resource-process-progress small').innerText(),'30% · 预计剩余 25 分钟');
+      assert.equal(await bar.evaluate(node=>Math.abs(node.getBoundingClientRect().width-node.parentElement.getBoundingClientRect().width)<1),true);
+      for(const scenario of ['estimated','resumed','unreported','invalid','stalled','expired','terminal']){
+        await page.evaluate(scenario=>{
+          window.store.jobs=structuredClone(window.fixture.jobs);const job=window.store.jobs[0];
+          if(scenario==='estimated'||scenario==='resumed'){job.progress.snapshot.etaSeconds=null;job.progress.snapshot.stepsCompleted=50;}
+          if(scenario==='resumed')job.latestAttempt.ordinal=2;
+          if(scenario==='unreported')job.progress=null;
+          if(scenario==='invalid')job.progress={reported:false,error:'invalid progress snapshot'};
+          if(scenario==='stalled'||scenario==='expired'){job.progress.stale=true;job.progress.observationStale=scenario==='expired';}
+          if(scenario==='terminal')job.state='SUCCEEDED';
+          window.refresh();
+        },scenario);
+        const text=await page.locator('#resource-sheet').innerText();
+        if(scenario==='estimated'){assert.equal(await bar.getAttribute('value'),'50');assert.match(text,/50% · 预计剩余 10 分钟（按已用时间估算）/);}
+        else if(scenario==='resumed'){assert.equal(await bar.isVisible(),true);assert.match(text,/50% · 剩余时间未知/);}
+        else{
+          assert.equal(await page.locator('#resource-sheet progress').count(),0);assert.doesNotMatch(text,/预计剩余/);
+          if(scenario==='unreported'||scenario==='invalid')assert.match(text,/进度未上报/);
+          if(scenario==='stalled')assert.match(text,/进度停滞（训练上报超时）/);
+          if(scenario==='expired')assert.match(text,/进度快照已过期（节点核验未更新）/);
+        }
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
+      }
+      await page.evaluate(()=>{window.store.jobs=structuredClone(window.fixture.jobs);window.refresh();});
       await page.evaluate(()=>window.refresh());assert.equal(await page.locator('#resource-sheet').isVisible(),true);
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
       await page.screenshot({path:join(shots,`compute-${role}-${width}-gpu.png`),animations:'disabled'});

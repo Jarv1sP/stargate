@@ -102,6 +102,9 @@
 .sb .resource-detail .process-table{min-width:500px;color:var(--ink-2)}
 .sb .resource-detail .process-table :is(th,td){color:var(--ink-2);border-color:var(--line);background:transparent;font-size:12px}
 .sb .resource-detail .process-table :is(small,th){font-size:11px;color:var(--ink-3)}
+.sb .resource-process-progress{margin-top:6px}
+.sb .resource-process-progress progress{display:block;width:100%;height:3px;accent-color:var(--ink-2)}
+.sb .resource-process-progress small{display:block}
 .sb .resource-detail .monitor-warning{color:var(--ink-2);font-size:13px;line-height:1.7;margin-top:16px}
 .sb .resource-sheet{width:min(580px,100vw);max-width:100vw;height:100dvh;max-height:100dvh;inset:0 0 0 auto;margin:0;padding:0;border:0;border-left:1px solid var(--line-2);border-radius:0;background:var(--bg)}
 .sb .resource-sheet[open]{display:flex;flex-direction:column}
