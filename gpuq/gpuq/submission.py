@@ -53,6 +53,7 @@ UNSUPPORTED_EXECUTABLES = {
     "su",
 }
 SUBMISSION_KEYS = {
+    "after",
     "preempt_idle_only",
     "preempt_opt_in_only",
     "yield_policy",
@@ -80,6 +81,7 @@ SUBMISSION_KEYS = {
     "env",
 }
 OPTIONAL_SUBMISSION_KEYS = {
+    "after",
     "preempt_idle_only",
     "preempt_opt_in_only",
     "yield_policy",
@@ -300,6 +302,7 @@ def validate_submission(
     if sum(len(k) + len(v) for k, v in env.items()) > 131_072:
         raise ValueError("env is too large")
     clean = {
+        "after": list(dict.fromkeys(item for item in raw.get("after", []) if isinstance(item, str))),
         "preempt_idle_only": preempt_idle_only,
         **({"preempt_opt_in_only": True} if preempt_opt_in_only else {}),
         "yield_policy": validate_yield_policy(raw.get("yield_policy", "legacy"), checkpoint_capability, share_gpu),

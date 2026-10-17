@@ -251,7 +251,7 @@ assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir()
     def test_submit_watch_cancel_outputs_and_original_key_use_current_project(self):
         import sqlite3
         node=self.node();node.projects().store.create('alice','demo');jid=self.key()
-        spec={'id':jid,'userId':'alice','username':'alice','project':'demo','cards':1,'argv':['python','train.py'],'name':'test','minVramGiB':0,'workspace':True}
+        spec={'id':jid,'userId':'alice','username':'alice','project':'demo','cards':1,'argv':['python','train.py'],'name':'test','minVramGiB':0,'workspace':True,'after':['J000000000002','J000000000003']}
         calls=[]
         def native(*args):
             calls.append(args)
@@ -264,6 +264,7 @@ assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir()
         self.assertEqual(node.process('sync',{'job':spec})['state'],'SUCCEEDED')
         self.assertEqual(sum(a[0]=='submit' for a in calls),1)
         submit=next(a for a in calls if a[0]=='submit');self.assertIn('GPUQ_CONSOLE_OCI=1',submit);self.assertIn(str(Path(node.HERE)/'oci-runner.py'),submit)
+        self.assertEqual([submit[i+1] for i,value in enumerate(submit) if value=='--after'],spec['after'])
         path=node.projects().store.runtime_paths(spec,jid)['output'];(path/'result.txt').write_bytes(b'result')
         data=node.process('files.get',{'userId':'bob','area':'output','runId':jid,'path':'result.txt'})
         self.assertEqual(base64.b64decode(data['data']),b'result')

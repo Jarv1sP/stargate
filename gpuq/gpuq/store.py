@@ -1346,9 +1346,11 @@ class Store:
 
     # ------------------------------------------------------------------ jobs
 
-    @staticmethod
-    def _job(row: sqlite3.Row) -> dict[str, Any]:
+    def _job(self, row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
+        after = self.get_setting("job-after:" + result["id"], [])
+        if after:
+            result["after"] = after
         result["display_metadata"] = _json_load(result.pop("display_json"))
         result["argv"] = _json_load(result.pop("argv_json"))
         result["env"] = _json_load(result.pop("env_json"))
@@ -1406,6 +1408,7 @@ class Store:
             "argv",
             "cwd",
             "env",
+            "after",
         }
         values = {key: value for key, value in values.items() if key in allowed}
         if "id" in values and "job_id" in values:
@@ -1554,6 +1557,7 @@ class Store:
         ):
             raise ValueError("env must map strings to strings")
         env_json = _json_dump(dict(env))
+        after = list(dict.fromkeys(item for item in values.get("after", []) if isinstance(item, str)))
         hami_core, sm_percent = validate_hami_request(
             values.get("hami_core", False), values.get("sm_percent"), share_gpu, env
         )
@@ -1651,6 +1655,8 @@ class Store:
                         int(preempt_opt_in_only),
                     ),
                 )
+                if after:
+                    self.set_setting("job-after:" + job_id, after)
                 row = connection.execute(
                     "SELECT * FROM jobs WHERE id=?", (job_id,)
                 ).fetchone()
@@ -1662,7 +1668,7 @@ class Store:
                     "SELECT * FROM jobs WHERE submit_key=?", (submit_key,)
                 ).fetchone()
                 if row is not None:
-                    if row["submit_digest"] == digest:
+                    if (row["submit_digest"], self.get_setting("job-after:" + row["id"], [])) == (digest, after):
                         return self._job(row)
                     raise StoreConflictError(
                         "submit_key was already used for a different submission"

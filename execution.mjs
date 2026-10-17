@@ -159,7 +159,38 @@ export function installExecution(service,bridge){
   };
   if(bridge){service.executionTimer=setInterval(()=>{service.reconcile().catch(()=>{});service.refreshStorage?.(true).catch(()=>{});},15000);service.executionTimer.unref();}
 }
-export function usage(jobs,userId,machine){return jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine)).reduce((sum,j)=>sum+j.cards,0);}
+export function usage(jobs,userId,machine){
+  const active=jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine));
+  const total=active.reduce((sum,job)=>sum+job.cards,0);
+  if(!active.some(job=>job.after?.length))return total;
+  // Maximum concurrent card demand is the weighted antichain of this DAG.
+  // A flow matches reusable parent/child card slots; branches stay independent.
+  // Relay through finished/other-user jobs keeps transitive dependencies intact.
+  const ids=new Map(jobs.map((job,index)=>[job.id,index])),weights=new Map(active.map(job=>[job.id,job.cards]));
+  const source=jobs.length*2,sink=source+1,graph=Array.from({length:sink+1},()=>[]);
+  const edge=(from,to,capacity)=>{
+    const forward={to,capacity},backward={to:from,capacity:0};
+    forward.reverse=backward;backward.reverse=forward;graph[from].push(forward);graph[to].push(backward);
+  };
+  jobs.forEach((job,index)=>{
+    const left=index*2,right=left+1,weight=weights.get(job.id)||0;
+    edge(source,left,weight);edge(right,sink,weight);edge(right,left,total);
+    for(const dependency of job.after||[]){const parent=ids.get(dependency.id);if(parent!==undefined)edge(parent*2,right,total);}
+  });
+  let overlap=0;
+  for(;;){
+    const previous=Array(graph.length).fill(null),queue=[source];previous[source]=[];
+    for(const from of queue){
+      for(const link of graph[from])if(link.capacity>0&&previous[link.to]===null){previous[link.to]=[from,link];queue.push(link.to);}
+      if(previous[sink])break;
+    }
+    if(!previous[sink])return total-overlap;
+    let amount=total;
+    for(let at=sink;at!==source;at=previous[at][0])amount=Math.min(amount,previous[at][1].capacity);
+    for(let at=sink;at!==source;at=previous[at][0]){const link=previous[at][1];link.capacity-=amount;link.reverse.capacity+=amount;}
+    overlap+=amount;
+  }
+}
 // Presentation only: never persist these deductions or use them for admission.
 // A node-supplied reason remains authoritative; missing observations are not
 // proof of free cards, a sharing limit, or a new dispatch opportunity.
@@ -167,6 +198,10 @@ export function pendingJobReason(service,job,now=Date.now()){
   const reported=typeof job.queueReason==='string'&&job.queueReason.trim()?job.queueReason:null;
   if(!['PENDING','QUEUED','SUBMITTING'].includes(job.state)||job.cancelRequested)return reported;
   if(reported)return reported;
+  if(job.after?.length){
+    const waiting=job.after.filter(item=>service.store.jobs.find(row=>row.id===item.id)?.state!=='SUCCEEDED');
+    if(waiting.length)return '等待依赖：'+waiting.map(item=>item.name||item.id).join('、');
+  }
   const snapshot=service.gpuq,host=snapshot?.hosts?.find(h=>h.id===job.machine);
   const observed=Date.parse(snapshot?.checkedAt),age=now-observed;
   const fresh=snapshot?.stale===false&&Number.isFinite(age)&&age>=-30000&&age<=180000&&host?.reachable===true&&host.gpuq?.connected===true;
@@ -424,12 +459,13 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation==='jobs.diagnostics'){
     args=selectFields(args,['jobId']);
     const job=jobById(args.jobId);authorizedMachine(job.machine);
-    if(!TERMINAL.has(job.state))return observeJob(job,'diagnostics',{job:nativeJobSpec(job)});
+    const dependencies={after:job.after||[],queueReason:pendingJobReason(service,job)};
+    if(!TERMINAL.has(job.state))return {...await observeJob(job,'diagnostics',{job:nativeJobSpec(job)}),...dependencies};
     try{
       const result=await observeJob(job,'diagnostics',{job:nativeJobSpec(job)});
       const nativeObservation=terminalNativeObservation(job,result);
-      return {...result,portalTerminal:portalTerminalSnapshot(job),nativeObservation};
-    }catch{return {jobId:job.id,state:'UNAVAILABLE',portalTerminal:portalTerminalSnapshot(job),nativeObservation:unavailableObservation()};}
+      return {...result,...dependencies,portalTerminal:portalTerminalSnapshot(job),nativeObservation};
+    }catch{return {jobId:job.id,state:'UNAVAILABLE',...dependencies,portalTerminal:portalTerminalSnapshot(job),nativeObservation:unavailableObservation()};}
   }
   if(['files.list','files.get'].includes(operation)){
     args=selectFields(args,['machine','ownerId','dataset','project','area','runId','path','offset','cursor','limit']);

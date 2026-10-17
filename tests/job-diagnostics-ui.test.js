@@ -4,6 +4,11 @@ import {diagnosticsHTML,createJobDiagnostics,allocationHistoryHTML} from '../dis
 const JOB='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const fixture=()=>({jobId:JOB,state:'PARTIAL',schedulerState:'RUNNING',workerErrorEvidence:true,attempts:[{id:'A1',state:'FAILED',gpu_indices:[2],gpu_uuids:['GPU-test'],started_at:1,finished_at:2,failure_reason:'worker exited'}],captures:[{updatedAt:3,runnerExit:{exitCode:137},resources:{peaks:{'memory.peak':1024**3,'pids.peak':100},counters:{'memory.events':{oom:1,oom_kill:1},'pids.events':{max:2}}},logs:[{source:'ray/session/logs/worker.err',text:'RuntimeError: test',truncated:true}]}]});
 
+test('diagnostics shows dependency names and waiting reason as plain text',()=>{
+ const html=diagnosticsHTML({...fixture(),after:[{id:JOB,name:'<mother>'}],queueReason:'等待依赖：<mother>'});
+ assert.match(html,/依赖：&lt;mother&gt;/);assert.match(html,/等待依赖：&lt;mother&gt;/);assert.doesNotMatch(html,/<mother>/);
+});
+
 test('exact lease history keeps actual acquisition/release separate from attempt times and marks truncated/migrated rows',()=>{
   const data={...fixture(),historyAvailable:true,historyTruncated:true,historyNextBeforeId:3,allocationHistory:[{id:4,attempt_id:'A1',gpu_index:2,gpu_uuid:'GPU-real',acquired_at:123.25,released_at:456.75,release_reason:'attempt finalized',source:'observed'},{id:3,attempt_id:'A0',gpu_index:1,gpu_uuid:'GPU-active',acquired_at:120,released_at:null,source:'migrated_active'}]};
   const html=diagnosticsHTML(data);for(const text of ['GPU-real','GPU-active','分配时间','释放时间 / 原因','attempt finalized','尚无释放记录','升级时补记的活动租约','继续查询游标：3','运行过程历史','GPU-test','.250','.750'])assert.ok(html.includes(text),text);

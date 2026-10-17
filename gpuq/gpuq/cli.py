@@ -997,6 +997,7 @@ def prepare_submission(args: argparse.Namespace) -> tuple[Config, dict[str, Any]
             fixed_indices, config.managed_gpu_uuids
         )
     submission = {
+        "after": [job.strip() for value in getattr(args, "after", []) for job in value.split(",") if job.strip()],
         "hami_core": bool(
             getattr(args, "hami", False)
             or getattr(args, "sm_percent", None) is not None
@@ -1410,6 +1411,7 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("--gpu-model", help="required GPU model substring, e.g. 4090")
     submit.add_argument("--min-vram-gb", type=float, help="minimum physical VRAM per GPU on the selected host")
     submit.add_argument("--env", action="append", default=[])
+    submit.add_argument("--after", action="append", default=[], help="wait for all dependency job IDs to succeed (repeatable or comma-separated)")
     submit.add_argument(
         "--submit-key",
         help="UUID idempotency key; reuse the same value after an uncertain timeout",

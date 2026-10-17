@@ -55,6 +55,8 @@ gpuctl run -g 1 [--rank P0..P4] -- python train.py --data /datasets/images --out
 gpuctl run --sync [--sync-dir LOCAL_DIR] -g 1 -- python train.py
 --sync 先上传到当前工作区；AUTO 异机执行与 project copy 均复用目标已有容器并增量同步，没有容器才完整复制。
 gpuctl run --machine auto [--candidates SERVER,SERVER] -g 1 -- python train.py
+gpuctl run --machine auto --after JOB_ID[,JOB_ID] [--after JOB_ID] -g 1 -- python refine.py
+--after 等全部依赖成功后在同一台机器排队；依赖失败或取消则不运行。同一依赖链共用用卡预留，并行分支分别预留。
 gpuctl run -g 1 --interactive / ssh --job JOB_ID
 gpuctl run --gpu 0 -g 1 --memory-limit-gib 60 -- python train.py
 工作区 /workspace，数据集 /datasets；任务输出 /outputs。
@@ -121,10 +123,10 @@ function fail9(message) {
 var CLI_OPTIONS = new Map([
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','recursive','interactive','pin','sync'].map(key=>[key,'flag']),
   ...['url','session-file','total','cards','role','name','description','display-name','min-vram','key','project','job','priority','timeout','reconnect','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','gpu','vram-mib','sm-percent','reason','revision','cursor','limit','members','primary','owner','via','memory-limit-gib','repo','dataset','kind','status','title','body','body-file','announcement-type','layout','background','text-color','accent','file-id','password-code','source-url','sync-dir','candidates'].map(key=>[key,'value']),
-  ['machine','machines']
+  ['machine','machines'], ['after','after']
 ]);
 function parseCLIOptions(argv) {
-  const options2 = { machines: [] }, positionals2 = [];
+  const options2 = { machines: [], after: [] }, positionals2 = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--") return { options: options2, positionals: positionals2, training: argv.slice(i + 1) };
     const item = argv[i] === "-g" ? "--cards" : argv[i] === "--on" ? "--machine" : argv[i];
@@ -134,7 +136,7 @@ function parseCLIOptions(argv) {
     }
     const key = item.slice(2), kind = CLI_OPTIONS.get(key);
     if (!kind) fail9(`Unknown option: ${item}`);
-    if (Object.hasOwn(options2, key)) fail9(`Duplicate option: ${item}`);
+    if (key !== 'after' && Object.hasOwn(options2, key)) fail9(`Duplicate option: ${item}`);
     if (kind === "flag") {
       options2[key] = true;
       continue;
@@ -185,6 +187,8 @@ async function secret(label = "Password") {
 }
 async function main() {
   ({ options, positionals, training } = parseCLIOptions(args));
+  if(options.after.length&&positionals[0]!=='run')fail9('--after 只用于 run。');
+  if(!options.after.length)delete options.after;
   const ownerUsername=options.owner;
   if(ownerUsername!==undefined&&!['project','files','outputs','pull','push','upload','upload-status','push-status','run','ssh','shell','data','terminal','jobs','queue'].includes(positionals[0]))fail9('--owner 用于项目、文件、数据、终端或任务命令。');
   delete options.owner;
@@ -342,7 +346,7 @@ async function main() {
     if (command === "pull") command = "download";
     if ((options.reconnect || options.takeover) && command !== "shell") fail9("--reconnect/--takeover are only valid for ssh");
     if (command === "run" && positionals.length > 1 && options.machines.length) fail9("Select a server once, either positionally or with --machine/--on");
-    if (["run", "shell"].includes(command) && positionals.length === 1) positionals.push(defaultMachine());
+    if (["run", "shell"].includes(command) && positionals.length === 1) positionals.push(command==='run'&&options.after?.length&&!options.machines.length?'auto':defaultMachine());
     if (["push", "push-status", "pull"].includes(shortcut)) positionals.splice(1, 0, defaultMachine());
     if (["push", "push-status"].includes(shortcut) && positionals.length === 3 && (await lstat5(positionals[2])).isDirectory()) positionals.push(".");
     if (!outputDelete&&command === "files" && (positionals.length === 1 || !state.machines.some((m) => m.id === machineName(positionals[1])))) positionals.splice(1, 0, defaultMachine());
@@ -609,7 +613,10 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
         training = ["/bin/bash", "--noprofile", "--norc", "-i"];
       }
       if (!training.length) fail9("Put the training command after --");
+      const after=options.after?.flatMap(value=>value.split(',').map(id=>id.trim()).filter(Boolean));
       const developmentMachine = automatic ? options.sync?selectedMachine():session.machine : positionals[1], context = projectArgs(developmentMachine);
+      // Only --sync needs an upload address; plain submissions let the Portal place the job.
+      const syncMachine=automatic&&after?.length&&options.sync?(await call('state',{view:'summary',jobId:after[0]})).state.jobs?.find(job=>job.id===after[0])?.machine||developmentMachine:developmentMachine;
       let candidates = options.candidates?.split(",").map(machineName);
       if (candidates && (!candidates.length || new Set(candidates).size !== candidates.length)) fail9("--candidates must list unique authorized server IDs separated by commas");
           const key = options.key || randomUUID7();
@@ -618,10 +625,11 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       const indices = options.gpu?.split(",").map((n) => /^\d+$/.test(n) ? Number(n) : NaN), cards = Number(options.cards || indices?.length || 1);
       const elastic = elasticKeys.some((k) => Object.hasOwn(options, k)) ? elasticAllocation({ minCards: Number(options["min-cards"]), globalBatch: Number(options["global-batch"]), microBatch: Number(options["micro-batch"]), autoExpand: options["auto-expand"] === true }, cards, scheduling).elastic : null;
       const placement = placementKeys.some((k) => Object.hasOwn(options, k)) ? gpuPlacement({ gpuIndices: indices, shared: options.share === true, ...options["vram-mib"] ? { vramMiB: Number(options["vram-mib"]) } : {}, hami: options.hami === true, ...options["sm-percent"] ? { smPercent: Number(options["sm-percent"]) } : {} }, cards, elastic, scheduling, options.priority) : null;
-      if(options.sync){if(!context.project)fail9('run --sync 请先用 project create/use 选择项目。');await uploadCodeFiles(call,{machine:developmentMachine,context,local:options['sync-dir']||process.cwd(),remote:'.',key,stateDirectory:sessionFile+'.uploads',via:options.via});}
+      if(options.sync){if(!context.project)fail9('run --sync 请先用 project create/use 选择项目。');await uploadCodeFiles(call,{machine:syncMachine,context,local:options['sync-dir']||process.cwd(),remote:'.',key,stateDirectory:sessionFile+'.uploads',via:options.via});}
       process.stderr.write('工作区：'+(context.project||'默认 OCI 项目')+' · 数据集 /datasets\n');
       if (options.interactive) context.interactive = true;
       if(automatic)context.sourceMachine=developmentMachine;
+      if(after?.length)context.after=[...new Set(after)];
       if (memoryLimitGiB !== void 0) context.memoryLimitGiB = memoryLimitGiB;
       const submission = await submitJobWithReceipt(call, { machine: positionals[1], ...automatic ? { machineSelection: { mode: "auto", ...candidates ? { candidates } : {} } } : {}, cards, minVramGiB: Number(options["min-vram"] || 0), name: options.name || "train", ...options.description !== void 0 ? { description: taskDescription(options.description) } : {}, argv: training, key, ...options.priority ? { priority: options.priority } : {}, ...scheduling ? { scheduling } : {}, ...elastic ? { elastic } : {}, ...placement ? { placement } : {}, ...context },session.principal);
       result=submission.result;if(submission.receiptRecovered)process.stderr.write("按原 key 找回已登记任务："+result.id+"\n");
@@ -805,7 +813,7 @@ ${n.body}
   if (command === "jobs") {
     console.log(result.length ? [...result].slice(-50).reverse().map((j) => `${j.id}  ${j.state}${j.preempted ? "（让位中断，不会自动重跑）" : ""}
   ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${Number.isInteger(j.schedulerPriority) ? 'P'+j.schedulerPriority : ["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}
-  ${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}\n  ${gpuMetricsText(j.gpuMetrics)}`).join("\n") : "暂无任务。");
+  ${j.after?.length?'依赖：'+j.after.map(item=>`${item.name} (${item.id})`).join('、')+(j.error||j.reason?' · '+(j.error||j.reason):'')+'\n  ':''}${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}\n  ${gpuMetricsText(j.gpuMetrics)}`).join("\n") : "暂无任务。");
     if (result.length > 50) console.log("显示最近 50 条；完整记录：gpuctl jobs --json");
     return;
   }
