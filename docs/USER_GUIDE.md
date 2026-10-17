@@ -412,6 +412,16 @@ gpuctl note-delete NOTE_ID
 
 P0–P4 越大越优先，团队成员都可使用。低等级不等于同意中断：
 
+网页普通/高/最低预设和 CLI `--priority normal|high|idle` 对应如下；未指定策略时默认 normal。
+
+| 预设 | 排队等级 | 让位方式 |
+| --- | --- | --- |
+| normal（默认） | P2 | 不自动让位 |
+| high | P4 | 不自动让位，可让 idle 任务让位 |
+| idle | P0 | 可立即中断，不自动重排 |
+
+`--rank` 使用显式调度策略；以上预设在首次派发时生效，已有排队或运行作业保持原策略。
+
 ```sh local
 gpuctl run --rank P1 --yield never -g 1 -- python train.py
 gpuctl run --rank P1 --yield now -g 1 -- python disposable.py

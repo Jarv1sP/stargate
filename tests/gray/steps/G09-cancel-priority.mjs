@@ -10,9 +10,10 @@ export default {features:["取消、优先级、完成情况、资源收尾"],id
     ctx.check('取消在120秒内结束且状态取消',Date.now()-start<=120000&&stopped.state==='CANCELED',stopped);
     const held=await submit(ctx,member,name,['python','-u','sleeper.py'],{cards:2});ids.push(held.id);
     ctx.check('下一任务可占满2卡',(await waitJob(ctx,member,held.id,['RUNNING',...terminalStates])).state==='RUNNING');
-    const queued=await submit(ctx,b,name,['python','-u','sleeper.py'],{ownerId:member.userId});ids.push(queued.id);
+    const queued=await submit(ctx,b,name,['python','-u','sleeper.py'],{ownerId:member.userId,priority:'high'});ids.push(queued.id);
     const pending=await waitJob(ctx,b,queued.id,['PENDING','RUNNING',...terminalStates]);
     ctx.check('两卡占用时新任务排队',pending.state==='PENDING',pending);
+    ctx.check('high 预设使用 P4',pending.schedulerPriority===4,pending.schedulerPriority);
     const priority=await call(ctx,b,'jobs.priority',{jobId:queued.id,priority:'P1'});
     ctx.check('排队任务优先级改为P1',priority.schedulerPriority===1,priority);
   }finally{

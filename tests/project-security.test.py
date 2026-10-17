@@ -260,6 +260,58 @@ assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir()
         result=node.process('watch',{'job':{**spec,'after':['J000000000002']}})
         self.assertEqual(result['error'],reason)
 
+    def test_portal_presets_reach_first_native_submission_without_changing_saved_records(self):
+        import sqlite3
+        node=self.node();node.projects().store.create('alice','demo')
+        script="""
+import {randomUUID} from 'node:crypto';
+import {normalizeJobSubmission,createSubmittedJob} from './job-submission.mjs';
+const variants=[{}, {priority:'high'}, {priority:'normal'}, {priority:'idle'},
+  {scheduling:{rank:'P4',yieldPolicy:'never',restartPolicy:'never',checkpointable:false}}];
+console.log(JSON.stringify(variants.map(policy=>createSubmittedJob(normalizeJobSubmission({
+  machine:'gpu-1',project:'demo',cards:1,argv:['python','train.py'],key:randomUUID(),...policy
+},{userId:'alice'}),{id:'alice',username:'alice'},true).spec)));
+"""
+        specs=json.loads(subprocess.check_output(['node','--input-type=module','-e',script],cwd=ROOT,text=True))
+        for spec,(rank,yielding,preset) in zip(specs,((2,'never',True),(4,'never',True),(2,'never',True),(0,'now',True),(4,'never',False))):
+            with self.subTest(policy=spec.get('priority','explicit')):
+                calls=[];native_id='J'+spec['id'].replace('-','')[:12]
+                def native(*args):
+                    calls.append(args)
+                    if args[0]=='submit':
+                        with sqlite3.connect(self.config['database']) as db:db.execute('insert into jobs values(?,?)',(native_id,spec['id']))
+                        return {'job_id':native_id}
+                    return {'job':{'id':native_id,'state':'PENDING','priority':rank},'attempts':[]}
+                node.gpu=native
+                node.process('sync',{'job':spec})
+                submit=next(args for args in calls if args[0]=='submit')
+                self.assertEqual(submit[submit.index('-p')+1],'P'+str(rank))
+                self.assertEqual(submit[submit.index('--yield')+1],yielding)
+                self.assertEqual('--preempt-idle-only' in submit,preset)
+                file=node.ROOT/'jobs'/(spec['id']+'.json');saved=file.read_bytes()
+                self.assertNotIn('priority',json.loads(saved));self.assertNotIn('preemptIdleOnly',json.loads(saved))
+                node.process('sync',{'job':spec})
+                self.assertEqual(file.read_bytes(),saved)
+                self.assertEqual(sum(args[0]=='submit' for args in calls),1)
+
+    def test_existing_preset_jobs_keep_their_native_rank_and_execution_record(self):
+        import sqlite3
+        node=self.node();folder=node.module('project-store').private_dir(node.ROOT/'jobs',create=True)
+        for state,rank in (('PENDING',0),('PENDING',1),('RUNNING',0)):
+            with self.subTest(state=state,rank=rank):
+                jid=self.key();native_id='J'+jid.replace('-','')[:12]
+                saved={'id':jid,'userId':'alice','project':'demo','cards':1,'argv':['python','train.py']}
+                file=folder/(jid+'.json');node.atomic_json(file,saved);before=file.read_bytes()
+                with sqlite3.connect(self.config['database']) as db:db.execute('insert into jobs values(?,?)',(native_id,jid))
+                calls=[]
+                def native(*args):
+                    calls.append(args)
+                    return {'job':{'id':native_id,'state':state,'priority':rank},'attempts':[]}
+                node.gpu=native
+                result=node.process('sync',{'job':{**saved,'priority':'high','preemptIdleOnly':True}})
+                self.assertEqual(result['state'],state);self.assertEqual(result['schedulerPriority'],rank)
+                self.assertEqual(calls,[('show',native_id)]);self.assertEqual(file.read_bytes(),before)
+
     def test_submit_watch_cancel_outputs_and_original_key_use_current_project(self):
         import sqlite3
         node=self.node();node.projects().store.create('alice','demo');jid=self.key()

@@ -110,7 +110,7 @@ def job_operation(operation,args):
                 terminal_folder=module('project-store').private_dir(ROOT/'terminals',create=True)
                 atomic_json(terminal_folder/(jid+'.json'),job)
                 if not (terminal_folder/(jid+'.session.json')).exists():atomic_json(terminal_folder/(jid+'.session.json'),{'state':'DETACHED','clientId':None,'leaseExpiresAt':0})
-            policy=SCHEDULING.normalize_job_policy(job)
+            policy=SCHEDULING.normalize_job_policy(args['job'])
             resources=module('job-resources').requested_limits(job,False,CONFIG)
             # Scheduler uses the original UUID to prevent repeated submissions.
             atomic_json(dispatched,{'state':'SUBMITTING'})
