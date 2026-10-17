@@ -25,9 +25,10 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
       const note=await call(ctx,member,'community.notes.create',{key:ctx.key(),jobId:job.id,body:'灰度训练进行中'});
       ctx.check('任务留言存在',(await call(ctx,member,'community.notes.list')).notes.some(n=>n.id===note.note.id));
       if(mode==='fixed'){
-        successor=await submit(ctx,member,name,['python','-c',`from pathlib import Path; p=Path('/job-outputs/${job.id}/result.json'); Path('/outputs/after.json').write_bytes(p.read_bytes()); print('AFTER_OK')`],{machine:'auto',after:[job.id],name:'依赖后续',priority:'high'});
+        successor=await submit(ctx,member,name,['python','-c',`from pathlib import Path; p=Path('/job-outputs/${job.id}/result.json'); Path('/outputs/after.json').write_bytes(p.read_bytes()); print('AFTER_OK')`],{machine:'auto',after:[job.id],name:'依赖后续',scheduling:{rank:'P4',yieldPolicy:'never',restartPolicy:'never',checkpointable:false,mode:'queue'}});
         const queued=await waitJob(ctx,member,successor.id,['PENDING',...terminalStates]);
         ctx.check('后续已提前进入依赖所在节点队列且未分卡',queued.state==='PENDING'&&queued.machine===running.machine&&!!queued.nodeJobId&&!queued.assignedIndices?.length&&queued.queueReason?.includes('等待依赖'),queued);
+        ctx.check('后续保留自己的 P4 优先级',queued.schedulerPriority===4,queued.schedulerPriority);
       }
       const ended=await waitJob(ctx,member,job.id,terminalStates);
       const diagnostics=await call(ctx,member,'jobs.diagnostics',{jobId:job.id});

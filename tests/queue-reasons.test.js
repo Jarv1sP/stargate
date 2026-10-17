@@ -99,6 +99,15 @@ test('node reasons, running/terminal history and canceling jobs remain unchanged
   f.job.state='PENDING';f.job.cancelRequested=true;assert.equal(f.reason(),null);
 });
 
+test('a shared future reservation never labels its predecessor or ready successor quota-full',()=>{
+  const f=fixture();f.user.limits[machine]=1;
+  const child={...target(),id:'child',after:[{id:f.job.id,name:'mother'}]};
+  f.service.store.jobs.push(child);
+  assert.equal(f.reason(),'等待调度器分配，原因未上报');
+  f.job.state='SUCCEEDED';f.service.store.jobs.push({...target(),id:'grandchild',after:[{id:child.id,name:'child'}]});
+  assert.equal(pendingJobReason(f.service,child,now),'等待调度器分配，原因未上报');
+});
+
 test('reason is a read-only projection and never changes lifecycle, key, policy or reservations',()=>{
   const f=fixture();fill(f);const before=JSON.stringify({job:f.job,jobs:f.service.store.jobs,gpuq:f.service.gpuq});
   assert.match(f.reason(),/^显卡已满/);assert.equal(JSON.stringify({job:f.job,jobs:f.service.store.jobs,gpuq:f.service.gpuq}),before);

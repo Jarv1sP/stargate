@@ -245,7 +245,7 @@ export function pendingJobReason(service,job,now=Date.now()){
   if(!personalCardQuotaExempt(user)&&Number.isSafeInteger(limit)&&limit>=0){
     // The current pending job already owns its reservation; counting it as
     // its own blocker would incorrectly label an admitted one-card job full.
-    const used=usage(jobs.filter(row=>row.id!==job.id),job.userId,job.machine);
+    const used=Math.max(0,usage(jobs,job.userId,job.machine)-job.cards);
     if(used>=limit)return `配额已满（本人在该机已用 ${used}/${limit} 张）`;
   }
   return '等待调度器分配，原因未上报';
