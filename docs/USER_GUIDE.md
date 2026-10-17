@@ -179,6 +179,17 @@ gpuctl ssh --job JOB_ID
 
 同一个 GPU shell 可运行多个脚本。断开保留进程和 GPU，原 `ssh --job JOB_ID` 可重连；`exit` 或 `cancel` 结束任务并释放卡。手动命令不自动恢复或扩卡。
 
+### 依赖前一个作业
+
+```sh local
+gpuctl run --machine auto --after MOTHER_JOB_ID --rank P4 -g 8 -- python refine.py
+gpuctl run --after CANARY_JOB_ID,SECOND_JOB_ID --after THIRD_JOB_ID -g 1 -- python batch.py
+```
+
+`JOB_ID` 用 `gpuctl jobs` 中的完整编号。可以提前提交整条链，全部依赖 `SUCCEEDED` 才运行。后续作业在依赖所在的同一台机器排队；AUTO 在这里直接用该机，不复制项目，显式指定别的机器会报错。依赖尚未取得节点编号时先等编号，取得后立即进入节点队列；等待期间不分配卡。节点在发现全部依赖成功的同一轮调度里，按后续作业自己的优先级分配空卡，不等门户刷新。
+
+同一依赖链共用用卡预留：8 卡 A→8 卡 B→8 卡 C 共预留 8 卡；可能并行的分支分别预留，仍守账号总额度和单机额度。依赖失败、取消或终态失联时，后续作业自动取消、不运行，额度释放。`jobs`、`diagnostics` 和网页任务详情显示依赖关系及“等待依赖”；这次网页不增加依赖提交选项。
+
 ### 自动选服务器与上传后运行
 
 ```sh local

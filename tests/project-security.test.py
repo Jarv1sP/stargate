@@ -248,10 +248,22 @@ assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir()
         spec=importlib.util.spec_from_file_location('test_node',code/'node-executor.py');node=importlib.util.module_from_spec(spec)
         sys.modules[spec.name]=node;spec.loader.exec_module(node);return node
 
+    def test_cancel_reason_is_error_only_for_dependency_jobs(self):
+        import sqlite3
+        node=self.node();jid=self.key()
+        spec={'id':jid,'userId':'alice','project':'demo','cards':1,'argv':['python','train.py']}
+        with sqlite3.connect(self.config['database']) as db:db.execute('insert into jobs values(?,?)',('J000000000001',jid))
+        for reason in ('用户取消','抢占取消'):
+            node.gpu=lambda *args:{'job':{'state':'CANCELED','state_reason':reason},'attempts':[]}
+            result=node.process('watch',{'job':spec})
+            self.assertIsNone(result['error']);self.assertEqual(result['queueReason'],reason)
+        result=node.process('watch',{'job':{**spec,'after':['J000000000002']}})
+        self.assertEqual(result['error'],reason)
+
     def test_submit_watch_cancel_outputs_and_original_key_use_current_project(self):
         import sqlite3
         node=self.node();node.projects().store.create('alice','demo');jid=self.key()
-        spec={'id':jid,'userId':'alice','username':'alice','project':'demo','cards':1,'argv':['python','train.py'],'name':'test','minVramGiB':0,'workspace':True}
+        spec={'id':jid,'userId':'alice','username':'alice','project':'demo','cards':1,'argv':['python','train.py'],'name':'test','minVramGiB':0,'workspace':True,'after':['J000000000002','J000000000003']}
         calls=[]
         def native(*args):
             calls.append(args)
@@ -264,6 +276,7 @@ assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir()
         self.assertEqual(node.process('sync',{'job':spec})['state'],'SUCCEEDED')
         self.assertEqual(sum(a[0]=='submit' for a in calls),1)
         submit=next(a for a in calls if a[0]=='submit');self.assertIn('GPUQ_CONSOLE_OCI=1',submit);self.assertIn(str(Path(node.HERE)/'oci-runner.py'),submit)
+        self.assertEqual([submit[i+1] for i,value in enumerate(submit) if value=='--after'],spec['after'])
         path=node.projects().store.runtime_paths(spec,jid)['output'];(path/'result.txt').write_bytes(b'result')
         data=node.process('files.get',{'userId':'bob','area':'output','runId':jid,'path':'result.txt'})
         self.assertEqual(base64.b64decode(data['data']),b'result')

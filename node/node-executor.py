@@ -75,7 +75,7 @@ def native(job):
     return row[0] if row else None
 
 def job_operation(operation,args):
-    fields={'id','userId','username','project','cards','argv','name','minVramGiB','memoryLimitGiB','ownerId','interactive','workspace','scheduling','placement','elastic','projectCopy'}
+    fields={'id','userId','username','project','cards','argv','name','minVramGiB','memoryLimitGiB','ownerId','interactive','workspace','scheduling','placement','elastic','projectCopy','after'}
     supplied={k:v for k,v in args['job'].items() if k in fields}
     for k,keys in {'scheduling':{'rank','yieldPolicy','restartPolicy','checkpointable','mode'},'placement':{'gpuIndices','shared','vramMiB','smPercent','hami'},'elastic':{'minCards','globalBatch','microBatch','autoExpand'}}.items():
         if isinstance(supplied.get(k),dict):supplied[k]={n:v for n,v in supplied[k].items() if n in keys}
@@ -115,6 +115,7 @@ def job_operation(operation,args):
             # Scheduler uses the original UUID to prevent repeated submissions.
             atomic_json(dispatched,{'state':'SUBMITTING'})
             result=gpu('submit',*SCHEDULING.allocation_arguments(job),*SCHEDULING.submit_arguments(policy),
+                *(item for dependency in job.get('after',[]) for item in ('--after',dependency)),
                 '--env','GPUQ_CONSOLE_OCI=1','-n','portal-'+jid[:8],'-u',gpuq_owner(job),
                 '--cwd',str(workspace(job['userId'])),'--submit-key',jid,'--','/usr/bin/python3',str(HERE/'oci-runner.py'),jid)
             node_id=result['job_id']
@@ -137,6 +138,7 @@ def job_operation(operation,args):
         attempts=data.get('attempts',[])
         return {'nodeJobId':node_id,'state':state.get('state','UNKNOWN'),
                 'assignedIndices':attempts[0].get('gpu_indices',[]) if attempts and not scheduler_finished(data) else [],
+                'error':state.get('state_reason') if job.get('after') and state.get('state')=='CANCELED' else None,
                 **scheduling_status(job,data)}
     finally:os.close(lock)
 

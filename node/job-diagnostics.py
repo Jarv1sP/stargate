@@ -449,6 +449,8 @@ def allocation_history(scheduler):
 def bundle(root, spec, scheduler):
     result = {'schema': 1, 'jobId': spec['id'], 'schedulerState': scheduler.get('job', scheduler).get('state', 'UNKNOWN'), 'state': 'UNAVAILABLE', 'captures': [], 'attempts': []}
     result['gpuMetrics'] = scheduler.get('gpuMetrics')
+    result['after'] = scheduler.get('job', scheduler).get('after', [])
+    result['queueReason'] = scheduler.get('job', scheduler).get('state_reason')
     result.update(allocation_history(scheduler))
     for attempt in scheduler.get('attempts', [])[:16]:
         result['attempts'].append({k: attempt[k] for k in ('id', 'state', 'exit_code', 'failure_reason', 'gpu_indices', 'gpu_uuids', 'created_at', 'started_at', 'finished_at') if k in attempt})

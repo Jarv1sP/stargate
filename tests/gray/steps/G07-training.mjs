@@ -6,7 +6,7 @@ import {project,call,submit,waitJob,download,terminalStates} from '../lib/exec.m
 import {AssertionFailure} from '../lib/context.mjs';
 import {memberState} from '../lib/accounts.mjs';
 import {stackExec} from '../lib/stack.mjs';
-export default {features:["提交任务（指定卡数、自动选服务器、指定 GPU），直接用当前工作区和 /datasets", "任务列表、日志、实时跟踪、诊断（CPU/内存/OOM）", "任务显示名、留言、通知", "训练进度上报、checkpoint 断点重跑（SDK）"],id:'G07',title:'指定、自动与指定 GPU 训练及观察（FEATURES 五）',level:'fast',async run(ctx){
+export default {features:["提交任务（指定卡数、自动选服务器、指定 GPU），直接用当前工作区和 /datasets", "作业依赖（CLI --after，可重复或逗号分隔）：全部成功后同机按优先级调度，失败/取消自动取消；链内共用预留", "任务列表、日志、实时跟踪、诊断（CPU/内存/OOM）", "任务显示名、留言、通知", "训练进度上报、checkpoint 断点重跑（SDK）"],id:'G07',title:'指定、自动与指定 GPU 训练及观察（FEATURES 五）',level:'fast',async run(ctx){
   const {name,member}=await project(ctx);
   if(!ctx.shared.dataset)await datasets.run(ctx);
   const dataset=ctx.shared.dataset;
@@ -14,7 +14,7 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
   for(const [mode,extra] of [['fixed',{}],['auto',{machine:'auto'}],['gpu',{placement:{gpuIndices:[1],shared:false}}]]){
     ctx.log('G07 训练方式 '+mode);
     const argv=['python','-u','-c',"import sys,time,runpy;print('GRAY_BEGIN',flush=True);time.sleep(30);sys.argv=['train.py',sys.argv[1]];runpy.run_path('train.py',run_name='__main__')",'/datasets/'+dataset.name];
-    const job=await submit(ctx,member,name,argv,extra);
+    const job=await submit(ctx,member,name,argv,extra);let successor;
     try{
       const running=await waitJob(ctx,member,job.id,['RUNNING',...terminalStates]);
       ctx.check(mode+' 训练进入运行',running.state==='RUNNING',running);
@@ -24,6 +24,12 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
       ctx.check('任务显示名持久化',(await call(ctx,member,'tasks.display.get',args)).name==='灰度 '+mode);
       const note=await call(ctx,member,'community.notes.create',{key:ctx.key(),jobId:job.id,body:'灰度训练进行中'});
       ctx.check('任务留言存在',(await call(ctx,member,'community.notes.list')).notes.some(n=>n.id===note.note.id));
+      if(mode==='fixed'){
+        successor=await submit(ctx,member,name,['python','-c',`from pathlib import Path; p=Path('/job-outputs/${job.id}/result.json'); Path('/outputs/after.json').write_bytes(p.read_bytes()); print('AFTER_OK')`],{machine:'auto',after:[job.id],name:'依赖后续',scheduling:{rank:'P4',yieldPolicy:'never',restartPolicy:'never',checkpointable:false,mode:'queue'}});
+        const queued=await waitJob(ctx,member,successor.id,['PENDING',...terminalStates]);
+        ctx.check('后续已提前进入依赖所在节点队列且未分卡',queued.state==='PENDING'&&queued.machine===running.machine&&!!queued.nodeJobId&&!queued.assignedIndices?.length&&queued.queueReason?.includes('等待依赖'),queued);
+        ctx.check('后续保留自己的 P4 优先级',queued.schedulerPriority===4,queued.schedulerPriority);
+      }
       const ended=await waitJob(ctx,member,job.id,terminalStates);
       const diagnostics=await call(ctx,member,'jobs.diagnostics',{jobId:job.id});
       await mkdir(ctx.artifacts,{recursive:true});await writeFile(join(ctx.artifacts,'diagnostics-'+mode+'.json'),JSON.stringify(diagnostics,null,2)+'\n');
@@ -32,6 +38,10 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
       const log=await call(ctx,member,'jobs.logs',{jobId:job.id});
       ctx.check('日志包含训练开始和结果',log.text.includes('GRAY_BEGIN')&&log.text.includes('GRAY-TRAIN'));
       const bytes=await download(ctx,member,{area:'output',runId:job.id,path:'result.json'}),result=JSON.parse(bytes);
+      if(successor){
+        const finished=await waitJob(ctx,member,successor.id,terminalStates);ctx.check('依赖成功后后续作业自动成功',finished.state==='SUCCEEDED',finished);
+        ctx.check('后续能读取前序完整输出',(await download(ctx,member,{area:'output',runId:successor.id,path:'after.json'})).equals(bytes));
+      }
       ctx.check('训练读取的数据文件数和总字节数一致',result.files===dataset.files&&result.bytes===dataset.bytes,result);
       ctx.check('训练产出有限损失和准确率',result.loss.length===4&&result.loss.every(Number.isFinite)&&result.accuracy>=0&&result.accuracy<=1);
       ctx.check('任务只可见一张分配卡',result.visibleGpuUuids.length===1,result.visibleGpuUuids);
@@ -54,6 +64,7 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
     }finally{
       const current=await call(ctx,member,'jobs.watch',{jobId:job.id});
       if(!terminalStates.includes(current.state)){await call(ctx,member,'jobs.cancel',{jobId:job.id});await waitJob(ctx,member,job.id,terminalStates);}
+      if(successor){const current=await call(ctx,member,'jobs.watch',{jobId:successor.id});if(!terminalStates.includes(current.state)){await call(ctx,member,'jobs.cancel',{jobId:successor.id});await waitJob(ctx,member,successor.id,terminalStates);}}
     }
   }
   try{await checkpoint(ctx,member,name);}catch(error){failures.push('SDK进度/checkpoint：'+error.message);ctx.note('SDK子检查失败：'+error.message);}

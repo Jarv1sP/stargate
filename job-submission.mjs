@@ -10,6 +10,7 @@ const FIELDS=new Set([
   'machine','cards','minVramGiB','argv','name','description','key',
   'project','priority','scheduling','elastic','placement',
   'machineSelection','interactive','memoryLimitGiB','sourceMachine',
+  'after',
 ]);
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 
@@ -62,6 +63,7 @@ export function normalizeJobSubmission(args,principal){
     ...(machineSelection?{machineSelection}:{}),...(args.interactive?{interactive:true}:{}),
     ...(placement?{placement}:{}),
     ...(allocation?{elastic:allocation.elastic,allowedGpuCounts:allocation.allowed}:{})};
+  if(args.after?.length)request.after=[...new Set(args.after)];
   if(args.memoryLimitGiB!==undefined)request.memoryLimitGiB=args.memoryLimitGiB;
   return request;
 }
@@ -72,6 +74,7 @@ export function createSubmittedJob(request,user,prioritySupported,{id=randomUUID
   const policy=explicit?{scheduling:structuredClone(explicit)}:prioritySupported?{priority,preemptIdleOnly:true}:{};
   const spec={id,userId:user.id,username:user.username,cards,argv:[...request.argv],name,minVramGiB,...context,...policy,...(request.memoryLimitGiB!==undefined?{memoryLimitGiB:request.memoryLimitGiB}:{})};
   return {id,key,spec,userId:user.id,username:user.username,submitterName:displayName(user.name??user.username),machine,cards,name,description:request.description,...context,
+    ...(request.after?.length?{after:structuredClone(request.after)}:{}),
     ...(request.sourceMachine?{sourceMachine:request.sourceMachine}:{}),
     ...(request.machineSelection?{machineSelection:structuredClone(request.machineSelection),
       ...(request.selectionSummary?{selectionSummary:structuredClone(request.selectionSummary)}:{})}:{}),

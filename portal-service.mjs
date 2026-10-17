@@ -38,6 +38,7 @@ function compactTerminalStateJob(job,users){
   // project plus the selected AUTO destination for outputs and allocation.
   // Keep these public references, never reconstruct ownership from labels.
   return {id:view.id,userId:view.userId,name:view.name,machine:view.machine,cards:view.cards,state:view.state,
+    ...(view.after?.length?{after:view.after}:{}),
     ...(view.project!==undefined?{project:view.project}:{}),
     ...(view.machineSelection!==undefined?{machineSelection:view.machineSelection}:{}),
     ...(view.selectionSummary!==undefined?{selectionSummary:view.selectionSummary}:{}),

@@ -13,6 +13,16 @@ export const submissionError=job=>Date.now()-Date.parse(job.dispatchStartedAt||j
 export const submissionDelay=attempt=>Math.min(60000,15000*2**Math.min(2,attempt));
 
 export async function firstDispatch(service,job,{usage,RANKS,fail}){
+  if(job.after?.length){
+    const dependencies=job.after.map(item=>service.store.jobs.find(row=>row.id===item.id));
+    const failed=dependencies.find(row=>row&&(['FAILED','CANCELED'].includes(row.state)||row.schedulerState==='LOST'));
+    if(failed){
+      await service.enqueue(()=>{job.state='CANCELED';job.error=`依赖作业 ${failed.name} 失败/已取消，未运行`;job.queueReason=null;job.notSubmitted=true;job.dispatchPending=false;job.finishedAt=new Date().toISOString();service.save();});
+      return null;
+    }
+    if(dependencies.some(row=>!row?.nodeJobId))return null;
+    job.spec.after=dependencies.map(row=>row.nodeJobId);
+  }
   if(job.spec.projectCopy){
     const user=service.store.get(job.userId),principal={userId:user.id,username:user.username,role:user.role};
     let result=await transferCall(service,principal,job.projectPreparation?'transfers.status':'transfers.create',
@@ -56,6 +66,15 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
   if(previous){
     return jobView(previous);
   }
+  if(request.after?.length){
+    const dependencies=request.after.map(id=>service.store.jobs.find(job=>job.id===id));
+    if(dependencies.some(job=>!job))rejectSubmission('依赖作业不存在，请使用 gpuctl jobs 中的完整作业编号。',404);
+    const machine=dependencies[0].machine;
+    if(dependencies.some(job=>job.machine!==machine))rejectSubmission('依赖作业必须都在同一台服务器上。',400);
+    if(!request.machineSelection&&request.machine!==machine)rejectSubmission('指定服务器与依赖作业所在服务器不一致，请选择 '+machine+' 或 auto。',400);
+    request.machine=machine;request.after=dependencies.map(({id,name})=>({id,name}));
+    delete request.machineSelection;delete request.sourceMachine;
+  }
   if(request.cards>user.total)rejectSubmission('任务卡数超出跨机器用卡总额度。',409);
   if(request.machineSelection){
     try{Object.assign(request,await selectMachine(service,user,request,usage));}
@@ -87,11 +106,11 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
   if(!queued&&(!host?.reachable||!host.gpuq.connected||host.gpus.filter(g=>g.memoryTotalMiB>=min*1024-512).length<request.cards))rejectSubmission('所选机器当前无法执行，或不满足卡数/显存条件；不会自动切换服务器。',409);
   const prioritySupported=true;
   if(service.maintenanceFor?.(request.machine))rejectSubmission('机器维护状态已改变；未提交训练。',409);
-  if(!personalCardQuotaExempt(user,request)){
-    if(usage(service.store.jobs,user.id)+request.cards>user.total)rejectSubmission('超出跨机器用卡总额度。',409);
-    if(usage(service.store.jobs,user.id,request.machine)+request.cards>user.limits[request.machine])rejectSubmission('超出所选机器的用卡额度。',409);
-  }
   const job=createSubmittedJob(request,user,prioritySupported),{id}=job;
+  if(!personalCardQuotaExempt(user,request)){
+    if(usage([...service.store.jobs,job],user.id)>user.total)rejectSubmission('超出跨机器用卡总额度。',409);
+    if(usage([...service.store.jobs,job],user.id,request.machine)>user.limits[request.machine])rejectSubmission('超出所选机器的用卡额度。',409);
+  }
   service.db.exec('BEGIN IMMEDIATE');
   try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
   catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==id);throw e;}

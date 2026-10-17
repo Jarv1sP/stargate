@@ -271,6 +271,7 @@ class Coordinator:
         self._health = "recovering"
         self._last_error: str | None = None
         self._snapshot: tuple[GpuDevice, ...] = ()
+        self._dependency_waiting: set[str] = set()
         self._gpu_samples_available = False
         self._statuses: dict[str, Any] = {}
         self._external: dict[str, set[int]] = {}
@@ -1025,6 +1026,7 @@ class Coordinator:
                 self._reconcile_attempts()
                 self._reconcile_scale_up_plans()
                 self._process_actions()
+                self._dependency_waiting = self._reconcile_dependencies()
                 if not self._observe_only and self._health == "ok":
                     self._schedule_scale_up_restarts()
                     self._schedule()
@@ -1657,7 +1659,7 @@ class Coordinator:
         # A queued job always gets first claim on newly idle capacity.  Once
         # the scale checkpoint is acknowledged, recovery is handled by the
         # durable plan rather than by this pre-ACK withdrawal predicate.
-        if self.store.list_jobs(states=[JobState.PENDING], limit=1):
+        if self._ready_pending_jobs():
             return False
         return self._scale_target_is_stable(plan, extras_only=True)
 
@@ -3838,7 +3840,7 @@ class Coordinator:
     def _schedule_scale_ups(self) -> None:
         # Expansion is opportunistic.  Any queued work gets a complete normal
         # scheduling pass before a running job may reserve additional GPUs.
-        if self.store.list_jobs(states=[JobState.PENDING], limit=1):
+        if self._ready_pending_jobs():
             return
         free = self._free_devices()
         if not free:
@@ -3990,7 +3992,7 @@ class Coordinator:
             )
 
     def _schedule_scale_up_restarts(self) -> None:
-        pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+        pending = self._ready_pending_jobs()
         restart_plans: list[dict[str, Any]] = []
         ordinary_pending = False
         for job in pending:
@@ -4026,7 +4028,7 @@ class Coordinator:
                     hard_conflict,
                     expected_states=[ScaleUpState.RESTART_PENDING],
                 )
-                pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+                pending = self._ready_pending_jobs()
                 continue
             if not self._scale_target_is_stable(plan, extras_only=False):
                 restart_deadline = float(plan["updated_at"]) + float(
@@ -4039,13 +4041,11 @@ class Coordinator:
                         "before timeout",
                         expected_states=[ScaleUpState.RESTART_PENDING],
                     )
-                    pending = self.store.list_jobs(
-                        states=[JobState.PENDING], limit=10_000
-                    )
+                    pending = self._ready_pending_jobs()
                     continue
                 return
             self._plan_scale_up_restart(head, plan)
-            pending = self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+            pending = self._ready_pending_jobs()
 
     def _reconcile_scale_up_plans(self) -> None:
         for plan in self.store.list_scale_up_plans(
@@ -4253,10 +4253,42 @@ class Coordinator:
                 return True
         return False
 
+    def _ready_pending_jobs(self) -> list[dict[str, Any]]:
+        return [job for job in self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+                if job["id"] not in self._dependency_waiting]
+
+    def _reconcile_dependencies(self) -> set[str]:
+        waiting = set()
+        # Parents were submitted first. Propagate a canceled chain in this pass.
+        for job in sorted(self.store.list_jobs(states=[JobState.PENDING], limit=10_000), key=lambda row: row["sequence"]):
+            names, failed = [], None
+            for dependency_id in job.get("after", []):
+                try:
+                    dependency = self.store.get_job(dependency_id)
+                except StoreNotFoundError:
+                    failed = "依赖作业不存在"
+                    break
+                name = dependency["display_metadata"].get("name") or dependency["name"]
+                if dependency["state"] in {"FAILED", "CANCELED", "LOST"}:
+                    failed = f"依赖作业 {name} 失败/已取消，未运行"
+                    break
+                if dependency["state"] != "SUCCEEDED":
+                    names.append(name)
+            reason = (failed or ("等待依赖：" + "、".join(names) if names else ""))[:400] or None
+            if failed:
+                self.store.update_job(job["id"], state=JobState.CANCELED, state_reason=reason)
+            elif names:
+                waiting.add(job["id"])
+                if job["state_reason"] != reason:
+                    self.store.update_job(job["id"], state_reason=reason)
+            elif job.get("after") and str(job["state_reason"] or "").startswith("等待依赖："):
+                self.store.update_job(job["id"], state_reason=None)
+        return waiting
+
     def _schedule(self) -> None:
         pending = [
             job
-            for job in self.store.list_jobs(states=[JobState.PENDING], limit=10_000)
+            for job in self._ready_pending_jobs()
             if not job.get("share_gpu")
         ]
         fallback_plans = {
@@ -4380,7 +4412,7 @@ class Coordinator:
     def _schedule_shared(self) -> None:
         # Explicit sharing can use an occupied card even while ordinary work
         # waits for idle cards. It never initiates preemption.
-        for job in self.store.list_jobs(states=[JobState.PENDING], limit=10000):
+        for job in self._ready_pending_jobs():
             if not job.get("share_gpu"):
                 continue
             if job.get("hami_core"):
@@ -4497,6 +4529,9 @@ class Coordinator:
                 )
         except (ValueError, StoreConflictError) as exc:
             raise ApiError("BAD_SUBMISSION", str(exc)) from exc
+        if job.get("after"):
+            self._dependency_waiting = self._reconcile_dependencies()
+            job = self.store.get_job(job["id"])
         return {
             "job_id": job["id"],
             "state": job["state"],
@@ -4542,6 +4577,7 @@ class Coordinator:
         states = None if show_all else _ACTIVE_JOB_STATES
         full_jobs = self.store.list_jobs(states=states, limit=limit)
         summary_fields = (
+            "after",
             "display_metadata",
             "hami_core",
             "sm_percent",
