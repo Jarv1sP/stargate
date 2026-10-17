@@ -59,6 +59,12 @@ class StorageUsage(unittest.TestCase):
         self.assertEqual(result['projectUsage'],{'project':'demo','ownerId':'alice','size':None,'complete':False})
         self.assertTrue(all(row['totalBytes'] is not None for row in result['volumes']))
 
+    def test_missing_project_status_explains_next_step_instead_of_errno(self):
+        for operation in ('projects.status','projects.workspace'):
+            with self.assertRaisesRegex(ValueError,'这台服务器上没有项目 absent.*project create absent') as caught:
+                self.ops().process(operation,{'userId':'nobody-yet','project':'absent'})
+            self.assertNotIn('Errno',str(caught.exception))
+
     def test_size_preserves_lower_bound_unknown_empty_and_link_boundary(self):
         root=Path(self.config['datasetsRoot']);healthy=root/'images';healthy.mkdir();(healthy/'ok.bin').write_bytes(b'abc')
         partial=healthy/'partial';partial.mkdir();(partial/'hidden.bin').write_bytes(b'hidden');partial.chmod(0)
