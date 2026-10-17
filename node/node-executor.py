@@ -138,7 +138,7 @@ def job_operation(operation,args):
         attempts=data.get('attempts',[])
         return {'nodeJobId':node_id,'state':state.get('state','UNKNOWN'),
                 'assignedIndices':attempts[0].get('gpu_indices',[]) if attempts and not scheduler_finished(data) else [],
-                'error':state.get('state_reason') if state.get('state')=='CANCELED' else None,
+                'error':state.get('state_reason') if job.get('after') and state.get('state')=='CANCELED' else None,
                 **scheduling_status(job,data)}
     finally:os.close(lock)
 

@@ -4266,8 +4266,8 @@ class Coordinator:
                 try:
                     dependency = self.store.get_job(dependency_id)
                 except StoreNotFoundError:
-                    names.append(dependency_id)
-                    continue
+                    failed = "依赖作业不存在"
+                    break
                 name = dependency["display_metadata"].get("name") or dependency["name"]
                 if dependency["state"] in {"FAILED", "CANCELED", "LOST"}:
                     failed = f"依赖作业 {name} 失败/已取消，未运行"

@@ -91,7 +91,7 @@ test('a full-width parent can release its reservation to two half-width branches
   f.service.store.jobs.find(row=>row.id===joined.id).state='SUCCEEDED';assert.equal(usage(f.service.store.jobs,f.member.id),0);
 });
 
-test('quota equals the largest possible concurrent set, including joins and finished intermediates',()=>{
+test('quota equals the largest possible concurrent set, including joins and completed ancestors',()=>{
   for(let links=0;links<64;links++)for(let finished=-1;finished<4;finished++){
     let bit=0;
     const rows=[4,1,3,2].map((cards,index)=>({id:String(index),userId:'member',machine:'gpu-1',cards,state:index===finished?'SUCCEEDED':'PENDING',after:[]}));
@@ -100,10 +100,11 @@ test('quota equals the largest possible concurrent set, including joins and fini
       rows[child].after.push({id:String(parent)});ancestors[child].add(parent);
       for(const id of ancestors[parent])ancestors[child].add(id);
     }
+    if(finished>=0)for(const parent of ancestors[finished])rows[parent].state='SUCCEEDED';
     let expected=0;
     for(let subset=0;subset<16;subset++){
       const picked=rows.map((_,index)=>index).filter(index=>subset&(1<<index));
-      if(picked.includes(finished)||picked.some(a=>picked.some(b=>ancestors[a].has(b))))continue;
+      if(picked.some(index=>rows[index].state==='SUCCEEDED')||picked.some(a=>picked.some(b=>ancestors[a].has(b))))continue;
       expected=Math.max(expected,picked.reduce((sum,index)=>sum+rows[index].cards,0));
     }
     assert.equal(usage(rows,'member'),expected,`DAG ${links}, finished ${finished}`);

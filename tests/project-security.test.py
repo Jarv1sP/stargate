@@ -248,6 +248,18 @@ assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir()
         spec=importlib.util.spec_from_file_location('test_node',code/'node-executor.py');node=importlib.util.module_from_spec(spec)
         sys.modules[spec.name]=node;spec.loader.exec_module(node);return node
 
+    def test_cancel_reason_is_error_only_for_dependency_jobs(self):
+        import sqlite3
+        node=self.node();jid=self.key()
+        spec={'id':jid,'userId':'alice','project':'demo','cards':1,'argv':['python','train.py']}
+        with sqlite3.connect(self.config['database']) as db:db.execute('insert into jobs values(?,?)',('J000000000001',jid))
+        for reason in ('用户取消','抢占取消'):
+            node.gpu=lambda *args:{'job':{'state':'CANCELED','state_reason':reason},'attempts':[]}
+            result=node.process('watch',{'job':spec})
+            self.assertIsNone(result['error']);self.assertEqual(result['queueReason'],reason)
+        result=node.process('watch',{'job':{**spec,'after':['J000000000002']}})
+        self.assertEqual(result['error'],reason)
+
     def test_submit_watch_cancel_outputs_and_original_key_use_current_project(self):
         import sqlite3
         node=self.node();node.projects().store.create('alice','demo');jid=self.key()

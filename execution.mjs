@@ -165,7 +165,8 @@ export function usage(jobs,userId,machine){
   if(!active.some(job=>job.after?.length))return total;
   // Maximum concurrent card demand is the weighted antichain of this DAG.
   // A flow matches reusable parent/child card slots; branches stay independent.
-  // Relay through finished/other-user jobs keeps transitive dependencies intact.
+  // Relay through other-user jobs keeps transitive dependencies intact.
+  jobs=jobs.filter(job=>!TERMINAL.has(job.state));
   const ids=new Map(jobs.map((job,index)=>[job.id,index])),weights=new Map(active.map(job=>[job.id,job.cards]));
   const source=jobs.length*2,sink=source+1,graph=Array.from({length:sink+1},()=>[]);
   const edge=(from,to,capacity)=>{

@@ -76,6 +76,14 @@ class After(unittest.TestCase):
         self.assertNotIn(child['id'], self.coordinator._dependency_waiting)
         self.assertIsNone(self.store.get_job(child['id'])['state_reason'])
 
+    def test_unknown_dependency_cancels_without_starting(self):
+        child = self.submit(after=['J000000000000'])
+        self.tick()
+        row = self.store.get_job(child['id'])
+        self.assertEqual(row['state'], 'CANCELED')
+        self.assertEqual(row['state_reason'], '依赖作业不存在')
+        self.assertEqual(self.store.list_attempts(job_id=child['id']), [])
+
     def test_dependencies_persist_across_restarts_and_original_key_is_immutable(self):
         parent, attempt = self.running()
         child = self.submit(after=[parent['id']])
