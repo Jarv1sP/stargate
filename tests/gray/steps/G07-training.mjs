@@ -18,6 +18,7 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
     try{
       const running=await waitJob(ctx,member,job.id,['RUNNING',...terminalStates]);
       ctx.check(mode+' 训练进入运行',running.state==='RUNNING',running);
+      ctx.check(mode+' 默认 normal 使用 P2',running.schedulerPriority===2,running.schedulerPriority);
       ctx.check('任务列表有原编号',(await memberState(ctx,member)).jobs.some(j=>j.id===job.id));
       const args={machine:ctx.machine,nodeJobId:running.nodeJobId};
       await call(ctx,member,'tasks.display.set',{...args,name:'灰度 '+mode,description:'读取数据集并写训练输出'});
