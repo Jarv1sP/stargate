@@ -78,8 +78,9 @@ class ProjectCopy:
                 paths=self.j.e.projects().store.dev_paths(owner,project)
                 self.s.require_workspace_space(folder,needed=1)
                 head=engine.workspace_container(project)
-                writable,rootfs=map(int,engine.run('container','inspect','--size','--format={{.SizeRw}} {{.SizeRootFs}}',head['container']).split())
-                workspace=0 if image_only else sum(int(line.split()[0]) for line in engine.run('unshare','/usr/bin/du','-sb',*[str(path) for path in paths.values()]).splitlines())
+                # Sizing walks the whole rootfs and workspace; it is as slow as the export itself.
+                writable,rootfs=map(int,engine.run('container','inspect','--size','--format={{.SizeRw}} {{.SizeRootFs}}',head['container'],timeout=3600).split())
+                workspace=0 if image_only else sum(int(line.split()[0]) for line in engine.run('unshare','/usr/bin/du','-sb',*[str(path) for path in paths.values()],timeout=3600).splitlines())
                 # Incremental export needs no commit layer or saved OCI image.
                 needed=writable+2*rootfs if image_only else rootfs+workspace if row['mode']=='incremental' else writable+2*rootfs+workspace
                 self.s.require_workspace_space(folder,needed=needed)
