@@ -38,28 +38,38 @@ class PeerClient:
                 raise
             self.connection = connection
     def call(self, action, **fields):
-        try:
-            timeout=5 if action=='complete' else 25
-            self.connect(timeout=timeout)
-            self.connection.sock.settimeout(timeout)
-            payload = json.dumps({'id': self.ticket['id'], 'action': action, **fields}).encode()
-            self.connection.request('POST', '/directory', body=payload,
-                headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+self.ticket['token']})
-            response = self.connection.getresponse()
-            raw = response.read(1500001)
-            if len(raw) > 1500000:
-                raise ValueError('Peer response is too large')
-            value = json.loads(raw)
-            if response.status in (429,503):raise TimeoutError('源服务器忙，请按原编号重试。')
-            if response.status != 200 or value.get('ok') is not True:
-                raise ValueError('源目录暂未响应，请按原编号查询或续传： '+str(value.get('error', response.status))[:200])
-            return value['result']
-        except (OSError,http.client.HTTPException) as error:
-            self.close()
-            raise ConnectionError(str(error)) from error
-        except Exception:
-            self.close()
-            raise
+        for attempt in (1, 2):
+            reused = self.connection is not None and self.connection.sock is not None
+            try:
+                timeout=5 if action=='complete' else 25
+                self.connect(timeout=timeout)
+                self.connection.sock.settimeout(timeout)
+                payload = json.dumps({'id': self.ticket['id'], 'action': action, **fields}).encode()
+                self.connection.request('POST', '/directory', body=payload,
+                    headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+self.ticket['token']})
+                response = self.connection.getresponse()
+                raw = response.read(1500001)
+                if len(raw) > 1500000:
+                    raise ValueError('Peer response is too large')
+                value = json.loads(raw)
+                if response.status in (429,503):raise TimeoutError('源服务器忙，请按原编号重试。')
+                if response.status != 200 or value.get('ok') is not True:
+                    raise ValueError('源目录暂未响应，请按原编号查询或续传： '+str(value.get('error', response.status))[:200])
+                return value['result']
+            except (ConnectionResetError, BrokenPipeError, ssl.SSLEOFError, ssl.SSLZeroReturnError) as error:
+                self.close()
+                # The source closes keep-alive connections idle for 30 s and on
+                # restart. Peer actions are reads or idempotent: resend once on a
+                # fresh connection; a fresh connection failing is a real outage.
+                if reused and attempt == 1:
+                    continue
+                raise ConnectionError(str(error)) from error
+            except (OSError,http.client.HTTPException) as error:
+                self.close()
+                raise ConnectionError(str(error)) from error
+            except Exception:
+                self.close()
+                raise
 
 
 class TransferJobs:
