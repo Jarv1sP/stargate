@@ -98,7 +98,10 @@ class PersonalOCI:
 
     def run(self,*args,timeout=30):
         self.s.private_dir(self.folder/'empty-hooks',create=True);self.s.private_dir(self.folder/'empty-cdi',create=True)
-        result=subprocess.run(self.command(*args),env=self.env,capture_output=True,text=True,timeout=timeout)
+        try:result=subprocess.run(self.command(*args),env=self.env,capture_output=True,text=True,timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # The exception text is the whole podman argv; say which step timed out.
+            raise ValueError(f'容器操作超时（{timeout} 秒未完成）：podman {" ".join(os.path.basename(a) for a in args[:2])}，请稍后按原编号重试。') from None
         if result.returncode:raise ValueError('容器操作失败：'+result.stderr[-1200:])
         return result.stdout.strip()
 
@@ -167,7 +170,8 @@ class PersonalOCI:
                  'container':self.load(project)['container'],'copy':{'action':action,'paths':{k:str(v) for k,v in paths.items()},**fields}}
         path=self.folder/'tmp'/('copy-'+uuid.uuid4().hex+'.json');self.s.atomic_json(path,request)
         try:
-            result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=3600)
+            try:result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=3600)
+            except subprocess.TimeoutExpired:raise ValueError('项目文件同步超时（3600 秒未完成），请稍后按原编号重试。') from None
             if result.returncode:raise ValueError('项目文件同步失败：'+result.stderr[-1200:])
             return json.loads(result.stdout)
         finally:path.unlink(missing_ok=True)
