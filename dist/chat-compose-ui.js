@@ -56,13 +56,16 @@ export function createChatComposer({form,input,members,onError}){
     catch(error){onError(error.message);}
     finally{busy=false;imageButton.disabled=false;}
   }
-  // The @word right before the caret, if the caret sits at its end.
-  function query(){const before=input.value.slice(0,input.selectionStart??0),match=/(?:^|[\s(（，,。：:])@([^\s@]{0,24})$/u.exec(before);return match&&input.selectionStart===input.selectionEnd?match[1]:null;}
+  // The @word right before the caret, if the caret sits at its end. Chinese text has no
+  // space before @; only a letter or digit right before it (an e-mail address) is not a mention.
+  function query(){const before=input.value.slice(0,input.selectionStart??0),match=/(?:^|[^A-Za-z0-9._%+-])@([^\s@]{0,24})$/u.exec(before);return match&&input.selectionStart===input.selectionEnd?match[1]:null;}
   function closeMentions(){choices=[];mentionList.hidden=true;input.removeAttribute('aria-activedescendant');}
   function suggest(){
     const word=locked()?null:query();if(word===null){closeMentions();return;}
     const lower=word.toLowerCase();
-    choices=members().filter(user=>user.username.toLowerCase().includes(lower)||(user.name||'').toLowerCase().includes(lower)).slice(0,6);
+    // Everyone who matches, in name order; the list scrolls.
+    choices=members().filter(user=>user.username.toLowerCase().includes(lower)||(user.name||'').toLowerCase().includes(lower))
+      .sort((a,b)=>(a.name||a.username).localeCompare(b.name||b.username,'zh-CN'));
     if(!choices.length){closeMentions();return;}
     active=Math.min(active,choices.length-1);mentionList.replaceChildren();
     for(const [index,user] of choices.entries()){
@@ -72,6 +75,7 @@ export function createChatComposer({form,input,members,onError}){
       option.addEventListener('pointerdown',event=>{event.preventDefault();pick(index);});mentionList.append(option);
     }
     mentionList.hidden=false;toggleEmoji(false);input.setAttribute('aria-activedescendant','chat-mention-'+active);
+    mentionList.children[active].scrollIntoView({block:'nearest'});
   }
   function pick(index){
     const user=choices[index],word=query();if(!user||word===null)return;
