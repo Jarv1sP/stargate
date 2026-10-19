@@ -121,7 +121,7 @@ export async function cloudImportCall(service,actor,operation,args,assertCurrent
   assertCurrent();
   const node={userId:actor.userId,actor:{userId:actor.userId,isAdmin:actor.role==='admin'},...source.target,key,path:source.path,url,sourceKind:source.kind,...(downloadHeaders?{downloadHeaders}:{}),...(source.kind==='aliyun'?{expectedBytes:source.file.size}:{...(source.expectedBytes!==undefined?{expectedBytes:source.expectedBytes}:{})})};
   service.audit(actor.username,operation,args.machine,key);
-  const result=await service.bridge(args.machine,'datasets.import.start',node);
+  const result=await service.bridge(args.machine,'datasets.import.'+action,{...node,...(action==='resume'?{operationId:key}:{})});
   assertCurrent();
   if(action==='resume'&&source.kind==='https')service.db.prepare('UPDATE cloud_downloads SET cipher=? WHERE user_id=? AND machine=? AND id=?').run(service.cloudSeal(identity,source),row.user_id,args.machine,key);
   return result;

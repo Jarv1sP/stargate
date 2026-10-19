@@ -165,7 +165,19 @@ class DataImports:
         if action=='cancel':
             with self.locked(key):row=self.s.read_json(file);row['state']='CANCELED';self.s.atomic_json(file,row)
         elif action in ('resume','continue'):
-            if row['state']!='SUCCEEDED':row['state']='PENDING';self.s.atomic_json(file,row);self.launch(key)
+            with self.locked(key):
+                row=self.s.read_json(file)
+                if row['state'] in ('PENDING','RUNNING','SUCCEEDED'):return self.view(row)
+                if 'url' in args:checked_url(args['url'])
+                for name in ('url','downloadHeaders'):
+                    if name in args:row[name]=args[name];row['request'][name]=args[name]
+                previous=row['state'];row.update(state='PENDING',error=None);self.s.atomic_json(file,row)
+            try:self.launch(key)
+            except Exception as error:
+                with self.locked(key):
+                    row=self.s.read_json(file)
+                    if row['state']=='PENDING':row.update(state=previous,error=str(error)[:400]);self.s.atomic_json(file,row)
+                raise
         return self.view(row)
 
     def worker(self,key):

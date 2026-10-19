@@ -151,6 +151,50 @@ class DirectoryContract(unittest.TestCase):
         self.assertEqual(Path(self.config['datasetsRoot'],'shared/cloud.bin').read_bytes(),b'abc')
         self.assertEqual(self.files.datasets(self.config)['datasets'][0]['uploadedBy'],'bob')
 
+    def test_import_resume_keeps_partial_bytes_and_refreshes_source_without_duplicate_workers(self):
+        imports=module('data-import')
+        for state in ('PAUSED','CANCELED'):
+            with self.subTest(state=state):
+                launches=[];jobs=imports.DataImports(SimpleNamespace(CONFIG=self.config,run=lambda *a,**k:launches.append(a)))
+                key=self.key();path=state.lower()+'.bin';original='https://example.invalid/file';fresh=original+'?fresh=1'
+                jobs.process('datasets.import.start',{'key':key,'url':original,'path':path,'dataset':'shared','userId':'bob'})
+                class Interrupted:
+                    status=200
+                    reads=0
+                    def getheader(_,name):return '6' if name=='Content-Length' else None
+                    def read(_,size):
+                        _.reads+=1
+                        if _.reads==1:return b'abc'
+                        raise TimeoutError('interrupted download')
+                with patch.object(imports,'open_download',return_value=(SimpleNamespace(close=lambda:None),Interrupted())):self.assertEqual(jobs.worker(key),1)
+                if state=='CANCELED':jobs.process('datasets.import.cancel',{'operationId':key})
+                self.assertEqual(jobs.process('datasets.import.status',{'operationId':key})['state'],state)
+                self.assertEqual(self.uploads.process('status',{'key':key})['offset'],3)
+                self.assertFalse(Path(self.config['datasetsRoot'],'shared',path).exists())
+                args={'operationId':key,'url':fresh,'path':'ignored-new-target.bin','dataset':'ignored-new-dataset'}
+                resumed=jobs.process('datasets.import.resume',args);self.assertEqual(resumed['bytes'],3);self.assertEqual(resumed['state'],'PENDING');self.assertIsNone(resumed['error'])
+                jobs.process('datasets.import.resume',args);self.assertEqual(len(launches),2)
+                class Remainder:
+                    status=206
+                    reads=0
+                    def getheader(_,name):return 'bytes 3-5/6' if name=='Content-Range' else '3' if name=='Content-Length' else None
+                    def read(_,size):_.reads+=1;return b'def' if _.reads==1 else b''
+                with patch.object(imports,'open_download',return_value=(SimpleNamespace(close=lambda:None),Remainder())) as opened:
+                    self.assertEqual(jobs.worker(key),0);self.assertEqual(opened.call_args.args[0],fresh);self.assertEqual(opened.call_args.kwargs['offset'],3)
+                complete=jobs.process('datasets.import.status',{'operationId':key});self.assertEqual(complete['state'],'SUCCEEDED');self.assertEqual(complete['bytes'],6)
+                self.assertEqual(Path(self.config['datasetsRoot'],'shared',path).read_bytes(),b'abcdef')
+                jobs.process('datasets.import.resume',args);self.assertEqual(len(launches),2)
+
+    def test_import_resume_launch_failure_remains_retryable(self):
+        imports=module('data-import');jobs=imports.DataImports(SimpleNamespace(CONFIG=self.config,run=lambda *a,**k:None));key=self.key()
+        jobs.process('datasets.import.start',{'key':key,'url':'https://example.invalid/file','path':'retry.bin','dataset':'shared','userId':'bob'})
+        jobs.update(key,state='PAUSED',bytes=3,totalBytes=6)
+        with patch.object(jobs,'launch',side_effect=RuntimeError('worker launch failed')):
+            with self.assertRaisesRegex(RuntimeError,'worker launch failed'):jobs.process('datasets.import.resume',{'operationId':key})
+        status=jobs.process('datasets.import.status',{'operationId':key});self.assertEqual(status['state'],'PAUSED');self.assertEqual(status['bytes'],3)
+        with patch.object(jobs,'launch') as launch:
+            self.assertEqual(jobs.process('datasets.import.resume',{'operationId':key})['state'],'PENDING');launch.assert_called_once_with(key)
+
     def test_cross_node_directory_copy_resumes_uuid_and_keeps_empty_directories(self):
         raw=b'a'*(1024**2)+b'end';self.upload('train/data.bin',raw)
         (Path(self.config['datasetsRoot'])/'shared/empty').mkdir()
