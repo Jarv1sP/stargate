@@ -11,6 +11,8 @@
 - `collector.credentialDirectory`、`collector.hosts`：采集身份的独立凭据和机器清单。
 - `collector.target`、`targetUid`、`targetGid`：快照文件位置及其属主。父目录须已存在，且门户用户能读取。发布通过同目录临时文件、`fsync`、原子改名完成。
 
+节点需要跳板时，分别设置 `transport.sshConfig`、`collector.sshConfig` 为 VPS 本地管理员维护的 SSH 配置文件，在对应 Host 中配置 ProxyCommand 或 ProxyJump；不设置仍使用 `/dev/null`。最终节点继续使用原执行/采集密钥和 known_hosts，跳板使用独立、仅允许转发到目标 SSH 端口的身份，不转发 agent。地址和密钥路径只放私有配置，不从 RPC 请求读取。自动发布另沿用 `node-ssh.conf`，新增节点须同时登记 `nodes.json` 和 production 的 `DEPLOY_MACHINES`。
+
 SSH 保留现有服务器证书校验和固定密钥，不自动重派已经发送的请求或终端输入。传输里的哈希仅用于生成短 Unix socket 文件名，不读取或比较用户文件。
 
 ## 现有 systemd 服务
