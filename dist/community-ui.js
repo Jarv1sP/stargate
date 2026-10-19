@@ -259,5 +259,9 @@ export function createCommunityUI(store,toast){
   });
   layoutObserver.observe(root);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(visible&&ready&&chatShown()){loadChat('poll');}});
-  return function sync(isVisible){const next=principal(store);if(next!==identity){identity=next;reset();if(next)install();}visible=Boolean(isVisible&&next);if(next)syncNotes();fitChat();if(!visible){stop();return;}if(!ready)enable();else arm();};
+  function sync(isVisible){const next=principal(store);if(next!==identity){identity=next;reset();if(next)install();}visible=Boolean(isVisible&&next);if(next)syncNotes();fitChat();if(!visible){stop();return;}if(!ready)enable();else arm();}
+  // The @mention pop-up opens the chat tab and skips while the chat is on screen.
+  sync.showChat=()=>{if(!identity)return;if(ready)selectTab('chat');else tab='chat';};
+  sync.chatOpen=()=>visible&&chatShown();
+  return sync;
 }

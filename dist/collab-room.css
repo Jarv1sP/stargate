@@ -81,3 +81,20 @@
   .sb #page-community .chat-compose-footer{grid-column:3;grid-row:3}
   .sb #page-community .chat-emoji-panel{grid-template-columns:repeat(6,36px)}
 }
+/* @mention pop-up, shown like an announcement when someone mentions you. */
+.sb .mention-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 40px);padding:24px;border:1px solid var(--line-2);border-radius:12px;background:var(--bg-1);color:var(--ink);overflow:hidden}
+.sb .mention-dialog[open]{display:flex;flex-direction:column;gap:16px}
+.sb .mention-dialog::backdrop{background:rgba(0,0,0,.7)}
+.sb #mention-title{font-size:22px;line-height:1.35;margin:0 0 6px}
+.sb #mention-meta{margin:0;font-size:13px;color:var(--ink-2)}
+.sb #mention-list{flex:1;min-height:0;overflow:auto;margin:0;padding:0;list-style:none;display:grid;gap:10px;overscroll-behavior:contain}
+.sb #mention-list li{min-width:0;padding:10px 12px;border:1px solid var(--line-2);border-radius:8px;background:var(--bg-2)}
+.sb #mention-list .mention-meta{margin:0 0 4px;font-size:12px;color:var(--ink-3)}
+.sb #mention-list .mention-text{margin:0;font-size:15px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.sb #mention-list .chat-mention{font-weight:600}
+.sb #mention-list .chat-mention.me{background:var(--ink);color:var(--bg);border-radius:4px;padding:0 4px}
+.sb #mention-error{margin:0;color:var(--err);font-size:14px}
+.sb #mention-error:empty{display:none}
+.sb .mention-dialog footer{flex:none;display:flex;justify-content:flex-end;gap:10px;padding:0;border:0;margin:0}
+.sb .mention-dialog button{min-height:44px;min-width:88px}
+@media (max-width:479px){.sb .mention-dialog{padding:18px}.sb .mention-dialog footer{display:grid;grid-template-columns:1fr 1fr}.sb .mention-dialog footer button{min-width:0}.sb #mention-open{grid-column:1/-1;order:-1}}

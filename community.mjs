@@ -102,6 +102,12 @@ export function chatMentions(service,actor){
   return service.db.prepare('SELECT count(*) AS n FROM community_chat_mentions_v2 m JOIN community_chat_v2 c ON c.id=m.message_id WHERE m.user_id=? AND c.created_at>=?')
     .get(actor.userId,Date.now()-COMMUNITY_LIMITS.retentionDays*DAY).n;
 }
+// The newest unread @mentions, for the pop-up shown when this account opens the site.
+function unreadMentions(service,actor){
+  const rows=service.db.prepare('SELECT c.* FROM community_chat_mentions_v2 m JOIN community_chat_v2 c ON c.id=m.message_id WHERE m.user_id=? AND c.created_at>=? ORDER BY c.id DESC LIMIT 20')
+    .all(actor.userId,Date.now()-COMMUNITY_LIMITS.retentionDays*DAY);
+  return {messages:rows.map(row=>view(service,row,actor,'message')),total:chatMentions(service,actor)};
+}
 export function chatImageFile(service,principal,value){
   if(!service.store.users.find(u=>u.id===principal.userId)?.enabled)fail('账号已暂停或不存在。',403);
   const row=service.db.prepare('SELECT i.type,i.data FROM community_chat_images_v2 i JOIN community_chat_v2 c ON c.id=i.message_id WHERE i.message_id=? AND c.created_at>=?')
@@ -298,7 +304,7 @@ function dispatch(service,actor,operation,args,now){
       return db.prepare('INSERT INTO community_notes_v2(author_id,job_id,body,created_at,updated_at) VALUES(?,?,?,?,?)').run(actor.userId,jobId,body,now,now).lastInsertRowid;
     });
   }
-  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1','chat-images-v1','chat-mentions-v1']};}
+  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1','chat-images-v1','chat-mentions-v1','chat-mention-popup-v1']};}
   if(operation==='community.posts.list')return listPosts(service,actor,args);
   if(operation==='community.posts.get'){args=selectFields(args,['id']);return {post:view(service,readablePost(service,actor,args.id),actor,'post')};}
   if(operation==='community.comments.list')return listComments(service,actor,args);
@@ -330,6 +336,7 @@ function dispatch(service,actor,operation,args,now){
       mention(service,actor.userId,messageId,body);return messageId;
     });
   }
+  if(operation==='community.chat.mentions'){args=selectFields(args,[]);return unreadMentions(service,actor);}
   if(operation==='community.chat.read'){
     args=selectFields(args,['id']);db.prepare('DELETE FROM community_chat_mentions_v2 WHERE user_id=? AND message_id<=?').run(actor.userId,id(args.id));
     return {chatMentions:chatMentions(service,actor)};
