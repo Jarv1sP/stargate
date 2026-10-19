@@ -6,7 +6,7 @@ import {registerGpuTasksAdmin} from './admin-gpu-tasks.js';
 import {terminalUI} from './terminal-ui.js';
 import {resourcesUI,monitorSummary} from './resources-ui.js';
 import {datasetsUI} from './datasets-ui.js';
-import {createCommunityUI} from './community-ui.js';
+import {createCommunityUI,renderChatMentionBadge} from './community-ui.js';
 import {createAnnouncementUI} from './announcement-ui.js';
 import {operationalMaintenanceUI} from './maintenance-ui.js';
 import {maintenanceExperienceUI} from './maintenance-experience.js';
@@ -83,7 +83,7 @@ function render(preserve=false){
   }else $('#mode-note').textContent=[note,monitorNotice].filter(Boolean).join(' ');
   $('.demo-note').hidden=!note&&!monitorNotice;
   renderOperationalMaintenance();
-  renderTransfers(page==='transfers');renderResources();renderExecution();renderJobsRoom();renderDatasets();renderCommunity(page==='community');renderAnnouncements();
+  renderTransfers(page==='transfers');renderResources();renderExecution();renderJobsRoom();renderDatasets();renderCommunity(page==='community');renderChatMentionBadge(store);renderAnnouncements();
   $('#open-submit').hidden=true;
   shell.update();
   adminConsole.update();

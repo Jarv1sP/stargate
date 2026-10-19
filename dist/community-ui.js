@@ -5,6 +5,8 @@ import {createTaskNotesUI,taskNotesMarkup} from './task-notes-ui.js';
 import {revealSheet,dismissSheet} from './motion-ui.js';
 import {copyHelp} from './copy-help-ui.js';
 import {defaultAppearance,applyAnnouncementAppearance} from './announcement-appearance.js';
+import {chatSegments} from './chat-content.js';
+import {createChatComposer} from './chat-compose-ui.js';
 export {createSubmissionKeys} from './submission-keys.js';
 const kinds={announcement:'公告',feedback:'问题反馈',discussion:'讨论'};
 const statuses={open:'待处理',investigating:'处理中',resolved:'已解决',closed:'已关闭'};
@@ -13,6 +15,16 @@ const date=value=>{const d=new Date(value);return Number.isFinite(d.getTime())?d
 const principal=store=>store.principal?JSON.stringify([store.principal.userId,store.principal.role]):'';
 function el(tag,className,text){const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=String(text);return node;}
 function button(text,action,className='button'){const node=el('button',className,text);node.type='button';node.addEventListener('click',action);return node;}
+// Unread @mentions of this account, shown on every 协作 entry.
+export function renderChatMentionBadge(store){
+  const count=store.principal?Number(store.data?.chatMentions)||0:0;
+  for(const item of document.querySelectorAll('[data-nav="community"]')){
+    let badge=item.querySelector('.nav-mention');
+    if(!count){badge?.remove();continue;}
+    if(!badge){badge=el('span','nav-mention');item.append(badge);}
+    badge.textContent='@'+(count>99?'99+':count);badge.title=count+' 条消息提到了你';
+  }
+}
 export function mergeCommunityItems(previous,incoming){const seen=new Set();return [...previous,...incoming].filter(item=>!seen.has(item.id)&&seen.add(item.id));}
 export function createCommunityUI(store,toast){
   const root=document.querySelector('#page-community'),keys=createSubmissionKeys();
@@ -21,6 +33,7 @@ export function createCommunityUI(store,toast){
   let posts=[],postCursor=null,postRequest=0,selected=null,comments=[],commentCursor=null,detailRequest=0,commentRequest=0;
   const commentDrafts=new Map();
   let messages=[],chatCursor=null,chatBefore=null,chatBusy=false,history=false,unread=0,lastChatReconcile=0,chatLoaded=false,postsLoaded=false;
+  let chatComposer=null,chatImages=new Map(),mentionRead='';
   let detail,composer,notes,notesCapable=false,editing=null,composeBusy=false,commentBusy=false,chatSending=false;
   const q=selector=>root.querySelector(selector),context=()=>epoch+':'+identity;
   const valid=stamp=>stamp===context()&&identity===principal(store);
@@ -47,13 +60,13 @@ export function createCommunityUI(store,toast){
   for(const node of document.querySelectorAll('.page-heading,.demo-note,#operational-maintenance,#room-nav'))railObserver.observe(node);
   addEventListener('resize',fitChat);addEventListener('scroll',fitChat,{passive:true});
   function stop(){clearTimeout(timer);timer=null;}
-  function reset(){epoch++;stop();notes?.reset();notes=null;notesCapable=false;tab='posts';ready=false;infoBusy=false;loading=false;chatBusy=false;composeBusy=false;commentBusy=false;chatSending=false;posts=[];postCursor=null;selected=null;comments=[];messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;chatLoaded=false;postsLoaded=false;chatStatus='';chatFailed=false;postStatus='';postFailed=false;keys.reset();commentDrafts.clear();editing=null;detail?.close();composer?.close();detail?.remove();composer?.remove();detail=null;composer=null;root.replaceChildren();}
+  function reset(){epoch++;stop();notes?.reset();notes=null;notesCapable=false;tab='posts';ready=false;infoBusy=false;loading=false;chatBusy=false;composeBusy=false;commentBusy=false;chatSending=false;posts=[];postCursor=null;selected=null;comments=[];messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;chatLoaded=false;postsLoaded=false;chatComposer=null;chatImages=new Map();mentionRead='';chatStatus='';chatFailed=false;postStatus='';postFailed=false;keys.reset();commentDrafts.clear();editing=null;detail?.close();composer?.close();detail?.remove();composer?.remove();detail=null;composer=null;root.replaceChildren();}
   store.onAuthChange?.(()=>{identity='';reset();});
   function install(){
     root.innerHTML=`<div class="community-tabs" id="community-tabs" role="tablist" aria-label="协作内容"><button type="button" role="tab" data-community-tab="posts">帖子</button><button type="button" role="tab" data-community-tab="chat">聊天</button></div>
       <p id="community-status" role="status" aria-live="polite"></p>
       <div class="community-layout"><section id="community-forum" role="tabpanel"><div class="community-toolbar"><label><span class="field-caption"><span>类型</span>${copyHelp('协作区','帖子用于公告与问题反馈，聊天用于即时交流。留言不会改变额度、排队或取消任务。','/guide/queue')}</span><select id="community-kind"><option value="">全部帖子</option><option value="announcement">公告</option><option value="feedback">问题反馈</option><option value="discussion">讨论</option></select></label><label id="community-filter-label" hidden><span class="field-caption">处理状态</span><select id="community-filter"><option value="">全部</option><option value="open">待处理</option><option value="investigating">处理中</option><option value="resolved">已解决</option><option value="closed">已关闭</option></select></label><div class="community-toolbar-actions"><button class="button" id="community-refresh" type="button">刷新</button><button class="button primary" id="community-create" type="button">发帖</button></div></div><div class="community-feed-focus hero-frame"><span class="hero-label">公告与最新帖子</span><div id="community-posts" class="community-posts" tabindex="0" aria-label="公告与最新帖子"></div></div><button class="button community-more" id="community-more" type="button" hidden>加载更多</button></section>
-      <section id="community-chat" role="tabpanel" hidden><div class="chat-topline"><div><div class="copy-caption"><h3>实验室聊天</h3>${copyHelp('公共聊天','登录成员可见，消息保留 30 天，重要进展请发帖保存。请勿发送密码或令牌。','/guide/queue')}</div></div><button class="button" id="chat-refresh" type="button">刷新</button></div><p id="chat-status" role="status" aria-live="polite" hidden></p><details id="community-task-notes" class="community-task-notes" hidden><summary><span class="copy-caption"><span>任务留言</span>${copyHelp('任务留言','任务留言随任务确认结束删除，非任务留言需手动删除。所有登录成员可见，任务状态未知或停止尚未确认时继续保留。','/guide/results')}</span></summary>${taskNotesMarkup}</details><button class="button community-more" id="chat-older" type="button" hidden>查看更早消息</button><button class="button community-more" id="chat-latest" type="button" hidden>返回最新消息</button><div id="community-messages" class="community-messages" tabindex="0" aria-label="公共聊天消息"></div><button class="button chat-new" id="chat-new" type="button" hidden>查看新消息</button><form id="community-chat-form"><label for="community-chat-body">发送消息</label><textarea id="community-chat-body" rows="3" maxlength="2000" required placeholder="交流计划，协调排队。"></textarea><div class="chat-compose-footer"><p>保留 30 天</p><button class="button" type="submit">发送消息</button></div><p id="chat-error" class="form-error" role="status"></p></form></section></div>`;
+      <section id="community-chat" role="tabpanel" hidden><div class="chat-topline"><div><div class="copy-caption"><h3>实验室聊天</h3>${copyHelp('公共聊天','登录成员可见，消息和图片保留 30 天，重要进展请发帖保存。输入 @ 选择成员，对方会收到提醒；图片可粘贴、拖入或点图片按钮选择。请勿发送密码或令牌。','/guide/queue')}</div></div><button class="button" id="chat-refresh" type="button">刷新</button></div><p id="chat-status" role="status" aria-live="polite" hidden></p><details id="community-task-notes" class="community-task-notes" hidden><summary><span class="copy-caption"><span>任务留言</span>${copyHelp('任务留言','任务留言随任务确认结束删除，非任务留言需手动删除。所有登录成员可见，任务状态未知或停止尚未确认时继续保留。','/guide/results')}</span></summary>${taskNotesMarkup}</details><button class="button community-more" id="chat-older" type="button" hidden>查看更早消息</button><button class="button community-more" id="chat-latest" type="button" hidden>返回最新消息</button><div id="community-messages" class="community-messages" tabindex="0" aria-label="公共聊天消息"></div><button class="button chat-new" id="chat-new" type="button" hidden>查看新消息</button><form id="community-chat-form"><label for="community-chat-body">发送消息</label><textarea id="community-chat-body" rows="3" maxlength="2000" required placeholder="回车发送，Shift+回车换行"></textarea><div class="chat-compose-footer"><p>保留 30 天，可粘贴图片</p><button class="button" type="submit">发送消息</button></div><p id="chat-error" class="form-error" role="status"></p></form></section></div>`;
     for(const [index,node] of [...root.querySelectorAll('[data-community-tab]')].entries()){
       node.id='community-tab-'+node.dataset.communityTab;node.setAttribute('aria-controls',node.dataset.communityTab==='chat'?'community-chat':'community-forum');
       node.addEventListener('click',()=>selectTab(node.dataset.communityTab));
@@ -62,10 +75,13 @@ export function createCommunityUI(store,toast){
     q('#community-kind').addEventListener('change',()=>{setTabs();loadPosts();});q('#community-filter').addEventListener('change',()=>loadPosts());q('#community-refresh').addEventListener('click',()=>loadPosts());q('#community-more').addEventListener('click',()=>loadPosts(true));q('#community-create').addEventListener('click',()=>openComposer('post'));
     q('#chat-refresh').addEventListener('click',()=>{history=false;loadChat('refresh');});q('#chat-older').addEventListener('click',()=>loadChat('older'));q('#chat-latest').addEventListener('click',()=>{history=false;loadChat('refresh');});
     q('#chat-new').addEventListener('click',()=>{q('#community-messages').scrollTop=q('#community-messages').scrollHeight;unread=0;q('#chat-new').hidden=true;});
+    q('#community-messages').addEventListener('scroll',readMentions,{passive:true});
     const announcements=button('全部公告',()=>{q('#community-kind').value='announcement';if(tab!=='posts')selectTab('posts');else{setTabs();loadPosts();}});announcements.id='community-announcements';
     const publish=button('发布公告',()=>{if(admin())openComposer('post',null,true);});publish.id='community-publish-announcement';publish.hidden=!admin();
     q('.community-toolbar-actions').append(announcements,publish);
-    notes=createTaskNotesUI(root,store,toast);q('#task-note-form [type=submit]').classList.remove('primary');q('#community-task-notes').addEventListener('toggle',syncNotes);q('#community-chat-form').addEventListener('submit',sendChat);setTabs();
+    notes=createTaskNotesUI(root,store,toast);q('#task-note-form [type=submit]').classList.remove('primary');q('#community-task-notes').addEventListener('toggle',syncNotes);q('#community-chat-form').addEventListener('submit',sendChat);
+    chatComposer=createChatComposer({form:q('#community-chat-form'),input:q('#community-chat-body'),onError:text=>{q('#chat-error').textContent=text;},
+      members:()=>(store.users||[]).filter(user=>user.username&&user.enabled!==false&&user.id!==store.principal?.userId)});setTabs();
     for(const control of root.querySelectorAll('button,input,select,textarea'))if(!control.dataset.communityTab&&!control.hasAttribute('data-copy-help'))control.disabled=true;
   }
   function setTabs(){
@@ -207,8 +223,34 @@ export function createCommunityUI(store,toast){
       chatLoaded=true;chatMessage(history?'正在查看历史消息。返回最新消息后恢复自动更新。':'');
     }catch(error){if(valid(stamp))chatMessage('消息读取失败：'+error.message,true);}finally{if(valid(stamp)){chatBusy=false;arm();}}
   }
-  function renderMessages(toEnd){const list=q('#community-messages'),oldTop=list.scrollTop;list.replaceChildren();for(const item of messages){const row=el('article','chat-message'+(item.author?.id===store.principal?.userId?' own':''));row.dataset.messageId=item.id;const avatar=el('span','chat-avatar',(item.author?.name||item.author?.username||'成员').slice(0,1));avatar.setAttribute('aria-hidden','true');const body=el('div','chat-message-content');body.append(el('p','community-meta',(item.author?.name||item.author?.username||'成员')+' · '+date(item.createdAt)),el('p','community-body',item.body),itemActions(item,'message'));row.append(avatar,body);list.append(row);}if(!messages.length)list.append(el('p','community-empty','还没有消息，先聊聊用卡计划吧。'));if(toEnd){list.scrollTop=list.scrollHeight;unread=0;}else list.scrollTop=oldTop;q('#chat-new').hidden=!unread;q('#chat-new').textContent=unread+' 条新消息 · 查看';}
-  async function sendChat(event){event.preventDefault();if(chatSending||!ready)return;chatSending=true;const stamp=context(),form=event.currentTarget,input=q('#community-chat-body'),submit=form.querySelector('[type=submit]');submit.disabled=true;input.readOnly=true;q('#chat-error').textContent='';try{const result=await create('chat','community.chat.send',{body:input.value});if(!valid(stamp))return;input.value='';input.readOnly=false;if(result.deleted)q('#chat-error').textContent='这条消息已删除或过期，没有重新发送。';history=false;await loadChat('refresh');}catch(error){if(valid(stamp)){const unknown=keys.hasUncertain('chat');input.readOnly=unknown;q('#chat-error').textContent=unknown?'发送结果未确认。请重试原内容，不会重复发送。':error.message;}}finally{if(valid(stamp)){chatSending=false;submit.disabled=false;}}}
+  function chatBody(item){
+    const body=el('p','community-body');
+    for(const part of chatSegments(item.body,store.users||[])){
+      if(!part.user){body.append(part.text);continue;}
+      const tag=el('span','chat-mention'+(part.user.id===store.principal?.userId?' me':''),'@'+(part.user.name||part.user.username));tag.title=part.text;body.append(tag);
+    }
+    return body;
+  }
+  // One element per picture: re-rendering on every poll must not reload or flash it.
+  function chatImage(image){
+    let link=chatImages.get(image.url);
+    if(!link){
+      link=el('a','chat-image');link.href=image.url;link.target='_blank';link.rel='noopener';link.setAttribute('aria-label','查看原图');
+      const img=el('img');img.alt='聊天图片';img.width=image.width;img.height=image.height;img.loading='lazy';img.decoding='async';img.src=image.url;
+      link.append(img);chatImages.set(image.url,link);
+    }
+    return link;
+  }
+  function renderMessages(toEnd){const list=q('#community-messages'),oldTop=list.scrollTop;list.replaceChildren();const shown=new Set();for(const item of messages){const body=item.body?chatBody(item):null,mine=body?.querySelector('.chat-mention.me');const row=el('article','chat-message'+(item.author?.id===store.principal?.userId?' own':'')+(mine?' mentions-me':''));row.dataset.messageId=item.id;const avatar=el('span','chat-avatar',(item.author?.name||item.author?.username||'成员').slice(0,1));avatar.setAttribute('aria-hidden','true');const content=el('div','chat-message-content');content.append(el('p','community-meta',(item.author?.name||item.author?.username||'成员')+' · '+date(item.createdAt)));if(item.image){shown.add(item.image.url);content.append(chatImage(item.image));}if(body)content.append(body);content.append(itemActions(item,'message'));row.append(avatar,content);list.append(row);}for(const url of chatImages.keys())if(!shown.has(url))chatImages.delete(url);if(!messages.length)list.append(el('p','community-empty','还没有消息，先聊聊用卡计划吧。'));if(toEnd){list.scrollTop=list.scrollHeight;unread=0;}else list.scrollTop=oldTop;q('#chat-new').hidden=!unread;q('#chat-new').textContent=unread+' 条新消息 · 查看';readMentions();}
+  // Seeing the newest messages clears this account's unread @mentions.
+  async function readMentions(){
+    const list=q('#community-messages'),last=messages.at(-1)?.id;
+    if(!last||last===mentionRead||!(Number(store.data?.chatMentions)>0)||!visible||!chatShown()||history||list.scrollHeight-list.scrollTop-list.clientHeight>40)return;
+    const stamp=context();mentionRead=last;
+    try{const result=await store.call('community.chat.read',{id:last});if(valid(stamp)&&store.data){store.data.chatMentions=result.chatMentions;renderChatMentionBadge(store);}}
+    catch{if(valid(stamp))mentionRead='';}
+  }
+  async function sendChat(event){event.preventDefault();if(chatSending||!ready)return;const form=event.currentTarget,input=q('#community-chat-body'),payload=chatComposer.payload();if(!payload.body.trim()&&!payload.image)return;chatSending=true;const stamp=context(),submit=form.querySelector('[type=submit]');submit.disabled=true;input.readOnly=true;chatComposer.lock(true);q('#chat-error').textContent='';try{const result=await create('chat','community.chat.send',payload);if(!valid(stamp))return;input.value='';input.readOnly=false;chatComposer.clear();chatComposer.lock(false);if(result.deleted)q('#chat-error').textContent='这条消息已删除或过期，没有重新发送。';history=false;await loadChat('refresh');}catch(error){if(valid(stamp)){const unknown=keys.hasUncertain('chat');input.readOnly=unknown;chatComposer.lock(unknown);q('#chat-error').textContent=unknown?'发送结果未确认。请重试原内容，不会重复发送。':error.message;}}finally{if(valid(stamp)){chatSending=false;submit.disabled=false;}}}
   const layoutObserver=new ResizeObserver(([entry])=>{
     const next=entry.contentRect.width>=56*parseFloat(getComputedStyle(document.documentElement).fontSize);
     if(next===wide.matches)return;wide.matches=next;

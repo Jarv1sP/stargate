@@ -441,7 +441,7 @@ gpuctl priority JOB_ID P1
 
 排队、启动、运行和状态未知任务计入成员额度；弹性按最大卡数计入。单机与合计额度同时生效，有额度也可能等卡。管理员免个人累计额度，仍不能超过物理卡数、显存或内存资源；身份不改变任务约定的让位方式。
 
-协作区提供帖子、评论、聊天、置顶与任务留言。CLI 入口为 `gpuctl help community`、`community posts`、`community show ID`、`community post --title TITLE --body-file FILE`、`community comment ID --body TEXT` 和 `community chat --body TEXT`。反馈附机器、任务编号、时间与复现步骤，不贴密码或私密数据。
+协作区提供帖子、评论、聊天、置顶与任务留言。聊天里回车发送、Shift+回车换行；输入 @ 选择成员，对方的「协作」入口会出现提醒，看到消息后自动消失；😊 按钮插入表情；图片可粘贴、拖入或点图片按钮选择，发送前在浏览器里压缩，和消息一样保留 30 天。CLI 入口为 `gpuctl help community`、`community posts`、`community show ID`、`community post --title TITLE --body-file FILE`、`community comment ID --body TEXT` 和 `community chat --body TEXT`。反馈附机器、任务编号、时间与复现步骤，不贴密码或私密数据。
 
 管理员发布公告可选全部成员、指定成员、管理员或成员，控制置顶、登录弹窗、布局和颜色。接收者点「我知道了」后跨浏览器记住；「稍后再看」只关闭本次提醒，公告更新可重新提醒。
 
