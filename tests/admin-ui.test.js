@@ -13,7 +13,7 @@ function fixture(t){
     setAttribute(){}removeAttribute(){}addEventListener(name,fn){this.events[name]=fn;}removeEventListener(name){delete this.events[name];}
     scrollIntoView(){this.scrolls++;}contains(node){return this.children.includes(node);}
   }
-  const nodes=Object.fromEntries(['page-admin','admin-frame','admin-denied','admin-sections','admin-content'].map(id=>[id,new Element()]));
+  const nodes=Object.fromEntries(['page-admin','admin-frame','admin-denied','admin-content'].map(id=>[id,new Element()]));
   globalThis.document={querySelector:selector=>nodes[selector.slice(1)],createElement:()=>new Element()};
   globalThis.location={hash:'#admin/second'};globalThis.history={replaceState(_a,_b,hash){location.hash=hash;}};
   t.after(()=>Object.assign(globalThis,original));

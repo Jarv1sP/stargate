@@ -1,16 +1,17 @@
-// Admin console from the approved prototype: 成员与额度 and 维护模式 as plain
-// tables on one page. Quotas save through policy.save, maintenance through
-// maintenance.set; per-server limits and reasons open in sheets.
+// Admin console from the approved prototype: 成员与额度, 维护模式 and 云盘连接 as
+// plain tables on one page. Quotas save through policy.save, maintenance through
+// maintenance.set, the Aliyun account through cloud.auth.*; limits and reasons open in sheets.
 import {registerAdminSection} from './admin-ui.js';
 import {openSheet,closeSheet,confirmSheet} from './sheet-ui.js';
-import {hostDiagnosticsUI} from './host-diagnostics-ui.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pending=u=>u.enabled&&u.role!=='admin'&&!u.approvedAt&&u.total===0;
 const roleLabel=u=>!u.enabled?'已暂停':u.role==='admin'?'管理员':pending(u)?'待审批':'成员';
 const short=id=>String(id||'').replace(/^amax-/,'');
 const when=value=>{const date=new Date(value);return Number.isFinite(date.getTime())?date.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'';};
 
-export function adminRoomUI(store,{machines,toast,refresh,experience}){
+const portal=()=>new URL('/manage',globalThis.GPUQ_CENTRAL_IDENTITY?.portal||'https://www.j4rv1s.xyz').href;
+
+export function adminRoomUI(store,{machines,refresh}){
   let memberSheet=null;
   const changed=async ctx=>{await store.call('state',{}, {signal:ctx.signal});if(!ctx.signal.aborted)await refresh();};
   const capacity=()=>machines.reduce((sum,m)=>sum+(m.cards||0),0);
@@ -18,26 +19,21 @@ export function adminRoomUI(store,{machines,toast,refresh,experience}){
 
   // 成员与额度
   registerAdminSection({id:'members',title:'成员与额度',order:10,mount(el,ctx){
-    let filter='all',busy=false;const sheet=document.createElement('dialog');sheet.className='pr-sheet adm-sheet';sheet.setAttribute('aria-label','服务器额度');document.body.append(sheet);memberSheet=sheet;
+    let filter='all';const sheet=document.createElement('dialog');sheet.className='pr-sheet adm-sheet';sheet.setAttribute('aria-label','服务器额度');document.body.append(sheet);memberSheet=sheet;
     el.className='adm-sec';
     function rows(){return [...store.users].filter(u=>filter!=='pending'||pending(u)).sort((a,b)=>Number(pending(b))-Number(pending(a))||a.username.localeCompare(b.username,'zh-CN'));}
     function render(){
       const list=rows(),waiting=store.users.filter(pending).length;
       el.innerHTML=`<div class="adm-head"><h2>成员与额度</h2><div class="jr-seg" role="group" aria-label="成员范围"><button type="button" data-adm-filter="all" aria-pressed="${filter==='all'}">全部 ${store.users.length}</button><button type="button" data-adm-filter="pending" aria-pressed="${filter==='pending'}">待审批 ${waiting}</button></div></div>
+        <p class="jr-hint adm-lede">账号、角色和停用在<a class="jr-link" href="${esc(portal())}" target="_blank" rel="noopener">统一门户管理</a>。</p>
         <div class="adm-scroll"><table class="adm-tbl"><thead><tr><th>成员</th><th>角色</th><th>卡数额度</th><th>各服务器</th><th>正在用</th><th></th></tr></thead><tbody>${list.map(u=>{
           const admin=u.role==='admin',limits=Object.entries(u.limits||{}).filter(([,n])=>n>0);
           return `<tr data-adm-user="${esc(u.id)}"><td><div class="adm-name">${esc(u.name||u.username)}</div><div class="adm-sub mono">${esc(u.username)}</div></td><td class="adm-sub">${roleLabel(u)}</td>
-            <td>${admin?'<span class="adm-sub">不限（管理员）</span>':`<div class="jr-stepper adm-stepper"><button type="button" data-adm-step="-1" aria-label="减少 ${esc(u.name)} 的额度" ${busy||u.total<=0?'disabled':''}>−</button><span>${u.total}</span><button type="button" data-adm-step="1" aria-label="增加 ${esc(u.name)} 的额度" ${busy||u.total>=capacity()?'disabled':''}>+</button></div>`}</td>
+            <td>${admin?'<span class="adm-sub">不限（管理员）</span>':`<span class="mono">${u.total} 张</span>`}</td>
             <td class="adm-sub mono">${admin?'全部':limits.length?limits.map(([m,n])=>`${esc(short(m))} ${n}`).join(' · '):'未授权'}</td>
             <td class="mono adm-sub">${store.usage(u.id)} 张</td>
             <td class="adm-acts">${admin?'':`${pending(u)?'<button type="button" class="jr-btn primary" data-adm-full>批准全部额度</button>':''}<button type="button" class="jr-link" data-adm-edit>编辑</button>`}</td></tr>`;}).join('')||'<tr><td colspan="6" class="adm-sub">暂无待审批成员。</td></tr>'}</tbody></table></div>
-        <p class="jr-hint">额度按卡数算，排队也占额度。管理员不受个人额度限制。账号本身在统一门户管理。</p>`;
-      requestAnimationFrame(()=>{const seg=el.querySelector('.jr-seg');if(!seg)return;});
-    }
-    async function save(user,next){
-      busy=true;render();
-      try{await store.save(user.id,{...store.get(user.id),...next});await changed(ctx);ctx.toast('额度已保存');}
-      catch(error){ctx.toast(error.message);}finally{busy=false;if(!ctx.signal.aborted)render();}
+        <p class="jr-hint">额度按卡数算，排队也占额度。管理员不受个人额度限制。</p>`;
     }
     function editLimits(user){
       const draft=store.get(user.id);
@@ -63,19 +59,17 @@ export function adminRoomUI(store,{machines,toast,refresh,experience}){
     el.addEventListener('click',event=>{
       const f=event.target.closest('[data-adm-filter]');if(f){filter=f.dataset.admFilter;render();return;}
       const row=event.target.closest('[data-adm-user]');if(!row)return;const user=store.users.find(u=>u.id===row.dataset.admUser);if(!user)return;
-      const step=event.target.closest('[data-adm-step]');if(step&&!step.disabled){const total=Math.max(0,Math.min(capacity(),user.total+Number(step.dataset.admStep)));if(total!==user.total)void save(user,{total});return;}
       if(event.target.closest('[data-adm-edit]')){editLimits(user);return;}
       if(event.target.closest('[data-adm-full]'))confirmSheet({signal:ctx.signal,title:`批准 ${user.name||user.username}？`,body:'给这位成员所有服务器的最大额度。之后可以在“编辑”里收紧。',action:'批准',run:async()=>{await store.call('policy.full',{userId:user.id});await changed(ctx);ctx.toast('已批准全部用卡额度');}});
     },{signal:ctx.signal});
-    ctx.subscribe(()=>{if(!busy)render();});
+    ctx.subscribe(render);
   },unmount(){memberSheet?.close();memberSheet?.remove();memberSheet=null;}});
 
   // 维护模式
-  const diagnostics=hostDiagnosticsUI(store,{toast});
   registerAdminSection({id:'maintenance',title:'维护模式',order:20,mount(el,ctx){
     el.className='adm-sec';
     const table=document.createElement('div'),sheet=document.createElement('dialog');sheet.className='pr-sheet adm-sheet';sheet.id='maintenance-settings-dialog';sheet.setAttribute('aria-label','开启维护');document.body.append(sheet);
-    el.append(table);experience?.mountAdmin(el,ctx);diagnostics.mount(el,ctx);
+    el.append(table);
     let maintenanceScope='all';
     const focusToggle=()=>{if(!ctx.signal.aborted)table.querySelector(`[data-adm-scope="${CSS.escape(maintenanceScope)}"] [data-maintenance-settings]`)?.focus({preventScroll:true});};
     sheet.addEventListener('close',focusToggle,{signal:ctx.signal});
@@ -102,7 +96,37 @@ export function adminRoomUI(store,{machines,toast,refresh,experience}){
       maintenanceScope=scope;
       confirmSheet({signal:ctx.signal,onClose:focusToggle,title:`解除 ${name} 的维护？`,body:'解除后立即恢复接新任务。',action:'解除维护',run:async()=>{await store.call('maintenance.set',{scope,enabled:false});await changed(ctx);ctx.toast('已明确解除所选范围的维护');}});
     },{signal:ctx.signal});
-    document.addEventListener('gpuq-maintenance-host',event=>{if(event.detail?.userId!==ctx.principal.userId)return;diagnostics.select(event.detail.machine);document.querySelector('#admin-host-diagnostics')?.scrollIntoView({block:'start'});},{signal:ctx.signal});
     ctx.subscribe(render);
-  },unmount(){diagnostics.unmount();experience?.unmountAdmin();document.querySelector('#maintenance-settings-dialog')?.remove();}});
+  },unmount(){document.querySelector('#maintenance-settings-dialog')?.remove();}});
+
+  // 云盘连接：成员导入阿里云盘分享时用的后台账号，只有管理员扫码连接或断开。
+  registerAdminSection({id:'cloud',title:'云盘连接',order:30,mount(el,ctx){
+    el.className='adm-sec';
+    const words={NEW:'请先扫码。',SCANED:'请在阿里云盘 App 内确认。',CONFIRMED:'云盘已连接。',EXPIRED:'二维码已过期，请重新连接。',CANCELED:'已取消授权。'};
+    let info=null,login=null,busy=false,note='';
+    function render(){
+      const connected=info?.aliyunConnected===true,known=typeof info?.aliyunConnected==='boolean',off=busy?'disabled':'';
+      el.innerHTML=`<div class="adm-head"><h2>云盘连接</h2></div><p class="jr-hint adm-lede">成员导入阿里云盘分享时用这个账号。扫码授权可能允许访问整个云盘，只连接你有权使用的账号。</p>
+        <div class="adm-scroll"><table class="adm-tbl"><tbody><tr><td><div class="adm-name">阿里云盘</div><div class="adm-sub" id="cloud-auth-status" role="status">${esc(note)}</div></td>
+          <td class="adm-sub">${connected?'<span class="jr-chip run">已连接</span>':known?'未连接':'状态未知'}</td>
+          <td class="adm-acts"><button type="button" class="jr-btn ${connected?'ghost':'primary'}" id="cloud-auth-begin" ${off}>${connected?'重新授权':'连接'}</button>${connected?`<button type="button" class="jr-link" id="cloud-auth-disconnect" ${off}>断开</button>`:''}${known?'':`<button type="button" class="jr-link" id="cloud-auth-info" ${off}>重新查询</button>`}</td></tr></tbody></table></div>
+        ${login?`<div class="adm-qr"><img id="cloud-auth-qr" alt="用阿里云盘 App 扫码授权" width="200" height="200"><button type="button" class="jr-btn" id="cloud-auth-check" ${off}>我已确认，检查状态</button></div>`:''}`;
+      if(login)el.querySelector('#cloud-auth-qr').src=login.image;
+    }
+    const call=(operation,args={})=>store.call(operation,args,{signal:ctx.signal});
+    const query=async()=>{info=null;info=await call('cloud.info');};
+    async function act(run){
+      if(busy)return;busy=true;render();
+      try{await run();}catch(problem){if(!ctx.signal.aborted){note=problem.message;ctx.toast(problem.message);}}
+      finally{busy=false;if(!ctx.signal.aborted)render();}
+    }
+    el.addEventListener('click',event=>{
+      const button=event.target.closest('button');if(!button||button.disabled)return;
+      if(button.id==='cloud-auth-info')act(async()=>{note='';await query();});
+      if(button.id==='cloud-auth-begin')act(async()=>{login=await call('cloud.auth.begin');note='用阿里云盘 App 扫码并确认，然后点击检查状态。';});
+      if(button.id==='cloud-auth-check')act(async()=>{const result=await call('cloud.auth.poll',{id:login.id});note=words[result.state]||'待确认';if(['CONFIRMED','EXPIRED','CANCELED'].includes(result.state))login=null;if(result.state==='CONFIRMED')await query();});
+      if(button.id==='cloud-auth-disconnect')act(async()=>{await call('cloud.auth.disconnect');login=null;note='已断开。';await query();});
+    },{signal:ctx.signal});
+    act(query);
+  }});
 }

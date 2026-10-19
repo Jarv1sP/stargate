@@ -2,7 +2,6 @@ import {discloseInfo,escapeUI as esc} from './workbench-ui.js';
 import {DemoClient} from './client.js';
 import {executionUI} from './execution-ui.js';
 import {jobsRoom} from './jobs-room.js';
-import {registerGpuTasksAdmin} from './admin-gpu-tasks.js';
 import {terminalUI} from './terminal-ui.js';
 import {resourcesUI,monitorSummary} from './resources-ui.js';
 import {datasetsUI} from './datasets-ui.js';
@@ -10,13 +9,12 @@ import {createCommunityUI,renderChatMentionBadge} from './community-ui.js';
 import {createAnnouncementUI} from './announcement-ui.js';
 import {createMentionPopup} from './mention-popup-ui.js';
 import {operationalMaintenanceUI} from './maintenance-ui.js';
-import {maintenanceExperienceUI} from './maintenance-experience.js';
 import {transfersUI} from './transfers-ui.js';
 import {shellUI} from './shell-ui.js';
 import {reducedMotion} from './motion-ui.js';
 import {copyHelp} from './copy-help-ui.js';
 import {pageForRoute,hashForPage} from './navigation.js';
-import {createAdminUI,adminHashForRoute,hasAdminSections,onAdminSectionsChange,registerAdminSection} from './admin-ui.js';
+import {createAdminUI,adminHashForRoute,hasAdminSections,onAdminSectionsChange} from './admin-ui.js';
 import {adminRoomUI} from './admin-room.js';
 import {toastPosition} from './toast-ui.js';
 const store=await DemoClient.create(),$=s=>document.querySelector(s);
@@ -29,7 +27,6 @@ async function loadInventory(){
 await loadInventory();
 let page=pageForRoute(location.hash)==='admin'?'admin':'resources',pendingRoute=pageForRoute(location.hash)==='admin'?location.hash:pageForRoute(location.hash),toastTimer,refreshing=false;
 const shell=shellUI(store,{navigate:choosePage,getPage:()=>page,toast});
-registerGpuTasksAdmin(registerAdminSection);
 const adminConsole=createAdminUI(store,{navigate:choosePage,getPage:()=>page,toast});
 const renderExecution=executionUI(store,()=>render(true),toast);
 const renderDatasets=datasetsUI(store,toast);
@@ -37,7 +34,6 @@ const renderCommunity=createCommunityUI(store,toast);
 const renderAnnouncements=createAnnouncementUI(store,{toast});
 const renderMentionPopup=createMentionPopup(store,{openChat:()=>{choosePage('community');renderCommunity.showChat();},chatOpen:()=>page==='community'&&renderCommunity.chatOpen()});
 const renderOperationalMaintenance=operationalMaintenanceUI(store);
-const renderMaintenanceExperience=maintenanceExperienceUI(store,toast,{getPage:()=>page,refresh:()=>render(true)});
 const renderTransfers=transfersUI(store,toast);
 const renderResourceView=resourcesUI(store,{machines:MACHINES,getPage:()=>page,navigate:choosePage});
 const renderJobsRoom=jobsRoom(store,{toast,machines:MACHINES,getPage:()=>page});
@@ -89,7 +85,6 @@ function render(preserve=false){
   $('#open-submit').hidden=true;
   shell.update();
   adminConsole.update();
-  renderMaintenanceExperience();
 }
 function renderResources(){
   $('#resource-summary').textContent=(store.data?.machines?.length||0)+' 台服务器';
@@ -115,7 +110,7 @@ document.addEventListener('click',async event=>{
 });
 $('#edit-profile').addEventListener('click',()=>location.assign(new URL('/account',identityPortal).href));
 for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();}});
-adminRoomUI(store,{machines:MACHINES,toast,refresh:()=>render(true),experience:renderMaintenanceExperience});
+adminRoomUI(store,{machines:MACHINES,refresh:()=>render(true)});
 if(store.principal)defaultPage();render();if(store.principal)shell.syncStatus('ready',Date.now());else openLogin();
 onAdminSectionsChange(()=>render(true));
 const poll=setInterval(()=>{if(!document.hidden)refresh();},15000);

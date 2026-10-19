@@ -135,24 +135,19 @@ try{
   }
   await page.locator('#dr-import-open').click();
   await page.locator('[name=cloud-target-name]').fill('images');await page.locator('[name=cloud-url]').fill('https://example.test/payload.bin');await page.locator('[name=cloud-path]').fill('payload.bin');await page.locator('#cloud-import-form [type=submit]').click();await page.waitForTimeout(50);const imported=calls.find(row=>row.op==='cloud.import.start');assert.equal(imported.args.area,'dataset');assert.equal(imported.args.dataset,'images');
-  if(role==='admin'){await page.locator('#cloud-admin>summary').click({position:{x:8,y:8}});await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent.includes('未连接'));for(let round=0;round<2;round++){await page.locator('#cloud-auth-begin').click();await page.locator('#cloud-auth-check').waitFor({state:'visible'});await page.locator('#cloud-auth-check').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent==='云盘已连接。');await page.locator('#cloud-auth-disconnect').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status').textContent==='已断开。');}await page.locator('#cloud-admin>summary').click({position:{x:8,y:8}});}
   await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-import.png')});await page.locator('#dr-import-sheet [data-sheet-close]').click();await page.locator('#dr-import-sheet').waitFor({state:'hidden'});
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-datasets.png'),fullPage:true});
   await page.locator('[data-nav=resources]').click();await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-resources.png'),fullPage:true});
   await page.locator('[data-nav=community]').click();await page.waitForTimeout(50);await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-community.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'no horizontal page overflow at '+width);
+  await page.evaluate(()=>{location.hash='#admin';});await page.locator('#page-admin').waitFor();
+  assert.deepEqual(await page.locator('#admin-content>[data-admin-section]').evaluateAll(nodes=>nodes.map(node=>node.dataset.adminSection)),role==='admin'?['members','maintenance','cloud']:[],'admins see exactly the three console sections; members see none');
   if(role==='admin'){
    await page.evaluate(()=>{location.hash='#admin/members';});await page.locator('[data-adm-user="'+peer+'"]').waitFor();
-   assert.equal(await page.locator('#admin-sections,#page-users,#members-parking').count(),0,'old navigation and member panels are removed');
-   assert.equal(await page.locator('#admin-content>.adm-sec').count(),2,'members and maintenance are mounted together');
-   assert.equal(await page.locator('#admin-content>.admin-gpu-tasks').count(),1,'GPU and task controls remain mounted');
    assert.equal(await page.locator('[data-adm-user]').first().getAttribute('data-adm-user'),'pending-member');
-   const peerRow=page.locator('[data-adm-user="'+peer+'"]');await peerRow.locator('[data-adm-step="1"]').click();
-   await page.waitForFunction(()=>document.querySelector('[data-adm-user="member-b"] .adm-stepper span')?.textContent==='3');
-   const stepped=calls.filter(row=>row.op==='policy.save');assert.equal(stepped.length,1);assert.equal(stepped[0].args.userId,peer);assert.equal(stepped[0].args.total,3);assert.equal(users.find(row=>row.id===peer).total,3);
-   await peerRow.locator('[data-adm-edit]').click();const quotaSheet=page.locator('dialog.adm-sheet[aria-label="服务器额度"]');await quotaSheet.waitFor();
+   const peerRow=page.locator('[data-adm-user="'+peer+'"]');await peerRow.locator('[data-adm-edit]').click();const quotaSheet=page.locator('dialog.adm-sheet[aria-label="服务器额度"]');await quotaSheet.waitFor();
    await quotaSheet.locator('[data-adm-limit]').fill('1');await quotaSheet.locator('[data-adm-total]').fill('2');await quotaSheet.locator('[data-adm-save]').click();await quotaSheet.waitFor({state:'hidden'});
-   const edited=calls.filter(row=>row.op==='policy.save').at(-1).args;assert.equal(edited.total,2);assert.deepEqual(edited.limits,{[machine]:1});assert.equal(users.find(row=>row.id===peer).limits[machine],1);
+   const edited=calls.filter(row=>row.op==='policy.save').at(-1).args;assert.equal(edited.userId,peer);assert.equal(edited.total,2);assert.deepEqual(edited.limits,{[machine]:1});assert.equal(users.find(row=>row.id===peer).limits[machine],1);
    await page.locator('[data-adm-user=pending-member] [data-adm-full]').click();await page.locator('.sg-confirm [data-confirm-go]').click();await page.locator('.sg-confirm').waitFor({state:'detached'});
    assert.equal(calls.filter(row=>row.op==='policy.full').length,1);assert.equal(users.find(row=>row.id==='pending-member').total,4);await page.locator('[data-adm-user=pending-member] [data-adm-full]').waitFor({state:'detached'});
    await page.evaluate(()=>{location.hash='#admin/maintenance';});const globalToggle=page.locator('[data-adm-scope=all] [data-maintenance-settings]');await globalToggle.waitFor();
@@ -161,12 +156,13 @@ try{
    assert.equal(state.operationalMaintenance.global.reason,'隔离测试维护');assert.equal(await globalToggle.getAttribute('aria-checked'),'true');
    await globalToggle.click();await page.locator('.sg-confirm [data-confirm-go]').click();await page.locator('.sg-confirm').waitFor({state:'detached'});assert.equal(state.operationalMaintenance.global,null);
    assert.equal(await globalToggle.getAttribute('aria-checked'),'false');assert.equal(await globalToggle.evaluate(node=>document.activeElement===node),true);
-   assert.equal(await page.locator('#admin-host-diagnostics').count(),1);assert.equal(await page.locator('#admin-maintenance-console').count(),1);
    await globalToggle.click();await page.evaluate(()=>{location.hash='#resources';});
    await page.locator('#maintenance-settings-dialog').waitFor({state:'detached'});assert.equal(await page.locator('[data-nav=resources][aria-current=page]').count(),1,'leaving admin also closes and removes its maintenance dialog');
    await page.evaluate(()=>{location.hash='#admin/maintenance';});await globalToggle.waitFor();await globalToggle.click();await page.locator('#maintenance-settings-dialog [data-sheet-close]').first().click();await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});
+   await page.evaluate(()=>{location.hash='#admin/cloud';});await page.locator('#admin-section-cloud').filter({hasText:'未连接'}).waitFor();
+   for(let round=0;round<2;round++){await page.locator('#cloud-auth-begin').click();await page.locator('#cloud-auth-check').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status')?.textContent==='云盘已连接。');await page.locator('#cloud-auth-disconnect').click();await page.waitForFunction(()=>document.querySelector('#cloud-auth-status')?.textContent==='已断开。');}
    await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});
-   for(const room of ['members','tasks']){await page.evaluate(room=>{location.hash='#admin/'+room;},room);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin-'+room+'.png'),fullPage:true});}
+   for(const room of ['members','cloud']){await page.evaluate(room=>{location.hash='#admin/'+room;},room);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin-'+room+'.png'),fullPage:true});}
   }
   await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
   await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});

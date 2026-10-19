@@ -1,6 +1,6 @@
 # STARGATE 管理说明
 
-管理员负责账号、机器接入、配额和平台维护。成员使用说明见 [使用指南](docs/USER_GUIDE.md)，开发和发布统一遵守 [AGENTS.md](AGENTS.md)。
+管理员负责机器接入、成员卡数额度、维护模式和云盘连接；账号、角色和停用在统一门户管理。网页管理台只有成员与额度、维护模式、云盘连接三块。成员使用说明见 [使用指南](docs/USER_GUIDE.md)，开发和发布统一遵守 [AGENTS.md](AGENTS.md)。
 
 部署使用 [deploy/Dockerfile](deploy/Dockerfile) 的 Portal 和 [节点构建说明](docs/NODE_RELEASE_BUILD.md)；域名、真实机器清单、认证配置、私有输入和数据库保存在仓库外。只读示例清单位于 [dist/machines.js](dist/machines.js)。
 

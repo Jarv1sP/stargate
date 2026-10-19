@@ -14,7 +14,7 @@
 .sb .wb-quota-segments{display:flex;gap:3px;margin-top:9px}.sb .wb-quota-segments i{flex:1;height:3px;background:var(--bg-4)}.sb .wb-quota-segments .on{background:var(--ink-2)}
 .sb .wb-telemetry-note{font:11px var(--mono);color:var(--ink-3);display:block;margin-top:8px}
 .sb .execution-workspace{margin-top:0;border:0;padding:0}
-.sb .wb-jobs{min-width:0}.sb #my-job-table{margin:8px 0 24px}
+.sb .wb-jobs{min-width:0}
 .sb #project-disk-quota>summary{font-size:13px;line-height:1.6;color:var(--ink-2)}.sb #disk-quota-state{font:11px var(--mono);color:var(--ink-3)}
 .sb .disk-quota-head{display:flex;align-items:center;gap:8px;margin:12px 0}.sb .disk-quota-head>.server-id{min-width:0;flex:1;font-size:11px}.sb .disk-quota-head .ui-info{margin:0}.sb .disk-quota-head .button{min-height:32px;font-size:12px}
 .sb .disk-quota-volumes{list-style:none;padding:0;margin:0;display:grid;gap:16px}.sb .disk-quota-volumes strong{display:block;font-size:12px;font-weight:400}.sb .disk-quota-volumes dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px;margin:8px 0;font-size:12px}.sb .disk-quota-volumes dt{color:var(--ink-3)}.sb .disk-quota-volumes dd{margin:0;text-align:right;font:12px/1.6 var(--mono);overflow-wrap:anywhere}.sb .disk-quota-volumes progress{display:block;width:100%;height:2px;accent-color:var(--ink-2)}.sb #disk-quota-result{font-size:12px;line-height:1.7;overflow-wrap:anywhere}.sb .disk-quota-status{margin:8px 0}
@@ -44,7 +44,6 @@
 .sb .wb-list-title{display:flex;justify-content:space-between;align-items:center;margin:36px 0 10px}.sb .wb-list-title h2{font-size:16px;font-weight:500}.sb .wb-list-title>span{font-size:11px;color:var(--ink-3)}
 .sb .wb-ended{margin:28px 0}
 .sb .wb-ended>summary{padding:16px 0;min-height:44px;font-size:14px;color:var(--ink-2);border-bottom:1px solid var(--line);cursor:pointer}
-.sb .wb-job-explanation{font-size:11px;line-height:1.7}.sb .wb-jobs>.section-kicker{padding:12px 0;border-top:1px solid var(--line);margin-top:36px;font:11px var(--mono)}
 .sb .wb-empty{padding:42px 32px;min-height:440px;display:flex;flex-direction:column;justify-content:center}.sb .wb-empty h2{font-size:24px;font-weight:500;margin:0 0 16px}.sb .wb-empty p{font-size:14px;color:var(--ink-2);line-height:1.8}.sb .wb-empty ol{margin-top:24px;list-style-position:inside;padding:0;display:grid;gap:14px;color:var(--ink-3);font-size:13px}
 .sb .work-sheet{position:fixed;inset:0 0 0 auto;margin:0;padding:0;width:640px;max-width:100%;height:100dvh;max-height:100dvh;background:var(--bg);color:var(--ink);border:0;border-left:1px solid var(--line-2);border-radius:0;box-shadow:var(--shadow);overflow:hidden}
 .sb .work-sheet:not([open]){display:none}.sb .work-sheet[open]{display:flex;flex-direction:column}.sb .work-sheet::backdrop{background:var(--scrim)}
