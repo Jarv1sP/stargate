@@ -5,7 +5,7 @@ import {submitTask,firstDispatch,SUBMISSION_SAFE_WINDOW_MS,submissionError,submi
 export {SUBMISSION_SAFE_WINDOW_MS,priorityCapable,priorityRankCapable};
 import {setTimeout as readDelay} from 'node:timers/promises';
 import {MACHINES} from './dist/model.js';
-import {taskIdentity,nativeTaskDisplay} from './dist/task-metadata.js';
+import {taskIdentity,nativeTaskDisplay,canControlJob} from './dist/task-metadata.js';
 import {nativeJobRequest,nativeJobSpec} from './native-task-metadata.mjs';
 import {applyJobFeedback,jobTiming,projectProgress} from './dist/job-progress.js';
 import {maintainTaskNotes} from './community.mjs';
@@ -311,6 +311,7 @@ export async function executionCall(service,principal,operation,args,readContext
     return bridge(machine,operation,{...request,userId:user.id,ownerId:args.ownerId??user.id,actor});
   }
   const jobById=id=>{const job=service.store.jobs.find(j=>j.id===id);if(!job)fail('任务不存在。',404);return job;};
+  const controlledJob=id=>{const job=jobById(id);if(!canControlJob(job,principal))fail('只能操作自己的任务',403);return job;};
   if(operation==='outputs.delete'){
     args=selectFields(args,['jobId','key','path','recursive','dryRun']);
     if(args.key!==undefined&&!UUID.test(args.key))fail('删除输出请使用原 UUID 编号。');
@@ -372,6 +373,7 @@ export async function executionCall(service,principal,operation,args,readContext
     const project=projectReference(args,{optional:!opening});
     if(args.input&&(typeof args.input!=='string'||args.input.length>12000))fail('终端输入过长。');
     const ownerId=args.ownerId??user.id;
+    if((operation==='terminal.close'||operation==='terminal.exchange'&&args.input)&&service.store.jobs.some(job=>job.id===args.id&&job.interactive))controlledJob(args.id);
     if(operation==='terminal.open')service.audit(principal.username,operation,args.machine,'project:'+mode+(args.takeover?':takeover':''));
     const result=await service.bridge(args.machine,operation,{...args,ownerId,userId:user.id,username:user.username,hostAdmin:false});
     if(opening&&result?.state==='REJECTED')
@@ -381,7 +383,7 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation==='jobs.submit')return submitTask(service,principal,user,args,{fail,authorizedMachine,jobView,usage});
   if(operation==='jobs.priority'){
     args=selectFields(args,['jobId','priority']);
-    const priority=rankValue(args.priority),job=jobById(args.jobId);
+    const job=controlledJob(args.jobId),priority=rankValue(args.priority);
     authorizedMachine(job.machine);
     service.audit(principal.username,operation,job.id,priority);
     try{
@@ -396,7 +398,7 @@ export async function executionCall(service,principal,operation,args,readContext
     }
   }
   if(operation==='jobs.cancel'){
-    const job=jobById(args.jobId);
+    const job=controlledJob(args.jobId);
     if(!TERMINAL.has(job.state)){
       const before=structuredClone(job);let transaction=false;
       try{

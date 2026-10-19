@@ -37,7 +37,7 @@ test('priority updates use the node state instead of refusing a stale portal cac
   await f.grant();const {result}=await f.submit();await f.settle();
   const job=f.s.store.jobs.find(row=>row.id===result.id),spec=structuredClone(job.spec);
   job.state='RUNNING';f.setState('PENDING');
-  const value=(await f.s.invoke(f.b.token,'jobs.priority',{jobId:job.id,priority:'P4',extra:'ignored'})).result;
+  const value=(await f.s.invoke(f.a.token,'jobs.priority',{jobId:job.id,priority:'P4',extra:'ignored'})).result;
   assert.equal(value.state,'PENDING');assert.deepEqual(job.spec,spec);
   const sent=f.calls.filter(call=>call.operation==='priority');assert.equal(sent.length,1);
   assert.equal(sent[0].args.priority,'P4');assert.equal(sent[0].args.rankOnly,true);
@@ -91,13 +91,14 @@ test('atomic concurrent reservations and idempotency do not exceed global or per
    await assert.rejects(f.grant(1,{'gpu-1':1}),/当前预留/);
  }finally{await f.close();}
 });
-test('logged-in team members share task state, logs and controls while submit identity stays the actor',async()=>{
+test('logged-in team members share task state and logs while only the submitter controls the task',async()=>{
  const f=await fixture();try{
    await f.grant();const j=(await f.submit({userId:f.other.id,unknown:'ignored'})).result;await f.settle();
    assert.equal(f.s.store.jobs[0].userId,f.member.id);
    const state=await f.s.invoke(f.b.token,'state');assert.equal(state.state.jobs.length,1);assert.equal(state.state.jobs[0].ownerId,f.member.id);
    assert.equal((await f.s.invoke(f.b.token,'jobs.logs',{jobId:j.id,unknown:'ignored'})).result.text,'private-log');
-   await f.s.invoke(f.b.token,'jobs.cancel',{jobId:j.id});assert.equal(usage(f.s.store.jobs,f.member.id),1);
+   await assert.rejects(f.s.invoke(f.b.token,'jobs.cancel',{jobId:j.id}),e=>e.status===403&&e.message==='只能操作自己的任务');
+   await f.s.invoke(f.a.token,'jobs.cancel',{jobId:j.id});assert.equal(usage(f.s.store.jobs,f.member.id),1);
    await f.settle();f.setState('CANCELED');await f.s.reconcile();assert.equal(usage(f.s.store.jobs,f.member.id),0);
  }finally{await f.close();}
 });

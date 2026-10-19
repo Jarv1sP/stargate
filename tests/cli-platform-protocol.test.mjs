@@ -27,7 +27,7 @@ test('same-machine same-slug projects remain separately addressable by ownerId',
 });
 test('a logged-in team member sees peer datasets and peer task output actions',()=>{
  const html=taskTable([{id:'peer-job',name:'peer task',userId:'peer',project:'vision',state:'RUNNING'}],{userId:'self'});
- assert.match(html,/data-job-output="peer-job"/);assert.match(html,/data-job-cancel="peer-job"/);
+ assert.match(html,/data-job-output="peer-job"/);assert.doesNotMatch(html,/data-job-cancel="peer-job"/);
 });
 
 test('peer output deletion retries the original key and permits a later fresh delete',async()=>{

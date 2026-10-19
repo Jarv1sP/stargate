@@ -114,7 +114,7 @@ test('current-workspace submit preserves resource limits, one original key and s
  assert.equal((await f.service.invoke(f.alice.token,'jobs.submit',{...args,argv:['ignored-new-request']})).result.id,first.id);assert.equal(f.service.store.jobs.length,1);
  assert.equal((await f.call('jobs.logs',{jobId:first.id})).text,'shared job log');
  await assert.rejects(f.service.invoke(f.alice.token,'jobs.submit',{...args,key:randomUUID(),cards:2}),/额度/);
- await f.call('jobs.cancel',{jobId:first.id});await f.service.reconcile();
+ await f.call('jobs.cancel',{jobId:first.id},f.alice);await f.service.reconcile();
  const spec=f.calls.find(row=>row.op==='sync').args.job;assert.equal(spec.project,'sample');assert.equal(spec.workspace,true);assert.equal(spec.release,undefined);assert.equal(spec.datasets,undefined);
 });
 

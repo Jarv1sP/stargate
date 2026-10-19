@@ -28,6 +28,12 @@ export default {features:["容器里自带 git，代码用 git 管理（pull/com
   try{
     const running=await waitJob(ctx,member,gpu.id,['RUNNING',...terminalStates]);ctx.check('GPU 交互任务运行',running.state==='RUNNING',running.error);
     const session=await openTerminal(ctx,member,name,{mode:'reconnect',id:gpu.id});
+    for(const [operation,args] of [['terminal.exchange',{...session,input:Buffer.from([3]).toString('base64')}],['terminal.close',session]]){
+      const error=await ctx.client.refused(b.token,operation,args);
+      ctx.check('他人不能停止GPU任务：'+operation,error.status===403&&error.body?.error==='只能操作自己的任务',error.body?.error);
+    }
+    const shared=await call(ctx,b,'terminal.exchange',{...session,offset:0});
+    ctx.check('他人仍可读取GPU终端',typeof shared.data==='string');
     const text=await terminalCommand(ctx,member,session,"nvidia-smi --query-gpu=uuid --format=csv,noheader; printf 'GRAY_%s\\n' GPU_DONE\n",'GRAY_GPU_DONE');
     await mkdir(ctx.artifacts,{recursive:true});
     await writeFile(join(ctx.artifacts,'g05-gpu-terminal.txt'),text);

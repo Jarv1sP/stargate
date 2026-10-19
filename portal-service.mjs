@@ -1,3 +1,4 @@
+import {canControlJob} from './dist/task-metadata.js';
 import {selectFields} from './portal-request-validation.mjs';
 import {DatabaseSync} from 'node:sqlite';
 import {mkdir,readFile,writeFile,chmod} from 'node:fs/promises';
@@ -436,7 +437,7 @@ export class PortalService extends DemoService{
     const gpuq=visibleGPUQStatus(snapshot,principal,this.store.get(principal.userId).limits,{jobs:this.store.jobs.map(j=>this.taskDisplayJob(j)),users:this.store.users});
     const capabilities=Object.fromEntries(gpuq.hosts.map(h=>[h.id,!gpuq.stale&&priorityCapable(h)===true]));
     const full=job=>({...publicJob(job,this.store.users),...stateCommand(job.spec.argv),queueReason:pendingJobReason(this,job),notifications:this.jobNotificationState(job,principal.userId),
-      canSetPriority:job.state==='PENDING'&&!job.cancelRequested});
+      canSetPriority:canControlJob(job,principal)&&job.state==='PENDING'&&!job.cancelRequested});
     const selected=new Map(visible.filter(job=>!TERMINAL.has(job.state)).map(job=>[job,full(job)]));
     // Full active records take precedence even when they alone exceed budget.
     let jobsBytes=2;

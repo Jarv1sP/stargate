@@ -44,7 +44,7 @@ export default {features:["新建项目（可填一个 Git 仓库地址，创建
           return {watch,log};
         },v=>v.log.text.includes('GRAY-SLEEPER')||terminalStates.includes(v.watch.state),{what:'B读取A任务真实日志'});
         ctx.check('B可读取A任务执行日志',observed.log.text.includes('GRAY-SLEEPER'),observed);
-      }finally{await call(ctx,b,'jobs.cancel',{jobId:job.id});await waitJob(ctx,b,job.id,terminalStates);}
+      }finally{await call(ctx,a,'jobs.cancel',{jobId:job.id});await waitJob(ctx,b,job.id,terminalStates);}
     }],
     ['团队训练输出',async()=>{
       ctx.check('G07训练输出可用',!!ctx.shared.trained?.length,'前置训练失败或未运行，不能证明输出协作');

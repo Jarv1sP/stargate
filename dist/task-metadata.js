@@ -2,6 +2,7 @@
 // resource displays. These fields describe a task; they are never executable.
 const encoder=new TextEncoder();
 const controls=/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+export const canControlJob=(job,principal)=>principal?.role==='admin'||!!principal?.userId&&job.userId===principal.userId;
 export function displayName(value){
   if(typeof value!=='string'||!value.isWellFormed())throw Error('姓名／显示名格式无效。');
   const name=value.trim();
