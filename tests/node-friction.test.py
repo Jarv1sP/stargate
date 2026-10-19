@@ -195,6 +195,52 @@ class DirectoryContract(unittest.TestCase):
         with patch.object(jobs,'launch') as launch:
             self.assertEqual(jobs.process('datasets.import.resume',{'operationId':key})['state'],'PENDING');launch.assert_called_once_with(key)
 
+    def test_ranged_import_downloads_concurrently_and_commits_original_order(self):
+        import threading
+        imports=module('data-import');jobs=imports.DataImports(SimpleNamespace(CONFIG=self.config,run=lambda *a,**k:None));key=self.key();raw=b'prefix'+bytes(range(27))
+        jobs.process('datasets.import.start',{'key':key,'url':'https://example.invalid/file','path':'parallel.bin','dataset':'shared','userId':'bob'})
+        self.uploads.process('begin',{'key':key,'path':'parallel.bin','totalSize':len(raw),'dataset':'shared'})
+        self.uploads.process('chunk',{'key':key,'offset':0,'data':base64.b64encode(raw[:6]).decode()});jobs.update(key,state='PAUSED',bytes=6,totalBytes=len(raw))
+        calls=[];barrier=threading.Barrier(4,timeout=3)
+        def opened(url,offset=0,end=None,**kwargs):
+            calls.append((offset,end));at=offset;last=len(raw)-1 if end is None else end
+            class Reply:
+                status=206
+                def getheader(_,name):return f'bytes {offset}-{last}/{len(raw)}' if name=='Content-Range' else str(last-offset+1) if name=='Content-Length' else None
+                def read(_,size):
+                    nonlocal at
+                    if end is not None:
+                        barrier.wait()
+                        if (offset-9)%12==0:time.sleep(.03)
+                    result=raw[at:min(at+size,last+1)];at+=len(result);return result
+            return SimpleNamespace(close=lambda:None),Reply()
+        jobs.process('datasets.import.resume',{'operationId':key})
+        with patch.object(imports,'BLOCK',3),patch.object(imports,'open_download',side_effect=opened):self.assertEqual(jobs.worker(key),0)
+        self.assertEqual(Path(self.config['datasetsRoot'],'shared/parallel.bin').read_bytes(),raw)
+        self.assertEqual(sorted((a,b) for a,b in calls if b is not None),[(a,a+2) for a in range(9,33,3)])
+        self.assertEqual(jobs.process('datasets.import.status',{'operationId':key})['state'],'SUCCEEDED')
+
+    def test_parallel_failure_retains_contiguous_prefix_for_original_resume(self):
+        imports=module('data-import');jobs=imports.DataImports(SimpleNamespace(CONFIG=self.config,run=lambda *a,**k:None));key=self.key();raw=b'prefix'+bytes(range(27))
+        jobs.process('datasets.import.start',{'key':key,'url':'https://example.invalid/file','path':'retry-range.bin','dataset':'shared','userId':'bob'})
+        fail=True;calls=[]
+        def opened(url,offset=0,end=None,**kwargs):
+            calls.append((offset,end));at=offset;last=len(raw)-1 if end is None else end
+            if end is not None and offset==6 and fail:raise TimeoutError('range interrupted')
+            class Reply:
+                status=206 if offset or end is not None else 200
+                def getheader(_,name):return f'bytes {offset}-{last}/{len(raw)}' if name=='Content-Range' else str(last-offset+1) if name=='Content-Length' else 'bytes' if name=='Accept-Ranges' else None
+                def read(_,size):
+                    nonlocal at
+                    result=raw[at:min(at+size,last+1)];at+=len(result);return result
+            return SimpleNamespace(close=lambda:None),Reply()
+        with patch.object(imports,'BLOCK',3),patch.object(imports,'open_download',side_effect=opened):
+            self.assertEqual(jobs.worker(key),1);self.assertEqual(self.uploads.process('status',{'key':key})['offset'],6)
+            self.assertFalse(Path(self.config['datasetsRoot'],'shared/retry-range.bin').exists())
+            self.assertEqual(jobs.process('datasets.import.status',{'operationId':key})['state'],'PAUSED')
+            fail=False;jobs.process('datasets.import.resume',{'operationId':key});self.assertEqual(jobs.worker(key),0)
+        self.assertIn((6,None),calls);self.assertEqual(Path(self.config['datasetsRoot'],'shared/retry-range.bin').read_bytes(),raw)
+
     def test_cross_node_directory_copy_resumes_uuid_and_keeps_empty_directories(self):
         raw=b'a'*(1024**2)+b'end';self.upload('train/data.bin',raw)
         (Path(self.config['datasetsRoot'])/'shared/empty').mkdir()
