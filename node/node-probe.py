@@ -200,13 +200,22 @@ def probe_gpuq():
     output = {'connected': False, 'jobs': []}
     if os.path.isfile(CONFIG['gpu']):
         try:
-            status = json.loads(command([CONFIG['gpu'], "--json", "q", "--limit", "100"], 12))
+            status = json.loads(command([CONFIG['gpu'], "--json", "q", "--limit", "1000"], 12))
             if not isinstance(status, dict):
                 raise ValueError('Invalid GPUQ status')
             daemon = status.get("daemon", {})
             jobs = status.get('jobs', [])
             if not isinstance(daemon, dict) or not isinstance(jobs, list):
                 raise ValueError('Invalid GPUQ status')
+            sampled, pending = [], 0
+            for job in jobs:
+                if not isinstance(job, dict):
+                    continue
+                if job.get('state') == 'PENDING':
+                    if pending >= 100:
+                        continue
+                    pending += 1
+                sampled.append(job)
             allowed = ("id", "name", "owner", "state", "gpu_count", "assigned_gpu_count",
                        "assigned_gpu_indices", "active_attempt_id", "priority", "priority_name", "share_gpu", "created_at",
                        "yield_policy", "dispatch_mode", "restart_policy", "state_reason", "preempt_idle_only")
@@ -217,8 +226,8 @@ def probe_gpuq():
                 "schedulableIndices": daemon.get("schedulable_gpu_indices", []),
                 "jobs": [{**{key: job.get(key) for key in allowed},
                           **({'display_metadata':display} if (display:=public_task_display(job.get('display_metadata'))) is not None else {})}
-                         for job in jobs[:100] if isinstance(job, dict)],
-                "limit": 100,
+                         for job in sampled],
+                "limit": 100 + len(sampled) - pending,
             }
             output['capabilities'] += ['console-task-display-v1','console-task-display-edit-v1','console-yield-v1','console-placement-v1']
         except (ValueError, OSError, subprocess.SubprocessError):
