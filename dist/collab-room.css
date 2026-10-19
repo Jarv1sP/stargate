@@ -65,7 +65,7 @@
 .sb #page-community .chat-emoji-panel{display:grid;grid-template-columns:repeat(8,36px);gap:2px;max-width:calc(100% - 24px)}
 .sb #page-community .chat-emoji{width:36px;height:36px;border:0;border-radius:8px;background:none;font-size:20px;padding:0}
 .sb #page-community .chat-emoji:hover,.sb #page-community .chat-emoji:focus-visible{background:var(--bg-3)}
-.sb #page-community .chat-mention-list{min-width:200px;max-width:calc(100% - 24px)}
+.sb #page-community .chat-mention-list{min-width:200px;max-width:calc(100% - 24px);max-height:min(264px,40vh);overflow-y:auto;overscroll-behavior:contain}
 .sb #page-community .chat-mention-option{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--ink)}
 .sb #page-community .chat-mention-option small{color:var(--ink-3);font-size:12px}
 .sb #page-community .chat-mention-option.active{background:var(--bg-3)}

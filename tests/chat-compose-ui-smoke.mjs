@@ -16,6 +16,8 @@ const admin=service.store.users[0],actors={};
 for(const width of [1440,390,320])for(const name of ['alice','bob']){
   const user={...admin,id:`demo-user-${name}-${width}`,username:`${name}-${width}`,name:name==='bob'?'鲍勃 '+width:'Alice '+width,role:'member'};seedAccounts(service,user);actors[name+'-'+width]=user;
 }
+// A team larger than one screen of suggestions.
+for(let n=1;n<=8;n++)seedAccounts(service,{...admin,id:'demo-user-crew-'+n,username:'crew-'+n,name:'组员 '+n,role:'member'});
 const token=user=>service.issueSession({userId:user.id,username:user.username,role:user.role});
 const html=`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 ${['styles','fonts','starbase','shell','workbench','copy-help','community','collab-room'].map(name=>'<link rel="stylesheet" href="/'+name+'.css">').join('')}
@@ -67,6 +69,11 @@ try{
     // Enter while an IME is composing confirms the word and never sends.
     await input.fill('拼音');await input.evaluate(n=>n.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true})));
     assert.equal((await sent(page)).length,1);await input.fill('');
+    // A bare @, even right after Chinese, lists every other member; the list scrolls to the last one.
+    await input.pressSequentially('请@');const everyone=page.locator('.chat-mention-option');await page.locator('.chat-mention-list').waitFor({state:'visible'});
+    assert.equal(await everyone.count(),service.store.users.length-1);
+    await input.press('ArrowUp');assert.ok(await everyone.last().evaluate(n=>{const list=n.parentElement.getBoundingClientRect(),row=n.getBoundingClientRect();return row.top>=list.top-1&&row.bottom<=list.bottom+1;}),'the chosen member is scrolled into view');
+    await input.press('Escape');await input.fill('mail@b');assert.equal(await page.locator('.chat-mention-list').isVisible(),false,'an e-mail address is not a mention');await input.fill('');
     // @ suggests members; Enter picks one instead of sending.
     await input.pressSequentially('@bob-'+width);const list=page.locator('.chat-mention-list');await list.waitFor({state:'visible'});
     assert.match(await list.textContent(),new RegExp('鲍勃 '+width));assert.doesNotMatch(await list.textContent(),/alice/,'no self-mention');
