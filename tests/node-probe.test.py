@@ -3,6 +3,7 @@ from dataclasses import replace
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -61,6 +62,28 @@ class Probe(unittest.TestCase):
             self.assertEqual(process['task']['id'], job['id'])
             self.assertEqual(process['task']['name'], job['name'])
             self.assertEqual(process['task']['owner'], 'team-member')
+        # The Portal must retain the node's bounded sample, too: otherwise its
+        # own list truncation discards the process/job association a second time.
+        path = self.root / 'snapshot.json'
+        path.write_text(json.dumps(result))
+        script = '''
+import {readFile,writeFile} from 'node:fs/promises';
+import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
+import {MACHINES} from './dist/model.js';
+const path=process.argv[1],host=JSON.parse(await readFile(path,'utf8'));
+host.id=MACHINES.find(m=>m.cards>=8).id;host.reachable=true;
+await writeFile(path,JSON.stringify({checkedAt:host.checkedAt,hosts:[host]}));
+const jobs=host.tasks.filter(j=>j.state==='RUNNING').map(j=>({
+  id:'portal-'+j.id,nodeJobId:j.id,machine:host.id,state:j.state,
+  name:j.name,userId:j.owner,username:j.owner,cards:1}));
+const value=visibleGPUQStatus(await readGPUQStatus(path),{role:'member'},{},{jobs});
+console.log(JSON.stringify(value.hosts.find(h=>h.id===host.id)));
+'''
+        visible = json.loads(subprocess.check_output(['node', '--input-type=module', '-e', script, str(path)], cwd=ROOT, text=True))
+        self.assertEqual(len(visible['gpuq']['jobs']), 108)
+        for gpu, (job, _) in zip(visible['gpus'], running):
+            self.assertEqual(gpu['processes'][0]['task']['id'], 'portal-' + job['id'])
+            self.assertEqual(gpu['processes'][0]['task']['submitter']['username'], 'team-member')
 
     def test_starting_and_preempting_jobs_do_not_use_pending_slots(self):
         (self.root / 'gpu').touch()

@@ -45,7 +45,7 @@ export async function readGPUQStatus(path,now=Date.now(),previous){
         gpus:Array.isArray(host.gpus)?host.gpus.filter(g=>g&&Number.isInteger(g.index)&&g.index>=0).slice(0,machine.cards).map(gpuStatus):[],
         gpuq:{...host.gpuq,connected:host.gpuq?.connected===true,
           healthIssue:host.gpuq?.health==='degraded'?healthIssue(host.gpuq?.healthIssue,machine.cards):undefined,
-          jobs:Array.isArray(host.gpuq?.jobs)?host.gpuq.jobs.slice(0,100):[]}};
+          jobs:Array.isArray(host.gpuq?.jobs)?host.gpuq.jobs:[]}};
     })};
 }
 
