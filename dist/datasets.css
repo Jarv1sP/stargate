@@ -46,7 +46,6 @@
 .cloud-import-list li>div:first-child{min-width:0}
 .cloud-import-list p{font-size:13px;line-height:1.7;margin:6px 0;color:var(--muted,#626266)}
 .cloud-import-list .file-actions{flex:none}
-.cloud-import #cloud-admin{margin-top:28px;border-top:1px solid var(--line,#dfdfdd);padding-top:12px}
 .cloud-import img{display:block;max-width:100%;margin:16px 0}
 #page-datasets #cloud-import-pending{padding:16px;margin:20px 0;background:var(--d-bg);border:1px solid var(--d-line);border-radius:8px;font-size:13px}
 #page-datasets #cloud-import-pending p{margin-bottom:10px;line-height:1.7}

@@ -1,10 +1,5 @@
 .sb #page-admin{container:admin-console / inline-size;min-width:0}
 .sb .admin-frame{display:grid;grid-template-columns:minmax(176px,220px) minmax(0,1fr);gap:clamp(24px,4cqi,48px);align-items:start;padding-block:12px 32px}
-.sb .admin-navigation{display:grid;gap:8px;position:sticky;top:96px;min-width:0}
-.sb .admin-navigation>a{display:flex;align-items:center;gap:16px;min-height:48px;padding:12px 16px;border:1px solid transparent;border-radius:8px;color:var(--ink-3);font:14px/1.5 var(--sans);text-decoration:none;word-break:keep-all}
-.sb .admin-navigation>a:hover{color:var(--ink);background:var(--bg-2)}
-.sb .admin-navigation>a.active{color:var(--ink);background:var(--bg-2);border-color:var(--line-2)}
-.sb .admin-section-number{flex:none;color:var(--ink-4);font:11px/1 var(--mono)}
 .sb .admin-content-column,.sb #admin-content,.sb .admin-section-host{min-width:0}
 .sb .admin-denied{padding:clamp(24px,5cqi,56px);min-height:240px;display:grid;align-content:center;gap:16px;border:1px solid var(--line-2);border-radius:12px;background:var(--bg-1)}
 .sb .admin-denied h2{font:300 clamp(28px,4cqi,56px)/1.15 var(--display);margin:0;letter-spacing:-.035em;overflow-wrap:anywhere}
@@ -12,9 +7,5 @@
 .sb .admin-return{justify-self:start;white-space:nowrap}
 @container admin-console (max-width:700px){
   .sb .admin-frame{grid-template-columns:minmax(0,1fr);gap:24px}
-  .sb .admin-navigation{position:static;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-  .sb .admin-navigation>a{justify-content:center;padding:10px 8px;font-size:13px;gap:0;min-height:44px}
-  .sb .admin-navigation>a:only-child{grid-column:1 / -1}
-  .sb .admin-section-number{display:none}
   .sb .admin-denied{min-height:200px}
 }

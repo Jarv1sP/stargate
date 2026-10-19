@@ -1,6 +1,5 @@
 /* Admin console from the approved prototype: one page, plain tables, a toggle per maintenance scope. */
 .sb #admin-frame{display:block}
-.sb #admin-sections{display:none}
 .sb .adm-sec{margin:0 0 48px}
 .sb .adm-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:12px}
 .sb .adm-head h2{font-size:17px;font-weight:500;margin:0;color:#F2F2EF}
@@ -15,10 +14,10 @@
 .sb .adm-sub{font-size:13px;color:var(--ink-3)}
 .sb .adm-name+.adm-sub{margin-top:2px}
 .sb .adm-acts{text-align:right;white-space:nowrap}
-.sb .adm-acts .jr-btn{height:34px;padding:0 14px;font-size:13px;margin-right:12px}
+.sb .adm-acts .jr-btn{height:34px;padding:0 14px;font-size:13px}
 .sb .adm-acts .jr-link{min-height:44px;display:inline-flex;align-items:center}
-.sb .adm-stepper button{width:36px;height:36px}
-.sb .adm-stepper span{width:40px}
+.sb .adm-acts .jr-btn+.jr-link{margin-left:12px}
+.sb .adm-lede .jr-link{font-size:inherit;text-decoration:underline;text-underline-offset:3px}
 .sb .adm-tog{position:relative;width:44px;height:26px;border-radius:999px;border:0;background:var(--bg-4);cursor:pointer;transition:background .3s;vertical-align:middle}
 .sb .adm-tog::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:var(--ink-2);transition:transform .45s cubic-bezier(.34,1.32,.5,1),background .3s}
 .sb .adm-tog[aria-checked="true"]{background:var(--queue)}
@@ -32,5 +31,7 @@
 .sb .adm-num{width:64px;height:36px;padding:0 10px;text-align:center;font-family:var(--mono)}
 .sb .adm-total{display:flex;align-items:center;gap:10px;margin-top:16px;font-size:14px;color:var(--ink-2)}
 .sb .adm-field{display:grid;gap:8px;font-size:13px;color:var(--ink-3)}
+.sb .adm-qr{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:16px}
+.sb .adm-qr img{width:200px;height:200px;border-radius:8px;background:#fff}
 @media (max-width:760px){.sb .adm-tbl th:nth-child(4),.sb .adm-tbl td:nth-child(4){display:none}.sb .adm-acts .jr-btn{margin:0 0 6px}}
 @media (prefers-reduced-motion:reduce){.sb .adm-tog,.sb .adm-tog::after,.sb .adm-tbl tbody tr{transition:none}}

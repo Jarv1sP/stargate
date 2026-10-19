@@ -1,9 +1,8 @@
 // Section modules own their requests and controls. The frame owns access and lifetime.
 export const ADMIN_SECTIONS=Object.freeze([
-  {id:'tasks',title:'显卡与任务',order:10},
-  {id:'storage',title:'数据与存储',order:20},
-  {id:'members',title:'成员与额度',order:30},
-  {id:'maintenance',title:'维护',order:40},
+  {id:'members',title:'成员与额度',order:10},
+  {id:'maintenance',title:'维护模式',order:20},
+  {id:'cloud',title:'云盘连接',order:30},
 ].map(Object.freeze));
 const validId=id=>typeof id==='string'&&/^[a-z][a-z0-9-]{0,63}$/.test(id);
 export function createAdminRegistry(){

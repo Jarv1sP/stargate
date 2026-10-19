@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {apiPost} from '../client-http.mjs';
-import {projectDirectoryValue,projectDirectorySelection,taskTable} from '../dist/execution-ui.js';
+import {projectDirectoryValue,projectDirectorySelection} from '../dist/execution-ui.js';
 
 test('new CLI sends the single protocol-2 platform marker',async()=>{
  const body={operation:'projects.list',args:{machine:'fixture-node',ownerId:'peer'}},requests=[];
@@ -24,10 +24,6 @@ test('same-machine same-slug projects remain separately addressable by ownerId',
  const values=entries.map(entry=>projectDirectoryValue(entry,entries,'fixture-node'));
  assert.notEqual(values[0],values[1]);
  for(let i=0;i<2;i++)assert.equal(projectDirectorySelection(values[i],entries,'fixture-node').info.ownerId,entries[i].info.ownerId);
-});
-test('a logged-in team member sees peer datasets and peer task output actions',()=>{
- const html=taskTable([{id:'peer-job',name:'peer task',userId:'peer',project:'vision',state:'RUNNING'}],{userId:'self'});
- assert.match(html,/data-job-output="peer-job"/);assert.match(html,/data-job-cancel="peer-job"/);
 });
 
 test('peer output deletion retries the original key and permits a later fresh delete',async()=>{
