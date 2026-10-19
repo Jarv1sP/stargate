@@ -40,7 +40,7 @@ files['/dataset-upload.js']='dataset-upload.js';
 files['/transfers-ui.js']='transfers-ui.js';files['/transfer-upload.js']='transfer-upload.js';
 files['/cloud-import-ui.js']='cloud-import-ui.js';
 files['/community-ui.js']='community-ui.js';files['/community.css']='community.css';
-files['/chat-content.js']='chat-content.js';files['/chat-compose-ui.js']='chat-compose-ui.js';
+files['/chat-content.js']='chat-content.js';files['/chat-compose-ui.js']='chat-compose-ui.js';files['/mention-popup-ui.js']='mention-popup-ui.js';
 files['/maintenance-ui.js']='maintenance-ui.js';files['/maintenance.css']='maintenance.css';
 files['/task-notes-ui.js']='task-notes-ui.js';files['/submission-keys.js']='submission-keys.js';
 export async function createPortalServer({database,bootstrap,origin,secure=true,statusPath,bridgeSocket,fileBridgeSocket,bridge,notificationConfigPath,fileLanEndpoints=process.env.GPUQ_FILE_LAN_ENDPOINTS||'{}',directUploadOrigins=process.env.GPUQ_DIRECT_UPLOAD_ORIGINS||'[]'}){

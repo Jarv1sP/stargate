@@ -83,6 +83,17 @@ test('@username notifies that member until they read the chat; self and partial 
   await f.call(f.alice,'chat.update',{id:message.id,body:'改成不提人'});assert.equal(await f.mentions(f.lin),0,'editing a mention away clears it');
 });
 
+test('the pop-up list holds only my unread mentions, newest first, and empties once read',async t=>{
+  const f=await fixture(t);
+  const first=(await f.send(f.alice,{body:'@bob 第一条'})).message;await f.send(f.alice,{body:'@lin 不是给 bob 的'});
+  const second=(await f.send(f.lin,{body:'@bob 看图',image:image()})).message;
+  const listed=await f.call(f.bob,'chat.mentions');
+  assert.equal(listed.total,2);assert.deepEqual(listed.messages.map(m=>m.id),[second.id,first.id]);
+  assert.equal(listed.messages[0].author.username,'lin');assert.ok(listed.messages[0].image,'a picture is flagged so the pop-up can say so');
+  assert.equal((await f.call(f.alice,'chat.mentions')).total,0);
+  await f.call(f.bob,'chat.read',{id:second.id});const after=await f.call(f.bob,'chat.mentions');assert.deepEqual([after.messages,after.total],[[],0]);
+});
+
 test('mention parsing prefers the longest username and needs a word boundary',()=>{
   const users=[{id:'1',username:'li'},{id:'2',username:'lin'},{id:'3',username:'张三'}];
   assert.deepEqual(mentionedUsers('@lin 和 @li，还有 @张三 好',users).map(user=>user.id),['2','1','3']);
