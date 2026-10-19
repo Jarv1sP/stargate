@@ -1,5 +1,5 @@
 """HTTPS imports into datasets or project workspaces, using the same upload primitive."""
-import base64,contextlib,fcntl,http.client,importlib.util,ipaddress,json,os,re,socket,ssl,stat,subprocess,time,uuid
+import base64,concurrent.futures,contextlib,fcntl,http.client,importlib.util,ipaddress,json,os,re,socket,ssl,stat,subprocess,time,uuid
 from pathlib import Path
 from urllib.parse import urljoin,urlsplit
 MAX_REDIRECTS=5
@@ -92,13 +92,13 @@ def checked_headers(value,source_kind):
         if isinstance(content,str) and '\r' not in content and '\n' not in content:result[name]=content
     return result
 
-def open_download(url, offset=0, etag=None, source_kind='https', download_headers=None):
+def open_download(url, offset=0, etag=None, source_kind='https', download_headers=None, end=None):
     headers = {'User-Agent': 'GPUQ-DataImport/1.0', 'Accept-Encoding': 'identity'}
     if source_kind == 'aliyun':
         headers['Referer'] = 'https://www.alipan.com/'
     headers.update(checked_headers(download_headers,source_kind))
-    if offset:
-        headers['Range'] = 'bytes=' + str(offset) + '-'
+    if offset or end is not None:
+        headers['Range'] = 'bytes=' + str(offset) + '-' + (str(end) if end is not None else '')
         if etag:
             headers['If-Range'] = etag
     for hop in range(MAX_REDIRECTS + 1):
@@ -123,6 +123,17 @@ def open_download(url, offset=0, etag=None, source_kind='https', download_header
             continue
         return connection, response
     raise ImportFailure('REDIRECT', 'Download redirect limit exceeded')
+
+def read_range(url,offset,end,total,source_kind,download_headers):
+    connection,response=open_download(url,offset=offset,end=end,source_kind=source_kind,download_headers=download_headers)
+    try:
+        match=re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)',response.getheader('Content-Range') or '')
+        if response.status!=206 or not match or tuple(map(int,match.groups()))!=(offset,end,total):
+            raise ValueError('下载源未接受分块范围，请保留原编号重试。')
+        raw=response.read(end-offset+1)
+        if len(raw)!=end-offset+1:raise ValueError('下载分块未传完，请按原编号续传。')
+        return raw
+    finally:connection.close()
 
 class DataImports:
     def __init__(self,executor):
@@ -207,6 +218,18 @@ class DataImports:
                 if not raw:break
                 status=uploads.process('chunk',{'key':key,'offset':offset,'data':base64.b64encode(raw).decode()});offset=status['offset']
                 row=self.update(key,bytes=offset)
+                if (response.status==206 or response.getheader('Accept-Ranges')=='bytes') and size-offset>BLOCK:
+                    connection.close();connection=None
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                        while offset<size:
+                            spans=[(at,min(at+BLOCK-1,size-1)) for at in range(offset,min(size,offset+4*BLOCK),BLOCK)]
+                            pending=[pool.submit(read_range,row['url'],at,end,size,row.get('sourceKind') or 'https',row.get('downloadHeaders')) for at,end in spans]
+                            for future in pending:
+                                raw=future.result()
+                                if self.s.read_json(self.path(key))['state']=='CANCELED':return 0
+                                status=uploads.process('chunk',{'key':key,'offset':offset,'data':base64.b64encode(raw).decode()});offset=status['offset']
+                                row=self.update(key,bytes=offset)
+                    break
             with self.locked(key):
                 row=self.s.read_json(self.path(key))
                 if row['state']=='CANCELED':return 0
