@@ -1,9 +1,10 @@
 import {selectFields} from './portal-request-validation.mjs';
 import {normalizeAppearance,defaultAppearance} from './dist/announcement-appearance.js';
+import {CHAT_IMAGE,mentionedUsers} from './dist/chat-content.js';
 
 // This module owns only community_* tables. No message bodies enter portal_state
 // or the audit log. All calls run in PortalService's serialized authenticated queue.
-export const COMMUNITY_LIMITS=Object.freeze({chat:5000,retentionDays:30,title:120,postBody:8000,commentBody:4000,chatBody:2000,page:100});
+export const COMMUNITY_LIMITS=Object.freeze({chat:5000,retentionDays:30,title:120,postBody:8000,commentBody:4000,chatBody:2000,page:100,chatImageBytes:CHAT_IMAGE.maxBytes,chatImagesTotalBytes:256*1024**2});
 const DAY=86400000;
 const KINDS=['feedback','discussion','announcement'],STATUSES=['open','investigating','resolved','closed'],ANNOUNCEMENTS=['notice','maintenance','outage'];
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
@@ -26,6 +27,11 @@ function view(service,row,actor,type){
   if(type==='post')return {...common,kind:row.kind,title:row.title,announcementType:row.announcement_type,status:row.status,pinned:!!row.pinned,
     ...(row.kind==='announcement'?{popup:!!row.popup,appearance:JSON.parse(row.appearance_json),...(actor.role==='admin'?{audience:audienceOf(row)}:{})}:{}),
     commentCount:service.db.prepare('SELECT count(*) AS n FROM community_comments_v2 WHERE post_id=?').get(row.id).n,canModerate:actor.role==='admin'};
+  if(type==='message'){
+    // Only the size travels with the list; the bytes are fetched once per image and cached.
+    const image=service.db.prepare('SELECT width,height FROM community_chat_images_v2 WHERE message_id=?').get(row.id);
+    return image?{...common,image:{url:'/community/chat-images/'+row.id,width:image.width,height:image.height}}:common;
+  }
   return type==='comment'?{...common,postId:String(row.post_id)}:type==='note'?{...common,jobId:row.job_id}:common;
 }
 const tables={post:'community_posts_v2',comment:'community_comments_v2',message:'community_chat_v2',note:'community_notes_v2'};
@@ -65,6 +71,42 @@ function prune(db,now){
   db.prepare('DELETE FROM community_keys_v2 WHERE created_at<?').run(before);
   db.prepare('DELETE FROM community_chat_v2 WHERE created_at<?').run(before);
   db.prepare('DELETE FROM community_chat_v2 WHERE id <= COALESCE((SELECT id FROM community_chat_v2 ORDER BY id DESC LIMIT 1 OFFSET ?),0)').run(COMMUNITY_LIMITS.chat);
+  db.prepare('DELETE FROM community_chat_images_v2 WHERE NOT EXISTS (SELECT 1 FROM community_chat_v2 c WHERE c.id=message_id)').run();
+  // Disk floor: past the total, the oldest pictures go first; a picture-only message goes with its picture.
+  let over=db.prepare('SELECT COALESCE(sum(size),0) AS n FROM community_chat_images_v2').get().n-COMMUNITY_LIMITS.chatImagesTotalBytes;
+  if(over>0){
+    const drop=db.prepare('DELETE FROM community_chat_images_v2 WHERE message_id=?');
+    for(const row of db.prepare('SELECT message_id,size FROM community_chat_images_v2 ORDER BY message_id').all()){if(over<=0)break;drop.run(row.message_id);over-=row.size;}
+    db.prepare("DELETE FROM community_chat_v2 WHERE body='' AND NOT EXISTS (SELECT 1 FROM community_chat_images_v2 i WHERE i.message_id=community_chat_v2.id)").run();
+  }
+  db.prepare('DELETE FROM community_chat_mentions_v2 WHERE NOT EXISTS (SELECT 1 FROM community_chat_v2 c WHERE c.id=message_id)').run();
+}
+// A picture-only message has an empty body; any text follows the usual rules.
+function chatBody(value,image){return image&&(value===undefined||typeof value==='string'&&!value.trim())?'':text(value,COMMUNITY_LIMITS.chatBody,'消息');}
+function chatImage(value){
+  if(value===undefined)return null;
+  value=selectFields(value,['type','data','width','height']);const max=COMMUNITY_LIMITS.chatImageBytes;
+  if(!CHAT_IMAGE.types.includes(value.type)||typeof value.data!=='string'||value.data.length>Math.ceil(max/3)*4)fail(`图片须为 PNG、JPEG 或 WebP，且不超过 ${max/1000} KB。`);
+  const data=Buffer.from(value.data,'base64');
+  if(data.length>max)fail(`图片须为 PNG、JPEG 或 WebP，且不超过 ${max/1000} KB。`);
+  if(!data.length||[value.width,value.height].some(side=>!Number.isInteger(side)||side<1||side>CHAT_IMAGE.maxSide))fail('图片读取失败，请重新选择。');
+  return {type:value.type,data,width:value.width,height:value.height};
+}
+function mention(service,authorId,messageId,body){
+  service.db.prepare('DELETE FROM community_chat_mentions_v2 WHERE message_id=?').run(messageId);
+  const insert=service.db.prepare('INSERT INTO community_chat_mentions_v2(user_id,message_id) VALUES(?,?)');
+  for(const user of mentionedUsers(body,service.store.users.filter(user=>user.enabled&&user.id!==authorId)))insert.run(user.id,messageId);
+}
+// Unread @mentions of this account; reading the chat clears them.
+export function chatMentions(service,actor){
+  return service.db.prepare('SELECT count(*) AS n FROM community_chat_mentions_v2 m JOIN community_chat_v2 c ON c.id=m.message_id WHERE m.user_id=? AND c.created_at>=?')
+    .get(actor.userId,Date.now()-COMMUNITY_LIMITS.retentionDays*DAY).n;
+}
+export function chatImageFile(service,principal,value){
+  if(!service.store.users.find(u=>u.id===principal.userId)?.enabled)fail('账号已暂停或不存在。',403);
+  const row=service.db.prepare('SELECT i.type,i.data FROM community_chat_images_v2 i JOIN community_chat_v2 c ON c.id=i.message_id WHERE i.message_id=? AND c.created_at>=?')
+    .get(id(value),Date.now()-COMMUNITY_LIMITS.retentionDays*DAY);
+  if(!row)fail('图片不存在或已过期。',404);return row;
 }
 export function pruneTaskNotes(service){
   // Missing/UNKNOWN/LOST is NOT a confirmed end. General notes have no job_id
@@ -115,6 +157,14 @@ export function installCommunity(service){
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1
     );
     CREATE INDEX IF NOT EXISTS community_chat_age ON community_chat_v2(created_at);
+    CREATE TABLE IF NOT EXISTS community_chat_images_v2 (
+      message_id INTEGER PRIMARY KEY, type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
+      size INTEGER NOT NULL, data BLOB NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS community_chat_mentions_v2 (
+      user_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY(user_id,message_id)
+    );
+    CREATE INDEX IF NOT EXISTS community_chat_mentions_message ON community_chat_mentions_v2(message_id);
     CREATE TABLE IF NOT EXISTS community_notes_v2 (
       id INTEGER PRIMARY KEY AUTOINCREMENT, author_id TEXT NOT NULL, job_id TEXT,
       body TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
@@ -182,7 +232,7 @@ function listChat(service,actor,args,now){
 }
 function change(service,actor,operation,args,type,remove,now){
   args=selectFields(args,remove?['id','revision']:type==='post'?['id','revision','title','body','status','pinned','announcementType','audience','popup','appearance']:['id','revision','body']);
-  const row=required(service,type,args.id);
+  const row=required(service,type,args.id),image=type==='message'&&!!service.db.prepare('SELECT 1 FROM community_chat_images_v2 WHERE message_id=?').get(row.id);
   if(type==='post')readablePost(service,actor,args.id);
   if(type==='comment')readablePost(service,actor,String(row.post_id));
   if(remove&&row.kind==='announcement')admin(actor);
@@ -193,6 +243,7 @@ function change(service,actor,operation,args,type,remove,now){
   if(remove){
     if(type==='post'){service.db.prepare('DELETE FROM community_comments_v2 WHERE post_id=?').run(row.id);service.db.prepare('DELETE FROM announcement_acknowledgements_v2 WHERE post_id=?').run(row.id);}
     service.db.prepare(`DELETE FROM ${tables[type]} WHERE id=?`).run(row.id);
+    if(type==='message')for(const table of ['community_chat_images_v2','community_chat_mentions_v2'])service.db.prepare(`DELETE FROM ${table} WHERE message_id=?`).run(row.id);
     service.audit(actor.username,operation,String(row.id),'ok');return {deleted:true,id:String(row.id)};
   }
   if(type==='post'){
@@ -209,8 +260,9 @@ function change(service,actor,operation,args,type,remove,now){
     const style=args.appearance===undefined?row.appearance_json:JSON.stringify(appearance(args.appearance));
     service.db.prepare('UPDATE community_posts_v2 SET title=?,body=?,status=?,pinned=?,announcement_type=?,audience_json=?,popup=?,appearance_json=?,updated_at=?,revision=revision+1 WHERE id=?').run(title,body,status,args.pinned===undefined?row.pinned:Number(args.pinned),announcementType,JSON.stringify(audience),popup,style,now,row.id);
   }else{
-    const body=text(args.body,COMMUNITY_LIMITS[type==='comment'?'commentBody':'chatBody'],'正文');
+    const body=type==='message'?chatBody(args.body,image):text(args.body,COMMUNITY_LIMITS[type==='comment'?'commentBody':'chatBody'],'正文');
     service.db.prepare(`UPDATE ${tables[type]} SET body=?,updated_at=?,revision=revision+1 WHERE id=?`).run(body,now,row.id);
+    if(type==='message')mention(service,row.author_id,row.id,body);
   }
   service.audit(actor.username,operation,String(row.id),'ok');return {[type]:view(service,get(service,type,row.id),actor,type)};
 }
@@ -246,7 +298,7 @@ function dispatch(service,actor,operation,args,now){
       return db.prepare('INSERT INTO community_notes_v2(author_id,job_id,body,created_at,updated_at) VALUES(?,?,?,?,?)').run(actor.userId,jobId,body,now,now).lastInsertRowid;
     });
   }
-  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1']};}
+  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1','chat-images-v1','chat-mentions-v1']};}
   if(operation==='community.posts.list')return listPosts(service,actor,args);
   if(operation==='community.posts.get'){args=selectFields(args,['id']);return {post:view(service,readablePost(service,actor,args.id),actor,'post')};}
   if(operation==='community.comments.list')return listComments(service,actor,args);
@@ -271,8 +323,16 @@ function dispatch(service,actor,operation,args,now){
     return create(service,actor,operation,args,'comment',now,()=>{readablePost(service,actor,args.postId);return db.prepare('INSERT INTO community_comments_v2(post_id,author_id,body,created_at,updated_at) VALUES(?,?,?,?,?)').run(postId,actor.userId,body,now,now).lastInsertRowid;});
   }
   if(operation==='community.chat.send'){
-    args=selectFields(args,['key','body']);const body=text(args.body,COMMUNITY_LIMITS.chatBody,'消息');
-    return create(service,actor,operation,args,'message',now,()=>db.prepare('INSERT INTO community_chat_v2(author_id,body,created_at,updated_at) VALUES(?,?,?,?)').run(actor.userId,body,now,now).lastInsertRowid);
+    args=selectFields(args,['key','body','image']);const image=chatImage(args.image),body=chatBody(args.body,image);
+    return create(service,actor,operation,args,'message',now,()=>{
+      const messageId=db.prepare('INSERT INTO community_chat_v2(author_id,body,created_at,updated_at) VALUES(?,?,?,?)').run(actor.userId,body,now,now).lastInsertRowid;
+      if(image)db.prepare('INSERT INTO community_chat_images_v2(message_id,type,width,height,size,data) VALUES(?,?,?,?,?,?)').run(messageId,image.type,image.width,image.height,image.data.length,image.data);
+      mention(service,actor.userId,messageId,body);return messageId;
+    });
+  }
+  if(operation==='community.chat.read'){
+    args=selectFields(args,['id']);db.prepare('DELETE FROM community_chat_mentions_v2 WHERE user_id=? AND message_id<=?').run(actor.userId,id(args.id));
+    return {chatMentions:chatMentions(service,actor)};
   }
   for(const [prefix,type] of [['posts','post'],['comments','comment'],['chat','message'],['notes','note']]){
     if(operation===`community.${prefix}.update`)return change(service,actor,operation,args,type,false,now);

@@ -7,7 +7,7 @@ import {DemoService,credential} from './dist/service.js';
 import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
 import {installExecution,executionCall,publicJob,usage,priorityCapable,priorityRankCapable,TERMINAL,pendingJobReason} from './execution.mjs';
 import {MACHINES,validUsername} from './dist/model.js';
-import {installCommunity,communityCall,maintainTaskNotes,announcementState} from './community.mjs';
+import {installCommunity,communityCall,maintainTaskNotes,announcementState,chatMentions,chatImageFile} from './community.mjs';
 import {installMaintenanceState,installMaintenance,maintenanceCall} from './maintenance.mjs';
 import {installFileCampus,fileTicket} from './campus-files.mjs';
 import {installJobNotifications} from './job-notifications.mjs';
@@ -454,8 +454,9 @@ export class PortalService extends DemoService{
     return structuredClone({...state,jobs,jobsTotal,jobsReturned:jobs.length,jobsTruncated:jobs.length<jobsTotal,jobsCompacted:true,
       taskMetadata:{version:1},operationalMaintenance:this.operationalMaintenance?.(principal),
       demo:false,mode:'persistent',gpuqConnected:gpuq.hosts.some(h=>h.gpuq.connected),jobsSimulated:false,executionEnabled:this.executionEnabled===true,
-      execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},announcements:announcementState(this,principal),
+      execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},announcements:announcementState(this,principal),chatMentions:chatMentions(this,principal),
       ...(principal.role==='admin'?{invitations:this.invitations()}:{})});
   }
+  communityImage(token,id){return chatImageFile(this,this.principal(token),id);}
   close(){this.closing=true;for(const admission of this.loginAdmissions?.values()||[])if(admission.issued)this.revokeSession(admission.issued);this.cloudProvider?.clear();clearInterval(this.executionTimer);clearInterval(this.notificationTimer);clearInterval(this.maintenanceTimer);clearInterval(this.transferTimer);this.accounts.close();this.db.close();}
 }

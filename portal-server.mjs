@@ -40,6 +40,7 @@ files['/dataset-upload.js']='dataset-upload.js';
 files['/transfers-ui.js']='transfers-ui.js';files['/transfer-upload.js']='transfer-upload.js';
 files['/cloud-import-ui.js']='cloud-import-ui.js';
 files['/community-ui.js']='community-ui.js';files['/community.css']='community.css';
+files['/chat-content.js']='chat-content.js';files['/chat-compose-ui.js']='chat-compose-ui.js';
 files['/maintenance-ui.js']='maintenance-ui.js';files['/maintenance.css']='maintenance.css';
 files['/task-notes-ui.js']='task-notes-ui.js';files['/submission-keys.js']='submission-keys.js';
 export async function createPortalServer({database,bootstrap,origin,secure=true,statusPath,bridgeSocket,fileBridgeSocket,bridge,notificationConfigPath,fileLanEndpoints=process.env.GPUQ_FILE_LAN_ENDPOINTS||'{}',directUploadOrigins=process.env.GPUQ_DIRECT_UPLOAD_ORIGINS||'[]'}){
@@ -161,6 +162,13 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       if(guide){
         if(guide.redirect){res.writeHead(302,{...headers,Location:guide.redirect});return res.end();}
         const text=await guidePage(guide.chapter,url.origin);res.writeHead(200,{...headers,'Content-Type':mime.html});return res.end(req.method==='HEAD'?undefined:text);
+      }
+      const chatImage=/^\/community\/chat-images\/([1-9][0-9]{0,14})$/.exec(path);
+      if(chatImage){
+        const {bearer,fromCookie}=tokens(req),image=service.communityImage(bearer||fromCookie,chatImage[1]);
+        // A sent picture never changes, so the browser keeps its copy across chat polls.
+        res.writeHead(200,{...headers,'Cache-Control':'private, max-age=2592000, immutable','Content-Type':image.type,'Content-Length':image.data.byteLength,'Content-Security-Policy':"default-src 'none'; sandbox"});
+        return res.end(req.method==='HEAD'?undefined:image.data);
       }
       const file=files[path];if(!file)return json(404,{error:'Not found'});
       inventoryRequest=file==='machines.js';

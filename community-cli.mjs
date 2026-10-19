@@ -82,7 +82,7 @@ export async function runCommunityCommand({positionals,options={},training=[],ca
 
 export function formatCommunityResult(result){
   if(result.acknowledged)return `公告 ${visible(result.id)} 第 ${result.revision} 版已确认。`;
-  const row=item=>`${item.id} · ${item.kind||'消息'}${item.pinned?' · 置顶':''}${item.kind==='announcement'&&item.revision?' · 第 '+item.revision+' 版':''}${item.title?' · '+item.title:''}\n${item.body||''}`;
+  const row=item=>`${item.id} · ${item.kind||'消息'}${item.pinned?' · 置顶':''}${item.kind==='announcement'&&item.revision?' · 第 '+item.revision+' 版':''}${item.title?' · '+item.title:''}\n${item.body||''}${item.image?(item.body?' ':'')+'[图片，请在网页查看]':''}`;
   if(result.deleted)return visible(`内容 ${result.id} 已删除或过期；没有重新发布。`);
   const items=result.posts||result.comments||result.messages||[result.post||result.comment||result.message].filter(Boolean);
   return visible((items.length?items.map(row).join('\n\n'):'暂无内容。')+(result.duplicate?'\n已确认此前提交，未重复发布。':'')+(result.nextCursor?'\n下一页：--cursor '+result.nextCursor:'')+(result.submissionKey?'\n提交键：'+result.submissionKey:''));
