@@ -309,7 +309,7 @@ gpuctl data import-cancel IMPORT_ID
 gpuctl data import-discard IMPORT_ID
 ```
 
-可用 `--project my-project` 选择工作区目标；分享有多个文件时按返回列表加 `--file-id FILE_ID`，提取码用 `--password-code`。过期直链可用 `import-resume IMPORT_ID --source-url HTTPS_LINK` 更新同一文件链接。导入不自动解压或执行文件；取消保留临时文件供继续，discard 清理记录而保留已完成目标。
+可用 `--project my-project` 选择工作区目标；分享有多个文件时按返回列表加 `--file-id FILE_ID`，提取码用 `--password-code`。暂停或取消后用 `import-resume IMPORT_ID` 沿原编号和已传偏移继续，运行中或已完成的导入不会重复启动。过期直链可加 `--source-url HTTPS_LINK` 更新同一文件链接。续传后用 `import-status IMPORT_ID` 查看实际状态和已传字节。导入不自动解压或执行文件；取消保留临时文件供继续，discard 清理记录而保留已完成目标。
 
 ### 云盘文件
 

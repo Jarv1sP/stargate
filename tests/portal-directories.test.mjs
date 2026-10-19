@@ -176,10 +176,13 @@ test('unknown node transfer listings are reported as unknown, rather than an emp
 });
 test('HTTPS cloud imports keep the original target and can be resumed and discarded by another team member',async t=>{
  const f=await fixture(t),key=randomUUID(),requests=[];
- f.setHandler((_host,op,args)=>{if(op==='datasets.import.start'){requests.push(args);return {id:key,state:'DOWNLOADING'};}if(op==='datasets.import.discard')return {discarded:true};});
+ f.setHandler((_host,op,args)=>{if(['datasets.import.start','datasets.import.resume'].includes(op)){requests.push({op,...args});return {id:key,state:op==='datasets.import.resume'?'PENDING':'PAUSED',bytes:2};}if(op==='datasets.import.discard')return {discarded:true};});
  await f.call('cloud.import.start',{key,area:'dataset',dataset:'shared',path:'data.bin',url:'https://example.invalid/file',expectedBytes:4},f.alice);
+ const resumed=await f.call('cloud.import.resume',{operationId:key,url:'https://example.invalid/file?fresh=1'},f.bob);
+ assert.equal(requests[1].op,'datasets.import.resume');assert.equal(requests[1].operationId,key);assert.equal(resumed.state,'PENDING');assert.equal(resumed.bytes,2);
  await f.call('cloud.import.resume',{operationId:key},f.bob);
- assert.equal(requests.length,2);assert.equal(requests[1].dataset,'shared');assert.equal(requests[1].key,key);assert.equal(requests[1].userId,f.bobUser.id);assert.equal(requests[1].expectedBytes,4);
+ assert.equal(requests.length,3);assert.equal(requests[1].dataset,'shared');assert.equal(requests[1].key,key);assert.equal(requests[1].userId,f.bobUser.id);assert.equal(requests[1].expectedBytes,4);
+ assert.equal(requests[1].path,'data.bin');assert.equal(requests[1].url,'https://example.invalid/file?fresh=1');assert.equal(requests[2].url,requests[1].url);
  await f.call('cloud.import.discard',{operationId:key},f.bob);assert.equal(f.service.db.prepare('SELECT count(*) n FROM cloud_downloads').get().n,0);
 });
 test('output preview reads size without deleting files or creating a trash record',async t=>{
