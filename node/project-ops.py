@@ -65,7 +65,7 @@ class ProjectOperations:
         if operation=='projects.quota':
             d=module('local-data');result={'volumes':[]}
             for kind,field in (('workspace','workspacesRoot'),('datasets','datasetsRoot')):
-                row={'kind':kind,'fs':None,'usedBytes':None,'availableBytes':None,'totalBytes':None}
+                row={'kind':kind,'fs':None,'usedBytes':None,'availableBytes':None,'totalBytes':None,'media':None}
                 try:row.update(d.disk_usage(d.root(self.config,field)))
                 except (OSError,ValueError):pass
                 shared=next((volume for volume in result['volumes'] if row['fs'] is not None and volume['fs']==row['fs']),None)

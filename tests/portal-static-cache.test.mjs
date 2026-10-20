@@ -20,5 +20,6 @@ test('static files revalidate to an empty 304 while the page itself is never cac
  // A compressing proxy hands the browser a weak or suffixed tag, which comes back as is.
  assert.equal((await fetch(origin+'/splash.css',{headers:{'If-None-Match':'W/'+tag.replace(/"$/,'-gzip"')}})).status,304);
  assert.equal((await fetch(origin+'/splash.css',{headers:{'If-None-Match':'"0-0"'}})).status,200,'a changed file downloads again');
+ const media=await fetch(origin+'/disk-media.js');assert.equal(media.status,200);assert.match(media.headers.get('content-type'),/javascript/);assert.match(await media.text(),/export function diskLabel/);
  const page=await fetch(origin+'/');assert.equal(page.status,200);assert.equal(page.headers.get('cache-control'),'no-store');assert.equal(page.headers.get('etag'),null);
 });

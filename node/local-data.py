@@ -7,6 +7,7 @@ import re
 import stat
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+SYS_DEV_BLOCK = Path('/sys/dev/block')
 
 def module(name):
     spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
@@ -108,8 +109,23 @@ def size(path,*,partial=False):
         if fd is not None:os.close(fd)
     return {'size':total if readable else None,'complete':complete} if partial else total
 
+def disk_media(path):
+    try:
+        device=os.stat(path).st_dev
+        pending=[SYS_DEV_BLOCK/f'{os.major(device)}:{os.minor(device)}'];seen=set();rotations=set()
+        while pending:
+            disk=pending.pop().resolve(strict=True)
+            if (disk/'partition').exists():disk=disk.parent
+            if disk in seen:continue
+            seen.add(disk)
+            slaves=list((disk/'slaves').iterdir())
+            if slaves:pending.extend(slaves)
+            else:rotations.add((disk/'queue/rotational').read_text().strip())
+        return {'0':'ssd','1':'hdd'}.get(next(iter(rotations))) if len(rotations)==1 else 'mixed' if rotations=={'0','1'} else None
+    except (OSError,RuntimeError,ValueError):return None
+
 def disk_usage(path):
-    row={'fs':None,'totalBytes':None,'usedBytes':None,'availableBytes':None}
+    row={'fs':None,'totalBytes':None,'usedBytes':None,'availableBytes':None,'media':disk_media(path)}
     try:
         v=os.statvfs(path)
         row.update(fs=str(v.f_fsid),totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
@@ -117,9 +133,14 @@ def disk_usage(path):
     return row
 
 def disk_samples(config):
-    result=[]
-    for mount in data_mount_points(config):
-        row={'mountPoint':str(mount),'totalBytes':None,'usedBytes':None,'availableBytes':None}
+    result=[];mounts=data_mount_points(config);roles={mount:[] for mount in mounts}
+    for role,field in (('workspace','workspacesRoot'),('datasets','datasetsRoot')):
+        if not config.get(field):continue
+        root=Path(config[field]).resolve()
+        mount=max((point for point in mounts if root==point or point in root.parents),key=lambda point:len(point.parts),default=None)
+        if mount is not None:roles[mount].append(role)
+    for mount in mounts:
+        row={'mountPoint':str(mount),'totalBytes':None,'usedBytes':None,'availableBytes':None,'media':None,'roles':roles[mount]}
         try:
             row.update(disk_usage(require_data_path(config,mount)))
         except (OSError,ValueError):pass

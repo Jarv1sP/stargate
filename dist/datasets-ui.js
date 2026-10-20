@@ -3,6 +3,7 @@ import {downloadBrowserPath,filePath} from './file-transfer-ui.js';
 import {createTrashUI} from './trash-ui.js';
 import {cloudImportHTML,cloudImportUI} from './cloud-import-ui.js';
 import {transferBytes} from './data-route.js';
+import {diskLabel,diskMediaLabel} from './disk-media.js';
 import {copyHelp} from './copy-help-ui.js';
 import {openSheet,closeSheet,confirmSheet} from './sheet-ui.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -48,11 +49,11 @@ export function datasetsUI(store,toast){
       do{
         const snapshot=(await store.call('storage.snapshot',{machine:id})).machines[0];if(!current())return;
         {const result=snapshot.quota.error?{}:snapshot.quota;
-          // A server whose workspace and datasets share one filesystem has a single SSD and no HDD.
+          // Workspace and datasets on one filesystem share a single measured disk.
           const volume=kind=>result.volumes?.find(row=>row.kind===kind),shared=volume('shared'),datasets=meter.querySelector('[data-volume="datasets"]');
-          meter.querySelector('[data-volume="workspace"]').innerHTML=shared?gaugeDiskHTML('SSD · 工作区与数据集共用',shared):gaugeDiskHTML('SSD',volume('workspace'));
-          datasets.hidden=!!shared;datasets.innerHTML=shared?'':gaugeDiskHTML('HDD',volume('datasets'));fills(meter);
-          find('[data-ds-where]').textContent=shared?' · 在 SSD':' · HDD /datasets';
+          meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML(diskLabel(shared||volume('workspace')||{kind:'workspace'}),shared||volume('workspace'));
+          datasets.hidden=!!shared;datasets.innerHTML=shared?'':gaugeDiskHTML(diskLabel(volume('datasets')||{kind:'datasets'}),volume('datasets'));fills(meter);
+          find('[data-ds-where]').textContent=' · '+diskMediaLabel((shared||volume('datasets'))?.media)+' /datasets';
         }
         if(first||!snapshot.refreshing){
           {const place=find('[data-storage-projects]'),result=snapshot.projects;
@@ -78,7 +79,7 @@ export function datasetsUI(store,toast){
         first=false;await new Promise(resolve=>setTimeout(resolve,1000));
       }while(current());
     }catch(error){if(current()){
-      meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML('SSD');meter.querySelector('[data-volume="datasets"]').hidden=false;meter.querySelector('[data-volume="datasets"]').innerHTML=gaugeDiskHTML('HDD');
+      meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML(diskLabel({kind:'workspace'}));meter.querySelector('[data-volume="datasets"]').hidden=false;meter.querySelector('[data-volume="datasets"]').innerHTML=gaugeDiskHTML(diskLabel({kind:'datasets'}));find('[data-ds-where]').textContent=' · /datasets';
       for(const list of ['projects','datasets'])find(`[data-storage-${list}]`).innerHTML='<p class="storage-empty">未知，请刷新重试。</p>';
       node.dataset.checkedAt='';find('[data-storage-caption]').textContent='统计时间未知';toast(error.message);
     }}finally{if(current()){node.dataset.loading='false';find('[data-storage-refresh]').disabled=false;controls();}}
@@ -95,11 +96,11 @@ export function datasetsUI(store,toast){
   function openDataset(dataset){selected=dataset;void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest',behavior:'smooth'});});}
   function build(machines){
     cloud?.reset();
-    section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML('SSD',null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML('HDD',null,{loading:true})}</div></button>`).join('')}</div>
+    section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML(diskLabel({kind:'workspace'}),null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML(diskLabel({kind:'datasets'}),null,{loading:true})}</div></button>`).join('')}</div>
       <div class="dr-cards">${machines.map(row=>`<article class="dr-machine" data-storage-machine="${esc(row.id)}" hidden>
-        <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · HDD /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
+        <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
         <div class="dr-rows" data-storage-datasets data-dataset-list></div>
-        <div class="dr-toolbar dr-gap"><h2>项目容器 · SSD /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','盘容量包含同盘的其他内容。项目大小统计项目目录，不分摊共享容器镜像；读不到的部分标为至少，完全读不到显示未知。删除可能影响正在运行的任务。')}</div>
+        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','盘容量包含同盘的其他内容。项目大小统计项目目录，不分摊共享容器镜像；读不到的部分标为至少，完全读不到显示未知。删除可能影响正在运行的任务。')}</div>
         <div class="dr-rows" data-storage-projects></div>
       </article>`).join('')}</div>
       <section class="dr-browse" data-dataset-files hidden><div class="dr-toolbar"><h2 class="mono" data-dataset-current></h2><span class="dr-flex"></span><button type="button" class="jr-link" id="dataset-file-up" hidden>← 上一级</button><button type="button" class="jr-link" data-browse-close>收起</button></div><div class="dr-files" data-dataset-file-list></div><button type="button" class="jr-btn ghost" id="dataset-file-more" hidden>下一页</button></section>

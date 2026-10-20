@@ -26,12 +26,12 @@ try{
    if(op==='cloud.auth.disconnect'){cloudConnected=false;return {disconnected:true};}
    if(op==='state')return {principal,state};
    if(op==='logout')return {loggedOut:true};
-   if(op==='storage.snapshot'||op==='storage.refresh'){const checkedAt=new Date().toISOString();return {machines:[{machine,checkedAt,refreshing:false,quota:{volumes:[{kind:'workspace',usedBytes:12,totalBytes:1000,availableBytes:988},{kind:'datasets',usedBytes:20,totalBytes:2000,availableBytes:1980}],checkedAt},datasets:{datasets,checkedAt},projects:{projects,checkedAt}}]};}
+   if(op==='storage.snapshot'||op==='storage.refresh'){const checkedAt=new Date().toISOString();return {machines:[{machine,checkedAt,refreshing:false,quota:{volumes:[{kind:'workspace',media:'ssd',usedBytes:12,totalBytes:1000,availableBytes:988},{kind:'datasets',media:'hdd',usedBytes:20,totalBytes:2000,availableBytes:1980}],checkedAt},datasets:{datasets,checkedAt},projects:{projects,checkedAt}}]};}
    if(op==='projects.list')return {projects,environmentModes:['oci']};
    if(op==='projects.status'&&args.diagnoseNetwork)return {network:{dns:'ok',https:'ok'}};
    if(op==='projects.status')return projects.find(row=>row.project===args.project&&(!args.ownerId||row.ownerId===args.ownerId))||{};
    if(op==='projects.create'){const row={project:args.project,ownerId:owner,ownerName:'成员甲',environmentMode:'oci',lifecycle:{state:'ACTIVE'},git:args.repo?{url:args.repo,branch:'main',commit:'def456'}:null};projects.push(row);return row;}
-   if(op==='projects.quota')return {volumes:[{kind:'workspace',usedBytes:12,totalBytes:1000,availableBytes:988},{kind:'datasets',usedBytes:20,totalBytes:2000,availableBytes:1980}],projectUsage:{size:3,complete:true}};
+   if(op==='projects.quota')return {volumes:[{kind:'workspace',media:'ssd',usedBytes:12,totalBytes:1000,availableBytes:988},{kind:'datasets',media:'hdd',usedBytes:20,totalBytes:2000,availableBytes:1980}],projectUsage:{size:3,complete:true}};
    if(op==='projects.catalog')return {groups:[]};
    if(op==='datasets.list')return {datasets};
    if(op==='files.list')return {entries:args.path==='.'?[{name:'sample.bin',type:'file',size:3}]:[],hasMore:false};

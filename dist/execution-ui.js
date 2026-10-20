@@ -1,4 +1,5 @@
 import {transferBytes} from './data-route.js';
+import {diskLabel} from './disk-media.js';
 import {uploadBrowserFile} from './personal-upload.js';
 import {downloadBrowserPath} from './file-transfer-ui.js';
 import {createJobDiagnostics} from './job-diagnostics-ui.js';
@@ -79,7 +80,7 @@ export function createSubmitSelectionGuard(){
 export function projectDiskQuotaHTML(value){
   const bytes=n=>Number.isFinite(n)?new Intl.NumberFormat('zh-CN',{maximumFractionDigits:1}).format(n/1024**3)+' GiB':'未知';
   const usage=value?.projectUsage,volumes=value?.volumes||[];
-  return (usage?`<p>项目文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${Number.isFinite(usage.size)?transferBytes(usage.size):'未知'}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${row.kind==='shared'?'SSD · 工作区与数据集共用':row.kind==='workspace'?'工作区盘（SSD）':'数据集盘（HDD）'}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
+  return (usage?`<p>项目文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${Number.isFinite(usage.size)?transferBytes(usage.size):'未知'}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${diskLabel(row)}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
 }
 export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,route,onRoute,current=()=>true,onRecoverySupport=()=>{}}={}){
   const check=()=>{signal?.throwIfAborted();if(!current())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');};
@@ -360,7 +361,7 @@ export function executionUI(store,refresh,toast){
     query('#workspace-upload').disabled=!available||locked||output;query('[name=files]').disabled=!available||locked||output;
     query('#workspace-upload').hidden=!!output;query('[name=files]').hidden=!!output;
     query('[name=file-area]').disabled=locked;query('.output-run-fields').hidden=!output;
-    query('#workspace-mode-note').textContent='工作区在 SSD，数据集在 HDD；容器内使用 /workspace、/datasets 和 /outputs。';
+    query('#workspace-mode-note').textContent='容器内使用 /workspace、/datasets 和 /outputs。';
     query('#terminal-mode-note').textContent='容器终端没有 GPU；可管理 /workspace、/datasets，容器内 root 不接触系统盘。';
     if(maintenanceFor(store.data?.operationalMaintenance,machine)){
       for(const selector of ['#terminal-open','#terminal-reconnect','#train-form [type=submit]','#workspace-upload','[name=files]'])query(selector).disabled=true;
@@ -630,7 +631,7 @@ export function executionUI(store,refresh,toast){
         <label><input type="checkbox" name="interactive">GPU 交互终端（申请一次卡，连续运行多个命令）</label>
         <label>训练命令<textarea name="command" rows="3" required spellcheck="false">python train.py</textarea></label>
         <p class="muted">代码、环境、HOME 和输出持续保留；目录自行组织。断开 GPU 终端不释放卡，退出 shell 或取消任务才释放。</p>
-        <div id="training-data-field">训练直接读取共享 HDD <code>/datasets</code>（只读）；终端可在该目录整理数据。</div>
+        <div id="training-data-field">训练直接读取共享 <code>/datasets</code>（只读）；终端可在该目录整理数据。</div>
         <div class="training-advanced">${schedulingFields()}${elasticFields()}${placementFields()}</div><button type="submit" class="button primary">提交训练</button>
       </form></details>`;
       adaptWorkspace();

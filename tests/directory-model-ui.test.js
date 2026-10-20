@@ -52,9 +52,17 @@ test('storage distinguishes lower bounds, unknown and real zero without filling 
  const low=gaugeDiskHTML('HDD',{usedBytes:100,totalBytes:200,availableBytes:50});assert.match(low,/空间不足/);assert.match(low,/data-fill="50"/);
 });
 
-test('shared SSD quota renders once without a phantom HDD',()=>{
- const volume={kind:'shared',fs:'9223372036854775815',usedBytes:100,totalBytes:200,availableBytes:100};
+test('shared HDD quota renders once using measured media',()=>{
+ const volume={kind:'shared',media:'hdd',fs:'9223372036854775815',usedBytes:100,totalBytes:200,availableBytes:100};
  const html=projectDiskQuotaHTML({volumes:[volume],projectUsage:{size:null,complete:false}});
- assert.equal((html.match(/<li>/g)||[]).length,1);assert.match(html,/SSD · 工作区与数据集共用/);assert.match(html,/项目文件用量：未知/);assert.doesNotMatch(html,/HDD/);
- const gauge=gaugeDiskHTML('SSD · 工作区与数据集共用',volume);assert.match(gauge,/SSD · 工作区与数据集共用/);assert.match(gauge,/data-fill="50"/);assert.doesNotMatch(gauge,/HDD/);
+ assert.equal((html.match(/<li>/g)||[]).length,1);assert.match(html,/HDD · 工作区与数据集共用/);assert.match(html,/项目文件用量：未知/);assert.doesNotMatch(html,/SSD/);
+ const gauge=gaugeDiskHTML('HDD · 工作区与数据集共用',volume);assert.match(gauge,/HDD · 工作区与数据集共用/);assert.match(gauge,/data-fill="50"/);assert.doesNotMatch(gauge,/SSD/);
+});
+
+test('quota labels use measured media and unknown media stays a data disk',()=>{
+ for(const [media,label] of [['ssd','SSD'],['hdd','HDD'],['mixed','混合盘'],[null,'数据盘']]){
+  const html=projectDiskQuotaHTML({volumes:[{kind:'workspace',media},{kind:'datasets',media}]});
+  assert.ok(html.includes('工作区 · '+label));assert.ok(html.includes('数据集 · '+label));
+  assert.ok(projectDiskQuotaHTML({volumes:[{kind:'shared',media}]}).includes(label+' · 工作区与数据集共用'));
+ }
 });
