@@ -1,6 +1,10 @@
 /* Workshop is a client of the existing portal, not a second visual system. */
 .sb #page-workshop{min-width:0;container-type:inline-size}
 .sb[data-workshop-theme] .brand-wordmark{color:var(--ink)}
+.sb[data-workshop-theme] #app-topbar{background:var(--bg-1);color:var(--ink)}
+.sb[data-workshop-theme] #room-nav .nav-item{color:var(--ink-2)}
+.sb[data-workshop-theme] #room-nav .nav-item.active{color:var(--ink)}
+.sb[data-workshop-theme] :is(.command-trigger,.guide-top,.sync){color:var(--ink-2);border-color:var(--line-2)}
 .sb .workshop-toolbar{display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin:0 0 24px}
 .sb :is(#page-workshop,#workshop-dialogs) label{display:grid;gap:8px;min-width:0;font-size:14px}
 .sb .workshop-search{flex:1 1 240px}
@@ -51,6 +55,7 @@
 .sb .workshop-widget>.form-error:not([hidden]){margin-bottom:12px;overflow-wrap:anywhere}
 @media(min-width:760px) and (max-width:1160px){.sb #app-topbar .brand{max-width:150px}.sb #room-nav .nav-item{padding-inline:6px;font-size:12px}}
 @media(max-width:759px){
+  .sb[data-workshop-theme] #room-nav{background:var(--bg-1);border-color:var(--line-2)}
   .sb #room-nav{grid-template-columns:repeat(6,minmax(0,1fr))}
   .sb #room-nav .nav-item{font-size:12px;padding-inline:0;white-space:nowrap}
   .sb .workshop-toolbar{gap:12px}

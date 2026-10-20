@@ -5,6 +5,7 @@ import {workshopTestServer,pluginPackage,themePackage} from './workshop-test-ser
 
 test('real HTTP serves only the installed immutable plugin, with frame-specific isolation',async t=>{
   const f=await workshopTestServer();t.after(()=>f.close());
+  const guide=await fetch(f.origin+'/guide/workshop');assert.equal(guide.status,200);assert.match(await guide.text(),/恢复默认/);
   const publish=await f.call(f.alice.token,'workshop.publish',{key:randomUUID(),package:pluginPackage});
   assert.equal(publish.response.status,200);const {item}=publish.body.result;
   const path=f.origin+`/workshop/frame/${item.id}/${item.version}`;
