@@ -24,7 +24,7 @@ gpuctl logs JOB_ID
 gpuctl pull --job JOB_ID model.pt ./model.pt
 ```
 
-SSD 工作区挂在 `/workspace`，HDD 共用数据集挂在 `/datasets`，每个任务的输出独立挂在 `/outputs`。代码用容器里的 git 管理；上传与训练直接使用当前目录。登录的团队成员可以协作操作项目、任务和数据，删除进入 7 天回收站。
+工作区挂在 `/workspace`，共用数据集挂在 `/datasets`，每个任务的输出独立挂在 `/outputs`。代码用容器里的 git 管理；上传与训练直接使用当前目录。登录的团队成员可以协作操作项目、任务和数据，删除进入 7 天回收站。
 
 ## 文档
 

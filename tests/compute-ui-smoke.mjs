@@ -17,7 +17,7 @@ function host(machine,index){
   return {id:machine.id,reachable:index!==2,checkedAt:'2026-10-15T18:00:00Z',gpuq:{connected:true,health:'ok'},
     gpus:Array.from({length:machine.cards},(_,index)=>({index,model:'Fixture GPU',memoryUsedMiB:index<3?4096:0,memoryTotalMiB:8192,utilization:index<3?75:0,temperatureC:42,powerDrawW:100,powerLimitW:350,processesAvailable:index!==3,
       processes:index===0?[{pid:101,name:'python',owner:'fixture-user',memoryUsedMiB:4096,task:own}]:index===1?[{pid:102,memoryUsedMiB:1024,task:own},{pid:103,memoryUsedMiB:3072,task:peer}]:index===2?[{pid:104,memoryUsedMiB:4096,task:peer}]:[]})),
-    disks:(index===0?['ssd','hdd']:['ssd']).map(name=>({mountPoint:'/fixture/'+name,totalBytes:1024**4,usedBytes:256*1024**3,availableBytes:768*1024**3})),
+    disks:(index===0?['ssd','hdd']:['ssd']).map(name=>({mountPoint:'/fixture/'+name,media:index===1?'hdd':name,roles:index===1?['workspace','datasets']:[name==='ssd'?'workspace':'datasets'],totalBytes:1024**4,usedBytes:256*1024**3,availableBytes:768*1024**3})),
     tasks:[{...peer,state:'QUEUED',priority:'normal',gpuCount:2,assignedGpuIndices:[],updatedAt:'2026-10-15T18:00:00Z'}]};
 }
 const browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}});
@@ -107,7 +107,7 @@ try{
       await page.locator('.resource-chassis-bays [data-resource-card="2"]').click();await page.locator('#resource-sheet[open]').waitFor();await page.keyboard.press('Escape');await page.locator('#resource-sheet').waitFor({state:'hidden'});assert.equal(await page.locator('.resource-chassis-bays [data-resource-card="2"]').evaluate(node=>document.activeElement===node),true);
       await page.locator('[data-resource-select="fixture-node-six"]').click();assert.equal(await page.locator('.resource-chassis-bays button').count(),6);
       assert.equal(await page.locator('[data-resource-metric=utilization]').getAttribute('aria-pressed'),'true');assert.equal(await page.locator('.resource-disks .resource-disk').count(),1);
-      assert.match(await page.locator('.resource-disks').innerText(),/SSD · 工作区与数据集共用/);assert.doesNotMatch(await page.locator('.resource-disks').innerText(),/HDD/);
+      assert.match(await page.locator('.resource-disks').innerText(),/HDD · 工作区与数据集共用/);assert.doesNotMatch(await page.locator('.resource-disks').innerText(),/SSD/);
       await page.screenshot({path:join(shots,`compute-${role}-${width}-single-disk.png`),fullPage:true,animations:'disabled'});
       await page.locator('[data-resource-select="fixture-node-unknown"]').click();assert.equal(await page.locator('.resource-chassis-bays .resource-tower-bar.unknown').count(),1);assert.match(await page.locator('.resource-disks').innerText(),/未知/);
       await page.locator('.resource-chassis-bays button').click();await page.locator('#resource-sheet[open]').waitFor();await page.evaluate(()=>window.leave());await page.locator('#resource-sheet').waitFor({state:'hidden'});

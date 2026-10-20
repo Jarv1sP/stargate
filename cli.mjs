@@ -9,6 +9,7 @@ import {runCloudFiles} from './client-cloud-files.mjs';
 import {runCommunityCommand,formatCommunityResult,communityJSON,showCLIAnnouncements,communityHelp} from './community-cli.mjs';
 import {watchJob} from './job-watch.mjs';
 import {progressText,jobTimingText} from './dist/job-progress.js';
+import {diskLabel} from './dist/disk-media.js';
 import {elasticAllocation,allocationLabel,gpuPlacement} from './dist/gpu-allocation.js';
 import {displayName,taskDescription} from './dist/task-metadata.js';
 import {commandPost} from './client-http.mjs';
@@ -751,7 +752,7 @@ ${result.project ? "当前项目：" + result.project : "未选择项目；可�
   }
   if (command === "project" && positionals[1] === "quota") {
     const bytes=value=>Number.isFinite(value)?value.toLocaleString('en-US')+' B':'未知',usage=result.projectUsage;
-    for (const row of result.volumes||[])console.log(`${row.kind==='shared'?'SSD · 工作区与数据集共用':row.kind==='workspace'?'工作区盘（SSD）':'数据集盘（HDD）'}\n  已用 ${bytes(row.usedBytes)} / 总量 ${bytes(row.totalBytes)}；可用 ${bytes(row.availableBytes)}`);
+    for (const row of result.volumes||[])console.log(`${diskLabel(row)}\n  已用 ${bytes(row.usedBytes)} / 总量 ${bytes(row.totalBytes)}；可用 ${bytes(row.availableBytes)}`);
     if(usage)console.log(`项目 ${usage.project} 文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${bytes(usage.size)}`);
     return;
   }

@@ -146,7 +146,7 @@ class ProjectContract(unittest.TestCase):
 
     def test_disk_samples_use_private_mounts_and_report_missing_without_zero(self):
         samples=self.data.disk_samples(self.config);self.assertEqual(len(samples),1)
-        self.assertIn('availableBytes',samples[0]);self.assertEqual(samples[0]['mountPoint'],str(self.base))
+        self.assertEqual(samples[0]['roles'],['workspace','datasets']);self.assertIn('media',samples[0]);self.assertIn('availableBytes',samples[0]);self.assertEqual(samples[0]['mountPoint'],str(self.base))
         with patch('os.statvfs',side_effect=OSError('offline')):self.assertIsNone(self.data.disk_samples(self.config)[0]['availableBytes'])
 
     def test_four_real_nvidia_cdi_mount_sets_accept_only_the_assigned_gpu(self):

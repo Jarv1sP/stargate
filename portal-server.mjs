@@ -34,6 +34,7 @@ const escapeHTML=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 files['/guide.css']='guide.css';files['/guide.js']='guide.js';
 files['/datasets-ui.js']='datasets-ui.js';
 files['/data-route.js']='data-route.js';
+files['/disk-media.js']='disk-media.js';
 files['/personal-upload.js']='personal-upload.js';
 files['/datasets.css']='datasets.css';
 files['/dataset-upload.js']='dataset-upload.js';

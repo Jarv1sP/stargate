@@ -71,14 +71,23 @@ test('mixed ownership only paints the memory supported by my process evidence wh
   assert.match(render({gpus:[gpu(0,{processes:[{task:{id:'mine',name:'my task'}}]}),gpu(1)]}),/class="resource-fill-own"[^>]*width="100"/);
 });
 test('disks follow observed inventory, merge known filesystems and keep missing samples unknown',()=>{
-  const disk={mountPoint:'/fixture/ssd',totalBytes:1024**4,usedBytes:256*1024**3,availableBytes:768*1024**3};
-  const single=render({disks:[disk]});assert.equal((single.match(/class="resource-disk /g)||[]).length,1);assert.match(single,/SSD · 工作区与数据集共用/);assert.doesNotMatch(single,/数据集 HDD/);
+  const disk={mountPoint:'/fixture/ssd',media:'hdd',roles:['workspace','datasets'],totalBytes:1024**4,usedBytes:256*1024**3,availableBytes:768*1024**3};
+  const single=render({disks:[disk]});assert.equal((single.match(/class="resource-disk /g)||[]).length,1);assert.match(single,/HDD · 工作区与数据集共用/);assert.doesNotMatch(single,/SSD/);
   assert.equal((render({disks:[disk,{...disk,mountPoint:'/fixture/hdd'}]}).match(/class="resource-disk /g)||[]).length,2);
   assert.equal((render({disks:[{...disk,filesystem:'shared'},{...disk,mountPoint:'/fixture/datasets',filesystem:'shared'}]}).match(/class="resource-disk /g)||[]).length,1);
   const unknown=render({disks:[{mountPoint:'/fixture/ssd',totalBytes:null,usedBytes:null,availableBytes:null}]});assert.match(unknown,/resource-disk unknown/);assert.match(unknown,/可用 未知/);assert.doesNotMatch(unknown,/可用 0/);
   assert.match(render(),/数据盘读数未知/);
   assert.match(render({disks:[{...disk,availableBytes:63*1024**3}]}),/空间不足，低于 64 GiB/);
   assert.doesNotMatch(render({disks:[{...disk,availableBytes:64*1024**3}]}),/空间不足/);
+});
+test('disk labels use roles and measured media even when the mount name says otherwise',()=>{
+  for(const [media,label] of [['ssd','SSD'],['hdd','HDD'],['mixed','混合盘'],[null,'数据盘']]){
+    const disk={mountPoint:'/fixture/ssd-hdd',media,roles:['workspace'],totalBytes:1024**4,usedBytes:0,availableBytes:1024**4};
+    const html=render({disks:[disk]});assert.ok(html.includes('工作区 · '+label));assert.doesNotMatch(html,/共用/);
+    assert.ok(render({disks:[{...disk,roles:['datasets']}]}).includes('数据集 · '+label));
+    assert.ok(render({disks:[{...disk,roles:['workspace','datasets']}]}).includes(label+' · 工作区与数据集共用'));
+  }
+  assert.match(render({disks:[{mountPoint:'/fixture/ssd',media:null,roles:[]}]}),/resource-disk-label">数据盘</);
 });
 test('all cards stay inspectable with no personal quota and selected drawer contains only that card processes',()=>{
   const html=render({gpus:[gpu(0,{processes:[{pid:123,memoryUsedMiB:1024,task:{id:'peer',name:'peer task'}}]}),gpu(1)],selectedGPU:1});

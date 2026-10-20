@@ -8,6 +8,7 @@ f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 case=unittest.TestCase();f.DirectoryContract.setUp(case)
 try:
     ops=f.module('project-ops').ProjectOperations(SimpleNamespace(CONFIG=case.config,ROOT=Path(case.config['root'])))
+    data=f.module('local-data');ops.process.__globals__['module']=lambda name:data if name=='local-data' else f.module(name)
     for owner,project in [('fixture-member','vision'),('builtin-admin','render')]:
         ops.store.create(owner,project);code=ops.store.dev_paths(owner,project)['code'];(code/'train.py').write_bytes(b'print("training")\n');(code/'partial').mkdir();(code/'partial'/'hidden').write_bytes(b'unknown bytes')
     records=Path(case.config['root'],'dataset-uploaders');records.mkdir()
@@ -25,7 +26,7 @@ try:
             available=(32 if machine=='gpu-3' and workspace else 614 if workspace else 8*1024)*GiB
             return SimpleNamespace(f_blocks=total,f_frsize=1,f_bfree=available,f_bavail=available,f_fsid=1 if workspace else 2)
         try:
-            with patch('os.open',opened),patch('os.statvfs',capacity):
+            with patch('os.open',opened),patch('os.statvfs',capacity),patch.object(data,'disk_media',side_effect=lambda path:'hdd' if machine=='gpu-2' or str(path)==case.config['datasetsRoot'] else 'ssd'):
                 if operation=='datasets.list':result=case.files.datasets(case.config)
                 elif operation in ('files.list','files.get','files.stat'):result=case.files.process(case.config,operation,args)
                 elif operation=='projects.status':result=ops.store.status(args.get('ownerId',args.get('userId')),args['project'])

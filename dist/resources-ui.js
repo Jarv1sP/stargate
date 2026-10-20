@@ -2,6 +2,7 @@ import {priorityLabel,taskIdentityHTML,nativeOwnerLabel} from './execution-ui.js
 import {revealSheet,dismissSheet,reducedMotion,captureObject,sharedObject,segPill} from './motion-ui.js';
 import {resourceOrbits} from './resource-orbits.js';
 import {transferBytes} from './data-route.js';
+import {diskLabel} from './disk-media.js';
 import {JOB_TERMINAL,progressPercent,progressText,remainingTime,remainingText} from './job-progress.js';
 import {maintenanceFor,maintenanceTime,maintenanceInfoHTML} from './maintenance-state.js';
 import {serverIdHTML,personalQuotaReadout,escapeUI as esc} from './workbench-ui.js';
@@ -122,8 +123,8 @@ function disksHTML(view){
     if(disks.some(row=>disk.filesystem!=null&&disk.filesystem!==''&&row.filesystem===disk.filesystem||disk.mountPoint&&row.mountPoint===disk.mountPoint))continue;
     disks.push(disk);
   }
-  return `<section class="resource-disks" aria-label="数据盘"><h3>${disks.length===1?'数据盘':disks.length?disks.length+' 块数据盘':'数据盘'}</h3>${disks.length?disks.map((disk,index)=>{
-    const label=disks.length===1?'SSD · 工作区与数据集共用':/ssd/i.test(disk.mountPoint)?'工作区 SSD':/hdd/i.test(disk.mountPoint)?'数据集 HDD':'数据盘 '+(index+1);
+  return `<section class="resource-disks" aria-label="数据盘"><h3>${disks.length===1?'数据盘':disks.length?disks.length+' 块数据盘':'数据盘'}</h3>${disks.length?disks.map(disk=>{
+    const label=diskLabel(disk);
     const measured=view.fresh&&known(disk.usedBytes)&&known(disk.availableBytes)&&known(disk.totalBytes)&&disk.totalBytes>0,low=measured&&disk.availableBytes<64*1024**3;
     return `<div class="resource-disk ${measured?'measured':'unknown'}${low?' low':''}"><div class="resource-disk-label">${esc(label)}<span>${view.fresh?'':'上次采样 · '}可用 ${diskBytes(measured?disk.availableBytes:null)} / ${diskBytes(measured?disk.totalBytes:null)}</span></div><div class="resource-disk-bar" role="img" aria-label="${esc(label)} · 已用 ${diskBytes(measured?disk.usedBytes:null)} · 可用 ${diskBytes(measured?disk.availableBytes:null)}">${measured?`<i data-resource-disk-level="${Math.min(100,disk.usedBytes/disk.totalBytes*100)}"></i>`:''}</div>${low?'<p>空间不足，低于 64 GiB</p>':''}</div>`;
   }).join(''):'<p class="muted">数据盘读数未知</p>'}</section>`;

@@ -1,5 +1,5 @@
 """Disk readings are independent of partial directory-size observations."""
-import importlib.util,os,unittest
+import importlib.util,os,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -24,7 +24,7 @@ class StorageUsage(unittest.TestCase):
         with patch('os.statvfs',return_value=v) as read,patch('os.scandir',side_effect=AssertionError('quota scanned files')):
             result=ops.process('projects.quota',{'userId':'alice'})
         self.assertEqual([str(c.args[0]) for c in read.call_args_list],[self.config['workspacesRoot'],self.config['datasetsRoot']])
-        self.assertEqual(result,{'volumes':[{'kind':'shared','fs':str(v.f_fsid),'totalBytes':4096000,'usedBytes':2457600,'availableBytes':1433600}]})
+        self.assertEqual(result,{'volumes':[{'kind':'shared','fs':str(v.f_fsid),'totalBytes':4096000,'usedBytes':2457600,'availableBytes':1433600,'media':self.data.disk_media(self.config['workspacesRoot'])}]})
 
     def test_equal_capacity_disks_keep_distinct_filesystem_ids(self):
         ops=self.ops();disks=[SimpleNamespace(f_blocks=100,f_bfree=50,f_bavail=40,f_frsize=4096,f_fsid=fs) for fs in (11,12)]
@@ -44,7 +44,15 @@ class StorageUsage(unittest.TestCase):
         with patch('os.statvfs',return_value=v):result=ops.process('projects.quota',{'userId':'alice'})
         self.assertEqual([(row['kind'],row['fs']) for row in result['volumes']],[('shared','0')])
         with patch('os.statvfs',side_effect=OSError('offline')):result=ops.process('projects.quota',{'userId':'alice'})
-        self.assertEqual(result['volumes'],[{'kind':kind,'fs':None,'totalBytes':None,'usedBytes':None,'availableBytes':None} for kind in ('workspace','datasets')])
+        self.assertEqual(result['volumes'],[{'kind':kind,'fs':None,'totalBytes':None,'usedBytes':None,'availableBytes':None,'media':self.data.disk_media(self.config[field])} for kind,field in (('workspace','workspacesRoot'),('datasets','datasetsRoot'))])
+
+    def test_quota_carries_measured_media_for_separate_and_shared_volumes(self):
+        ops=self.ops();data=f.module('local-data');original=ops.process.__globals__['module']
+        with patch.dict(ops.process.__globals__,module=lambda name:data if name=='local-data' else original(name)),patch.object(data,'disk_media',side_effect=['ssd','hdd']):
+            with patch('os.statvfs',side_effect=[SimpleNamespace(f_blocks=100,f_bfree=50,f_bavail=40,f_frsize=4096,f_fsid=fs) for fs in (11,12)]):
+                self.assertEqual([row['media'] for row in ops.process('projects.quota',{})['volumes']],['ssd','hdd'])
+            with patch.object(data,'disk_media',return_value='hdd'):
+                self.assertEqual(ops.process('projects.quota',{})['volumes'][0]['media'],'hdd')
 
     def test_one_unavailable_disk_keeps_the_other_reading(self):
         ops=self.ops();v=SimpleNamespace(f_blocks=100,f_bfree=50,f_bavail=40,f_frsize=4096,f_fsid=12)
@@ -134,5 +142,54 @@ finally:case.doCleanups()
             reply,priority=map(json.loads,result.stdout.splitlines());self.assertTrue(reply['ok'],reply)
             self.assertEqual(priority['nice'],19 if scan else os.getpriority(os.PRIO_PROCESS,0))
             if scan:self.assertEqual(priority['io'],'idle')
+
+class DiskMedia(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.base=Path(self.tmp.name)
+        self.data=f.module('local-data');self.sys=self.base/'sys/dev/block';self.sys.mkdir(parents=True)
+        self.data.SYS_DEV_BLOCK=self.sys
+        device=os.stat(self.base).st_dev;self.link=self.sys/f'{os.major(device)}:{os.minor(device)}'
+
+    def disk(self,name,rotational):
+        disk=self.base/'sys/devices'/name;(disk/'slaves').mkdir(parents=True);(disk/'queue').mkdir()
+        (disk/'queue/rotational').write_text(str(rotational));return disk
+
+    def mounted(self,disk):
+        self.link.unlink(missing_ok=True);self.link.symlink_to(disk,target_is_directory=True)
+        return self.data.disk_usage(self.base)['media']
+
+    def test_sata_nvme_and_partition_use_physical_rotation(self):
+        for name,rotation,media in [('sda',1,'hdd'),('nvme0n1',0,'ssd')]:
+            with self.subTest(name=name):
+                disk=self.disk(name,rotation);self.assertEqual(self.mounted(disk),media)
+                partition=disk/(name+'p1');partition.mkdir();(partition/'partition').write_text('1')
+                self.assertEqual(self.mounted(partition),media)
+
+    def test_lvm_and_md_follow_all_slaves_and_report_mixed_media(self):
+        a=self.disk('sda',0);b=self.disk('sdb',0);md=self.disk('md0',0);lvm=self.disk('dm-0',0)
+        (md/'slaves/sda1').symlink_to(a);(md/'slaves/sdb1').symlink_to(b);(lvm/'slaves/md0').symlink_to(md)
+        self.assertEqual(self.mounted(lvm),'ssd')
+        (b/'queue/rotational').write_text('1');self.assertEqual(self.mounted(lvm),'mixed')
+        (a/'queue/rotational').write_text('1');self.assertEqual(self.mounted(lvm),'hdd')
+        (b/'queue/rotational').unlink();self.assertIsNone(self.mounted(lvm))
+
+    def test_unavailable_device_or_rotation_stays_unknown(self):
+        self.assertIsNone(self.data.disk_usage(self.base)['media'])
+        disk=self.disk('unknown','?');self.assertIsNone(self.mounted(disk))
+        (disk/'queue/rotational').unlink();self.assertIsNone(self.mounted(disk))
+
+    def test_samples_assign_roles_to_configured_mounts_without_path_name_guesses(self):
+        workspace=self.base/'hdd-named';dataset=self.base/'ssd-named';other=self.base/'other'
+        for mount in (workspace,dataset,other):mount.mkdir()
+        self.mounted(self.disk('sda',1))
+        config={'dataMountPoints':[str(self.base),str(workspace),str(dataset),str(other)],'workspacesRoot':str(workspace/'projects'),'datasetsRoot':str(dataset/'data')}
+        with patch.object(self.data,'require_data_path',side_effect=lambda _,path:path):
+            samples=self.data.disk_samples(config)
+            self.assertEqual([row['roles'] for row in samples],[[],['workspace'],['datasets'],[]])
+            self.assertTrue(all(row['media']=='hdd' for row in samples))
+            config['datasetsRoot']=str(workspace/'data')
+            self.assertEqual(self.data.disk_samples(config)[1]['roles'],['workspace','datasets'])
+            with patch('os.statvfs',side_effect=OSError('offline')):
+                self.assertTrue(all(row['availableBytes'] is None for row in self.data.disk_samples(config)))
 
 if __name__=='__main__':unittest.main()
