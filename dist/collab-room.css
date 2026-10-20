@@ -98,3 +98,31 @@
 .sb .mention-dialog footer{flex:none;display:flex;justify-content:flex-end;gap:10px;padding:0;border:0;margin:0}
 .sb .mention-dialog button{min-height:44px;min-width:88px}
 @media (max-width:479px){.sb .mention-dialog{padding:18px}.sb .mention-dialog footer{display:grid;grid-template-columns:1fr 1fr}.sb .mention-dialog footer button{min-width:0}.sb #mention-open{grid-column:1/-1;order:-1}}
+/* Private chat rooms: a switcher under the chat header and a members dialog. */
+.sb #page-community .chat-topline-actions{display:flex;align-items:center;gap:2px;flex:none}
+.sb #page-community #chat-room-members{min-height:32px;height:32px;border:0;background:none;color:var(--ink-3);font-size:12px;padding:0 6px}
+.sb #page-community #chat-room-members:hover{color:#F2F2EF}
+.sb #page-community #chat-room-private{margin-left:8px;font-size:11px;white-space:nowrap;flex:none}
+.sb #page-community .chat-topline>div{min-width:0}
+.sb #page-community #chat-room-title{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb #page-community .chat-rooms{display:flex;gap:8px;overflow-x:auto;padding:8px 12px;border-bottom:1px solid var(--line-2);scrollbar-width:none;flex:none}
+.sb #page-community .chat-rooms[hidden]{display:none}
+.sb #page-community .chat-room{flex:none;min-height:34px;height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--line-2);background:var(--bg-2);color:var(--ink-2);font-size:13px;white-space:nowrap}
+.sb #page-community .chat-room[aria-selected=true]{background:#F2F2EF;color:#0A0B0D;border-color:transparent}
+.sb #page-community .chat-room-new{border-style:dashed;background:none}
+.sb #page-community .chat-room-mention{margin-left:6px;font-size:11px;font-weight:600}
+.sb .chat-room-dialog .modal-head h2{margin:0}
+.sb .chat-room-member-list{list-style:none;margin:0 0 20px;padding:0}
+.sb .chat-room-member-list[hidden]{display:none}
+.sb .chat-room-member-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:48px;border-bottom:1px solid var(--line)}
+.sb .chat-room-member{display:flex;align-items:center;gap:8px;min-width:0;overflow-wrap:anywhere;font-size:14px}
+.sb .chat-room-member .community-tag{flex:none}
+.sb .chat-room-member-actions{display:flex;gap:4px;flex:none}
+.sb .chat-room-member-actions .community-text-button{min-height:40px}
+.sb #chat-room-invite{border:0;margin:0;padding:0;min-width:0}
+.sb #chat-room-invite legend{font-size:13px;color:var(--ink-2);margin:0 0 8px;padding:0}
+.sb .chat-room-candidates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px;max-height:240px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--line-2);border-radius:8px;padding:6px 12px}
+.sb .chat-room-dialog .chat-room-candidates label{display:flex;align-items:center;gap:8px;min-height:44px;min-width:0;overflow-wrap:anywhere;font-size:14px;color:var(--ink)}
+.sb .chat-room-candidates input{flex:none;width:18px;height:18px;margin:0;accent-color:var(--ink)}
+.sb #chat-room-error:empty{display:none}
+@media (max-width:479px){.sb .chat-room-candidates{grid-template-columns:minmax(0,1fr)}.sb .chat-room-member-list li{flex-wrap:wrap;padding:6px 0}}

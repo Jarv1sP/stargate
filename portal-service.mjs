@@ -355,7 +355,7 @@ export class PortalService extends DemoService{
     if(reads.has(operation))return this.remoteRead(token,operation,args,options);
     if(operation.startsWith('community.')){
       const run=()=>{const principal=this.principal(token);return {result:communityCall(this,principal,operation,args),principal};};
-      return new Set(['community.info','community.posts.list','community.posts.get','community.comments.list','community.chat.list','community.chat.mentions','community.notes.list','community.announcements.pending']).has(operation)?run():this.enqueue(run);
+      return new Set(['community.info','community.posts.list','community.posts.get','community.comments.list','community.chat.list','community.chat.mentions','community.rooms.list','community.notes.list','community.announcements.pending']).has(operation)?run():this.enqueue(run);
     }
     if(operation.startsWith('maintenance.')){
       const principal=this.principal(token);return Promise.resolve(maintenanceCall(this,principal,operation,args)).then(result=>({result,principal:this.principal(token)}));
