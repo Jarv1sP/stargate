@@ -51,18 +51,18 @@ async function open(width,name){
   await page.waitForTimeout(100);
   return {page,errors};
 }
-const heads=page=>page.locator('.chat-room-head');
-const roomWindow=(page,id)=>page.locator(`.chat-room-window[data-room-id="${id}"]`);
-const roomHead=(page,id)=>roomWindow(page,id).locator('.chat-room-head');
+const chips=page=>page.locator('.chat-room[role=tab]');
+const roomChip=(page,id)=>page.locator(`.chat-room[data-room-id="${id}"]`);
 const bodies=page=>page.locator('#community-messages .community-body').allTextContents();
 const fits=async page=>{assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'no sideways page scroll');};
 async function createRoom(page,name,invited=[]){
-  await page.locator('.chat-room-create').click();const dialog=page.locator('.chat-room-dialog');await dialog.waitFor({state:'visible'});
+  await page.locator('.chat-room-new').click();const dialog=page.locator('.chat-room-dialog');await dialog.waitFor({state:'visible'});
   await dialog.locator('[name=name]').fill(name);
   for(const who of invited)await dialog.locator('label',{hasText:who}).locator('[name=invite]').check();
   await dialog.locator('#chat-room-submit').click();await dialog.waitFor({state:'hidden'});
-  await page.waitForFunction(name=>document.querySelector('.chat-room-head[aria-expanded=true] .chat-room-name')?.textContent===name,name);
-  return page.locator('.chat-room-window.expanded').getAttribute('data-room-id');
+  await page.waitForFunction(name=>document.querySelector('.chat-room[aria-selected=true] .chat-room-name')?.textContent===name,name);
+  assert.equal(await page.locator('#chat-room-title').textContent(),name);
+  return page.locator('.chat-room[aria-selected=true]').getAttribute('data-room-id');
 }
 async function settings(page){await page.locator('#chat-room-settings').click();const dialog=page.locator('.chat-room-dialog');await dialog.waitFor({state:'visible'});return dialog;}
 async function shot(page,width,state){await fits(page);await page.screenshot({path:join(shots,`room-${state}-${width}.png`),animations:'disabled'});}
@@ -72,11 +72,13 @@ try{
     for(const table of ['community_chat_v2','community_chat_images_v2','community_chat_mentions_v2','community_rooms_v2','community_room_members_v2','community_room_messages_v2'])service.db.exec('DELETE FROM '+table);
     await service.invoke(token(actors.carol),'community.chat.send',{key:randomUUID(),body:'实验室里大家好'});
     const boss=await open(width,'owner'),page=boss.page;
-    assert.deepEqual(await heads(page).allTextContents(),['实验室聊天']);assert.equal(await roomHead(page,'').getAttribute('aria-expanded'),'true');
-    assert.equal(await page.locator('#community-chat>.chat-topline h3').textContent(),'聊天');assert.equal(await page.locator('#chat-room-tools').isVisible(),false);
-    await page.evaluate(()=>{window.originalBody=document.querySelector('#chat-room-body');window.originalInput=document.querySelector('#community-chat-body');});
+    assert.deepEqual(await chips(page).allTextContents(),['实验室聊天']);assert.equal(await roomChip(page,'').getAttribute('aria-selected'),'true');
+    assert.equal(await page.locator('#chat-room-title').textContent(),'实验室聊天');assert.equal(await page.locator('#chat-room-settings').isVisible(),false);
+    assert.equal(await page.locator('#chat-room-private').isVisible(),false);
     const first=await createRoom(page,'东方的太阳',['爱丽丝','鲍勃']);
-    assert.equal(await roomHead(page,'').getAttribute('aria-expanded'),'false');assert.equal(await page.locator('.chat-room-head[aria-expanded=true]').count(),1);
+    assert.equal(await roomChip(page,'').getAttribute('aria-selected'),'false');assert.equal(await page.locator('.chat-room[aria-selected=true]').count(),1);
+    assert.equal(await page.locator('#chat-room-private').isVisible(),true);assert.equal(await page.locator('#chat-room-settings').isVisible(),true);
+    assert.equal(await page.locator('#chat-room-title').locator('..').locator('[data-copy-help]').isVisible(),true,'chat help stays visible in private rooms');
     assert.deepEqual(await bodies(page),[],'a new room starts empty');
     const input=page.locator('#community-chat-body');await input.click();await input.pressSequentially('@');
     await page.locator('.chat-mention-list').waitFor({state:'visible'});
@@ -88,48 +90,51 @@ try{
     await dialog.locator('li',{hasText:'爱丽丝'}).getByRole('button',{name:'设为管理员'}).click();
     await dialog.locator('li',{hasText:'爱丽丝'}).locator('.community-tag',{hasText:'管理员'}).waitFor();
     await dialog.locator('[name=name]').fill('东方的新太阳');await dialog.locator('#chat-room-rename').click();
-    await page.waitForFunction(id=>document.querySelector(`[data-room-id="${id}"] .chat-room-name`).textContent==='东方的新太阳',first);
+    await page.waitForFunction(()=>document.querySelector('#chat-room-title').textContent==='东方的新太阳');
+    assert.equal(await roomChip(page,first).locator('.chat-room-name').textContent(),'东方的新太阳');
     await dialog.locator('[name=name]').fill(' 东方的晨光 ');await dialog.locator('[name=name]').press('Enter');
-    await page.waitForFunction(id=>document.querySelector(`[data-room-id="${id}"] .chat-room-name`).textContent==='东方的晨光',first);
+    await page.waitForFunction(()=>document.querySelector('#chat-room-title').textContent==='东方的晨光');
+    assert.equal(await roomChip(page,first).locator('.chat-room-name').textContent(),'东方的晨光');
     assert.equal(await dialog.locator('#chat-room-error').textContent(),'');
     assert.equal(await dialog.locator('#chat-room-delete').isVisible(),true);
     const box=await dialog.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width,'the dialog fits the screen');
     await shot(page,width,'owner-settings');await dialog.locator('.modal-head [data-room-close]').click();
-    await shot(page,width,'expanded');
-    await input.fill('草稿保持');await roomHead(page,first).click();
-    assert.equal(await page.locator('.chat-room-head[aria-expanded=true]').count(),0);assert.equal(await page.locator('#chat-room-body').isVisible(),false);
-    assert.equal(await page.evaluate(()=>window.community.chatOpen()),false);
-    const paused=await page.evaluate(()=>calls.length);await page.waitForTimeout(6000);assert.equal(await page.evaluate(()=>calls.length),paused,'collapsed rooms stop all chat polling');
-    await shot(page,width,'collapsed');
-    // Real DOM elements and the draft survive both collapse and room switches.
-    await page.evaluate(id=>window.community.showChat(id),first);assert.equal(await roomHead(page,first).getAttribute('aria-expanded'),'true');assert.equal(await input.inputValue(),'草稿保持');
-    for(let index=0;index<8;index++)await createRoom(page,index===7?'很长的聊天室名称'.repeat(3).slice(0,30):'更多聊天室 '+(index+1));
-    assert.equal(await heads(page).count(),10);assert.equal(await page.locator('.chat-room-head[aria-expanded=true]').count(),1);
-    assert.equal(await input.inputValue(),'草稿保持');
-    assert.equal(await page.evaluate(()=>window.originalBody===document.querySelector('#chat-room-body')&&window.originalInput===document.querySelector('#community-chat-body')),true);
-    assert.equal(await page.locator('#chat-room-body').count(),1);
-    for(const head of await heads(page).all()){
-      await head.scrollIntoViewIfNeeded();const bounds=await head.boundingBox();assert.ok(bounds.height>=44&&bounds.x>=0&&bounds.x+bounds.width<=width);
-      assert.equal(await head.locator('.chat-room-name').evaluate(node=>getComputedStyle(node).whiteSpace),'nowrap');
-    }
-    if(width>=900)assert.ok((await page.locator('.chat-room-window.expanded').boundingBox()).height>=300);
-    await page.locator('.chat-room-window.expanded').scrollIntoViewIfNeeded();await shot(page,width,'many');
-    await page.emulateMedia({reducedMotion:'reduce'});
-    const animations=await page.evaluate(id=>{document.querySelector(`[data-room-id="${id}"] .chat-room-head`).click();return document.querySelector('#chat-room-body').getAnimations().length;},first);
-    assert.equal(animations,0);assert.equal(await page.locator('.chat-room-chevron').first().evaluate(node=>getComputedStyle(node).transitionDuration),'0s');
-    await page.emulateMedia({reducedMotion:'no-preference'});
-    await roomHead(page,first).click();
-    assert.ok(await page.evaluate(id=>{document.querySelector(`[data-room-id="${id}"] .chat-room-head`).click();return document.querySelector('#chat-room-body').getAnimations().length;},first)>0,'normal expansion uses jr-rise');
-    await input.fill('');await roomHead(page,'').click();
+    await shot(page,width,'selected-private');
+    await roomChip(page,'').click();
     await page.waitForFunction(()=>[...document.querySelectorAll('#community-messages .community-body')].map(n=>n.textContent).join()==='实验室里大家好');
-    assert.equal(await page.locator('#chat-room-tools').isVisible(),false);await fits(page);
+    assert.equal(await page.locator('#chat-room-title').textContent(),'实验室聊天');assert.equal(await page.locator('#chat-room-settings').isVisible(),false);assert.equal(await page.locator('#chat-room-private').isVisible(),false);
+    assert.equal(await page.evaluate(()=>window.community.chatOpen()),true);
+    await page.evaluate(id=>window.community.showChat(id),first);assert.equal(await roomChip(page,first).getAttribute('aria-selected'),'true');
+    await page.waitForFunction(()=>document.querySelector('#community-messages .community-body')?.textContent.includes('欢迎来到东方的太阳'));
+    let last;
+    const longName='很长的聊天室名称'.repeat(3).slice(0,30);
+    for(let index=0;index<8;index++)last=await createRoom(page,index===7?longName:'更多聊天室 '+(index+1));
+    assert.equal(await chips(page).count(),10);assert.equal(await page.locator('.chat-room[aria-selected=true]').count(),1);
+    await roomChip(page,'').click();await roomChip(page,last).click();
+    const row=await page.locator('#chat-rooms').evaluate(node=>{
+      const rect=node.getBoundingClientRect(),buttons=[...node.children].map(button=>button.getBoundingClientRect()),chosen=node.querySelector('[aria-selected=true]').getBoundingClientRect();
+      return {scrollWidth:node.scrollWidth,clientWidth:node.clientWidth,height:rect.height,tops:buttons.map(b=>b.top),buttonHeight:buttons[0].height,left:rect.left,right:rect.right,chosenLeft:chosen.left,chosenRight:chosen.right};
+    });
+    assert.ok(row.scrollWidth>row.clientWidth,'many rooms scroll horizontally');
+    assert.ok(row.tops.every(top=>Math.abs(top-row.tops[0])<1),'all buttons stay on one row');
+    assert.ok(row.height<row.buttonHeight*2,'the switcher is only one row tall');
+    assert.ok(row.chosenLeft>=row.left&&row.chosenRight<=row.right,'the selected last room is fully visible in the row');
+    assert.equal(await roomChip(page,last).getAttribute('title'),longName);
+    assert.equal(await page.locator('#chat-room-title').evaluate(node=>getComputedStyle(node).whiteSpace),'nowrap');
+    assert.equal(await roomChip(page,last).locator('.chat-room-name').evaluate(node=>getComputedStyle(node).textOverflow),'ellipsis');
+    await shot(page,width,'many');
+    await page.emulateMedia({reducedMotion:'reduce'});await roomChip(page,first).click();
+    await page.waitForFunction(()=>document.querySelector('#community-messages .chat-message'));
+    assert.equal(await page.locator('#community-messages').evaluate(node=>node.getAnimations({subtree:true}).length),0);
+    assert.equal(await roomChip(page,first).evaluate(node=>getComputedStyle(node).transitionDuration),'0s');
+    await page.emulateMedia({reducedMotion:'no-preference'});
     // A normal member sees the list only; a room admin can rename and remove members.
-    const bob=await open(width,'bob');await roomHead(bob.page,first).click();const bobDialog=await settings(bob.page);
+    const bob=await open(width,'bob');await roomChip(bob.page,first).click();const bobDialog=await settings(bob.page);
     assert.equal(await bobDialog.locator('#chat-room-name-field').isVisible(),false);assert.equal(await bobDialog.locator('#chat-room-rename').isVisible(),false);assert.equal(await bobDialog.locator('#chat-room-delete').isVisible(),false);
-    assert.equal(await bobDialog.locator('.chat-room-member-actions button').count(),0);await shot(bob.page,width,'member-settings');await bobDialog.locator('.modal-head [data-room-close]').click();
-    const alice=await open(width,'alice');assert.match((await roomHead(alice.page,first).textContent()),/@1/);
-    await roomHead(alice.page,first).click();await alice.page.waitForFunction(()=>document.querySelector('.chat-message.mentions-me'));
-    await alice.page.waitForFunction(()=>calls.some(c=>c.op==='community.chat.read'&&c.args.room));await alice.page.waitForFunction(()=>!document.querySelector('.chat-room-unread'));
+    assert.equal(await bobDialog.locator('.chat-room-member-actions button').count(),0);await fits(bob.page);await bobDialog.locator('.modal-head [data-room-close]').click();
+    const alice=await open(width,'alice');assert.match((await roomChip(alice.page,first).textContent()),/@1/);
+    await roomChip(alice.page,first).click();await alice.page.waitForFunction(()=>document.querySelector('.chat-message.mentions-me'));
+    await alice.page.waitForFunction(()=>calls.some(c=>c.op==='community.chat.read'&&c.args.room));await alice.page.waitForFunction(()=>!document.querySelector('.chat-room-mention'));
     const aliceDialog=await settings(alice.page);
     assert.equal(await aliceDialog.locator('#chat-room-name-field').isVisible(),true);assert.equal(await aliceDialog.locator('#chat-room-rename').isVisible(),true);assert.equal(await aliceDialog.locator('#chat-room-delete').isVisible(),false);
     assert.equal(await aliceDialog.getByRole('button',{name:'设为管理员'}).count(),0,'only the owner names admins');
@@ -138,20 +143,20 @@ try{
     assert.ok(await aliceDialog.locator('.chat-room-candidates label',{hasText:'鲍勃'}).count(),'bob can be invited again');
     await shot(alice.page,width,'admin-settings');await aliceDialog.locator('.modal-head [data-room-close]').click();
     await bob.page.waitForFunction(()=>toasts.includes('这个聊天室已不可用，已回到实验室聊天。'));
-    assert.equal(await roomHead(bob.page,'').getAttribute('aria-expanded'),'true');assert.equal(await roomWindow(bob.page,first).count(),0);
-    assert.deepEqual(await heads(bob.page).allTextContents(),['实验室聊天']);
+    assert.equal(await roomChip(bob.page,'').getAttribute('aria-selected'),'true');assert.equal(await roomChip(bob.page,first).count(),0);
+    assert.equal(await bob.page.locator('#chat-rooms').isVisible(),false);
     await bob.page.waitForFunction(()=>[...document.querySelectorAll('#community-messages .community-body')].map(node=>node.textContent).join()==='实验室里大家好');assert.deepEqual(await bodies(bob.page),['实验室里大家好']);
-    const carol=await open(width,'carol');assert.deepEqual(await heads(carol.page).allTextContents(),['实验室聊天']);assert.equal(await carol.page.locator('.chat-room-create').count(),0);
+    const carol=await open(width,'carol');assert.equal(await carol.page.locator('#chat-rooms').isVisible(),false);assert.equal(await roomChip(carol.page,first).count(),0);assert.equal(await carol.page.locator('.chat-room-new').count(),0);
     assert.deepEqual(await bodies(carol.page),['实验室里大家好']);await fits(carol.page);
     // Room removal falls back immediately for its owner and after refresh for a member.
-    await roomHead(page,first).click();dialog=await settings(page);await dialog.locator('#chat-room-delete').click();await dialog.waitFor({state:'hidden'});
-    assert.equal(await roomWindow(page,first).count(),0);assert.equal(await roomHead(page,'').getAttribute('aria-expanded'),'true');
+    await roomChip(page,first).click();dialog=await settings(page);await dialog.locator('#chat-room-delete').click();await dialog.waitFor({state:'hidden'});
+    assert.equal(await roomChip(page,first).count(),0);assert.equal(await roomChip(page,'').getAttribute('aria-selected'),'true');assert.equal(await page.locator('#chat-room-title').textContent(),'实验室聊天');
     assert.equal(await page.evaluate(()=>toasts.includes('已删除聊天室。')),true);
     await alice.page.reload();await alice.page.waitForFunction(()=>window.ready);
     if(width<900)await alice.page.locator('[data-community-tab="chat"]').click();
     await alice.page.waitForFunction(()=>calls.some(c=>c.op==='community.rooms.list'));
-    assert.equal(await roomWindow(alice.page,first).count(),0);
+    assert.equal(await roomChip(alice.page,first).count(),0);
     for(const result of [boss,alice,bob,carol]){await fits(result.page);assert.deepEqual(result.errors,[]);await result.page.close();}
-    console.log('PASS chat rooms '+width+': accordion, paused polling, shared draft, many rooms, rename/delete, roles, removal fallback, reduced motion and no overflow');
+    console.log('PASS chat rooms '+width+': one-row switching, scrolling, rename/Enter/delete, roles, mentions, removal fallback, reduced motion and no overflow');
   }
 }finally{await browser?.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));service.close();await rm(temporary,{recursive:true,force:true});}
