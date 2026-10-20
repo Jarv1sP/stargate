@@ -30,31 +30,38 @@ const cleanupTemporaryHelper=async(cleanup,timeoutMs=2000)=>{
 };
 export async function extractCampusNative(artifacts=EMBEDDED,{platform,arch=process.arch,resolveRuntime=resolveCampusNativeRuntime,prepareWindows=prepareWindowsNativeFolder,directory=tmpdir(),remove=rm}={}){
   const runtime=await resolveRuntime({...(platform?{platform}:{}),arch});
-  let windowsFolder;if(runtime.platform==='windows')windowsFolder=await prepareWindows(runtime);
-  platform=runtime.platform;arch=windowsFolder?.arch||runtime.arch;
-  if(!['linux','windows'].includes(platform)||!['x64','arm64'].includes(arch))throw failed('PLATFORM_UNSUPPORTED');
-  if(artifacts==null&&arguments[0]===undefined){
-    // Source CLI uses the native build input; the installed client embeds it.
-    const path=new URL('./build/campus-native/embedded-artifacts.private.json',import.meta.url);
-    try{artifacts=JSON.parse(await readFile(path,'utf8'));}catch{throw failed('SOURCE_NATIVE_BUILD_REQUIRED');}
+  for(let attempt=0;;attempt++){
+    let windowsFolder;if(runtime.platform==='windows')windowsFolder=await prepareWindows(runtime);
+    platform=runtime.platform;arch=windowsFolder?.arch||runtime.arch;
+    if(!['linux','windows'].includes(platform)||!['x64','arm64'].includes(arch))throw failed('PLATFORM_UNSUPPORTED');
+    if(artifacts==null&&arguments[0]===undefined){
+      // Source CLI uses the native build input; the installed client embeds it.
+      const path=new URL('./build/campus-native/embedded-artifacts.private.json',import.meta.url);
+      try{artifacts=JSON.parse(await readFile(path,'utf8'));}catch{throw failed('SOURCE_NATIVE_BUILD_REQUIRED');}
+    }
+    try{
+      const temporary=windowsFolder?.folder||directory,root=join(temporary,platform==='windows'?'stargate-campus':`stargate-campus-${process.getuid?.()??'user'}`);
+      const version=encodeURIComponent(artifacts?.version).replace(/^\.+$/,'_'),folder=join(root,version),path=join(folder,platform==='windows'?'campus-http.exe':'campus-http');
+      const binary={path,cleanup:async()=>{},platform,interop:runtime.interop};
+      try{await access(path);return binary;}catch(error){if(error.code!=='ENOENT')throw error;}
+      const item=artifacts?.artifacts?.[`${platform}-${arch}`];
+      if(!item)throw failed('NATIVE_NOT_BUNDLED');
+      await mkdir(folder,{recursive:true,mode:0o700});const pending=path+'.'+randomUUID()+'.tmp';
+      try{
+        await writeFile(pending,Buffer.from(item.base64,'base64'),{flag:'wx',mode:0o700});
+        if(platform!=='windows'||runtime.interop)await chmod(pending,0o700);
+        try{await rename(pending,path);}catch(error){try{await access(path);}catch{throw error;}}
+      }finally{await remove(pending,{force:true}).catch(()=>{});}
+      const versions=await readdir(root,{withFileTypes:true}).catch(()=>[]),legacy=await readdir(temporary,{withFileTypes:true}).catch(()=>[]);
+      const retired=[...versions.filter(entry=>entry.isDirectory()&&entry.name!==version).map(entry=>join(root,entry.name)),
+        ...legacy.filter(entry=>entry.isDirectory()&&/^stargate-campus-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(entry.name)).map(entry=>join(temporary,entry.name))];
+      await Promise.all(retired.map(path=>remove(path,{recursive:true,force:true}).catch(()=>{})));
+      return binary;
+    }catch(error){
+      if(!windowsFolder?.invalidate)throw error;
+      await windowsFolder.invalidate();if(attempt)throw error;
+    }
   }
-  const temporary=windowsFolder?.folder||directory,root=join(temporary,platform==='windows'?'stargate-campus':`stargate-campus-${process.getuid?.()??'user'}`);
-  const version=encodeURIComponent(artifacts?.version).replace(/^\.+$/,'_'),folder=join(root,version),path=join(folder,platform==='windows'?'campus-http.exe':'campus-http');
-  const binary={path,cleanup:async()=>{},platform,interop:runtime.interop};
-  try{await access(path);return binary;}catch(error){if(error.code!=='ENOENT')throw error;}
-  const item=artifacts?.artifacts?.[`${platform}-${arch}`];
-  if(!item)throw failed('NATIVE_NOT_BUNDLED');
-  await mkdir(folder,{recursive:true,mode:0o700});const pending=path+'.'+randomUUID()+'.tmp';
-  try{
-    await writeFile(pending,Buffer.from(item.base64,'base64'),{flag:'wx',mode:0o700});
-    if(platform!=='windows'||runtime.interop)await chmod(pending,0o700);
-    try{await rename(pending,path);}catch(error){try{await access(path);}catch{throw error;}}
-  }finally{await remove(pending,{force:true}).catch(()=>{});}
-  const versions=await readdir(root,{withFileTypes:true}).catch(()=>[]),legacy=await readdir(temporary,{withFileTypes:true}).catch(()=>[]);
-  const retired=[...versions.filter(entry=>entry.isDirectory()&&entry.name!==version).map(entry=>join(root,entry.name)),
-    ...legacy.filter(entry=>entry.isDirectory()&&/^stargate-campus-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(entry.name)).map(entry=>join(temporary,entry.name))];
-  await Promise.all(retired.map(path=>remove(path,{recursive:true,force:true}).catch(()=>{})));
-  return binary;
 }
 
 const bounded=(promise,timeoutMs,code)=>new Promise((resolve,reject)=>{

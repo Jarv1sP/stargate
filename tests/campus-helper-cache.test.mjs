@@ -47,12 +47,12 @@ test('build labels remain below the temp cache and a missing helper keeps its ex
  }
  await assert.rejects(extractCampusNative({version:'missing',artifacts:{}},f.options),{code:'NATIVE_NOT_BUNDLED'});
 });
-test('Windows bootstrap uses the user temp path and ignores extra output fields',async()=>{
- const folder=await prepareWindowsNativeFolder({platform:'windows',arch:'x64',interop:false},{powerShell:async()=>'/fixture/powershell',command:async()=>JSON.stringify({path:'C:\\Users\\Fixture\\Temp\\',arch:'x64',extra:'ignored'})});
+test('Windows bootstrap uses the user temp path and ignores extra output fields',async t=>{
+ const f=await fixture(t),folder=await prepareWindowsNativeFolder({platform:'windows',arch:'x64',interop:false},{cacheFile:join(f.root,'bootstrap.json'),powerShell:async()=>'/fixture/powershell',command:async()=>JSON.stringify({path:'C:\\Users\\Fixture\\Temp\\',arch:'x64',extra:'ignored'})});
  assert.equal(folder.folder,'C:\\Users\\Fixture\\Temp\\');
 });
-test('WSL maps the Windows user temp path without per-invocation removal',async()=>{
- const programs=[],folder=await prepareWindowsNativeFolder({platform:'windows',arch:'x64',interop:true},{powerShell:async()=>'/fixture/powershell',command:async(program)=>{
+test('WSL maps the Windows user temp path without per-invocation removal',async t=>{
+ const f=await fixture(t),programs=[],folder=await prepareWindowsNativeFolder({platform:'windows',arch:'x64',interop:true},{cacheFile:join(f.root,'bootstrap.json'),powerShell:async()=>'/fixture/powershell',command:async(program)=>{
   programs.push(program);return program==='/usr/bin/wslpath'?'/fixture/user temp':JSON.stringify({path:'C:\\Users\\Fixture\\Temp',arch:'x64'});
  }});
  assert.equal(folder.folder,'/fixture/user temp');assert.deepEqual(programs,['/fixture/powershell','/usr/bin/wslpath']);
@@ -61,7 +61,8 @@ test('real Windows bootstrap keeps the local user temp constraint', {skip:proces
  const root=await mkdtemp(join(tmpdir(),'campus-fixed-temp-')),previous={TEMP:process.env.TEMP,TMP:process.env.TMP};
  t.after(async()=>{for(const [key,value] of Object.entries(previous))if(value===undefined)delete process.env[key];else process.env[key]=value;await rm(root,{recursive:true,force:true});});
  process.env.TEMP=root;process.env.TMP=root;
- const folder=await prepareWindowsNativeFolder({platform:'windows',arch:process.arch,interop:false});assert.equal(folder.folder.replace(/[\\/]$/,''),root);
+ const cacheFile=join(root,'bootstrap.json'),folder=await prepareWindowsNativeFolder({platform:'windows',arch:process.arch,interop:false},{cacheFile});assert.equal(folder.folder.replace(/[\\/]$/,''),root);
+ await rm(cacheFile,{force:true});
  process.env.TEMP='\\\\fixture.invalid\\temp';process.env.TMP=process.env.TEMP;
- await assert.rejects(prepareWindowsNativeFolder({platform:'windows',arch:process.arch,interop:false}));
+ await assert.rejects(prepareWindowsNativeFolder({platform:'windows',arch:process.arch,interop:false},{cacheFile}));
 });

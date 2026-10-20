@@ -1,6 +1,7 @@
 import {spawn} from 'node:child_process';
-import {readFile,lstat} from 'node:fs/promises';
-import {win32,posix} from 'node:path';
+import {readFile,lstat,stat,mkdir,writeFile,rename,rm} from 'node:fs/promises';
+import {homedir} from 'node:os';
+import {win32,posix,join,dirname} from 'node:path';
 
 const fail=code=>Object.assign(Error(`Windows host transport stopped (${code}); no WSL network fallback`),{code});
 export async function resolveCampusNativeRuntime({platform=process.platform,arch=process.arch,read=readFile}={}){
@@ -45,8 +46,24 @@ export async function windowsPowerShell(runtime,{env=process.env,read=readFile,s
 export function windowsTempScript(){
   return `$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$temp=[IO.Path]::GetTempPath();if($temp -notmatch '^[A-Za-z]:\\\\'){throw 'local temp required'};$drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($temp));if($drive.DriveType -ne [IO.DriveType]::Fixed){throw 'local fixed drive required'};$arch=if([Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE') -eq 'ARM64'){'arm64'}elseif([Environment]::Is64BitOperatingSystem){'x64'}else{throw 'unsupported architecture'};[Console]::Out.WriteLine((@{path=$temp;arch=$arch}|ConvertTo-Json -Compress))`;
 }
-export async function prepareWindowsNativeFolder(runtime,{command=boundedLocalCommand,powerShell=windowsPowerShell}={}){
-  const ps=await powerShell(runtime);let value;try{value=JSON.parse((await command(ps,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',windowsTempScript()])).trim());}catch(error){throw error?.code?error:fail('WINDOWS_BOOTSTRAP_INVALID');}
-  const folder=runtime.interop?(await command('/usr/bin/wslpath',['-u',value.path])).trim():value.path;
-  return {folder,arch:value.arch,interop:runtime.interop};
+export async function prepareWindowsNativeFolder(runtime,{command=boundedLocalCommand,powerShell=windowsPowerShell,
+  cacheFile=join(homedir(),'.config','gpuq-console','windows-bootstrap.json')}={}){
+  const mapped=async value=>runtime.interop?(await command('/usr/bin/wslpath',['-u',value.path])).trim():value.path;
+  const invalidate=()=>rm(cacheFile,{force:true}).catch(()=>{});
+  try{
+    const value=JSON.parse(await readFile(cacheFile,'utf8'));
+    if(typeof value?.path==='string'&&/^[A-Za-z]:\\/.test(value.path)&&['x64','arm64'].includes(value.arch)){
+      const folder=await mapped(value);
+      if((await stat(folder)).isDirectory())return {folder,arch:value.arch,interop:runtime.interop,invalidate};
+    }
+  }catch{/* A stale or unreadable cache is replaced by bootstrap. */}
+  await invalidate();
+  const ps=await powerShell(runtime);let value;try{value=JSON.parse((await command(ps,['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',windowsTempScript()],{timeoutMs:30000})).trim());}catch(error){throw error?.code?error:fail('WINDOWS_BOOTSTRAP_INVALID');}
+  const folder=await mapped(value),pending=cacheFile+'.'+process.pid+'.tmp';
+  try{
+    await mkdir(dirname(cacheFile),{recursive:true,mode:0o700});
+    await writeFile(pending,JSON.stringify({path:value.path,arch:value.arch})+'\n',{mode:0o600});await rename(pending,cacheFile);
+  }catch{/* Cache persistence must not stop a command. */}
+  finally{await rm(pending,{force:true}).catch(()=>{});}
+  return {folder,arch:value.arch,interop:runtime.interop,invalidate};
 }
