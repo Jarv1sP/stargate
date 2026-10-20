@@ -23,6 +23,7 @@ function editable(row,actor){return row.kind!=='announcement'||actor.role==='adm
 function deletable(row,actor){return actor.role==='admin'||editable(row,actor);}
 function view(service,row,actor,type){
   if(!row)return null;
+  if(type==='room')return roomView(service,row,actor);
   const common={id:String(row.id),body:row.body,author:author(service,row.author_id),createdAt:nowISO(row.created_at),updatedAt:nowISO(row.updated_at),revision:row.revision,canEdit:editable(row,actor),canDelete:deletable(row,actor)};
   if(type==='post')return {...common,kind:row.kind,title:row.title,announcementType:row.announcement_type,status:row.status,pinned:!!row.pinned,
     ...(row.kind==='announcement'?{popup:!!row.popup,appearance:JSON.parse(row.appearance_json),...(actor.role==='admin'?{audience:audienceOf(row)}:{})}:{}),
@@ -34,7 +35,7 @@ function view(service,row,actor,type){
   }
   return type==='comment'?{...common,postId:String(row.post_id)}:type==='note'?{...common,jobId:row.job_id}:common;
 }
-const tables={post:'community_posts_v2',comment:'community_comments_v2',message:'community_chat_v2',note:'community_notes_v2'};
+const tables={post:'community_posts_v2',comment:'community_comments_v2',message:'community_chat_v2',note:'community_notes_v2',room:'community_rooms_v2'};
 function get(service,type,value){return service.db.prepare(`SELECT * FROM ${tables[type]} WHERE id=?`).get(value);}
 function required(service,type,value){const row=get(service,type,id(value));if(!row)fail('内容不存在或已删除。',404);return row;}
 function admin(actor){if(actor.role!=='admin')fail('此操作需要管理员权限。',403);}
@@ -80,6 +81,7 @@ function prune(db,now){
     db.prepare("DELETE FROM community_chat_v2 WHERE body='' AND NOT EXISTS (SELECT 1 FROM community_chat_images_v2 i WHERE i.message_id=community_chat_v2.id)").run();
   }
   db.prepare('DELETE FROM community_chat_mentions_v2 WHERE NOT EXISTS (SELECT 1 FROM community_chat_v2 c WHERE c.id=message_id)').run();
+  db.prepare('DELETE FROM community_room_messages_v2 WHERE NOT EXISTS (SELECT 1 FROM community_chat_v2 c WHERE c.id=message_id)').run();
 }
 // A picture-only message has an empty body; any text follows the usual rules.
 function chatBody(value,image){return image&&(value===undefined||typeof value==='string'&&!value.trim())?'':text(value,COMMUNITY_LIMITS.chatBody,'消息');}
@@ -92,10 +94,28 @@ function chatImage(value){
   if(!data.length||[value.width,value.height].some(side=>!Number.isInteger(side)||side<1||side>CHAT_IMAGE.maxSide))fail('图片读取失败，请重新选择。');
   return {type:value.type,data,width:value.width,height:value.height};
 }
-function mention(service,authorId,messageId,body){
+// Private rooms: only members see a room, its messages, pictures and @mentions.
+// Messages without a room row belong to the lab chat that every member sees.
+const roomOf=(service,messageId)=>service.db.prepare('SELECT room_id FROM community_room_messages_v2 WHERE message_id=?').get(messageId)?.room_id??null;
+const roleIn=(service,roomId,userId)=>service.db.prepare('SELECT role FROM community_room_members_v2 WHERE room_id=? AND user_id=?').get(roomId,userId)?.role;
+const LAB_SQL='NOT EXISTS (SELECT 1 FROM community_room_messages_v2 r WHERE r.message_id=community_chat_v2.id)';
+const ROOM_SQL='id IN (SELECT message_id FROM community_room_messages_v2 WHERE room_id=?)';
+function room(service,actor,value){
+  if(value===undefined||value===null)return null;
+  const roomId=id(value);if(!roleIn(service,roomId,actor.userId))fail('聊天室不存在，或你已不在这个聊天室里。',404);return roomId;
+}
+function messageRoom(service,actor,row){const roomId=roomOf(service,row.id);if(roomId!==null&&!roleIn(service,roomId,actor.userId))fail('内容不存在或已删除。',404);return roomId;}
+function roomView(service,row,actor){
+  const members=service.db.prepare('SELECT user_id,role FROM community_room_members_v2 WHERE room_id=? ORDER BY added_at,user_id').all(row.id).map(m=>({...author(service,m.user_id),role:m.role}));
+  const mentions=service.db.prepare('SELECT count(*) AS n FROM community_chat_mentions_v2 m JOIN community_room_messages_v2 r ON r.message_id=m.message_id WHERE m.user_id=? AND r.room_id=?').get(actor.userId,row.id).n;
+  return {id:String(row.id),name:row.name,role:roleIn(service,row.id,actor.userId),members,mentions,createdAt:nowISO(row.created_at)};
+}
+function roomManager(service,actor,value){const roomId=room(service,actor,value),role=roleIn(service,roomId,actor.userId);if(role==='member')fail('只有群主和聊天室管理员可以拉人或移出成员。',403);return {roomId,role};}
+function mention(service,authorId,messageId,body,roomId=null){
   service.db.prepare('DELETE FROM community_chat_mentions_v2 WHERE message_id=?').run(messageId);
   const insert=service.db.prepare('INSERT INTO community_chat_mentions_v2(user_id,message_id) VALUES(?,?)');
-  for(const user of mentionedUsers(body,service.store.users.filter(user=>user.enabled&&user.id!==authorId)))insert.run(user.id,messageId);
+  const inside=roomId===null?null:new Set(service.db.prepare('SELECT user_id FROM community_room_members_v2 WHERE room_id=?').all(roomId).map(m=>m.user_id));
+  for(const user of mentionedUsers(body,service.store.users.filter(user=>user.enabled&&user.id!==authorId&&(!inside||inside.has(user.id)))))insert.run(user.id,messageId);
 }
 // Unread @mentions of this account; reading the chat clears them.
 export function chatMentions(service,actor){
@@ -106,13 +126,15 @@ export function chatMentions(service,actor){
 function unreadMentions(service,actor){
   const rows=service.db.prepare('SELECT c.* FROM community_chat_mentions_v2 m JOIN community_chat_v2 c ON c.id=m.message_id WHERE m.user_id=? AND c.created_at>=? ORDER BY c.id DESC LIMIT 20')
     .all(actor.userId,Date.now()-COMMUNITY_LIMITS.retentionDays*DAY);
-  return {messages:rows.map(row=>view(service,row,actor,'message')),total:chatMentions(service,actor)};
+  const named=service.db.prepare('SELECT r.id,r.name FROM community_room_messages_v2 m JOIN community_rooms_v2 r ON r.id=m.room_id WHERE m.message_id=?');
+  return {messages:rows.map(row=>{const place=named.get(row.id);return {...view(service,row,actor,'message'),...(place?{room:{id:String(place.id),name:place.name}}:{})};}),total:chatMentions(service,actor)};
 }
 export function chatImageFile(service,principal,value){
   if(!service.store.users.find(u=>u.id===principal.userId)?.enabled)fail('账号已暂停或不存在。',403);
   const row=service.db.prepare('SELECT i.type,i.data FROM community_chat_images_v2 i JOIN community_chat_v2 c ON c.id=i.message_id WHERE i.message_id=? AND c.created_at>=?')
     .get(id(value),Date.now()-COMMUNITY_LIMITS.retentionDays*DAY);
-  if(!row)fail('图片不存在或已过期。',404);return row;
+  const roomId=row?roomOf(service,id(value)):null;
+  if(!row||roomId!==null&&!roleIn(service,roomId,principal.userId))fail('图片不存在或已过期。',404);return row;
 }
 export function pruneTaskNotes(service){
   // Missing/UNKNOWN/LOST is NOT a confirmed end. General notes have no job_id
@@ -171,6 +193,16 @@ export function installCommunity(service){
       user_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY(user_id,message_id)
     );
     CREATE INDEX IF NOT EXISTS community_chat_mentions_message ON community_chat_mentions_v2(message_id);
+    CREATE TABLE IF NOT EXISTS community_rooms_v2 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS community_room_members_v2 (
+      room_id INTEGER NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','admin','member')),
+      added_at INTEGER NOT NULL, PRIMARY KEY(room_id,user_id)
+    );
+    CREATE INDEX IF NOT EXISTS community_room_members_user ON community_room_members_v2(user_id);
+    CREATE TABLE IF NOT EXISTS community_room_messages_v2 (message_id INTEGER PRIMARY KEY, room_id INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS community_room_messages_room ON community_room_messages_v2(room_id,message_id);
     CREATE TABLE IF NOT EXISTS community_notes_v2 (
       id INTEGER PRIMARY KEY AUTOINCREMENT, author_id TEXT NOT NULL, job_id TEXT,
       body TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
@@ -229,11 +261,12 @@ function listComments(service,actor,args){
   return {comments:rows.map(r=>view(service,r,actor,'comment')),nextCursor:more?String(rows.at(-1).id):null};
 }
 function listChat(service,actor,args,now){
-  args=selectFields(args,['before','after','limit']);if(args.before!==undefined&&args.after!==undefined)fail('before 与 after 不能同时指定。');
+  args=selectFields(args,['before','after','limit','room']);if(args.before!==undefined&&args.after!==undefined)fail('before 与 after 不能同时指定。');
+  const roomId=room(service,actor,args.room);
   const limit=page(args.limit),after=args.after===undefined?null:id(args.after),before=args.before===undefined?null:id(args.before),cutoff=now-COMMUNITY_LIMITS.retentionDays*DAY;
-  const where=['created_at>=?'],params=[cutoff];if(after!==null){where.push('id>?');params.push(after);}if(before!==null){where.push('id<?');params.push(before);}
+  const where=['created_at>=?',roomId===null?LAB_SQL:ROOM_SQL],params=[cutoff,...(roomId===null?[]:[roomId])];if(after!==null){where.push('id>?');params.push(after);}if(before!==null){where.push('id<?');params.push(before);}
   const rows=service.db.prepare(`SELECT * FROM community_chat_v2 WHERE ${where.join(' AND ')} ORDER BY id ${after!==null?'ASC':'DESC'} LIMIT ?`).all(...params,limit+1),more=rows.length>limit;rows.length=Math.min(rows.length,limit);if(after===null)rows.reverse();
-  const latest=service.db.prepare('SELECT max(id) AS id FROM community_chat_v2 WHERE created_at>=?').get(cutoff).id;
+  const latest=service.db.prepare(`SELECT max(id) AS id FROM community_chat_v2 WHERE created_at>=? AND ${roomId===null?LAB_SQL:ROOM_SQL}`).get(cutoff,...(roomId===null?[]:[roomId])).id;
   return {messages:rows.map(r=>view(service,r,actor,'message')),nextCursor:rows.length?String(after!==null?rows.at(-1).id:rows[0].id):null,latestCursor:latest===null?null:String(latest),hasMore:more};
 }
 function change(service,actor,operation,args,type,remove,now){
@@ -241,6 +274,7 @@ function change(service,actor,operation,args,type,remove,now){
   const row=required(service,type,args.id),image=type==='message'&&!!service.db.prepare('SELECT 1 FROM community_chat_images_v2 WHERE message_id=?').get(row.id);
   if(type==='post')readablePost(service,actor,args.id);
   if(type==='comment')readablePost(service,actor,String(row.post_id));
+  const roomId=type==='message'?messageRoom(service,actor,row):null;
   if(remove&&row.kind==='announcement')admin(actor);
   if(!remove){
     if(type==='post'&&['status','pinned','announcementType'].some(k=>Object.hasOwn(args,k)))admin(actor);
@@ -249,7 +283,7 @@ function change(service,actor,operation,args,type,remove,now){
   if(remove){
     if(type==='post'){service.db.prepare('DELETE FROM community_comments_v2 WHERE post_id=?').run(row.id);service.db.prepare('DELETE FROM announcement_acknowledgements_v2 WHERE post_id=?').run(row.id);}
     service.db.prepare(`DELETE FROM ${tables[type]} WHERE id=?`).run(row.id);
-    if(type==='message')for(const table of ['community_chat_images_v2','community_chat_mentions_v2'])service.db.prepare(`DELETE FROM ${table} WHERE message_id=?`).run(row.id);
+    if(type==='message')for(const table of ['community_chat_images_v2','community_chat_mentions_v2','community_room_messages_v2'])service.db.prepare(`DELETE FROM ${table} WHERE message_id=?`).run(row.id);
     service.audit(actor.username,operation,String(row.id),'ok');return {deleted:true,id:String(row.id)};
   }
   if(type==='post'){
@@ -268,7 +302,7 @@ function change(service,actor,operation,args,type,remove,now){
   }else{
     const body=type==='message'?chatBody(args.body,image):text(args.body,COMMUNITY_LIMITS[type==='comment'?'commentBody':'chatBody'],'正文');
     service.db.prepare(`UPDATE ${tables[type]} SET body=?,updated_at=?,revision=revision+1 WHERE id=?`).run(body,now,row.id);
-    if(type==='message')mention(service,row.author_id,row.id,body);
+    if(type==='message')mention(service,row.author_id,row.id,body,roomId);
   }
   service.audit(actor.username,operation,String(row.id),'ok');return {[type]:view(service,get(service,type,row.id),actor,type)};
 }
@@ -304,7 +338,7 @@ function dispatch(service,actor,operation,args,now){
       return db.prepare('INSERT INTO community_notes_v2(author_id,job_id,body,created_at,updated_at) VALUES(?,?,?,?,?)').run(actor.userId,jobId,body,now,now).lastInsertRowid;
     });
   }
-  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1','chat-images-v1','chat-mentions-v1','chat-mention-popup-v1']};}
+  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1','chat-images-v1','chat-mentions-v1','chat-mention-popup-v1','chat-rooms-v1']};}
   if(operation==='community.posts.list')return listPosts(service,actor,args);
   if(operation==='community.posts.get'){args=selectFields(args,['id']);return {post:view(service,readablePost(service,actor,args.id),actor,'post')};}
   if(operation==='community.comments.list')return listComments(service,actor,args);
@@ -329,17 +363,58 @@ function dispatch(service,actor,operation,args,now){
     return create(service,actor,operation,args,'comment',now,()=>{readablePost(service,actor,args.postId);return db.prepare('INSERT INTO community_comments_v2(post_id,author_id,body,created_at,updated_at) VALUES(?,?,?,?,?)').run(postId,actor.userId,body,now,now).lastInsertRowid;});
   }
   if(operation==='community.chat.send'){
-    args=selectFields(args,['key','body','image']);const image=chatImage(args.image),body=chatBody(args.body,image);
+    args=selectFields(args,['key','body','image','room']);const image=chatImage(args.image),body=chatBody(args.body,image),roomId=room(service,actor,args.room);
     return create(service,actor,operation,args,'message',now,()=>{
       const messageId=db.prepare('INSERT INTO community_chat_v2(author_id,body,created_at,updated_at) VALUES(?,?,?,?)').run(actor.userId,body,now,now).lastInsertRowid;
+      if(roomId!==null)db.prepare('INSERT INTO community_room_messages_v2(message_id,room_id) VALUES(?,?)').run(messageId,roomId);
       if(image)db.prepare('INSERT INTO community_chat_images_v2(message_id,type,width,height,size,data) VALUES(?,?,?,?,?,?)').run(messageId,image.type,image.width,image.height,image.data.length,image.data);
-      mention(service,actor.userId,messageId,body);return messageId;
+      mention(service,actor.userId,messageId,body,roomId);return messageId;
     });
   }
   if(operation==='community.chat.mentions'){args=selectFields(args,[]);return unreadMentions(service,actor);}
   if(operation==='community.chat.read'){
-    args=selectFields(args,['id']);db.prepare('DELETE FROM community_chat_mentions_v2 WHERE user_id=? AND message_id<=?').run(actor.userId,id(args.id));
+    // Reading one room clears only that room; the @ pop-up's 我知道了 clears all.
+    args=selectFields(args,['id','room','all']);const last=id(args.id);
+    if(args.all===true)db.prepare('DELETE FROM community_chat_mentions_v2 WHERE user_id=? AND message_id<=?').run(actor.userId,last);
+    else{const roomId=room(service,actor,args.room);db.prepare(`DELETE FROM community_chat_mentions_v2 WHERE user_id=? AND message_id<=? AND message_id IN (SELECT id FROM community_chat_v2 WHERE ${roomId===null?LAB_SQL:ROOM_SQL})`).run(actor.userId,last,...(roomId===null?[]:[roomId]));}
     return {chatMentions:chatMentions(service,actor)};
+  }
+  if(operation==='community.rooms.list'){
+    args=selectFields(args,[]);
+    const rows=db.prepare('SELECT r.* FROM community_rooms_v2 r JOIN community_room_members_v2 m ON m.room_id=r.id WHERE m.user_id=? ORDER BY r.id').all(actor.userId);
+    return {rooms:rows.map(row=>roomView(service,row,actor)),canCreate:actor.role==='admin'};
+  }
+  if(operation==='community.rooms.create'){
+    args=selectFields(args,['key','name']);admin(actor);const name=text(args.name,30,'聊天室名称');
+    return create(service,actor,operation,args,'room',now,()=>{
+      const roomId=db.prepare('INSERT INTO community_rooms_v2(name,created_at) VALUES(?,?)').run(name,now).lastInsertRowid;
+      db.prepare("INSERT INTO community_room_members_v2(room_id,user_id,role,added_at) VALUES(?,?,'owner',?)").run(roomId,actor.userId,now);return roomId;
+    });
+  }
+  if(operation==='community.rooms.members.add'){
+    args=selectFields(args,['room','userIds']);const {roomId}=roomManager(service,actor,args.room);
+    const users=new Set(service.store.users.filter(u=>u.enabled).map(u=>u.id));
+    if(!Array.isArray(args.userIds)||!args.userIds.length||args.userIds.length>200||args.userIds.some(u=>typeof u!=='string'||!users.has(u)))fail('请选择要拉进来的成员。');
+    const insert=db.prepare("INSERT OR IGNORE INTO community_room_members_v2(room_id,user_id,role,added_at) VALUES(?,?,'member',?)");
+    for(const userId of new Set(args.userIds))insert.run(roomId,userId,now);
+    service.audit(actor.username,operation,String(roomId),'ok');return {room:roomView(service,get(service,'room',roomId),actor)};
+  }
+  if(operation==='community.rooms.members.remove'){
+    args=selectFields(args,['room','userId']);const {roomId,role}=roomManager(service,actor,args.room),target=typeof args.userId==='string'?roleIn(service,roomId,args.userId):undefined;
+    if(!target)fail('这个人不在聊天室里。',404);
+    if(target==='owner')fail('群主不能被移出聊天室。',403);
+    if(target==='admin'&&role!=='owner')fail('只有群主可以移出聊天室管理员。',403);
+    db.prepare('DELETE FROM community_room_members_v2 WHERE room_id=? AND user_id=?').run(roomId,args.userId);
+    db.prepare('DELETE FROM community_chat_mentions_v2 WHERE user_id=? AND message_id IN (SELECT message_id FROM community_room_messages_v2 WHERE room_id=?)').run(args.userId,roomId);
+    service.audit(actor.username,operation,String(roomId),'ok');return {room:roomView(service,get(service,'room',roomId),actor)};
+  }
+  if(operation==='community.rooms.members.role'){
+    args=selectFields(args,['room','userId','role']);const roomId=room(service,actor,args.room);
+    if(roleIn(service,roomId,actor.userId)!=='owner')fail('只有群主可以设置聊天室管理员。',403);
+    const target=typeof args.userId==='string'?roleIn(service,roomId,args.userId):undefined,next=choice(args.role,['admin','member'],'聊天室角色');
+    if(!target)fail('这个人不在聊天室里。',404);if(target==='owner')fail('群主的身份不能修改。',403);
+    db.prepare('UPDATE community_room_members_v2 SET role=? WHERE room_id=? AND user_id=?').run(next,roomId,args.userId);
+    service.audit(actor.username,operation,String(roomId),'ok');return {room:roomView(service,get(service,'room',roomId),actor)};
   }
   for(const [prefix,type] of [['posts','post'],['comments','comment'],['chat','message'],['notes','note']]){
     if(operation===`community.${prefix}.update`)return change(service,actor,operation,args,type,false,now);

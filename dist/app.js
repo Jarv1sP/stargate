@@ -32,7 +32,7 @@ const renderExecution=executionUI(store,()=>render(true),toast);
 const renderDatasets=datasetsUI(store,toast);
 const renderCommunity=createCommunityUI(store,toast);
 const renderAnnouncements=createAnnouncementUI(store,{toast});
-const renderMentionPopup=createMentionPopup(store,{openChat:()=>{choosePage('community');renderCommunity.showChat();},chatOpen:()=>page==='community'&&renderCommunity.chatOpen()});
+const renderMentionPopup=createMentionPopup(store,{openChat:place=>{choosePage('community');renderCommunity.showChat(place);},chatOpen:()=>page==='community'&&renderCommunity.chatOpen()});
 const renderOperationalMaintenance=operationalMaintenanceUI(store);
 const renderTransfers=transfersUI(store,toast);
 const renderResourceView=resourcesUI(store,{machines:MACHINES,getPage:()=>page,navigate:choosePage});

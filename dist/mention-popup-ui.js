@@ -21,7 +21,7 @@ export function createMentionPopup(store,{openChat,chatOpen}){
     const list=q('#mention-list');list.replaceChildren();
     for(const item of messages.slice(0,SHOWN)){
       const row=document.createElement('li'),meta=document.createElement('p'),text=document.createElement('p');
-      meta.className='mention-meta';meta.textContent=(item.author?.name||item.author?.username||'成员')+' · '+date(item.createdAt);
+      meta.className='mention-meta';meta.textContent=[item.author?.name||item.author?.username||'成员',item.room?.name,date(item.createdAt)].filter(Boolean).join(' · ');
       text.className='mention-text';
       for(const part of chatSegments(item.body||'',store.users||[])){
         if(!part.user){text.append(part.text);continue;}
@@ -53,11 +53,11 @@ export function createMentionPopup(store,{openChat,chatOpen}){
   }
   q('#mention-later').addEventListener('click',close);
   dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
-  q('#mention-open').addEventListener('click',()=>{close();openChat();});
+  q('#mention-open').addEventListener('click',()=>{const place=messages[0]?.room?.id||null;close();openChat(place);});
   q('#mention-ack').addEventListener('click',async()=>{
     const stamp=actor(),last=top();q('#mention-ack').disabled=true;q('#mention-error').textContent='';
     try{
-      const result=await store.call('community.chat.read',{id:String(last)});
+      const result=await store.call('community.chat.read',{id:String(last),all:true});
       if(stamp!==actor())return;
       if(store.data)store.data.chatMentions=result.chatMentions;fetched=result.chatMentions;renderChatMentionBadge(store);close();
     }catch(error){if(stamp===actor()){q('#mention-error').textContent=error.message;q('#mention-ack').disabled=false;}}

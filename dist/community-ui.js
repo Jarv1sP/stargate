@@ -7,6 +7,7 @@ import {copyHelp} from './copy-help-ui.js';
 import {defaultAppearance,applyAnnouncementAppearance} from './announcement-appearance.js';
 import {chatSegments} from './chat-content.js';
 import {createChatComposer} from './chat-compose-ui.js';
+import {createRoomDialog} from './chat-rooms-ui.js';
 export {createSubmissionKeys} from './submission-keys.js';
 const kinds={announcement:'公告',feedback:'问题反馈',discussion:'讨论'};
 const statuses={open:'待处理',investigating:'处理中',resolved:'已解决',closed:'已关闭'};
@@ -34,6 +35,7 @@ export function createCommunityUI(store,toast){
   const commentDrafts=new Map();
   let messages=[],chatCursor=null,chatBefore=null,chatBusy=false,history=false,unread=0,lastChatReconcile=0,chatLoaded=false,postsLoaded=false;
   let chatComposer=null,chatImages=new Map(),mentionRead='';
+  let rooms=[],room=null,canCreateRoom=false,roomsAt=0,roomsMentions=-1,roomDialog=null;
   let detail,composer,notes,notesCapable=false,editing=null,composeBusy=false,commentBusy=false,chatSending=false;
   const q=selector=>root.querySelector(selector),context=()=>epoch+':'+identity;
   const valid=stamp=>stamp===context()&&identity===principal(store);
@@ -60,13 +62,13 @@ export function createCommunityUI(store,toast){
   for(const node of document.querySelectorAll('.page-heading,.demo-note,#operational-maintenance,#room-nav'))railObserver.observe(node);
   addEventListener('resize',fitChat);addEventListener('scroll',fitChat,{passive:true});
   function stop(){clearTimeout(timer);timer=null;}
-  function reset(){epoch++;stop();notes?.reset();notes=null;notesCapable=false;tab='posts';ready=false;infoBusy=false;loading=false;chatBusy=false;composeBusy=false;commentBusy=false;chatSending=false;posts=[];postCursor=null;selected=null;comments=[];messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;chatLoaded=false;postsLoaded=false;chatComposer=null;chatImages=new Map();mentionRead='';chatStatus='';chatFailed=false;postStatus='';postFailed=false;keys.reset();commentDrafts.clear();editing=null;detail?.close();composer?.close();detail?.remove();composer?.remove();detail=null;composer=null;root.replaceChildren();}
+  function reset(){epoch++;stop();notes?.reset();notes=null;notesCapable=false;tab='posts';ready=false;infoBusy=false;loading=false;chatBusy=false;composeBusy=false;commentBusy=false;chatSending=false;posts=[];postCursor=null;selected=null;comments=[];messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;chatLoaded=false;postsLoaded=false;chatComposer=null;chatImages=new Map();mentionRead='';rooms=[];room=null;canCreateRoom=false;roomsAt=0;roomsMentions=-1;roomDialog?.close();roomDialog?.remove();roomDialog=null;chatStatus='';chatFailed=false;postStatus='';postFailed=false;keys.reset();commentDrafts.clear();editing=null;detail?.close();composer?.close();detail?.remove();composer?.remove();detail=null;composer=null;root.replaceChildren();}
   store.onAuthChange?.(()=>{identity='';reset();});
   function install(){
     root.innerHTML=`<div class="community-tabs" id="community-tabs" role="tablist" aria-label="协作内容"><button type="button" role="tab" data-community-tab="posts">帖子</button><button type="button" role="tab" data-community-tab="chat">聊天</button></div>
       <p id="community-status" role="status" aria-live="polite"></p>
       <div class="community-layout"><section id="community-forum" role="tabpanel"><div class="community-toolbar"><label><span class="field-caption"><span>类型</span>${copyHelp('协作区','帖子用于公告与问题反馈，聊天用于即时交流。留言不会改变额度、排队或取消任务。','/guide/queue')}</span><select id="community-kind"><option value="">全部帖子</option><option value="announcement">公告</option><option value="feedback">问题反馈</option><option value="discussion">讨论</option></select></label><label id="community-filter-label" hidden><span class="field-caption">处理状态</span><select id="community-filter"><option value="">全部</option><option value="open">待处理</option><option value="investigating">处理中</option><option value="resolved">已解决</option><option value="closed">已关闭</option></select></label><div class="community-toolbar-actions"><button class="button" id="community-refresh" type="button">刷新</button><button class="button primary" id="community-create" type="button">发帖</button></div></div><div class="community-feed-focus hero-frame"><span class="hero-label">公告与最新帖子</span><div id="community-posts" class="community-posts" tabindex="0" aria-label="公告与最新帖子"></div></div><button class="button community-more" id="community-more" type="button" hidden>加载更多</button></section>
-      <section id="community-chat" role="tabpanel" hidden><div class="chat-topline"><div><div class="copy-caption"><h3>实验室聊天</h3>${copyHelp('公共聊天','登录成员可见，消息和图片保留 30 天，重要进展请发帖保存。输入 @ 选择成员，对方会收到提醒；图片可粘贴、拖入或点图片按钮选择。请勿发送密码或令牌。','/guide/queue')}</div></div><button class="button" id="chat-refresh" type="button">刷新</button></div><p id="chat-status" role="status" aria-live="polite" hidden></p><details id="community-task-notes" class="community-task-notes" hidden><summary><span class="copy-caption"><span>任务留言</span>${copyHelp('任务留言','任务留言随任务确认结束删除，非任务留言需手动删除。所有登录成员可见，任务状态未知或停止尚未确认时继续保留。','/guide/results')}</span></summary>${taskNotesMarkup}</details><button class="button community-more" id="chat-older" type="button" hidden>查看更早消息</button><button class="button community-more" id="chat-latest" type="button" hidden>返回最新消息</button><div id="community-messages" class="community-messages" tabindex="0" aria-label="公共聊天消息"></div><button class="button chat-new" id="chat-new" type="button" hidden>查看新消息</button><form id="community-chat-form"><label for="community-chat-body">发送消息</label><textarea id="community-chat-body" rows="3" maxlength="2000" required placeholder="回车发送，Shift+回车换行"></textarea><div class="chat-compose-footer"><p>保留 30 天，可粘贴图片</p><button class="button" type="submit">发送消息</button></div><p id="chat-error" class="form-error" role="status"></p></form></section></div>`;
+      <section id="community-chat" role="tabpanel" hidden><div class="chat-topline"><div><div class="copy-caption"><h3 id="chat-room-title">实验室聊天</h3><span id="chat-room-private" class="community-tag" hidden>私密</span>${copyHelp('公共聊天','登录成员可见，消息和图片保留 30 天，重要进展请发帖保存。输入 @ 选择成员，对方会收到提醒；图片可粘贴、拖入或点图片按钮选择。请勿发送密码或令牌。','/guide/queue')}</div></div><div class="chat-topline-actions"><button class="button" id="chat-room-members" type="button" hidden>成员</button><button class="button" id="chat-refresh" type="button">刷新</button></div></div><div id="chat-rooms" class="chat-rooms" role="tablist" aria-label="聊天室" hidden></div><p id="chat-status" role="status" aria-live="polite" hidden></p><details id="community-task-notes" class="community-task-notes" hidden><summary><span class="copy-caption"><span>任务留言</span>${copyHelp('任务留言','任务留言随任务确认结束删除，非任务留言需手动删除。所有登录成员可见，任务状态未知或停止尚未确认时继续保留。','/guide/results')}</span></summary>${taskNotesMarkup}</details><button class="button community-more" id="chat-older" type="button" hidden>查看更早消息</button><button class="button community-more" id="chat-latest" type="button" hidden>返回最新消息</button><div id="community-messages" class="community-messages" tabindex="0" aria-label="公共聊天消息"></div><button class="button chat-new" id="chat-new" type="button" hidden>查看新消息</button><form id="community-chat-form"><label for="community-chat-body">发送消息</label><textarea id="community-chat-body" rows="3" maxlength="2000" required placeholder="回车发送，Shift+回车换行"></textarea><div class="chat-compose-footer"><p>保留 30 天，可粘贴图片</p><button class="button" type="submit">发送消息</button></div><p id="chat-error" class="form-error" role="status"></p></form></section></div>`;
     for(const [index,node] of [...root.querySelectorAll('[data-community-tab]')].entries()){
       node.id='community-tab-'+node.dataset.communityTab;node.setAttribute('aria-controls',node.dataset.communityTab==='chat'?'community-chat':'community-forum');
       node.addEventListener('click',()=>selectTab(node.dataset.communityTab));
@@ -76,12 +78,13 @@ export function createCommunityUI(store,toast){
     q('#chat-refresh').addEventListener('click',()=>{history=false;loadChat('refresh');});q('#chat-older').addEventListener('click',()=>loadChat('older'));q('#chat-latest').addEventListener('click',()=>{history=false;loadChat('refresh');});
     q('#chat-new').addEventListener('click',()=>{q('#community-messages').scrollTop=q('#community-messages').scrollHeight;unread=0;q('#chat-new').hidden=true;});
     q('#community-messages').addEventListener('scroll',readMentions,{passive:true});
+    q('#chat-room-members').addEventListener('click',()=>{const current=currentRoom();if(current)roomsDialog().open(current);});
     const announcements=button('全部公告',()=>{q('#community-kind').value='announcement';if(tab!=='posts')selectTab('posts');else{setTabs();loadPosts();}});announcements.id='community-announcements';
     const publish=button('发布公告',()=>{if(admin())openComposer('post',null,true);});publish.id='community-publish-announcement';publish.hidden=!admin();
     q('.community-toolbar-actions').append(announcements,publish);
     notes=createTaskNotesUI(root,store,toast);q('#task-note-form [type=submit]').classList.remove('primary');q('#community-task-notes').addEventListener('toggle',syncNotes);q('#community-chat-form').addEventListener('submit',sendChat);
     chatComposer=createChatComposer({form:q('#community-chat-form'),input:q('#community-chat-body'),onError:text=>{q('#chat-error').textContent=text;},
-      members:()=>(store.users||[]).filter(user=>user.username&&user.enabled!==false&&user.id!==store.principal?.userId)});setTabs();
+      members:()=>{const inside=currentRoom()&&new Set(currentRoom().members.map(m=>m.id));return (store.users||[]).filter(user=>user.username&&user.enabled!==false&&user.id!==store.principal?.userId&&(!inside||inside.has(user.id)));}});setTabs();
     for(const control of root.querySelectorAll('button,input,select,textarea'))if(!control.dataset.communityTab&&!control.hasAttribute('data-copy-help'))control.disabled=true;
   }
   function setTabs(){
@@ -96,7 +99,7 @@ export function createCommunityUI(store,toast){
   function syncNotes(){notes?.sync(visible&&chatShown()&&q('#community-task-notes').open,ready&&notesCapable);}
   async function enable(){
     if(infoBusy||ready||!identity)return;infoBusy=true;const stamp=context();message('正在连接协作区…');
-    try{if(!valid(stamp))return;ready=true;notesCapable=true;setTabs();for(const control of root.querySelectorAll('button,input,select,textarea'))control.disabled=false;syncNotes();message('');await Promise.all([...(postsShown()?[loadPosts()]:[]),...(chatShown()?[loadChat('refresh')]:[])]);}
+    try{if(!valid(stamp))return;ready=true;notesCapable=true;setTabs();for(const control of root.querySelectorAll('button,input,select,textarea'))control.disabled=false;syncNotes();message('');await Promise.all([...(postsShown()?[loadPosts()]:[]),...(chatShown()?[loadChat('refresh'),loadRooms()]:[])]);}
     catch(error){if(valid(stamp))message('协作区暂不可用，请稍后刷新。尚未发送任何内容。',true);}
     finally{if(valid(stamp))infoBusy=false;}
   }
@@ -193,14 +196,15 @@ export function createCommunityUI(store,toast){
   function arm(){stop();if(visible&&ready&&chatShown()&&!document.hidden&&!history)timer=setTimeout(()=>loadChat('poll'),5000);}
   async function loadChat(mode){
     if(!ready||chatBusy)return;chatBusy=true;
-    const stamp=context(),scroll=q('#community-messages'),atEnd=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<80;
+    // Switching rooms mid-request drops this answer and reloads the new room.
+    const stamp=context(),place=room,scope=place?{room:place}:{},here=()=>valid(stamp)&&place===room,scroll=q('#community-messages'),atEnd=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<80;
     try{
       let more=false;
       // Three pages per turn bounds catch-up work. The next timer resumes the
       // actual cursor, never the server's global latestCursor.
       for(let page=0;page<(mode==='poll'?3:1);page++){
         const recentPage=mode==='refresh'||mode==='poll'&&!chatCursor;
-        const result=await store.call('community.chat.list',{limit:50,...(mode==='older'&&chatBefore?{before:chatBefore}:mode==='poll'&&chatCursor?{after:chatCursor}:{})});if(!valid(stamp))return;
+        const result=await store.call('community.chat.list',{limit:50,...scope,...(mode==='older'&&chatBefore?{before:chatBefore}:mode==='poll'&&chatCursor?{after:chatCursor}:{})});if(!here())return;
         if(mode==='older'){history=true;messages=mergeCommunityItems(result.messages,messages);chatBefore=result.hasMore?result.nextCursor:null;}
         else if(recentPage){messages=result.messages;chatCursor=result.latestCursor;chatBefore=result.hasMore?result.nextCursor:null;history=false;lastChatReconcile=Date.now();}
         else{
@@ -214,14 +218,42 @@ export function createCommunityUI(store,toast){
       // Incremental IDs do not announce edits/deletes. Reconcile only the
       // latest 50-message window, without replacing drafts or older history.
       if(mode==='poll'&&!more&&!history&&Date.now()-lastChatReconcile>=30000){
-        const recent=await store.call('community.chat.list',{limit:50});if(!valid(stamp))return;
+        const recent=await store.call('community.chat.list',{limit:50,...scope});if(!here())return;
         const oldest=recent.messages[0]?.id;
         messages=oldest?[...messages.filter(row=>BigInt(row.id)<BigInt(oldest)),...recent.messages].slice(-200):[];
         chatBefore=recent.hasMore?messages[0]?.id||null:null;lastChatReconcile=Date.now();
       }
       renderMessages(mode==='refresh'||(atEnd&&mode!=='older'));q('#chat-older').hidden=!chatBefore;q('#chat-latest').hidden=!history;
       chatLoaded=true;chatMessage(history?'正在查看历史消息。返回最新消息后恢复自动更新。':'');
-    }catch(error){if(valid(stamp))chatMessage('消息读取失败：'+error.message,true);}finally{if(valid(stamp)){chatBusy=false;arm();}}
+      const mentioned=Number(store.data?.chatMentions)||0;if(mentioned!==roomsMentions||Date.now()-roomsAt>30000){roomsMentions=mentioned;loadRooms();}
+    }catch(error){if(here()){chatMessage('消息读取失败：'+error.message,true);if(place&&error.status===404)loadRooms();}}finally{if(valid(stamp)){chatBusy=false;if(place!==room)loadChat('refresh');else arm();}}
+  }
+  // Private rooms sit under the lab chat; the server lists only the viewer's rooms.
+  function currentRoom(){return rooms.find(item=>item.id===room)||null;}
+  function roomsDialog(){roomDialog??=createRoomDialog(store,{create,toast,onChange:(next,created)=>{rooms=[...rooms.filter(item=>item.id!==next.id),next].sort((a,b)=>Number(a.id)-Number(b.id));if(created)switchRoom(next.id);else renderRooms();}});return roomDialog;}
+  async function loadRooms(){
+    const stamp=context();roomsAt=Date.now();
+    try{
+      const result=await store.call('community.rooms.list');if(!valid(stamp))return;
+      rooms=result.rooms||[];canCreateRoom=result.canCreate===true;
+      if(room&&!rooms.some(item=>item.id===room)){toast('你已不在这个聊天室里，已回到实验室聊天。');switchRoom(null);}else renderRooms();
+      roomDialog?.update(currentRoom());
+    }catch{if(valid(stamp))roomsAt=0;}
+  }
+  function renderRooms(){
+    const bar=q('#chat-rooms');if(!bar)return;bar.replaceChildren();bar.hidden=!rooms.length&&!canCreateRoom;
+    const total=Number(store.data?.chatMentions)||0,lab=Math.max(0,total-rooms.reduce((sum,item)=>sum+(item.mentions||0),0));
+    for(const item of [{id:null,name:'实验室聊天',mentions:lab},...rooms]){
+      const chip=button(item.name,()=>switchRoom(item.id),'chat-room'+(item.id?' private':''));chip.setAttribute('role','tab');chip.setAttribute('aria-selected',String(item.id===room));
+      if(item.mentions)chip.append(el('span','chat-room-mention','@'+item.mentions));bar.append(chip);
+    }
+    if(canCreateRoom)bar.append(button('+ 私密聊天室',()=>roomsDialog().open(null),'chat-room chat-room-new'));
+    const current=currentRoom();q('#chat-room-title').textContent=current?current.name:'实验室聊天';q('#chat-room-private').hidden=!current;for(const help of q('#chat-room-title').parentElement.querySelectorAll('[data-copy-help]'))help.hidden=Boolean(current);q('#chat-room-members').hidden=!current;
+    q('#community-messages').setAttribute('aria-label',current?current.name+'的消息':'公共聊天消息');
+  }
+  function switchRoom(next){
+    if(next===room)return;room=next;messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;mentionRead='';chatLoaded=false;
+    q('#chat-error').textContent='';renderRooms();renderMessages(true);loadChat('refresh');
   }
   function chatBody(item){
     const body=el('p','community-body');
@@ -247,10 +279,10 @@ export function createCommunityUI(store,toast){
     const list=q('#community-messages'),last=messages.at(-1)?.id;
     if(!last||last===mentionRead||!(Number(store.data?.chatMentions)>0)||!visible||!chatShown()||history||list.scrollHeight-list.scrollTop-list.clientHeight>40)return;
     const stamp=context();mentionRead=last;
-    try{const result=await store.call('community.chat.read',{id:last});if(valid(stamp)&&store.data){store.data.chatMentions=result.chatMentions;renderChatMentionBadge(store);}}
+    try{const place=room,result=await store.call('community.chat.read',{id:last,...(place?{room:place}:{})});if(valid(stamp)&&store.data){store.data.chatMentions=result.chatMentions;renderChatMentionBadge(store);const read=rooms.find(item=>item.id===place);if(read)read.mentions=0;roomsMentions=result.chatMentions;renderRooms();}}
     catch{if(valid(stamp))mentionRead='';}
   }
-  async function sendChat(event){event.preventDefault();if(chatSending||!ready)return;const form=event.currentTarget,input=q('#community-chat-body'),payload=chatComposer.payload();if(!payload.body.trim()&&!payload.image)return;chatSending=true;const stamp=context(),submit=form.querySelector('[type=submit]');submit.disabled=true;input.readOnly=true;chatComposer.lock(true);q('#chat-error').textContent='';try{const result=await create('chat','community.chat.send',payload);if(!valid(stamp))return;input.value='';input.readOnly=false;chatComposer.clear();chatComposer.lock(false);if(result.deleted)q('#chat-error').textContent='这条消息已删除或过期，没有重新发送。';history=false;await loadChat('refresh');}catch(error){if(valid(stamp)){const unknown=keys.hasUncertain('chat');input.readOnly=unknown;chatComposer.lock(unknown);q('#chat-error').textContent=unknown?'发送结果未确认。请重试原内容，不会重复发送。':error.message;}}finally{if(valid(stamp)){chatSending=false;submit.disabled=false;}}}
+  async function sendChat(event){event.preventDefault();if(chatSending||!ready)return;const form=event.currentTarget,input=q('#community-chat-body'),payload=chatComposer.payload();if(!payload.body.trim()&&!payload.image)return;chatSending=true;const stamp=context(),submit=form.querySelector('[type=submit]');submit.disabled=true;input.readOnly=true;chatComposer.lock(true);q('#chat-error').textContent='';try{const result=await create('chat','community.chat.send',{...payload,...(room?{room}:{})});if(!valid(stamp))return;input.value='';input.readOnly=false;chatComposer.clear();chatComposer.lock(false);if(result.deleted)q('#chat-error').textContent='这条消息已删除或过期，没有重新发送。';history=false;await loadChat('refresh');}catch(error){if(valid(stamp)){const unknown=keys.hasUncertain('chat');input.readOnly=unknown;chatComposer.lock(unknown);q('#chat-error').textContent=unknown?'发送结果未确认。请重试原内容，不会重复发送。':error.message;}}finally{if(valid(stamp)){chatSending=false;submit.disabled=false;}}}
   const layoutObserver=new ResizeObserver(([entry])=>{
     const next=entry.contentRect.width>=56*parseFloat(getComputedStyle(document.documentElement).fontSize);
     if(next===wide.matches)return;wide.matches=next;
@@ -261,7 +293,7 @@ export function createCommunityUI(store,toast){
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(visible&&ready&&chatShown()){loadChat('poll');}});
   function sync(isVisible){const next=principal(store);if(next!==identity){identity=next;reset();if(next)install();}visible=Boolean(isVisible&&next);if(next)syncNotes();fitChat();if(!visible){stop();return;}if(!ready)enable();else arm();}
   // The @mention pop-up opens the chat tab and skips while the chat is on screen.
-  sync.showChat=()=>{if(!identity)return;if(ready)selectTab('chat');else tab='chat';};
+  sync.showChat=(target=null)=>{if(!identity)return;if(!ready){tab='chat';room=target;return;}if(tab!=='chat')selectTab('chat');switchRoom(target);};
   sync.chatOpen=()=>visible&&chatShown();
   return sync;
 }
