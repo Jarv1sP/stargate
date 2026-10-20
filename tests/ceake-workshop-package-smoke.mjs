@@ -31,12 +31,12 @@ try{
  const go=async route=>{await frame.evaluate(route=>ROUTE.go(ROUTE.AIDP+route),route);await f.locator('.pg-title,.crumb').first().waitFor();};
  await go('model-develop/training/j3');await f.locator('[data-act=jobTab][data-t=log]').click();await f.locator('.log').filter({hasText:'exit status 127'}).waitFor();
  await f.locator('[data-act=logDl]').click();await f.locator('.workshop-demo-text').filter({hasText:'exit status 127'}).waitFor();await f.locator('.dialog [data-x]').click();
- await go('model-develop/notebook');await f.locator('[data-act=nbOpen][data-id=n1]').click();await f.locator('.workshop-demo-back').waitFor();await f.locator('.workshop-demo-back').click();await f.locator('[data-act=nbNew]').waitFor();
+ await go('model-develop/notebook');await f.locator('[data-act=nbOpen][data-id=n1]').click();await f.getByText('Launcher',{exact:true}).first().waitFor();await page.keyboard.press('Alt+ArrowLeft');await f.locator('[data-act=nbNew]').waitFor();
  await go('model-develop/automl');await f.locator('[data-act=demoNew]').click();await f.locator('.dialog [name=name]').fill('工坊内创建');await f.locator('.dialog [data-ok]').click();await f.locator('.tbl').filter({hasText:'工坊内创建'}).waitFor();
  assert.equal(await page.locator('iframe').getAttribute('sandbox'),'allow-scripts');
  assert.equal(await frame.evaluate(()=>{try{localStorage.getItem('x');return false;}catch{return true;}}),true);
  assert.equal(await page.locator('.workshop-widget>.form-error').isVisible(),false);
  await mkdir('out/ceake-demo/工坊验证截图',{recursive:true});await page.screenshot({path:'out/ceake-demo/工坊验证截图/组件实际运行.png'});
- if(pkg.presentation==='interface'){await page.getByRole('button',{name:'恢复平台界面'}).click();assert.equal(await page.locator('iframe').count(),0);assert.equal(await page.locator('.shell').evaluate(n=>n.inert),false);assert.equal(await page.locator('#portal-action').isVisible(),true);assert.deepEqual(await page.evaluate(()=>exits),['demo']);await page.goto(origin+'/?workshop=off');assert.equal(await page.locator('iframe').count(),0);}
+ if(pkg.presentation==='interface'){assert.equal(await page.locator('.workshop-interface-actions').count(),0);await f.locator('#demo-search').focus();await page.keyboard.press('Control+Alt+0');await page.locator('.workshop-interface').waitFor({state:'detached'});assert.equal(await page.locator('iframe').count(),0);assert.equal(await page.locator('.shell').evaluate(n=>n.inert),false);assert.equal(await page.locator('#portal-action').isVisible(),true);assert.deepEqual(await page.evaluate(()=>exits),['demo']);await page.goto(origin+'/?workshop=off');assert.equal(await page.locator('iframe').count(),0);}
  assert.deepEqual(errors,[]);console.log('PASS actual frame CSP + runtime, open, failure log/text export, same-frame Notebook, mock create, zero permissions, opaque storage blocked');
 }finally{await browser?.close();server.closeAllConnections();await new Promise(r=>server.close(r));}

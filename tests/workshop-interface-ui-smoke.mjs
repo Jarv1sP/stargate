@@ -19,7 +19,7 @@ try{
  assert.equal(await page.locator('.shell').evaluate(n=>n.inert),true);assert.equal(await page.locator('#room-nav').isVisible(),false);
  await page.frameLocator('.workshop-interface iframe').locator('#action').click();await page.frameLocator('.workshop-interface iframe').locator('#result').filter({hasText:'模拟创建成功'}).waitFor();
  await page.reload();await page.frameLocator('.workshop-interface iframe').locator('h1').waitFor();await page.locator('#startup-wordmark').waitFor({state:'hidden'});
- await page.getByRole('button',{name:'恢复平台界面'}).click();await page.locator('.workshop-interface').waitFor({state:'detached'});
+ assert.equal(await page.locator('.workshop-interface-actions').count(),0);await page.frameLocator('.workshop-interface iframe').locator('#action').focus();await page.keyboard.press('Control+Alt+0');await page.locator('.workshop-interface').waitFor({state:'detached'});
  assert.equal(await page.locator('.shell').evaluate(n=>n.inert),false);assert.equal(await page.locator('#room-nav').isVisible(),true);
  assert.equal((await f.call(f.alice.token,'workshop.mine')).body.result.installed.length,0);
  assert.equal((await f.call(f.bob.token,'workshop.mine')).body.result.installed.length,0);

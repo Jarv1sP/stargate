@@ -17,6 +17,11 @@ function bootstrap(payload, portalOrigin, nonce) {
     if (data.error) request.reject(new Error(data.error));
     else request.resolve(data.result);
   };
+  if(pkg.presentation==='interface')window.addEventListener('keydown',event=>{
+    if(event.isTrusted&&!event.repeat&&event.ctrlKey&&event.altKey&&!event.shiftKey&&!event.metaKey&&event.code==='Digit0'){
+      event.preventDefault();event.stopImmediatePropagation();channel.port1.postMessage({type:'exit-interface'});
+    }
+  },true);
   Object.defineProperty(window, 'stargate', {value: Object.freeze({
     call(method, args = {}) {
       if (pending.size >= 16) return Promise.reject(new Error('等待中的请求过多。'));
@@ -48,7 +53,7 @@ export function renderWorkshopFrame(pkg, {nonce, origin}) {
   if (!/^[A-Za-z0-9+/_=-]{16,128}$/.test(nonce)) throw new Error('Invalid frame nonce');
   const url = new URL(origin);
   if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin) throw new Error('Invalid portal origin');
-  const payload = Buffer.from(JSON.stringify({html: pkg.html, css: pkg.css, script: pkg.script})).toString('base64');
+  const payload = Buffer.from(JSON.stringify({html: pkg.html, css: pkg.css, script: pkg.script,presentation:pkg.presentation})).toString('base64');
   const csp = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts`;
   const script = `(${bootstrap.toString()})(${JSON.stringify(payload)},${JSON.stringify(origin)},${JSON.stringify(nonce)});`;
   return {csp, html: `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>STARGATE 工坊组件</title><style>html{color-scheme:dark}body{margin:0;padding:16px;background:#111215;color:#f2f2ef;font:14px/1.6 system-ui,sans-serif;overflow-wrap:anywhere}*{box-sizing:border-box}button,input,select{font:inherit;min-height:44px}button{cursor:pointer}a{color:inherit}</style></head><body><div id="workshop-root"></div><script nonce="${nonce}">${script.replace(/<\/script/gi, '<\\/script')}</script></body></html>`};

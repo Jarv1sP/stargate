@@ -71,13 +71,10 @@
   .sb .workshop-dialog .workshop-actions>.button{flex:1 1 auto}
   .sb #workshop-recovery{justify-content:start;gap:8px}
 }
-/* A whole-interface work is still the same isolated frame. Recovery stays outside it. */
+/* A whole-interface work is still the same isolated frame. Recovery uses Ctrl+Alt+0, including when focus is inside the frame. */
 .sb.workshop-interface-active{overflow:hidden}
 .sb.workshop-interface-active>.shell{visibility:hidden}
 .sb .workshop-widget.workshop-interface{position:fixed;inset:0;z-index:70;margin:0;padding:0;width:100%;height:100dvh;max-width:none;border:0;border-radius:0;background:#fff}
 .sb .workshop-interface>h3{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 .sb .workshop-interface>iframe{width:100%;height:100%;border:0;border-radius:0}
 .sb .workshop-interface>.form-error:not([hidden]){position:absolute;top:12px;left:12px;z-index:1;padding:12px;background:var(--bg-1);color:var(--ink);max-width:calc(100% - 24px)}
-.sb .workshop-interface-actions{position:absolute;right:16px;bottom:16px;z-index:2;display:flex;align-items:center;gap:12px;padding:8px 12px;background:#fff;color:#293548;border:1px solid #dce4ee;border-radius:6px;box-shadow:0 4px 16px #23354c22}
-.sb .workshop-interface-actions .button{min-height:44px;background:#3985f7;border:0;color:#fff}
-.sb .workshop-interface-actions a{font-size:12px;color:#246fdf}

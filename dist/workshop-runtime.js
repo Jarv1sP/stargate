@@ -129,6 +129,16 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
       return {jobId: latest.id, state: text(updated?.state, 32), cancelRequested: updated?.cancelRequested === true};
     } finally { instance.canceling = false; }
   }
+  async function leaveInterface(instance){
+    if(!current(instance)||!instance.wholeInterface||instance.exiting)return;
+    instance.exiting=true;
+    try{await exitInterface?.(instance.key.split(':')[0]);}catch(error){fail(instance,error.message);}finally{instance.exiting=false;}
+  }
+  function recoveryKey(event){
+    if(!event.isTrusted||event.repeat||!event.ctrlKey||!event.altKey||event.shiftKey||event.metaKey||event.code!=='Digit0')return;
+    const instance=[...frames.values()].find(entry=>entry.wholeInterface);
+    if(instance){event.preventDefault();void leaveInterface(instance);}
+  }
   function connect(event) {
     if (event.data?.type !== 'stargate:workshop:ready' || event.data.protocol !== 1) return;
     const instance = [...frames.values()].find(instance => event.source === instance.frame.contentWindow);
@@ -136,6 +146,7 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
     instance.port = event.ports[0]; clearTimeout(instance.timer); instance.status.hidden = true;
     instance.port.onmessage = async ({data}) => {
       if (!current(instance)) return;
+      if(data?.type==='exit-interface'){void leaveInterface(instance);return;}
       if (data?.type === 'error') { fail(instance, data.message); return; }
       if (data?.type !== 'call' || !Number.isSafeInteger(data.id) || data.id <= instance.lastId) return;
       instance.lastId = data.id;
@@ -165,16 +176,13 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
     });
     frames.set(instance.key, instance); card.append(heading, status, frame);
     if(wholeInterface){
-      const actions=document.createElement('div');actions.className='workshop-interface-actions';
-      const exit=document.createElement('button');exit.type='button';exit.className='button';exit.textContent='恢复平台界面';
-      exit.onclick=async()=>{exit.disabled=true;try{await exitInterface?.(entry.item.id);}catch(error){fail(instance,error.message);}finally{exit.disabled=false;}};
-      const recovery=document.createElement('a');const url=new URL(window.location.href);url.searchParams.set('workshop','off');url.hash='workshop';recovery.href=url.href;recovery.textContent='安全打开平台';
-      actions.append(exit,recovery);card.append(actions);document.body.append(card);
+      document.body.append(card);
       interfaceShell=document.querySelector('.shell');if(interfaceShell){previousInert=interfaceShell.inert;interfaceShell.inert=true;}
       document.body.classList.add('workshop-interface-active');
     }else root.append(card);
   }
   window.addEventListener('message', connect);
+  window.addEventListener('keydown', recoveryKey, true);
   const unsubscribe = store.onAuthChange?.(() => { clear(); stamp = identity(); });
   return {
     setInstalled(entries) {
@@ -188,6 +196,6 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
     },
     update() { if (!account()) { clear(); return; } for (const instance of frames.values()) instance.port?.postMessage({type: 'update'}); },
     previewTheme(pkg) { if (!account()) return; preview = pkg; applyTheme(); },
-    destroy() { clear(); destroyed = true; themeStyle.remove(); unsubscribe?.(); window.removeEventListener('message', connect); }
+    destroy() { clear(); destroyed = true; themeStyle.remove(); unsubscribe?.(); window.removeEventListener('message', connect);window.removeEventListener('keydown',recoveryKey,true); }
   };
 }

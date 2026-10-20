@@ -21,12 +21,10 @@ jupyter=jupyter.replace("navigator.clipboard && navigator.clipboard.writeText(p.
 const adapter=`
 window.demoShowText=(title,text)=>UI.dialog({title,width:760,footer:false,body:'<textarea class="workshop-demo-text" readonly aria-label="文件内容">'+UI.esc(text)+'</textarea>'});
 ACT.logDl=a=>{const job=S.db.jobs.find(j=>j.id===a.dataset.id);demoShowText(job.name+'.log',(job.logs||[]).join('\\n'));};
-const back=document.createElement('button');back.className='workshop-demo-back';back.textContent='返回 Notebook 列表';back.onclick=()=>ROUTE.go(ROUTE.AIDP+'model-develop/notebook');document.body.append(back);
-const routeChanged=()=>back.hidden=!location.hash.startsWith('#/jupyter/');addEventListener('hashchange',routeChanged);routeChanged();
+addEventListener('keydown',event=>{if(event.altKey&&!event.ctrlKey&&event.code==='ArrowLeft'&&location.hash.startsWith('#/jupyter/')){event.preventDefault();ROUTE.go(ROUTE.AIDP+'model-develop/notebook');}});
 `;
 const css=(await read('css/style.css'))+'\n'+await read('css/demo.css')+`
 html{color-scheme:light}button,input,select{min-height:0}body{padding:0;overflow:auto;overflow-wrap:normal}#app{min-width:1100px;min-height:850px}#workshop-root{height:100vh}
-.workshop-demo-back{position:fixed;right:12px;top:2px;z-index:2000;background:#fff;border:1px solid #dce4ee;color:#246fdf;padding:5px 12px}
 .workshop-demo-text{width:100%;min-height:300px;font:13px/1.7 monospace}
 `;
 const script=[store,await read('js/ui.js'),api,pages,jupyter,await read('js/shell.js'),await read('js/demo-ui.js'),adapter].join('\n;\n');
