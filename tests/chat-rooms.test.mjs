@@ -27,7 +27,7 @@ async function fixture(t){
   const mentions=async user=>(await service.invoke(token(user),'state')).state.chatMentions;
   const fetchImage=(url,user)=>fetch(origin+url,{headers:{Authorization:'Bearer '+token(user)}});
   const {room}=await call(owner,'rooms.create',{key:randomUUID(),name:'东方的太阳'});
-  return {owner,alice,bob,lin,boss,room,call,refused,send,mentions,fetchImage};
+  return {service,owner,alice,bob,lin,boss,room,call,refused,send,mentions,fetchImage};
 }
 
 test('a private room is invisible to everyone outside it, platform admins included',async t=>{
@@ -81,4 +81,39 @@ test('room @mentions reach members only, clear per room, and room pictures stay 
   await f.call(f.owner,'rooms.members.remove',{room:room.id,userId:f.bob.id});assert.equal(await f.mentions(f.bob),0,'removal clears that room\'s mentions');
   await f.send(f.bob,{body:'@alice 再一次'});await f.send(f.owner,{room:room.id,body:'@alice 群里'});
   assert.equal((await f.call(f.alice,'chat.read',{id:'999999999999999',all:true})).chatMentions,0,'我知道了 clears every room');
+});
+
+test('room names are editable by owners and room admins, never by members or outsiders',async t=>{
+  const f=await fixture(t),room=f.room.id;
+  assert.ok((await f.call(f.owner,'info')).capabilities.includes('chat-rooms-manage-v1'));
+  await f.call(f.owner,'rooms.members.add',{room,userIds:[f.alice.id,f.bob.id]});
+  await f.call(f.owner,'rooms.members.role',{room,userId:f.alice.id,role:'admin'});
+  assert.equal((await f.call(f.owner,'rooms.rename',{room,name:'新的太阳'})).room.name,'新的太阳');
+  assert.equal((await f.call(f.alice,'rooms.rename',{room,name:'东方的月亮'})).room.name,'东方的月亮');
+  await assert.rejects(f.call(f.bob,'rooms.rename',{room,name:'成员改名'}),error=>error.status===403&&error.message==='只有群主和聊天室管理员可以改名。');
+  for(const user of [f.lin,f.boss])await f.refused(f.call(user,'rooms.rename',{room,name:'外人改名'}),404);
+  for(const name of ['', '   ', '名'.repeat(31)])await f.refused(f.call(f.owner,'rooms.rename',{room,name}),400);
+  assert.equal((await f.call(f.owner,'rooms.rename',{room,name:'名'.repeat(30)})).room.name,'名'.repeat(30));
+});
+
+test('only the owner deletes a room with its messages, images and mentions, leaving lab chat intact',async t=>{
+  const f=await fixture(t),room=f.room.id;
+  await f.call(f.owner,'rooms.members.add',{room,userIds:[f.alice.id,f.bob.id]});
+  await f.call(f.owner,'rooms.members.role',{room,userId:f.alice.id,role:'admin'});
+  const message=(await f.send(f.owner,{room,body:'@alice 一起看图',image:{type:'image/webp',data:picture.toString('base64'),width:320,height:200}})).message;
+  const other=(await f.send(f.bob,{room,body:'第二条私密消息'})).message;
+  const lab=(await f.send(f.lin,{body:'实验室聊天保留',image:{type:'image/webp',data:picture.toString('base64'),width:320,height:200}})).message;
+  assert.equal(await f.mentions(f.alice),1);assert.equal((await f.fetchImage(message.image.url,f.alice)).status,200);
+  for(const user of [f.alice,f.bob])await assert.rejects(f.call(user,'rooms.delete',{room}),error=>error.status===403&&error.message==='只有群主可以删除聊天室。');
+  for(const user of [f.lin,f.boss])await f.refused(f.call(user,'rooms.delete',{room}),404);
+  const result=await f.call(f.owner,'rooms.delete',{room});assert.equal(result.deleted,true);assert.equal(result.id,room);
+  for(const user of [f.owner,f.alice,f.bob])assert.deepEqual((await f.call(user,'rooms.list')).rooms,[]);
+  for(const table of ['community_rooms_v2','community_room_messages_v2','community_room_members_v2','community_chat_mentions_v2'])assert.equal(f.service.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n,0,table);
+  for(const id of [message.id,other.id]){
+    assert.equal(f.service.db.prepare('SELECT count(*) AS n FROM community_chat_v2 WHERE id=?').get(id).n,0);
+    assert.equal(f.service.db.prepare('SELECT count(*) AS n FROM community_chat_images_v2 WHERE message_id=?').get(id).n,0);
+  }
+  assert.equal((await f.fetchImage(message.image.url,f.owner)).status,404);assert.equal(await f.mentions(f.alice),0);
+  assert.deepEqual((await f.call(f.bob,'chat.list')).messages.map(m=>m.id),[lab.id]);assert.equal((await f.fetchImage(lab.image.url,f.bob)).status,200);
+  await f.refused(f.call(f.bob,'rooms.create',{key:randomUUID(),name:'普通成员不能新建'}),403);
 });

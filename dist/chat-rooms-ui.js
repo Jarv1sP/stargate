@@ -5,11 +5,17 @@ const ROLES={owner:'群主',admin:'管理员',member:'成员'};
 function el(tag,className,text){const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=String(text);return node;}
 function button(text,action,className='button'){const node=el('button',className,text);node.type='button';node.addEventListener('click',action);return node;}
 const label=user=>user.name&&user.name!==user.username?`${user.name}（${user.username}）`:user.name||user.username||'成员';
-export function createRoomDialog(store,{create,toast,onChange}){
+export function createRoomDialog(store,{create,toast,onChange,onDelete}){
   const dialog=el('dialog','community-dialog chat-room-dialog');dialog.setAttribute('aria-labelledby','chat-room-dialog-title');
   dialog.innerHTML='<form><div class="modal-head"><h2 id="chat-room-dialog-title"></h2><button class="icon-button" type="button" data-room-close aria-label="关闭">×</button></div><label class="field" id="chat-room-name-field">名称<input name="name" maxlength="30" placeholder="例如：东方的太阳"></label><ul id="chat-room-member-list" class="chat-room-member-list"></ul><fieldset id="chat-room-invite"><legend>拉人进来</legend><div id="chat-room-candidates" class="chat-room-candidates"></div></fieldset><p class="form-error" id="chat-room-error" role="status"></p><div class="modal-actions"><button type="button" class="button" data-room-close>关闭</button><button type="submit" class="button primary" id="chat-room-submit"></button></div></form>';
   document.body.append(dialog);
   const q=selector=>dialog.querySelector(selector),form=q('form');
+  const save=button('保存名称',()=>change('community.rooms.rename',{name:form.elements.name.value}));save.id='chat-room-rename';q('#chat-room-name-field').after(save);
+  const remove=button('删除聊天室',async()=>{
+    if(busy||!window.confirm(`确定删除「${current.name}」？里面的聊天记录和图片会一起删除，无法恢复。`))return;
+    busy=true;remove.disabled=true;q('#chat-room-error').textContent='';
+    try{const id=current.id;await store.call('community.rooms.delete',{room:id});dialog.close();toast('已删除聊天室。');onDelete(id);}catch(error){fail(error);}finally{busy=false;remove.disabled=false;}
+  },'button danger');remove.id='chat-room-delete';q('.modal-actions').prepend(remove);
   let current=null,busy=false;
   const fail=error=>{q('#chat-room-error').textContent=error.message;};
   function candidates(exclude){
@@ -21,8 +27,8 @@ export function createRoomDialog(store,{create,toast,onChange}){
   }
   function render(){
     const creating=!current,mine=current?.role,manager=creating||mine==='owner'||mine==='admin';
-    q('#chat-room-dialog-title').textContent=creating?'新建私密聊天室':`「${current.name}」成员`;
-    q('#chat-room-name-field').hidden=!creating;q('#chat-room-member-list').hidden=creating;q('#chat-room-error').textContent='';
+    q('#chat-room-dialog-title').textContent=creating?'新建私密聊天室':`「${current.name}」成员与设置`;
+    q('#chat-room-name-field').hidden=!manager;form.elements.name.value=current?.name||'';save.hidden=creating||!manager;remove.hidden=mine!=='owner';q('#chat-room-member-list').hidden=creating;q('#chat-room-error').textContent='';
     const list=q('#chat-room-member-list');list.replaceChildren();
     for(const member of current?.members||[]){
       const row=el('li'),who=el('span','chat-room-member',label(member));who.append(el('span','community-tag',ROLES[member.role]||'成员'));row.append(who);
