@@ -4,7 +4,7 @@ import {WORKSHOP_EXAMPLES} from './workshop-examples.js';
 import {createWorkshopRuntime} from './workshop-runtime.js';
 
 const permissionLabels={'resources.read':'读取 GPU 概况','jobs.read':'读取本人的任务','jobs.cancel':'经平台确认后取消任务','ui.navigate':'切换平台页面'};
-const kindLabel=kind=>kind==='theme'?'主题与布局':'功能插件';
+const kindLabel=(kind,presentation)=>presentation==='interface'?'整站界面':kind==='theme'?'主题与布局':'功能插件';
 const versionLabel=version=>String(version).length>16?String(version).slice(0,12):String(version);
 const permissionHTML=pkg=>(pkg.permissions||[]).length?`<ul class="workshop-permissions">${pkg.permissions.map(value=>`<li>${esc(permissionLabels[value])} <code>${esc(value)}</code></li>`).join('')}</ul>`:'<p class="muted">不申请数据或操作权限。</p>';
 
@@ -50,7 +50,7 @@ export function createWorkshopUI(store,{navigate,toast}){
     const matches=rows.filter(item=>(kind==='all'||kind==='installed'||item.kind===kind)&&[item.name,item.description,item.author.name,item.author.username].some(value=>String(value||'').toLocaleLowerCase().includes(needle)));
     q('#workshop-catalog').innerHTML=matches.map(item=>{
       const own=installed.find(record=>record.item.id===item.id),state=mineState!=='ready'?'安装状态未知':own?`已安装 v${versionLabel(own.item.version)}`:'未安装';
-      return `<article class="workshop-card"><div class="workshop-card-meta"><span>${kindLabel(item.kind)}</span><span>${esc(state)}</span></div><h2>${esc(item.name)}</h2><p class="workshop-description">${esc(item.description)}</p><p class="muted">${esc(item.author.name||item.author.username)} · <span title="${esc(item.version)}">v${esc(versionLabel(item.version))}</span></p><button type="button" class="button" data-workshop="detail" data-id="${esc(item.id)}" ${kind==='installed'?`data-version="${esc(item.version)}"`:''}>查看作品</button></article>`;
+      return `<article class="workshop-card"><div class="workshop-card-meta"><span>${kindLabel(item.kind,item.presentation)}</span><span>${esc(state)}</span></div><h2>${esc(item.name)}</h2><p class="workshop-description">${esc(item.description)}</p><p class="muted">${esc(item.author.name||item.author.username)} · <span title="${esc(item.version)}">v${esc(versionLabel(item.version))}</span></p><button type="button" class="button" data-workshop="detail" data-id="${esc(item.id)}" ${kind==='installed'?`data-version="${esc(item.version)}"`:''}>查看作品</button></article>`;
     }).join('')||`<p class="workshop-empty">${!enabled?'工坊暂不可用。':listState==='loading'?'正在读取作品…':listState==='error'?'作品读取失败，请重试。':needle?'没有匹配的作品。':kind==='installed'&&mineState!=='ready'?'安装状态尚未确认。':'暂无作品。可以从示例开始发布。'}</p>`;
   }
   async function loadMine(){
@@ -72,7 +72,7 @@ export function createWorkshopUI(store,{navigate,toast}){
   function showDetail(){
     if(!selected)return;const {item,package:pkg}=selected,own=installed.find(record=>record.item.id===item.id);
     q('#workshop-detail-title').textContent=item.name;
-    q('#workshop-detail-content').innerHTML=`<p>${esc(item.description)}</p><p class="muted">${esc(item.author.name||item.author.username)} · ${kindLabel(item.kind)} · <span title="${esc(item.version)}">v${esc(versionLabel(item.version))}</span></p><h3>安装后可用权限</h3>${permissionHTML(pkg)}${pkg.kind==='theme'?`<p class="muted">${pkg.theme.density==='compact'?'紧凑':'舒适'}间距 · ${pkg.theme.width==='wide'?'宽':'标准'}工作台 · ${pkg.theme.columns} 列小组件</p>`:'<p class="muted">插件在独立小组件内运行，不会获得终端、文件或管理员接口。</p>'}<p>${mineState!=='ready'?'安装状态尚未确认，请刷新。':own?`已安装 v${esc(versionLabel(own.item.version))}${own.item.version===item.version?'':'；更新需要重新确认权限。'}`:'尚未安装。'}</p><div class="workshop-actions">${pkg.kind==='theme'?'<button class="button" type="button" data-workshop="preview">预览主题</button><button class="button" type="button" data-workshop="stop-preview">停止预览</button>':''}<button type="button" class="button primary" data-workshop="install" ${busy||mineState!=='ready'||own?.item.version===item.version?'disabled':''}>${own?.item.version===item.version?'已安装此版本':'安装此版本'}</button>${own?'<button type="button" class="button" data-workshop="uninstall">停用作品</button>':''}${item.canEdit?'<button type="button" class="button" data-workshop="edit">发布新版本</button>':''}${item.canRemove?'<button type="button" class="button danger" data-workshop="remove">下架作品</button>':''}</div><details class="workshop-source-details"><summary>查看完整源码 JSON</summary><pre tabindex="0">${esc(JSON.stringify(pkg,null,2))}</pre></details>`;
+    q('#workshop-detail-content').innerHTML=`<p>${esc(item.description)}</p><p class="muted">${esc(item.author.name||item.author.username)} · ${kindLabel(item.kind,item.presentation)} · <span title="${esc(item.version)}">v${esc(versionLabel(item.version))}</span></p><h3>安装后可用权限</h3>${permissionHTML(pkg)}${pkg.kind==='theme'?`<p class="muted">${pkg.theme.density==='compact'?'紧凑':'舒适'}间距 · ${pkg.theme.width==='wide'?'宽':'标准'}工作台 · ${pkg.theme.columns} 列小组件</p>`:pkg.presentation==='interface'?'<p class="muted">安装后替换整个可见界面，按 Ctrl + Alt + 0 恢复平台界面；作品仍在隔离环境中运行。</p>':'<p class="muted">插件在独立小组件内运行，不会获得终端、文件或管理员接口。</p>'}<p>${mineState!=='ready'?'安装状态尚未确认，请刷新。':own?`已安装 v${esc(versionLabel(own.item.version))}${own.item.version===item.version?'':'；更新需要重新确认权限。'}`:'尚未安装。'}</p><div class="workshop-actions">${pkg.kind==='theme'?'<button class="button" type="button" data-workshop="preview">预览主题</button><button class="button" type="button" data-workshop="stop-preview">停止预览</button>':''}<button type="button" class="button primary" data-workshop="install" ${busy||mineState!=='ready'||own?.item.version===item.version?'disabled':''}>${own?.item.version===item.version?'已安装此版本':'安装此版本'}</button>${own?'<button type="button" class="button" data-workshop="uninstall">停用作品</button>':''}${item.canEdit?'<button type="button" class="button" data-workshop="edit">发布新版本</button>':''}${item.canRemove?'<button type="button" class="button danger" data-workshop="remove">下架作品</button>':''}</div><details class="workshop-source-details"><summary>查看完整源码 JSON</summary><pre tabindex="0">${esc(JSON.stringify(pkg,null,2))}</pre></details>`;
   }
   async function openDetail(id,version){
     const turn=++detailTurn,stamp=generation;selected=null;stopPreview();q('#workshop-detail-title').textContent='作品详情';q('#workshop-detail-content').textContent='正在读取…';detail.showModal();
@@ -108,7 +108,7 @@ export function createWorkshopUI(store,{navigate,toast}){
   }
   function checkPackage(){
     const pkg=normalizeWorkshopPackage(JSON.parse(q('#workshop-source').value));
-    q('#workshop-package-summary').innerHTML=`<h3>${esc(pkg.name)}</h3><p>${kindLabel(pkg.kind)} · ${new TextEncoder().encode(JSON.stringify(pkg)).byteLength} 字节 · 尚未执行</p>${permissionHTML(pkg)}`;
+    q('#workshop-package-summary').innerHTML=`<h3>${esc(pkg.name)}</h3><p>${kindLabel(pkg.kind,pkg.presentation)} · ${new TextEncoder().encode(JSON.stringify(pkg)).byteLength} 字节 · 尚未执行</p>${permissionHTML(pkg)}`;
     q('#workshop-publish-error').textContent='';return pkg;
   }
   q('#workshop-publish-form').addEventListener('submit',async event=>{
@@ -139,7 +139,7 @@ export function createWorkshopUI(store,{navigate,toast}){
       else if(action==='edit'&&selected)openEditor(selected.package,selected.item.id);
       else if(action==='preview'&&selected){runtime.previewTheme(selected.package);previewing=true;draw();}
       else if(action==='stop-preview')stopPreview();
-      else if(action==='install'&&selected){const {item,package:pkg}=selected;if(await confirmAction(`安装 ${item.name}？`,`<p>固定版本 v${esc(versionLabel(item.version))} · ${esc(item.author.name||item.author.username)}</p>${permissionHTML(pkg)}<p>${pkg.kind==='theme'?'替换本人当前主题，不影响其他成员。':'只安装信任作者的插件。插件将获得以上数据与能力，并在自己的工作台运行。'}</p>`,'授权并安装')&&current(stamp))await write('workshop.install',{id:item.id,version:item.version,permissions:pkg.permissions||[]},'已安装，工作台已更新。');}
+      else if(action==='install'&&selected){const {item,package:pkg}=selected;if(await confirmAction(`安装 ${item.name}？`,`<p>固定版本 v${esc(versionLabel(item.version))} · ${esc(item.author.name||item.author.username)}</p>${permissionHTML(pkg)}<p>${pkg.kind==='theme'?'替换本人当前主题，不影响其他成员。':pkg.presentation==='interface'?'安装后自动替换整个可见界面，替换本人已安装的其他整站界面。按 Ctrl + Alt + 0 恢复平台界面，不影响真实训练。':'只安装信任作者的插件。插件将获得以上数据与能力，并在自己的工作台运行。'}</p>`,'授权并安装')&&current(stamp)){const result=await write('workshop.install',{id:item.id,version:item.version,permissions:pkg.permissions||[]},'已安装，工作台已更新。');if(result&&pkg.presentation==='interface'){detail.close();selected=null;}}}
       else if(action==='uninstall'&&selected)await write('workshop.uninstall',{id:selected.item.id},'已停用作品。');
       else if(action==='remove'&&selected){const item=selected.item;if(await confirmAction(`下架 ${item.name}？`,'<p>所有使用者都会停用此作品，已发布的版本将不再可安装。</p>','下架并停用')&&current(stamp)){const result=await write('workshop.remove',{id:item.id},'作品已下架。');if(result){detail.close();selected=null;await Promise.all([loadList(),loadMine()]);}}}
     }catch(cause){if(current(stamp)){if(editor.open)q('#workshop-publish-error').textContent=cause.message;else{error=cause.message;draw();}}}
@@ -150,7 +150,7 @@ export function createWorkshopUI(store,{navigate,toast}){
   });
   return {render(nextActive){
     if(actor!==identity())resetSession();
-    if(!runtime&&available())runtime=createWorkshopRuntime({store,root:widgets,navigate,toast});
+    if(!runtime&&available())runtime=createWorkshopRuntime({store,root:widgets,navigate,toast,exitInterface:async id=>{detail.close();selected=null;await write('workshop.uninstall',{id},'已恢复平台界面。');}});
     if(!nextActive&&active){detail.close();editor.close();stopPreview();}
     const entered=nextActive&&!active;active=nextActive;
     if(available()){if(!mineAt||Date.now()-mineAt>60000)void loadMine();if(active&&(entered||listState==='idle'))void loadList();}

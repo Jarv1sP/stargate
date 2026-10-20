@@ -226,3 +226,17 @@ test('real Portal queue, sessions, lost receipt replay and installations survive
   await service.invoke(admin.token,'users.enabled',{userId:account.id,enabled:false});
   await assert.rejects(service.invoke(member.token,'workshop.mine'),status(401));
 });
+
+test('whole-interface presentation stays isolated and replaces only this user’s previous interface',t=>{
+  const f=fixture(t),ordinary=f.publish(plugin()),colors=f.publish(theme());
+  const first=f.publish(plugin({name:'界面甲',presentation:'interface',permissions:[]}));
+  const second=f.publish(plugin({name:'界面乙',presentation:'interface',permissions:[]}));
+  assert.equal(first.package.presentation,'interface');assert.equal(first.item.presentation,'interface');
+  f.install(ordinary);f.install(colors);f.install(first);f.install(first,'bob');
+  const result=f.install(second);
+  assert.deepEqual(new Set(result.installed.map(entry=>entry.item.id)),new Set([ordinary.item.id,colors.item.id,second.item.id]));
+  assert.equal(f.call('mine',{},'bob').installed[0].item.id,first.item.id);
+  assert.equal(installedWorkshopPlugin(f.service,actors.alice,{id:second.item.id,version:1}).presentation,'interface');
+  assert.deepEqual(f.call('uninstall',{id:second.item.id}).installed.map(entry=>entry.item.id).sort(),[ordinary.item.id,colors.item.id].sort());
+  assert.equal(normalizeWorkshopPackage(plugin({presentation:'future-layout'})).presentation,undefined);
+});

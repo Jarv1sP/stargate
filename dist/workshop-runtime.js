@@ -40,7 +40,7 @@ body.sb[data-workshop-theme] #workshop-widgets{gap:var(--workshop-gap)}
 ${theme.density === 'compact' ? 'body.sb[data-workshop-theme] .page-heading{padding-block:24px 20px}body.sb[data-workshop-theme] #workshop-widgets>.workshop-widget{padding:12px}' : ''}`;
 }
 
-export function createWorkshopRuntime({store, root, navigate, toast}) {
+export function createWorkshopRuntime({store, root, navigate, toast, exitInterface}) {
   const document = root.ownerDocument, window = document.defaultView;
   const disabled = new URLSearchParams(window.location.search).get('workshop') === 'off';
   const frames = new Map();
@@ -52,10 +52,13 @@ export function createWorkshopRuntime({store, root, navigate, toast}) {
 
   function identity() { return `${store.principal?.userId || ''}:${store.authGeneration || 0}`; }
   function current(instance) { return !destroyed && !disabled && !instance.stopped && !!store.principal && instance.stamp === identity() && frames.get(instance.key) === instance; }
+  let interfaceShell=null,previousInert=false;
+  function restoreShell(){if(interfaceShell){interfaceShell.inert=previousInert;interfaceShell=null;}document.body.classList.remove('workshop-interface-active');}
   function close(instance) {
     clearTimeout(instance.timer);
     instance.port?.close();
     instance.card.remove();
+    if(instance.wholeInterface)restoreShell();
     frames.delete(instance.key);
     if (confirmation?.instance === instance) confirmation.finish(false);
   }
@@ -126,6 +129,16 @@ export function createWorkshopRuntime({store, root, navigate, toast}) {
       return {jobId: latest.id, state: text(updated?.state, 32), cancelRequested: updated?.cancelRequested === true};
     } finally { instance.canceling = false; }
   }
+  async function leaveInterface(instance){
+    if(!current(instance)||!instance.wholeInterface||instance.exiting)return;
+    instance.exiting=true;
+    try{await exitInterface?.(instance.key.split(':')[0]);}catch(error){fail(instance,error.message);}finally{instance.exiting=false;}
+  }
+  function recoveryKey(event){
+    if(!event.isTrusted||event.repeat||!event.ctrlKey||!event.altKey||event.shiftKey||event.metaKey||event.code!=='Digit0')return;
+    const instance=[...frames.values()].find(entry=>entry.wholeInterface);
+    if(instance){event.preventDefault();void leaveInterface(instance);}
+  }
   function connect(event) {
     if (event.data?.type !== 'stargate:workshop:ready' || event.data.protocol !== 1) return;
     const instance = [...frames.values()].find(instance => event.source === instance.frame.contentWindow);
@@ -133,6 +146,7 @@ export function createWorkshopRuntime({store, root, navigate, toast}) {
     instance.port = event.ports[0]; clearTimeout(instance.timer); instance.status.hidden = true;
     instance.port.onmessage = async ({data}) => {
       if (!current(instance)) return;
+      if(data?.type==='exit-interface'){void leaveInterface(instance);return;}
       if (data?.type === 'error') { fail(instance, data.message); return; }
       if (data?.type !== 'call' || !Number.isSafeInteger(data.id) || data.id <= instance.lastId) return;
       instance.lastId = data.id;
@@ -146,22 +160,29 @@ export function createWorkshopRuntime({store, root, navigate, toast}) {
     instance.port.start();
   }
   function mount(entry) {
-    const card = document.createElement('section'); card.className = 'workshop-widget';
+    const wholeInterface=entry.package.presentation==='interface';
+    const card = document.createElement('section'); card.className = 'workshop-widget'+(wholeInterface?' workshop-interface':'');
     const heading = document.createElement('h3'); heading.textContent = entry.package.name;
     const status = document.createElement('p'); status.className = 'form-error'; status.setAttribute('role', 'status'); status.textContent = '正在加载组件…';
     const frame = document.createElement('iframe');
     frame.title = entry.package.name; frame.sandbox = 'allow-scripts'; frame.referrerPolicy = 'no-referrer';
     frame.src = `/workshop/frame/${encodeURIComponent(entry.item.id)}/${encodeURIComponent(entry.item.version)}`;
-    const instance = {key: `${entry.item.id}:${entry.item.version}`, name: entry.package.name, stamp, card, status, frame, permissions: new Set(entry.package.permissions || []), port: null, lastId: 0};
+    const instance = {key: `${entry.item.id}:${entry.item.version}`, wholeInterface, name: entry.package.name, stamp, card, status, frame, permissions: new Set(entry.package.permissions || []), port: null, lastId: 0};
     instance.timer = setTimeout(() => { if (current(instance) && !instance.port) fail(instance, '组件未能连接。请检查登录状态或重新安装。'); }, 10000);
     let loaded = false;
     frame.addEventListener('load', () => {
       if (loaded) { instance.stopped = true; instance.port?.close(); instance.port = null; if (confirmation?.instance === instance) confirmation.finish(false); fail(instance, '组件已离开运行页面；请停用后重新启用。'); }
       loaded = true;
     });
-    frames.set(instance.key, instance); card.append(heading, status, frame); root.append(card);
+    frames.set(instance.key, instance); card.append(heading, status, frame);
+    if(wholeInterface){
+      document.body.append(card);
+      interfaceShell=document.querySelector('.shell');if(interfaceShell){previousInert=interfaceShell.inert;interfaceShell.inert=true;}
+      document.body.classList.add('workshop-interface-active');
+    }else root.append(card);
   }
   window.addEventListener('message', connect);
+  window.addEventListener('keydown', recoveryKey, true);
   const unsubscribe = store.onAuthChange?.(() => { clear(); stamp = identity(); });
   return {
     setInstalled(entries) {
@@ -175,6 +196,6 @@ export function createWorkshopRuntime({store, root, navigate, toast}) {
     },
     update() { if (!account()) { clear(); return; } for (const instance of frames.values()) instance.port?.postMessage({type: 'update'}); },
     previewTheme(pkg) { if (!account()) return; preview = pkg; applyTheme(); },
-    destroy() { clear(); destroyed = true; themeStyle.remove(); unsubscribe?.(); window.removeEventListener('message', connect); }
+    destroy() { clear(); destroyed = true; themeStyle.remove(); unsubscribe?.(); window.removeEventListener('message', connect);window.removeEventListener('keydown',recoveryKey,true); }
   };
 }
