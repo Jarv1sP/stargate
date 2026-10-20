@@ -13,7 +13,7 @@ export function workshopResources(store) {
     checkedAt: text(snapshot?.checkedAt) || null, stale: !fresh,
     machines: (store.data?.machines || []).slice(0, 64).map(machine => {
       const host = snapshot?.hosts?.find(host => host.id === machine.id);
-      return {id: text(machine.id), model: text(machine.model), cards: number(machine.cards), reachable: typeof host?.reachable === 'boolean' ? host.reachable : null,
+      return {id: typeof machine.id==='string'?machine.id:'', model: text(machine.model), cards: number(machine.cards), reachable: typeof host?.reachable === 'boolean' ? host.reachable : null,
         gpus: fresh && host?.reachable === true ? (host.gpus || []).slice(0, 64).map(gpu => ({
           index: number(gpu.index), model: text(gpu.model), utilization: number(gpu.utilization),
           memoryUsedMiB: number(gpu.memoryUsedMiB), memoryTotalMiB: number(gpu.memoryTotalMiB),

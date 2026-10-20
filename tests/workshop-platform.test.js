@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {workshopResources} from '../dist/workshop-runtime.js';
 import {platformSnapshot,platformCall} from '../dist/workshop-platform.js';
 test('live snapshot contains team tasks and public account fields but no session or account secrets',()=>{
  const store={principal:{userId:'a',username:'alice',role:'member',token:'secret-token'},users:[{id:'a',name:'成员甲',username:'alice',passwordHash:'secret-password'},{id:'b',name:'成员乙',username:'bob'}],jobs:[{id:'j-b',userId:'b',state:'UNKNOWN',argv:['python','train.py'],submitter:{name:'成员乙'},bridgeToken:'secret-bridge'}],sessionToken:'secret-session'};
@@ -20,3 +21,5 @@ test('live state refresh uses the existing store refresh and preserves backend f
  assert.equal((await platformCall(store,'platform.read',{operation:'state',refresh:true},()=>({stale:false}))).jobs[0].id,'new');
  await assert.rejects(platformCall(store,'platform.write',{operation:'projects.create',args:{}}),e=>e===error);
 });
+
+test('server IDs used for real operations are not shortened for display',()=>{const id='node-'+ 'x'.repeat(200);const result=workshopResources({data:{machines:[{id,cards:1}],gpuq:{stale:false,hosts:[{id,reachable:true,gpus:[]}]}}});assert.equal(result.machines[0].id,id);});
