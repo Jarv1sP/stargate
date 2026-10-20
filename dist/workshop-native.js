@@ -1,9 +1,10 @@
 // Mount existing platform views in a modal, preserving their controllers and transfer logic.
-export function createWorkshopNative({store,navigate,openProject}){
+export function createWorkshopNative({store,navigate,openProject,toast}){
  let active=null,opening=null,turn=0;
  function close(){turn++;if(active){active.dialog.close();active.finish();}}
  async function mount(request){
   close();const stamp=turn,type=request?.view;
+  if(type==='admin'&&store.principal?.role!=='admin')throw Error('管理台需要管理员权限。');
   const page={project:'work',datasets:'datasets',job:'jobs',submit:'jobs',admin:'admin',community:'community',transfers:'transfers',resources:'resources'}[type];
   if(!page)throw Error('不支持此平台面板。');
   navigate(page);
@@ -24,12 +25,15 @@ export function createWorkshopNative({store,navigate,openProject}){
   }
   const body=document.createElement('div');body.className='workshop-native-body';body.append(node);dialog.append(body);document.body.append(dialog);let finished=false,visibility=null;
   const finish=()=>{if(finished)return;finished=true;visibility?.disconnect();if(type==='submit'&&node.classList.contains('on')){const cancel=node.querySelector('[data-sheet-close]');if(cancel)cancel.click();else document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));}if(type==='job'&&node.classList.contains('on'))node.querySelector('.jr-x')?.click();marker.replaceWith(node);dialog.remove();if(active?.dialog===dialog)active=null;};
-  active={dialog,finish};
+  active={dialog,finish,type};
   dialog.addEventListener('close',finish,{once:true});dialog.addEventListener('click',event=>{if(type==='job'&&event.target.closest('.jr-x'))dialog.close();});
   if(type==='job'||type==='submit'){visibility=new MutationObserver(()=>{if(!node.classList.contains('on'))dialog.close();});visibility.observe(node,{attributes:true,attributeFilter:['class']});}
   dialog.showModal();
   if(type==='project')node.querySelector(`[data-pt="${['term','files','settings'].includes(request.tab)?request.tab:'term'}"]`)?.click();
   return {opened:true};
  }
- return {open(request){if(!opening)opening=mount(request).finally(()=>{opening=null;});return opening;},close};
+ function open(request){if(!opening)opening=mount(request).finally(()=>{opening=null;});return opening;}
+ function route(event){if(!active)return;const next=event.detail?.next;if(next==='work'){close();return;}if(['resources','datasets','community','transfers','admin'].includes(next)&&active.type!==next)void open({view:next}).catch(error=>toast?.(error.message));}
+ document.addEventListener('gpuq-route-entered',route);
+ return {open,close,isOpen:()=>!!active,destroy(){close();document.removeEventListener('gpuq-route-entered',route);}};
 }

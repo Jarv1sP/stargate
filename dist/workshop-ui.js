@@ -11,7 +11,7 @@ const permissionHTML=pkg=>(pkg.permissions||[]).length?`<ul class="workshop-perm
 
 export function createWorkshopUI(store,{navigate,toast,openProject}){
   const host=document.querySelector('#page-workshop'),widgets=document.querySelector('#workshop-widgets');
-  const nativeView=createWorkshopNative({store,navigate,openProject});
+  const nativeView=createWorkshopNative({store,navigate,openProject,toast});
   let runtime=null;
   const bypass=new URL(location.href).searchParams.get('workshop')==='off';
   let actor=null,generation=0,active=false,items=[],installed=[],mineState='unknown',listState='idle',error='',busy=false;
@@ -150,12 +150,12 @@ export function createWorkshopUI(store,{navigate,toast,openProject}){
   recovery.querySelector('button').addEventListener('click',async()=>{
     if(!available())return;const stamp=generation;if(await confirmAction('恢复默认界面？','<p>停用本人安装的全部主题和插件，不删除已发布作品，也不影响训练。</p>','恢复默认')&&current(stamp)){runtime.previewTheme(null);runtime.setInstalled([]);previewing=false;await write('workshop.reset',{},'已恢复默认界面。');}
   });
-  return {render(nextActive){
+  return {openNativeProject:detail=>nativeView.isOpen()?nativeView.open({view:'project',project:detail}):null,render(nextActive){
     if(actor!==identity())resetSession();
     if(!runtime&&available())runtime=createWorkshopRuntime({store,root:widgets,navigate,toast,nativeView,exitInterface:async id=>{detail.close();selected=null;await write('workshop.uninstall',{id},'已恢复平台界面。');}});
     if(!nextActive&&active){detail.close();editor.close();stopPreview();}
     const entered=nextActive&&!active;active=nextActive;
     if(available()){if(!mineAt||Date.now()-mineAt>60000)void loadMine();if(active&&(entered||listState==='idle'))void loadList();}
     runtime?.update();draw();
-  },destroy(){controller.abort();runtime?.destroy();dialogs.remove();}};
+  },destroy(){controller.abort();runtime?.destroy();nativeView.destroy();dialogs.remove();}};
 }

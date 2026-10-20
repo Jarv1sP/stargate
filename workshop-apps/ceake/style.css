@@ -412,3 +412,4 @@ html{color-scheme:light}body{padding:0;overflow-wrap:normal}button,input,select{
 #note-form{margin-top:18px}#note-form textarea{width:100%;margin-bottom:12px}
 .tbl td{max-width:260px;overflow-wrap:anywhere}.tbl-scroll{overflow:auto}
 #live-log{min-height:160px}.log-l span{min-width:0;flex:1}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

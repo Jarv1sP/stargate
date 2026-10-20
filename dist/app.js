@@ -120,6 +120,6 @@ if(store.principal)defaultPage();render();if(store.principal)shell.syncStatus('r
 onAdminSectionsChange(()=>render(true));
 const poll=setInterval(()=>{if(!document.hidden)refresh();},15000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
-document.addEventListener('gpuq-open-project',async event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||detail.authGeneration!==store.authGeneration)return;try{await choosePage('work');await renderExecution.openProject(detail);}catch(error){toast(error.message);}});
+document.addEventListener('gpuq-open-project',async event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||detail.authGeneration!==store.authGeneration)return;try{const native=workshop.openNativeProject(detail);if(native){await native;return;}await choosePage('work');await renderExecution.openProject(detail);}catch(error){toast(error.message);}});
 addEventListener('hashchange',()=>choosePage(location.hash));
 addEventListener('pagehide',()=>clearInterval(poll),{once:true});
