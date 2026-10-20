@@ -29,7 +29,8 @@
 .sb .adm-limit .adm-sub{grid-area:sub}
 .sb .adm-limit-n{grid-area:n;font-size:13px;color:var(--ink-3);white-space:nowrap}
 .sb .adm-num{width:64px;height:36px;padding:0 10px;text-align:center;font-family:var(--mono)}
-.sb .adm-total{display:flex;align-items:center;gap:10px;margin-top:16px;font-size:14px;color:var(--ink-2)}
+.sb .adm-total{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:16px;font-size:14px;color:var(--ink-2)}
+.sb .adm-hint{margin:6px 0 0;font-size:13px;line-height:1.6;color:var(--ink-3)}
 .sb .adm-field{display:grid;gap:8px;font-size:13px;color:var(--ink-3)}
 .sb .adm-qr{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:16px}
 .sb .adm-qr img{width:200px;height:200px;border-radius:8px;background:#fff}
