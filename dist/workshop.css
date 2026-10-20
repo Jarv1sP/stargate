@@ -1,0 +1,73 @@
+/* Workshop is a client of the existing portal, not a second visual system. */
+.sb #page-workshop{min-width:0;container-type:inline-size}
+.sb[data-workshop-theme] .brand-wordmark{color:var(--ink)}
+.sb[data-workshop-theme] #app-topbar{background:var(--bg-1);color:var(--ink)}
+.sb[data-workshop-theme] #room-nav .nav-item{color:var(--ink-2)}
+.sb[data-workshop-theme] #room-nav .nav-item.active{color:var(--ink)}
+.sb[data-workshop-theme] :is(.command-trigger,.guide-top,.sync){color:var(--ink-2);border-color:var(--line-2)}
+.sb .workshop-toolbar{display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin:0 0 24px}
+.sb :is(#page-workshop,#workshop-dialogs) label{display:grid;gap:8px;min-width:0;font-size:14px}
+.sb .workshop-search{flex:1 1 240px}
+.sb :is(#page-workshop,#workshop-dialogs) :is(input,select,textarea){width:100%;min-width:0;max-width:100%;min-height:48px;padding:10px 12px;color:var(--ink);background:var(--bg-1);border:1px solid var(--line-2);border-radius:6px;box-sizing:border-box}
+.sb :is(#page-workshop,#workshop-dialogs,.workshop-confirm) :is(button,.button,summary){min-height:48px;min-width:48px}
+.sb :is(#page-workshop,#workshop-dialogs,.workshop-confirm) .button{height:auto;white-space:normal;overflow-wrap:anywhere;line-height:1.5;padding:10px 16px}
+.sb .workshop-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sb #workshop-status{margin-bottom:12px;color:var(--ink-2);overflow-wrap:anywhere}
+.sb #workshop-error:not(:empty){margin-bottom:16px}
+.sb .workshop-catalog{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:24px}
+.sb .workshop-card{display:flex;flex-direction:column;align-items:start;gap:16px;min-width:0;padding:24px;background:var(--bg-1);border:1px solid var(--line-2);border-radius:8px}
+.sb .workshop-card-meta{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;width:100%;font-size:12px;color:var(--ink-2)}
+.sb .workshop-card h2{font-size:22px;line-height:1.4;overflow-wrap:anywhere}
+.sb .workshop-card :is(p,span){overflow-wrap:anywhere}
+.sb .workshop-description{flex:1;white-space:pre-wrap}
+.sb .workshop-card>.button{width:100%}
+.sb .workshop-empty{color:var(--ink-2);padding:32px 0}
+.sb .workshop-dialog{box-sizing:border-box;width:min(780px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);padding:24px;overflow:auto;overscroll-behavior:contain}
+.sb .workshop-dialog .modal-head{display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:20px}
+.sb .workshop-dialog .modal-head h2{min-width:0;overflow-wrap:anywhere;font-size:24px}
+.sb .workshop-dialog .modal-head>.button{flex:none}
+.sb .workshop-dialog :is(p,li,h3){overflow-wrap:anywhere}
+.sb #workshop-detail-content,.sb #workshop-publish-form{display:grid;gap:20px;min-width:0}
+.sb #workshop-detail-content h3,.sb #workshop-package-summary h3{font-size:16px;margin:0}
+.sb .workshop-permissions{list-style:disc;padding-left:20px;display:grid;gap:8px}
+.sb .workshop-permissions code{color:var(--ink-2);overflow-wrap:anywhere}
+.sb .workshop-source-details>summary{display:flex;align-items:center;cursor:pointer;gap:8px}
+.sb .workshop-source-details>summary::before{content:'▸'}
+.sb .workshop-source-details[open]>summary::before{content:'▾'}
+.sb .workshop-source-details pre{padding:16px;background:var(--bg-2);border:1px solid var(--line-2);max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:12px/1.6 var(--mono)}
+.sb .workshop-editor-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.sb #workshop-source{font:13px/1.6 var(--mono);resize:vertical;min-height:240px;white-space:pre;overflow:auto}
+.sb .workshop-confirm{width:min(520px,calc(100vw - 32px))}
+.sb #workshop-confirm-content{display:grid;gap:16px;margin-block:20px}
+.sb #workshop-package-summary{display:grid;gap:12px}
+.sb #workshop-publish-status{overflow-wrap:anywhere}
+/* Fixed palette preserves a way out even after installing unreadable colours. */
+.sb #workshop-recovery{display:flex;gap:12px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:24px;padding:12px;background:#111215;color:#f2f2ef;border:1px solid #53555b;border-radius:6px;font:13px/1.5 system-ui,sans-serif}
+.sb #workshop-recovery :is(button,a){display:inline-flex;align-items:center;justify-content:center;min-height:48px;min-width:48px;padding:8px 12px;background:#111215;color:#f2f2ef;border:1px solid #73767e;border-radius:4px;text-decoration:none;font:inherit;cursor:pointer}
+.sb #workshop-recovery button:disabled{opacity:.6;cursor:not-allowed}
+.sb #workshop-recovery :focus-visible{outline:2px solid #fff;outline-offset:3px}
+.sb #workshop-recovery [data-workshop-recovery-status]:empty{display:none}
+.sb #workshop-widgets:empty{display:none}
+.sb #workshop-widgets{display:grid;grid-template-columns:minmax(0,1fr);gap:24px;margin-bottom:24px}
+.sb .workshop-widget{min-width:0;padding:16px;border:1px solid var(--line-2);border-radius:8px;background:var(--bg-1)}
+.sb .workshop-widget h3{margin:0 0 12px;font-size:16px;overflow-wrap:anywhere}
+.sb .workshop-widget iframe{display:block;width:100%;height:360px;border:0;background:var(--bg-1);border-radius:4px}
+.sb .workshop-widget>.form-error:not([hidden]){margin-bottom:12px;overflow-wrap:anywhere}
+@media(min-width:760px) and (max-width:1160px){.sb #app-topbar .brand{max-width:150px}.sb #room-nav .nav-item{padding-inline:6px;font-size:12px}}
+@media(max-width:759px){
+  .sb[data-workshop-theme] #room-nav{background:var(--bg-1);border-color:var(--line-2)}
+  .sb #room-nav{grid-template-columns:repeat(6,minmax(0,1fr))}
+  .sb #room-nav .nav-item{font-size:12px;padding-inline:0;white-space:nowrap}
+  .sb .workshop-toolbar{gap:12px}
+  .sb .workshop-toolbar>label{flex:1 1 100%}
+  .sb .workshop-toolbar>.workshop-actions{width:100%}
+  .sb .workshop-toolbar>.workshop-actions>.button{flex:1}
+  .sb .workshop-card{padding:20px;gap:12px}
+  .sb .workshop-catalog{gap:16px}
+  .sb .workshop-dialog{padding:16px}
+  .sb .workshop-dialog .modal-head{gap:8px}
+  .sb .workshop-dialog .modal-head h2{font-size:20px}
+  .sb .workshop-editor-fields{grid-template-columns:minmax(0,1fr)}
+  .sb .workshop-dialog .workshop-actions>.button{flex:1 1 auto}
+  .sb #workshop-recovery{justify-content:start;gap:8px}
+}

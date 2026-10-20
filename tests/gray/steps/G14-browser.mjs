@@ -79,10 +79,10 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
             }catch(error){checks.push([title,async()=>{throw error;}]);}
           }
           await page.locator('#account-menu-toggle').click();await page.locator('[data-shell-action=quota]').click();await page.locator('#quota-ledger').waitFor();
-          const navCount=await page.locator('#room-nav [data-nav]').count(),commandCount=await page.locator('[data-shell-action=control]').count(),retiredCount=await page.locator('#control-strip,#mobile-control,#shell-context').count();
+          const navItems=await page.locator('#room-nav [data-nav]').evaluateAll(nodes=>nodes.map(n=>n.dataset.nav)),commandCount=await page.locator('[data-shell-action=control]').count(),retiredCount=await page.locator('#control-strip,#mobile-control,#shell-context').count();
           const targets=await page.locator('#room-nav a,#account-menu-toggle,.command-trigger').evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return {width:r.width,height:r.height};}));
           checks.push([role+'/'+width+'/shell',async()=>{
-            ctx.check('五个主区入口',navCount===5);ctx.check('全局命令入口只有一个',commandCount===1);ctx.check('浮动条与顶部上下文条已移除',retiredCount===0);ctx.check('导航触控区域至少 44px',targets.every(r=>r.width>=44&&r.height>=44),targets);
+            ctx.check('六个主区入口含创意工坊',JSON.stringify(navItems)===JSON.stringify(['resources','work','jobs','datasets','community','workshop']),navItems);ctx.check('全局命令入口只有一个',commandCount===1);ctx.check('浮动条与顶部上下文条已移除',retiredCount===0);ctx.check('导航触控区域至少 44px',targets.every(r=>r.width>=44&&r.height>=44),targets);
           }]);
           await page.locator('#account-menu-toggle').click();
           const adminEntry=await page.locator('[data-shell-action=admin]').isVisible();checks.push([role+' 管理入口',async()=>ctx.check('管理台入口按角色显示',adminEntry===(role==='admin'))]);
@@ -91,7 +91,7 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
           await page.screenshot({path:join(screens,role+'-'+width+'-palette.png'),animations:'disabled'});
           await page.locator('#control-command').fill('月球');await page.locator('.egg-moon').waitFor();await page.keyboard.press('Escape');
           await page.goto(ctx.stack.origin+'/guide');await page.screenshot({path:join(screens,role+'-'+width+'-guide.png'),fullPage:true});
-          const guide=await page.locator('body').innerText(),chapters=await page.locator('.guide-card').count(),guideOverflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);checks.push([role+'/'+width+'/guide',async()=>{ctx.check('使用指南与七章入口可读',guide.includes('STARGATE')&&guide.includes('使用指南')&&chapters===7);ctx.check('指南无横向滚动',!guideOverflow);}]);
+          const guide=await page.locator('body').innerText(),chapters=await page.locator('.guide-card').count(),guideOverflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);checks.push([role+'/'+width+'/guide',async()=>{ctx.check('使用指南与八章入口含创意工坊',guide.includes('STARGATE')&&guide.includes('使用指南')&&guide.includes('创意工坊')&&chapters===8);ctx.check('指南无横向滚动',!guideOverflow);}]);
           await page.goto(ctx.stack.origin+'/#work');await page.locator('[data-nav=work][aria-current=page]').waitFor();
         }
         await page.evaluate(()=>{location.hash='#work';});

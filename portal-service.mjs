@@ -8,6 +8,7 @@ import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
 import {installExecution,executionCall,publicJob,usage,priorityCapable,priorityRankCapable,TERMINAL,pendingJobReason} from './execution.mjs';
 import {MACHINES,validUsername} from './dist/model.js';
 import {installCommunity,communityCall,maintainTaskNotes,announcementState,chatMentions,chatImageFile} from './community.mjs';
+import {installWorkshop,workshopCall} from './workshop.mjs';
 import {installMaintenanceState,installMaintenance,maintenanceCall} from './maintenance.mjs';
 import {installFileCampus,fileTicket} from './campus-files.mjs';
 import {installJobNotifications} from './job-notifications.mjs';
@@ -60,7 +61,7 @@ export class PortalService extends DemoService{
     service.db=new DatabaseSync(path);await chmod(path,0o600);
     service.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS portal_state_v2 (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, time TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL, subject TEXT, outcome TEXT NOT NULL);');
     service.db.exec("CREATE TABLE IF NOT EXISTS invites_v2 (role TEXT PRIMARY KEY CHECK(role IN ('admin','member')), digest TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, max_uses INTEGER, created_at TEXT NOT NULL,code_cipher TEXT);");
-    installMaintenanceState(service);installCommunity(service);installProjectCatalog(service);installTaskDisplay(service);
+    installMaintenanceState(service);installCommunity(service);installWorkshop(service);installProjectCatalog(service);installTaskDisplay(service);
     const keyPath=path+'.invite-key';
     try{service.inviteKey=await readFile(keyPath);}catch(e){
       if(e.code!=='ENOENT')throw e;
@@ -357,6 +358,10 @@ export class PortalService extends DemoService{
       const run=()=>{const principal=this.principal(token);return {result:communityCall(this,principal,operation,args),principal};};
       return new Set(['community.info','community.posts.list','community.posts.get','community.comments.list','community.chat.list','community.chat.mentions','community.rooms.list','community.notes.list','community.announcements.pending']).has(operation)?run():this.enqueue(run);
     }
+    if(operation.startsWith('workshop.')){
+      const run=()=>{const principal=this.principal(token);return {result:workshopCall(this,principal,operation,args),principal};};
+      return ['workshop.list','workshop.get','workshop.mine'].includes(operation)?run():this.enqueue(run);
+    }
     if(operation.startsWith('maintenance.')){
       const principal=this.principal(token);return Promise.resolve(maintenanceCall(this,principal,operation,args)).then(result=>({result,principal:this.principal(token)}));
     }
@@ -454,7 +459,7 @@ export class PortalService extends DemoService{
     return structuredClone({...state,jobs,jobsTotal,jobsReturned:jobs.length,jobsTruncated:jobs.length<jobsTotal,jobsCompacted:true,
       taskMetadata:{version:1},operationalMaintenance:this.operationalMaintenance?.(principal),
       demo:false,mode:'persistent',gpuqConnected:gpuq.hosts.some(h=>h.gpuq.connected),jobsSimulated:false,executionEnabled:this.executionEnabled===true,
-      execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},announcements:announcementState(this,principal),chatMentions:chatMentions(this,principal),
+      execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},frontendWorkshop:{version:1},announcements:announcementState(this,principal),chatMentions:chatMentions(this,principal),
       ...(principal.role==='admin'?{invitations:this.invitations()}:{})});
   }
   communityImage(token,id){return chatImageFile(this,this.principal(token),id);}

@@ -40,7 +40,7 @@ export function controlUI(store,{navigate,toast,openSubmit,openJob}){
   const q=selector=>dialog.querySelector(selector);
   const jump=(id,label,run,detail='跳转')=>({id,label,run,detail});
   function baseCommands(){
-    const rows=[['resources','算力'],['work','项目'],['jobs','任务'],['datasets','数据'],['community','协作']].map(([id,label])=>jump(id,label,()=>navigate(id)));
+    const rows=[['resources','算力'],['work','项目'],['jobs','任务'],['datasets','数据'],['community','协作'],['workshop','创意工坊']].map(([id,label])=>jump(id,label,()=>navigate(id)));
     if(store.production&&store.data?.executionEnabled===true)rows.push(jump('submit','新建任务',()=>{navigate('jobs');openSubmit();},'动作'));
     rows.push(jump('new-project','新建项目',()=>{navigate('work');const panel=document.querySelector('#project-create');if(panel){panel.open=true;panel.scrollIntoView({block:'center'});panel.querySelector('input')?.focus();}},'动作'));
     rows.push(jump('terminal','打开终端',()=>{navigate('work');const button=document.querySelector('#terminal-open');if(!button||button.disabled){toast('先选择一个项目，再打开终端。');document.querySelector('[name=workspace-project]')?.focus();return;}for(let parent=button.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;button.click();},'动作'));

@@ -7,6 +7,7 @@ export const chapters=[
   {id:'data',title:'数据目录',description:'直接读取本机数据，独立上传和跨机复制。'},
   {id:'results',title:'日志与结果',description:'查询进度，设置通知与留言，下载结果。'},
   {id:'queue',title:'排队与协作',description:'分清等级、抢占、保存让位与自动恢复。'},
+  {id:'workshop',title:'创意工坊',description:'预览和安装主题、小组件，发布共享作品或恢复默认。'},
   {id:'troubleshooting',title:'常见问题',description:'容器网络诊断、排查故障与反馈问题。'},
 ];
 const aliases={'/guide/':'/guide','/guide/user':'/guide/start','/guide/projects':'/guide/development','/guide/datasets':'/guide/data','/guide/community':'/guide/queue','/guide/terminal-sessions':'/guide/development','/guide/diagnostics':'/guide/results','/guide/ray-resources':'/guide/troubleshooting','/guide/project-network':'/guide/troubleshooting'};
