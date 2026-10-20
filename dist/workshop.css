@@ -78,3 +78,11 @@
 .sb .workshop-interface>h3{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 .sb .workshop-interface>iframe{width:100%;height:100%;border:0;border-radius:0}
 .sb .workshop-interface>.form-error:not([hidden]){position:absolute;top:12px;left:12px;z-index:1;padding:12px;background:var(--bg-1);color:var(--ink);max-width:calc(100% - 24px)}
+.sb .workshop-native-panel{width:min(1240px,calc(100vw - 32px));max-width:none;height:calc(100dvh - 48px);max-height:none;margin:auto;padding:0;border:1px solid var(--line-2);border-radius:8px;background:var(--bg);color:var(--ink);overflow:auto}
+.sb .workshop-native-panel::backdrop{background:#17223588}
+.sb .workshop-native-heading{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--line-2);position:sticky;top:0;background:var(--bg);z-index:2}
+.sb .workshop-native-body{padding:20px;min-width:0}
+body.sb dialog.workshop-native-panel .workshop-native-body>.jr-drawer{position:static;width:100%;height:auto;min-height:calc(100dvh - 100px);transform:none;border:0;visibility:visible}
+.sb .workshop-native-body .pr-head{padding-top:0}
+
+body.sb dialog.workshop-native-panel .workshop-native-body>.jr-sheet{position:static;width:100%;max-height:none;transform:none;opacity:1;visibility:visible;pointer-events:auto;border:0;box-shadow:none}

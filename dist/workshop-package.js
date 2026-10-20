@@ -1,4 +1,4 @@
-export const WORKSHOP_PERMISSIONS=Object.freeze(['resources.read','jobs.read','jobs.cancel','ui.navigate']);
+export const WORKSHOP_PERMISSIONS=Object.freeze(['resources.read','jobs.read','jobs.cancel','ui.navigate','platform.read','platform.write','platform.ui']);
 export const THEME_TOKENS=Object.freeze([
   '--bg','--bg-1','--bg-2','--bg-3','--bg-4','--line','--line-2','--line-3',
   '--ink','--ink-2','--ink-3','--ink-4','--run','--queue','--prep','--err',

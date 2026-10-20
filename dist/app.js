@@ -34,7 +34,7 @@ const adminConsole=createAdminUI(store,{navigate:choosePage,getPage:()=>page,toa
 const renderExecution=executionUI(store,()=>render(true),toast);
 const renderDatasets=datasetsUI(store,toast);
 const renderCommunity=createCommunityUI(store,toast);
-const workshop=createWorkshopUI(store,{navigate:choosePage,toast});
+const workshop=createWorkshopUI(store,{navigate:choosePage,toast,openProject:detail=>renderExecution.openProject(detail)});
 const renderAnnouncements=createAnnouncementUI(store,{toast});
 const renderMentionPopup=createMentionPopup(store,{openChat:place=>{choosePage('community');renderCommunity.showChat(place);},chatOpen:()=>page==='community'&&renderCommunity.chatOpen()});
 const renderOperationalMaintenance=operationalMaintenanceUI(store);
@@ -120,6 +120,6 @@ if(store.principal)defaultPage();render();if(store.principal)shell.syncStatus('r
 onAdminSectionsChange(()=>render(true));
 const poll=setInterval(()=>{if(!document.hidden)refresh();},15000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
-document.addEventListener('gpuq-open-project',async event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||detail.authGeneration!==store.authGeneration)return;try{await choosePage('work');await renderExecution.openProject(detail);}catch(error){toast(error.message);}});
+document.addEventListener('gpuq-open-project',async event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||detail.authGeneration!==store.authGeneration)return;try{const native=workshop.openNativeProject(detail);if(native){await native;return;}await choosePage('work');await renderExecution.openProject(detail);}catch(error){toast(error.message);}});
 addEventListener('hashchange',()=>choosePage(location.hash));
 addEventListener('pagehide',()=>clearInterval(poll),{once:true});
