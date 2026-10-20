@@ -21,7 +21,7 @@ function text(value,max,label,empty=false){
 // Shared by the publisher and server. Theme packages never inject CSS or code;
 // plugin code is stored verbatim and executed only by the isolated frame runtime.
 export function normalizeWorkshopPackage(input){
-  fields(input,['apiVersion','kind','name','description','theme','permissions','html','css','script'],'作品');
+  fields(input,['apiVersion','kind','name','description','theme','permissions','html','css','script','presentation'],'作品');
   let bytes;
   try{bytes=new TextEncoder().encode(JSON.stringify(input)).byteLength;}catch{fail('作品须为 JSON。');}
   if(bytes>WORKSHOP_PACKAGE_BYTES)fail('作品不能超过 128 KiB。');
@@ -44,6 +44,7 @@ export function normalizeWorkshopPackage(input){
   }else{
     if(Object.hasOwn(input,'theme'))fail('插件不能修改门户主题；请单独发布主题。');
     if(!Array.isArray(input.permissions)||input.permissions.some(value=>!WORKSHOP_PERMISSIONS.includes(value))||new Set(input.permissions).size!==input.permissions.length)fail('插件权限无效。');
+    if(input.presentation==='interface')result.presentation='interface';
     result.permissions=WORKSHOP_PERMISSIONS.filter(value=>input.permissions.includes(value));
     for(const key of ['html','css','script']){
       if(typeof input[key]!=='string'||!input[key].isWellFormed()||input[key].includes('\0'))fail(`插件 ${key} 须为文本。`);

@@ -40,7 +40,7 @@ body.sb[data-workshop-theme] #workshop-widgets{gap:var(--workshop-gap)}
 ${theme.density === 'compact' ? 'body.sb[data-workshop-theme] .page-heading{padding-block:24px 20px}body.sb[data-workshop-theme] #workshop-widgets>.workshop-widget{padding:12px}' : ''}`;
 }
 
-export function createWorkshopRuntime({store, root, navigate, toast}) {
+export function createWorkshopRuntime({store, root, navigate, toast, exitInterface}) {
   const document = root.ownerDocument, window = document.defaultView;
   const disabled = new URLSearchParams(window.location.search).get('workshop') === 'off';
   const frames = new Map();
@@ -52,10 +52,13 @@ export function createWorkshopRuntime({store, root, navigate, toast}) {
 
   function identity() { return `${store.principal?.userId || ''}:${store.authGeneration || 0}`; }
   function current(instance) { return !destroyed && !disabled && !instance.stopped && !!store.principal && instance.stamp === identity() && frames.get(instance.key) === instance; }
+  let interfaceShell=null,previousInert=false;
+  function restoreShell(){if(interfaceShell){interfaceShell.inert=previousInert;interfaceShell=null;}document.body.classList.remove('workshop-interface-active');}
   function close(instance) {
     clearTimeout(instance.timer);
     instance.port?.close();
     instance.card.remove();
+    if(instance.wholeInterface)restoreShell();
     frames.delete(instance.key);
     if (confirmation?.instance === instance) confirmation.finish(false);
   }
@@ -146,20 +149,30 @@ export function createWorkshopRuntime({store, root, navigate, toast}) {
     instance.port.start();
   }
   function mount(entry) {
-    const card = document.createElement('section'); card.className = 'workshop-widget';
+    const wholeInterface=entry.package.presentation==='interface';
+    const card = document.createElement('section'); card.className = 'workshop-widget'+(wholeInterface?' workshop-interface':'');
     const heading = document.createElement('h3'); heading.textContent = entry.package.name;
     const status = document.createElement('p'); status.className = 'form-error'; status.setAttribute('role', 'status'); status.textContent = '正在加载组件…';
     const frame = document.createElement('iframe');
     frame.title = entry.package.name; frame.sandbox = 'allow-scripts'; frame.referrerPolicy = 'no-referrer';
     frame.src = `/workshop/frame/${encodeURIComponent(entry.item.id)}/${encodeURIComponent(entry.item.version)}`;
-    const instance = {key: `${entry.item.id}:${entry.item.version}`, name: entry.package.name, stamp, card, status, frame, permissions: new Set(entry.package.permissions || []), port: null, lastId: 0};
+    const instance = {key: `${entry.item.id}:${entry.item.version}`, wholeInterface, name: entry.package.name, stamp, card, status, frame, permissions: new Set(entry.package.permissions || []), port: null, lastId: 0};
     instance.timer = setTimeout(() => { if (current(instance) && !instance.port) fail(instance, '组件未能连接。请检查登录状态或重新安装。'); }, 10000);
     let loaded = false;
     frame.addEventListener('load', () => {
       if (loaded) { instance.stopped = true; instance.port?.close(); instance.port = null; if (confirmation?.instance === instance) confirmation.finish(false); fail(instance, '组件已离开运行页面；请停用后重新启用。'); }
       loaded = true;
     });
-    frames.set(instance.key, instance); card.append(heading, status, frame); root.append(card);
+    frames.set(instance.key, instance); card.append(heading, status, frame);
+    if(wholeInterface){
+      const actions=document.createElement('div');actions.className='workshop-interface-actions';
+      const exit=document.createElement('button');exit.type='button';exit.className='button';exit.textContent='恢复平台界面';
+      exit.onclick=async()=>{exit.disabled=true;try{await exitInterface?.(entry.item.id);}catch(error){fail(instance,error.message);}finally{exit.disabled=false;}};
+      const recovery=document.createElement('a');const url=new URL(window.location.href);url.searchParams.set('workshop','off');url.hash='workshop';recovery.href=url.href;recovery.textContent='安全打开平台';
+      actions.append(exit,recovery);card.append(actions);document.body.append(card);
+      interfaceShell=document.querySelector('.shell');if(interfaceShell){previousInert=interfaceShell.inert;interfaceShell.inert=true;}
+      document.body.classList.add('workshop-interface-active');
+    }else root.append(card);
   }
   window.addEventListener('message', connect);
   const unsubscribe = store.onAuthChange?.(() => { clear(); stamp = identity(); });

@@ -26,7 +26,7 @@ function record(service,id,number){
 }
 function view(service,principal,row){
   const pkg=JSON.parse(row.package),author=service.store.users.find(user=>user.id===row.author_id);
-  return {item:{id:row.id,version:row.version,kind:row.kind,name:pkg.name,description:pkg.description,
+  return {item:{id:row.id,version:row.version,kind:row.kind,...(pkg.presentation==='interface'?{presentation:'interface'}:{}),name:pkg.name,description:pkg.description,
     author:{id:row.author_id,name:row.author_id==='system'?'STARGATE':author?.name||'已删除账号',username:author?.username||null},createdAt:row.created_at,
     canEdit:true,canRemove:true},package:pkg};
 }
@@ -96,6 +96,10 @@ function dispatch(service,principal,operation,args){
   if(operation==='workshop.install'){
     fields(args,['id','version','permissions']);
     const row=record(service,args.id,version(args.version));
+    if(JSON.parse(row.package).presentation==='interface'){
+      for(const entry of mine(service,principal).installed)if(entry.package.presentation==='interface')
+        db.prepare('DELETE FROM workshop_installs WHERE user_id=? AND item_id=?').run(principal.userId,entry.item.id);
+    }
     if(row.kind==='theme')db.prepare("DELETE FROM workshop_installs WHERE user_id=? AND item_id IN (SELECT id FROM workshop_items WHERE kind='theme')").run(principal.userId);
     db.prepare(`INSERT INTO workshop_installs(user_id,item_id,version,installed_at) VALUES(?,?,?,?)
       ON CONFLICT(user_id,item_id) DO UPDATE SET version=excluded.version,installed_at=excluded.installed_at`)
