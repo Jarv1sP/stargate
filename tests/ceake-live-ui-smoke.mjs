@@ -62,7 +62,7 @@ try{
   const path=resolve(root,'.'+u.pathname);assert.ok(path.startsWith(root+'/'));return route.fulfill({contentType:extname(path)==='.js'?'text/javascript':extname(path)==='.css'?'text/css':'application/octet-stream',body:await readFile(path)});
  });
  await page.goto(origin+'/#workshop');await page.locator('#startup-wordmark').waitFor({state:'hidden'});
- const f=page.frameLocator('.workshop-interface iframe');await f.locator('.live-connection').waitFor();
+ const f=page.frameLocator('.workshop-interface iframe');await f.locator('.live-connection').waitFor();await f.locator('.dash .tiles').waitFor();assert.deepEqual(await f.locator('.mon-v').allTextContents(),['未知','未知','未知','未知']);await mkdir('out/ceake-live/screenshots',{recursive:true});await page.screenshot({path:'out/ceake-live/screenshots/reference-console.png'});await f.locator('[data-action=products]').click();await f.locator('.prod-l-it').click();
  await mkdir('out/ceake-live/screenshots',{recursive:true});await page.screenshot({path:'out/ceake-live/screenshots/reference-overview.png'});
  const goRoute=async key=>{if(key==='trash'){await f.locator('[data-action=account]').click();await f.locator('.dd-it').filter({hasText:'回收站'}).click();return;}if(!await f.locator('.mside [data-route='+key+']').count()){const group={projects:'全局管理',trash:'全局管理',jobs:'模型开发',datasets:'数据服务'}[key];await f.locator('[data-group="'+group+'"]').click();}await f.locator('.mside [data-route='+key+']').click();};
  await goRoute('projects');await f.locator('.tbl').filter({hasText:'团队项目'}).waitFor();await page.screenshot({path:'out/ceake-live/screenshots/reference-projects.png'});
