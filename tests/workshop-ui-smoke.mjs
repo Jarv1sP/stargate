@@ -31,6 +31,21 @@ try{
   assert.equal(await page.locator('body').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(243, 243, 240)');
   assert.equal((await f.call(f.bob.token,'workshop.mine')).body.result.installed.length,0);
 
+  await page.locator('.workshop-card').filter({hasText:'AISpace 参考布局'}).getByRole('button').click();
+  await page.locator('[data-workshop=install]').click();await page.locator('#workshop-confirm-accept').click();
+  await page.waitForFunction(()=>document.body.dataset.workshopLayout==='aispace');
+  await page.reload();await page.waitForFunction(()=>document.body.dataset.workshopLayout==='aispace');
+  await page.locator('#startup-wordmark').waitFor({state:'hidden'});
+  await page.setViewportSize({width:1440,height:900});
+  await page.locator('[data-nav=jobs]').click();
+  await page.locator('.aispace-table-head').waitFor();
+  await page.locator('.aispace-cells').filter({hasText:'alice training'}).waitFor();
+  for(const width of [1440,390,320]){
+    await page.setViewportSize({width,height:900});
+    assert.deepEqual((await inspectGeometry(page,{roots:['#page-jobs','#room-nav'],largeTargets:'.jr-row'})).failures,[]);
+    await page.screenshot({path:`${screenshots}/aispace-${width}.png`,animations:'disabled'});
+  }
+  await page.locator('[data-nav=workshop]').click();
   await page.locator('[data-workshop=create]').click();
   await page.locator('#workshop-source').fill(JSON.stringify(pluginPackage,null,2));
   let lost=false;const keys=[];
@@ -59,6 +74,8 @@ try{
   await page.locator('#workshop-recovery button').click();await page.locator('#workshop-confirm-accept').click();
   await page.waitForFunction(()=>!document.querySelector('.workshop-card')?.textContent.includes('已安装 v'));
   assert.equal((await f.call(f.alice.token,'workshop.mine')).body.result.installed.length,0);
+  assert.notEqual(await page.locator('body').getAttribute('data-workshop-layout'),'aispace');
+  assert.equal(await page.locator('.aispace-cells,.aispace-table-head').count(),0);
   assert.equal(f.ownJob.cancelRequested,false);assert.equal(f.otherJob.cancelRequested,false);assert.deepEqual(errors,[]);
   console.log('Workshop UI passed: builtin preview/install, persistence, per-account choices, lost-reply retry, plugin, bypass/reset, 1440/390/320.');
 }finally{await browser.close();await f.close();}

@@ -26,7 +26,8 @@ function fixture(t,{builtins=false}={}){
 
 test('builtin light theme is available immediately and startup does not replace user versions',t=>{
   const f=fixture(t,{builtins:true}),items=f.call('list').items;
-  assert.equal(items.length,1);assert.equal(items[0].name,'浅色紧凑');
+  assert.deepEqual(items.map(item=>item.name).sort(),['AISpace 参考布局','浅色紧凑']);
+  assert.equal(f.call('get',{id:items.find(item=>item.name==='AISpace 参考布局').id}).package.theme.layout,'aispace');
   const original=f.call('get',{id:items[0].id});f.install(original);
   const updated=f.publish(theme({name:'团队主题'}),{id:items[0].id});
   installWorkshop(f.service);

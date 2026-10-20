@@ -51,10 +51,12 @@ export function installWorkshop(service){
       PRIMARY KEY(user_id,item_id)
     );
   `);
-  const id='ec2da0a5-485a-44ee-aeb6-7b2f6f2ad015',pkg=normalizeWorkshopPackage(WORKSHOP_EXAMPLES.find(example=>example.id==='light').package);
-  service.db.prepare('INSERT OR IGNORE INTO workshop_items(id,author_id,kind) VALUES(?,?,?)').run(id,'system','theme');
-  service.db.prepare('INSERT OR IGNORE INTO workshop_versions(item_id,version,author_id,client_key,request_json,package,created_at) VALUES(?,?,?,?,?,?,?)')
-    .run(id,1,'system',id,'{}',JSON.stringify(pkg),'2026-10-20T00:00:00.000Z');
+  for(const [name,id] of [['light','ec2da0a5-485a-44ee-aeb6-7b2f6f2ad015'],['aispace','6f3e6e95-1ed8-40db-8e4c-18596c74380e']]){
+    const pkg=normalizeWorkshopPackage(WORKSHOP_EXAMPLES.find(example=>example.id===name).package);
+    service.db.prepare('INSERT OR IGNORE INTO workshop_items(id,author_id,kind) VALUES(?,?,?)').run(id,'system','theme');
+    service.db.prepare('INSERT OR IGNORE INTO workshop_versions(item_id,version,author_id,client_key,request_json,package,created_at) VALUES(?,?,?,?,?,?,?)')
+      .run(id,1,'system',id,'{}',JSON.stringify(pkg),'2026-10-20T00:00:00.000Z');
+  }
 }
 function dispatch(service,principal,operation,args){
   const db=service.db;

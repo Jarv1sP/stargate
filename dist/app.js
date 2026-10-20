@@ -7,6 +7,7 @@ import {resourcesUI,monitorSummary} from './resources-ui.js';
 import {datasetsUI} from './datasets-ui.js';
 import {createCommunityUI,renderChatMentionBadge} from './community-ui.js';
 import {createWorkshopUI} from './workshop-ui.js';
+import {mount as mountAISpace} from './themes/aispace.js';
 import {createAnnouncementUI} from './announcement-ui.js';
 import {createMentionPopup} from './mention-popup-ui.js';
 import {operationalMaintenanceUI} from './maintenance-ui.js';
@@ -19,6 +20,7 @@ import {createAdminUI,adminHashForRoute,hasAdminSections,onAdminSectionsChange} 
 import {adminRoomUI} from './admin-room.js';
 import {toastPosition} from './toast-ui.js';
 const store=await DemoClient.create(),$=s=>document.querySelector(s);
+const aispace=mountAISpace({store});
 const MACHINES=[];
 async function loadInventory(){
   if(!store.principal)return;

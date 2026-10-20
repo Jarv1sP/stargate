@@ -74,7 +74,9 @@ try{
     if(url.pathname==='/capabilities'){probes++;return campusReachable?route.fulfill({contentType:'application/json',body:'{}'}):route.abort('connectionrefused');}
     if(url.pathname.startsWith('/api/')){const body=request.postDataJSON(),result=await rpc(body.operation,body.args||{});return route.fulfill({contentType:'application/json',body:JSON.stringify(body.operation==='state'?result:{ok:true,result})});}
     if(url.pathname.startsWith('/v1/files/')){const parts=url.pathname.split('/'),args=grants.get(parts[3]),offset=Number(url.searchParams.get('offset'));assert.ok(args);if(parts[4]==='put'){const bytes=request.postDataBuffer(),row=uploads.get(args.uploadId);assert.equal(offset,row.offset);assert.ok(bytes.length<=1024**2);row.bytes=Buffer.concat([row.bytes,bytes]);row.offset+=bytes.length;return route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,result:{key:row.key,offset:row.offset,state:'UPLOADING'}})});}const bytes=files.get(resource(args))||Buffer.from('abc');return route.fulfill({contentType:'application/octet-stream',headers:{'x-gpuq-file-metadata':Buffer.from(JSON.stringify({size:bytes.length,offset})).toString('base64url')},body:bytes.subarray(offset)});}
-    const path=resolve(root,'.'+url.pathname);if(!path.startsWith(root+'/'))throw Error('Outside static root');return route.fulfill({contentType:extname(path)==='.js'?'text/javascript':extname(path)==='.css'?'text/css':extname(path)==='.woff2'?'font/woff2':'application/octet-stream',body:await readFile(path)});
+    const path=resolve(root,'.'+url.pathname);if(!path.startsWith(root+'/'))throw Error('Outside static root');
+    if(process.env.AISPACE_THEME==='1'&&url.pathname==='/app.js')return route.fulfill({contentType:'text/javascript',body:(await readFile(path,'utf8'))+'\nwindow.mountAISpace=()=>mountAISpace({store});window.aispaceAdapter=aispace;'});
+    return route.fulfill({contentType:extname(path)==='.js'?'text/javascript':extname(path)==='.css'?'text/css':extname(path)==='.woff2'?'font/woff2':'application/octet-stream',body:await readFile(path)});
    }catch(error){errors.push(error.stack);console.error(error.stack);await route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:error.message})});}
   });
   await page.goto(origin);await page.locator('[data-nav=resources][aria-current=page]').waitFor();await page.locator('[data-nav=work]').click();await page.locator('[name=workspace-project] option[data-owner-id="member-b"]').waitFor({state:'attached'}).catch(async error=>{console.error(JSON.stringify({errors,calls,requests,body:(await page.locator('body').innerText()).slice(0,500)}));throw error;});
@@ -89,6 +91,7 @@ try{
   await page.locator('[data-empty-new]').click();await page.locator('.jr-sheet.on [type=submit]').click();await page.locator('.jr-sheet.on').waitFor({state:'detached'});
   const submitted=calls.find(row=>row.op==='jobs.submit').args;assert.deepEqual(submitted.argv,['/bin/bash','-c','python train.py --data /datasets --output /outputs']);assert.equal(submitted.cards,1);assert.ok(submitted.project&&submitted.machine===machine&&submitted.key);
   await page.locator('[data-scope=all]').click();await page.locator('.jr-row[data-job="'+jobId+'"]').click();await page.locator('.jr-drawer.on [data-log]').filter({hasText:'fixture log'}).waitFor();
+  if(process.env.AISPACE_THEME==='1')await (await import('./aispace-layout-checks.mjs')).checkLayout({page,shots,role,width,job:state.jobs[0]});
   await page.keyboard.press('Escape');
   Object.assign(state.jobs[0],{state:'PENDING',after:[{id:'22222222-2222-4222-8222-222222222222',name:'母模型 <canary>'}],queueReason:'等待依赖：母模型 <canary>'});
   await refreshVisible(page);await page.locator('.jr-row[data-job="'+jobId+'"]').filter({hasText:'等待依赖'}).waitFor();await page.locator('.jr-row[data-job="'+jobId+'"]').click();
@@ -168,7 +171,7 @@ try{
   await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
   await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});
   await page.locator('[data-shell-action=quota]').click();await page.locator('#quota-ledger').waitFor();
-  assert.equal(await page.locator('#room-nav [data-nav]').count(),5);assert.equal(await page.locator('[data-shell-action=control]').count(),1);assert.equal(await page.locator('#control-strip,#mobile-control,#shell-context').count(),0);
+  assert.deepEqual(await page.locator('#room-nav [data-nav]').evaluateAll(nodes=>nodes.map(n=>n.dataset.nav)),['resources','work','jobs','datasets','community','workshop']);assert.equal(await page.locator('[data-shell-action=control]').count(),1);assert.equal(await page.locator('#control-strip,#mobile-control,#shell-context').count(),0);
   const touch=await page.locator('#room-nav a,#account-menu-toggle,.command-trigger').evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return r.width>=44&&r.height>=44;}));assert.ok(touch.every(Boolean));
   await page.locator('.command-trigger').click();await page.locator('#control-command').fill('火星');await page.locator('.egg-mars').waitFor();
   await page.screenshot({path:join(shots,role+'-'+width+'-palette.png'),animations:'disabled'});
