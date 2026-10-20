@@ -89,6 +89,9 @@ try{
     await dialog.locator('li',{hasText:'爱丽丝'}).locator('.community-tag',{hasText:'管理员'}).waitFor();
     await dialog.locator('[name=name]').fill('东方的新太阳');await dialog.locator('#chat-room-rename').click();
     await page.waitForFunction(id=>document.querySelector(`[data-room-id="${id}"] .chat-room-name`).textContent==='东方的新太阳',first);
+    await dialog.locator('[name=name]').fill(' 东方的晨光 ');await dialog.locator('[name=name]').press('Enter');
+    await page.waitForFunction(id=>document.querySelector(`[data-room-id="${id}"] .chat-room-name`).textContent==='东方的晨光',first);
+    assert.equal(await dialog.locator('#chat-room-error').textContent(),'');
     assert.equal(await dialog.locator('#chat-room-delete').isVisible(),true);
     const box=await dialog.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width,'the dialog fits the screen');
     await shot(page,width,'owner-settings');await dialog.locator('.modal-head [data-room-close]').click();

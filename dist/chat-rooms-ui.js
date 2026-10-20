@@ -48,7 +48,11 @@ export function createRoomDialog(store,{create,toast,onChange,onDelete}){
   form.addEventListener('submit',async event=>{
     event.preventDefault();if(busy)return;
     const invited=[...form.querySelectorAll('[name=invite]:checked')].map(box=>box.value);
-    if(current&&!invited.length){q('#chat-room-error').textContent='请先勾选要拉进来的人。';return;}
+    if(current&&!invited.length){
+      const name=form.elements.name.value.trim();
+      if(name!==current.name)return change('community.rooms.rename',{name});
+      q('#chat-room-error').textContent='请先勾选要拉进来的人。';return;
+    }
     busy=true;q('#chat-room-submit').disabled=true;q('#chat-room-error').textContent='';
     try{
       let room=current;
