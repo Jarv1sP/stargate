@@ -338,7 +338,7 @@ function dispatch(service,actor,operation,args,now){
       return db.prepare('INSERT INTO community_notes_v2(author_id,job_id,body,created_at,updated_at) VALUES(?,?,?,?,?)').run(actor.userId,jobId,body,now,now).lastInsertRowid;
     });
   }
-  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1','chat-images-v1','chat-mentions-v1','chat-mention-popup-v1','chat-rooms-v1']};}
+  if(operation==='community.info'){args=selectFields(args,[]);return {enabled:true,version:2,limits:{...COMMUNITY_LIMITS,titleBytes:COMMUNITY_LIMITS.title*3,postBodyBytes:COMMUNITY_LIMITS.postBody*3,commentBodyBytes:COMMUNITY_LIMITS.commentBody*3,chatBodyBytes:COMMUNITY_LIMITS.chatBody*3},capabilities:['posts','announcements','comments','chat','idempotency-30d','announcement-publish-v1','task-notes-v1','chat-images-v1','chat-mentions-v1','chat-mention-popup-v1','chat-rooms-v1','chat-rooms-manage-v1']};}
   if(operation==='community.posts.list')return listPosts(service,actor,args);
   if(operation==='community.posts.get'){args=selectFields(args,['id']);return {post:view(service,readablePost(service,actor,args.id),actor,'post')};}
   if(operation==='community.comments.list')return listComments(service,actor,args);
@@ -390,6 +390,21 @@ function dispatch(service,actor,operation,args,now){
       const roomId=db.prepare('INSERT INTO community_rooms_v2(name,created_at) VALUES(?,?)').run(name,now).lastInsertRowid;
       db.prepare("INSERT INTO community_room_members_v2(room_id,user_id,role,added_at) VALUES(?,?,'owner',?)").run(roomId,actor.userId,now);return roomId;
     });
+  }
+  if(operation==='community.rooms.rename'){
+    args=selectFields(args,['room','name']);const roomId=room(service,actor,args.room);
+    if(!['owner','admin'].includes(roleIn(service,roomId,actor.userId)))fail('只有群主和聊天室管理员可以改名。',403);
+    const name=text(args.name,30,'聊天室名称');db.prepare('UPDATE community_rooms_v2 SET name=? WHERE id=?').run(name,roomId);
+    service.audit(actor.username,operation,String(roomId),'ok');return {room:roomView(service,get(service,'room',roomId),actor)};
+  }
+  if(operation==='community.rooms.delete'){
+    args=selectFields(args,['room']);const roomId=room(service,actor,args.room);
+    if(roleIn(service,roomId,actor.userId)!=='owner')fail('只有群主可以删除聊天室。',403);
+    for(const table of ['community_chat_images_v2','community_chat_mentions_v2'])db.prepare(`DELETE FROM ${table} WHERE message_id IN (SELECT message_id FROM community_room_messages_v2 WHERE room_id=?)`).run(roomId);
+    db.prepare('DELETE FROM community_chat_v2 WHERE id IN (SELECT message_id FROM community_room_messages_v2 WHERE room_id=?)').run(roomId);
+    for(const table of ['community_room_messages_v2','community_room_members_v2'])db.prepare(`DELETE FROM ${table} WHERE room_id=?`).run(roomId);
+    db.prepare('DELETE FROM community_rooms_v2 WHERE id=?').run(roomId);
+    service.audit(actor.username,operation,String(roomId),'ok');return {deleted:true,id:String(roomId)};
   }
   if(operation==='community.rooms.members.add'){
     args=selectFields(args,['room','userIds']);const {roomId}=roomManager(service,actor,args.room);
