@@ -26,7 +26,7 @@ export function adminRoomUI(store,{machines,refresh}){
       const list=rows(),waiting=store.users.filter(pending).length;
       el.innerHTML=`<div class="adm-head"><h2>成员与额度</h2><div class="jr-seg" role="group" aria-label="成员范围"><button type="button" data-adm-filter="all" aria-pressed="${filter==='all'}">全部 ${store.users.length}</button><button type="button" data-adm-filter="pending" aria-pressed="${filter==='pending'}">待审批 ${waiting}</button></div></div>
         <p class="jr-hint adm-lede">账号、角色和停用在<a class="jr-link" href="${esc(portal())}" target="_blank" rel="noopener">统一门户管理</a>。</p>
-        <div class="adm-scroll"><table class="adm-tbl"><thead><tr><th>成员</th><th>角色</th><th>卡数额度</th><th>各服务器</th><th>正在用</th><th></th></tr></thead><tbody>${list.map(u=>{
+        <div class="adm-scroll"><table class="adm-tbl"><thead><tr><th>成员</th><th>角色</th><th>同时最多</th><th>每台最多</th><th>正在用</th><th></th></tr></thead><tbody>${list.map(u=>{
           const admin=u.role==='admin',limits=Object.entries(u.limits||{}).filter(([,n])=>n>0);
           return `<tr data-adm-user="${esc(u.id)}"><td><div class="adm-name">${esc(u.name||u.username)}</div><div class="adm-sub mono">${esc(u.username)}</div></td><td class="adm-sub">${roleLabel(u)}</td>
             <td>${admin?'<span class="adm-sub">不限（管理员）</span>':`<span class="mono">${u.total} 张</span>`}</td>
@@ -39,7 +39,8 @@ export function adminRoomUI(store,{machines,refresh}){
       const draft=store.get(user.id);
       sheet.innerHTML=`<div class="pr-sheet-in">${sheetHead('服务器额度',esc(draft.name||draft.username))}
         <div class="adm-limits">${machines.map(m=>`<label class="adm-limit"><input type="checkbox" data-adm-machine="${esc(m.id)}" ${draft.limits[m.id]?'checked':''}><span class="adm-name">${esc(m.id)}</span><span class="adm-sub">${m.cards} × ${esc(m.model||'')}</span><span class="adm-limit-n">最多 <input class="jr-input adm-num" type="number" min="1" max="${m.cards}" data-adm-limit="${esc(m.id)}" value="${draft.limits[m.id]||1}" ${draft.limits[m.id]?'':'disabled'}> / ${m.cards} 张</span></label>`).join('')}</div>
-        <label class="adm-total">合计额度 <input class="jr-input adm-num" type="number" min="0" max="${capacity()}" data-adm-total value="${draft.total}"> / ${capacity()} 张</label>
+        <label class="adm-total">同时最多用卡（所有服务器加起来） <input class="jr-input adm-num" type="number" min="0" max="${capacity()}" data-adm-total value="${draft.total}"> / ${capacity()} 张</label>
+        <p class="adm-hint">上面是每台服务器最多用几张，这里是同一时间所有服务器加起来最多占几张，两条同时生效。例：每台都给满、这里填 8，就是同时最多占 8 张；排队中的任务也算。</p>
         <p class="jr-error" data-adm-error hidden></p>
         <div class="jr-actions"><button type="button" class="jr-btn ghost" data-sheet-close>取消</button><button type="button" class="jr-btn primary" data-adm-save>${pending(user)?'批准授权':'保存'}</button></div></div>`;
       sheet.onchange=event=>{const id=event.target.dataset.admMachine;if(!id)return;const input=sheet.querySelector(`[data-adm-limit="${CSS.escape(id)}"]`);input.disabled=!event.target.checked;};
