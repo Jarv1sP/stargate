@@ -1,5 +1,5 @@
 // Transfers share the dataset navigation.
-export const roomOrder=['resources','work','jobs','datasets','community'];
+export const roomOrder=['resources','work','jobs','datasets','community','workshop'];
 const pages=new Set([...roomOrder,'transfers','me','admin']);
 export function pageForRoute(route){
   const value=String(route??'').replace(/^#/,'');

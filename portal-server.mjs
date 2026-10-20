@@ -14,6 +14,8 @@ import {LOGIN_POLICY} from './login-sessions.mjs';
 import {STARBASE_ASSETS} from './frontend-assets.mjs';
 import {directUploadConnectSources} from './direct-upload-policy.mjs';
 import {centralLogin} from './accounts/oidc.mjs';
+import {installedWorkshopPlugin} from './workshop.mjs';
+import {renderWorkshopFrame} from './workshop-frame.mjs';
 
 const files={'/':'index.html','/index.html':'index.html','/styles.css':'styles.css','/workspace.css':'workspace.css','/app.js':'app.js','/model.js':'model.js','/machines.js':'machines.js','/client.js':'client.js','/execution-ui.js':'execution-ui.js','/terminal-ui.js':'terminal-ui.js','/resources-ui.js':'resources-ui.js','/xterm.js':'vendor/xterm.js','/xterm.css':'vendor/xterm.css','/addon-fit.js':'vendor/addon-fit.js'};
 files['/job-progress.js']='job-progress.js';files['/job-progress-ui.js']='job-progress-ui.js';
@@ -72,6 +74,17 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       if(path==='/healthz'){
         if(service.accounts.central)service.accounts.sessions.assertIdentityFresh();
         return json(200,{ok:true,service:'gpuq-console',executionEnabled:service.executionEnabled});
+      }
+      if(path.startsWith('/workshop/frame/')){
+        if(req.method!=='GET'&&req.method!=='HEAD')return json(405,{error:'GET required'});
+        const match=/^\/workshop\/frame\/([a-f0-9-]{36})\/([1-9][0-9]*)$/.exec(path);
+        if(!match)return json(404,{error:'Not found'});
+        const {bearer,fromCookie}=tokens(req),principal=service.principal(bearer||fromCookie);
+        const pkg=installedWorkshopPlugin(service,principal,{id:match[1],version:Number(match[2])});
+        const frame=renderWorkshopFrame(pkg,{nonce:styleNonce,origin:url.origin});
+        res.writeHead(200,{...headers,'Cache-Control':'private, no-store','Content-Type':mime.html,
+          'X-Frame-Options':'SAMEORIGIN','Content-Security-Policy':frame.csp});
+        return res.end(req.method==='HEAD'?undefined:frame.html);
       }
       if(path.startsWith('/api/')){
         headers['Cache-Control']='private, no-store';

@@ -6,6 +6,7 @@ import {terminalUI} from './terminal-ui.js';
 import {resourcesUI,monitorSummary} from './resources-ui.js';
 import {datasetsUI} from './datasets-ui.js';
 import {createCommunityUI,renderChatMentionBadge} from './community-ui.js';
+import {createWorkshopUI} from './workshop-ui.js';
 import {createAnnouncementUI} from './announcement-ui.js';
 import {createMentionPopup} from './mention-popup-ui.js';
 import {operationalMaintenanceUI} from './maintenance-ui.js';
@@ -31,6 +32,7 @@ const adminConsole=createAdminUI(store,{navigate:choosePage,getPage:()=>page,toa
 const renderExecution=executionUI(store,()=>render(true),toast);
 const renderDatasets=datasetsUI(store,toast);
 const renderCommunity=createCommunityUI(store,toast);
+const workshop=createWorkshopUI(store,{navigate:choosePage,toast});
 const renderAnnouncements=createAnnouncementUI(store,{toast});
 const renderMentionPopup=createMentionPopup(store,{openChat:place=>{choosePage('community');renderCommunity.showChat(place);},chatOpen:()=>page==='community'&&renderCommunity.chatOpen()});
 const renderOperationalMaintenance=operationalMaintenanceUI(store);
@@ -61,8 +63,8 @@ function render(preserve=false){
   $('#profile-name').title=$('#profile-name').textContent;
   $('#edit-profile').hidden=!logged;
   $('#switch-account').textContent=logged?'退出 AMAX':'登录';$('#refresh-state').disabled=!logged;
-  const titles={me:['我的额度',''],transfers:['数据',''],work:['项目',''],jobs:['任务',''],resources:['算力',''],datasets:['数据',''],community:['协作',''],admin:['管理台','']};
-  const concisePage=['community','admin'].includes(page);
+  const titles={me:['我的额度',''],transfers:['数据',''],work:['项目',''],jobs:['任务',''],resources:['算力',''],datasets:['数据',''],community:['协作',''],workshop:['创意工坊',''],admin:['管理台','']};
+  const concisePage=['community','workshop','admin'].includes(page);
   const eyebrows={resources:MACHINES.length+' 台服务器 · 实时',work:'容器工作区 · /workspace',jobs:'全队共用',datasets:'/workspace · /datasets',transfers:'/workspace · /datasets',community:'帖子 · 聊天 · 公告',admin:'仅管理员可见'};
   let eyebrow=$('#page-eyebrow');if(!eyebrow){eyebrow=document.createElement('div');eyebrow.id='page-eyebrow';eyebrow.className='page-eyebrow';$('#page-title').before(eyebrow);}
   eyebrow.textContent=logged?eyebrows[page]||'':'';eyebrow.hidden=!eyebrow.textContent;
@@ -82,6 +84,7 @@ function render(preserve=false){
   $('.demo-note').hidden=!note&&!monitorNotice;
   renderOperationalMaintenance();
   renderTransfers(page==='transfers');renderResources();renderExecution();renderJobsRoom();renderDatasets();renderCommunity(page==='community');renderChatMentionBadge(store);renderAnnouncements();renderMentionPopup();
+  workshop.render(page==='workshop');
   $('#open-submit').hidden=true;
   shell.update();
   adminConsole.update();

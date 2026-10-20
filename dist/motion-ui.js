@@ -11,6 +11,7 @@ function cleanClone(element){
   const clone=element.cloneNode(true);
   const originals=[element,...element.querySelectorAll('*')],copies=[clone,...clone.querySelectorAll('*')];
   for(const [index,node] of copies.entries()){
+    if(node.tagName==='IFRAME'){node.remove();continue;}
     if(node.tagName==='DIALOG')node.removeAttribute('open');
     // cloneNode copies serialized style attributes, which strict CSP rejects.
     // Reapply only through the CSSOM, as with the actual application controls.
