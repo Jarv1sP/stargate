@@ -295,7 +295,7 @@ gpuctl transfer resume TRANSFER_ID
 
 只读查询和下载遇到“暂时无法读取”、429、502、503、504、连接重置或超时时，保留原请求及下载偏移，按指数退避重试，共用约一分钟的总时限；权限、路径或文件不存在的错误立即报告。`pull --job` 只读取该任务的寻址信息，不拉取完整状态。
 
-Windows 和 WSL 的原生传输助手按 CLI 构建版本保存在用户临时目录 `stargate-campus/<版本>/`；Linux 使用 `stargate-campus-<uid>/<版本>/` 区分本机用户。后续命令直接复用，新版本首次写入时尽力清理旧版本与旧临时助手目录；删不掉不影响命令。
+Windows 和 WSL 的原生传输助手按 CLI 构建版本保存在用户临时目录 `stargate-campus/<版本>/`；Linux 使用 `stargate-campus-<uid>/<版本>/` 区分本机用户。后续命令直接复用，新版本首次写入时尽力清理旧版本与旧临时助手目录；删不掉不影响命令。 Windows 临时目录和架构保存在 `~/.config/gpuq-console/windows-bootstrap.json`，后续命令不再启动 PowerShell；缓存失效或助手解压失败时自动重新读取一次。只有这一步 PowerShell 最多等待 30 秒，其余本机命令仍为 8 秒。
 
 ### HTTPS 与阿里云盘分享导入
 
