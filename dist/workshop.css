@@ -82,7 +82,7 @@
 .sb .workshop-native-panel::backdrop{background:#17223588}
 .sb .workshop-native-heading{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--line-2);position:sticky;top:0;background:var(--bg);z-index:2}
 .sb .workshop-native-body{padding:20px;min-width:0}
-.sb .workshop-native-body>.jr-drawer{position:static;width:100%;height:auto;min-height:calc(100dvh - 100px);transform:none;border:0;visibility:visible}
+body.sb dialog.workshop-native-panel .workshop-native-body>.jr-drawer{position:static;width:100%;height:auto;min-height:calc(100dvh - 100px);transform:none;border:0;visibility:visible}
 .sb .workshop-native-body .pr-head{padding-top:0}
 
-.sb .workshop-native-body>.jr-sheet{position:static;width:100%;max-height:none;transform:none;opacity:1;visibility:visible;pointer-events:auto;border:0;box-shadow:none}
+body.sb dialog.workshop-native-panel .workshop-native-body>.jr-sheet{position:static;width:100%;max-height:none;transform:none;opacity:1;visibility:visible;pointer-events:auto;border:0;box-shadow:none}

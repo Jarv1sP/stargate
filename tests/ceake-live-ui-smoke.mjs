@@ -9,6 +9,7 @@ import {renderWorkshopFrame} from '../workshop-frame.mjs';
 const dir=await mkdtemp(join(tmpdir(),'ceake-live-')),bundle=join(dir,'package.json'),origin='https://ceake-live.test',root=resolve(import.meta.dirname,'../dist');
 execFileSync(process.execPath,['scripts/package-ceake-live.mjs',bundle]);const pkg=JSON.parse(await readFile(bundle,'utf8'));
 const item={id:'11111111-1111-4111-8111-111111111111',version:1,kind:'plugin',presentation:'interface',name:pkg.name,description:pkg.description,author:{name:'fixture'},canEdit:true};
+const theme={item:{id:'44444444-4444-4444-8444-444444444444',version:1,kind:'theme',name:'参考布局',author:{name:'fixture'}},package:{apiVersion:1,kind:'theme',name:'参考布局',description:'',theme:{tokens:{},layout:'aispace',density:'comfortable',width:'wide',columns:1}}};
 const machine='fixture-node',owner='member-a',peer='member-b',principal={userId:owner,username:'alice',role:process.env.CEAKE_ROLE||'admin'};
 const projects=[{project:'peer-project',displayName:'团队项目',ownerId:peer,ownerName:'成员乙',environmentMode:'oci',state:'ACTIVE'}];
 const jobs=[{id:'22222222-2222-4222-8222-222222222222',nodeJobId:'J111111111111',userId:peer,ownerId:peer,machine,project:'peer-project',name:'团队训练',state:'RUNNING',cards:1,argv:['python','train.py'],submitter:{name:'成员乙'},createdAt:'2026-10-20T00:00:00Z',startedAt:'2026-10-20T00:00:00Z'}];
@@ -17,10 +18,10 @@ const state={machines:[{id:machine,cards:2,model:'Fixture GPU'}],users:[{id:owne
 const calls=[],errors=[],submissions=new Map(),notes=[];
 async function rpc(op,args){calls.push({op,args:structuredClone(args)});
  if(op==='state')return {principal,state};
- if(op==='workshop.mine')return {installed:installed?[{item,package:pkg}]:[]};
- if(op==='workshop.list')return {items:[item]};
+ if(op==='workshop.mine')return {installed:[...(process.env.CEAKE_THEME==='aispace'?[theme]:[]),...(installed?[{item,package:pkg}]:[])]};
+ if(op==='workshop.list')return {items:[item,...(process.env.CEAKE_THEME==='aispace'?[theme.item]:[])]};
  if(op==='workshop.get')return {item,package:pkg};
- if(op==='workshop.uninstall'){installed=false;return {installed:[]};}
+ if(op==='workshop.uninstall'){installed=false;return {installed:process.env.CEAKE_THEME==='aispace'?[theme]:[]};}
  if(op==='projects.list'){if(failProjects)throw Error('节点暂时读不到');return {projects};}
  if(op==='projects.create'){const p={project:args.project,ownerId:owner,ownerName:'成员甲',environmentMode:'oci',lifecycle:{state:'ACTIVE'}};projects.push(p);return p;}
  if(op==='projects.status')return {...projects.find(p=>p.project===args.project),git:{url:'https://example.test/vision.git',branch:'main'}};
