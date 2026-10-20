@@ -2,7 +2,7 @@
 // Keep static asset registration separate from every API and execution route.
 export const STARBASE_ASSETS = Object.fromEntries([
   'themes/aispace.css','themes/aispace.js',
-  'workshop-package.js','workshop-ui.js','workshop-examples.js','workshop-runtime.js','workshop.css',
+  'workshop-platform.js','workshop-native.js','workshop-package.js','workshop-ui.js','workshop-examples.js','workshop-runtime.js','workshop.css',
   'starbase-tokens.css', 'starbase-shell.css', 'starbase-controls.css', 'starbase-status.css', 'starbase-surfaces.css', 'starbase-overlays.css', 'starbase-responsive.css', 'starbase-motion.css', 'starbase-navigation-glass.css',
   'announcement-ui.js','announcement-appearance.js','announcements.css',
   'fonts.css', 'starbase.css', 'shell.css', 'workbench.css', 'terminal.css', 'resources.css', 'jobs-room.css', 'projects-room.css', 'data-room.css', 'collab-room.css', 'jobs-room.js', 'sheet-ui.js', 'apple-touch-icon.png', 'members.css', 'copy-help.css',

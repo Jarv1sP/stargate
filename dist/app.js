@@ -34,7 +34,7 @@ const adminConsole=createAdminUI(store,{navigate:choosePage,getPage:()=>page,toa
 const renderExecution=executionUI(store,()=>render(true),toast);
 const renderDatasets=datasetsUI(store,toast);
 const renderCommunity=createCommunityUI(store,toast);
-const workshop=createWorkshopUI(store,{navigate:choosePage,toast});
+const workshop=createWorkshopUI(store,{navigate:choosePage,toast,openProject:detail=>renderExecution.openProject(detail)});
 const renderAnnouncements=createAnnouncementUI(store,{toast});
 const renderMentionPopup=createMentionPopup(store,{openChat:place=>{choosePage('community');renderCommunity.showChat(place);},chatOpen:()=>page==='community'&&renderCommunity.chatOpen()});
 const renderOperationalMaintenance=operationalMaintenanceUI(store);

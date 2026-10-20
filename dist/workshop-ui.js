@@ -1,15 +1,17 @@
+import {createWorkshopNative} from './workshop-native.js';
 import {escapeUI as esc} from './workbench-ui.js';
 import {normalizeWorkshopPackage,WORKSHOP_PACKAGE_BYTES} from './workshop-package.js';
 import {WORKSHOP_EXAMPLES} from './workshop-examples.js';
 import {createWorkshopRuntime} from './workshop-runtime.js';
 
-const permissionLabels={'resources.read':'读取 GPU 概况','jobs.read':'读取本人的任务','jobs.cancel':'经平台确认后取消任务','ui.navigate':'切换平台页面'};
+const permissionLabels={'resources.read':'读取 GPU 概况','jobs.read':'读取本人的任务','jobs.cancel':'经平台确认后取消任务','ui.navigate':'切换平台页面','platform.read':'读取团队项目、数据集与任务','platform.write':'创建项目、提交训练命令、管理数据与回收站','platform.ui':'打开平台原生终端、文件和管理面板'};
 const kindLabel=(kind,presentation)=>presentation==='interface'?'整站界面':kind==='theme'?'主题与布局':'功能插件';
 const versionLabel=version=>String(version).length>16?String(version).slice(0,12):String(version);
 const permissionHTML=pkg=>(pkg.permissions||[]).length?`<ul class="workshop-permissions">${pkg.permissions.map(value=>`<li>${esc(permissionLabels[value])} <code>${esc(value)}</code></li>`).join('')}</ul>`:'<p class="muted">不申请数据或操作权限。</p>';
 
-export function createWorkshopUI(store,{navigate,toast}){
+export function createWorkshopUI(store,{navigate,toast,openProject}){
   const host=document.querySelector('#page-workshop'),widgets=document.querySelector('#workshop-widgets');
+  const nativeView=createWorkshopNative({store,navigate,openProject});
   let runtime=null;
   const bypass=new URL(location.href).searchParams.get('workshop')==='off';
   let actor=null,generation=0,active=false,items=[],installed=[],mineState='unknown',listState='idle',error='',busy=false;
@@ -150,7 +152,7 @@ export function createWorkshopUI(store,{navigate,toast}){
   });
   return {render(nextActive){
     if(actor!==identity())resetSession();
-    if(!runtime&&available())runtime=createWorkshopRuntime({store,root:widgets,navigate,toast,exitInterface:async id=>{detail.close();selected=null;await write('workshop.uninstall',{id},'已恢复平台界面。');}});
+    if(!runtime&&available())runtime=createWorkshopRuntime({store,root:widgets,navigate,toast,nativeView,exitInterface:async id=>{detail.close();selected=null;await write('workshop.uninstall',{id},'已恢复平台界面。');}});
     if(!nextActive&&active){detail.close();editor.close();stopPreview();}
     const entered=nextActive&&!active;active=nextActive;
     if(available()){if(!mineAt||Date.now()-mineAt>60000)void loadMine();if(active&&(entered||listState==='idle'))void loadList();}

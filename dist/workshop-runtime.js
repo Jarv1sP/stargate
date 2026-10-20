@@ -1,6 +1,7 @@
+import {platformCall} from './workshop-platform.js';
 import {THEME_TOKENS} from './workshop-package.js';
 
-const permissions = new Set(['resources.read', 'jobs.read', 'jobs.cancel', 'ui.navigate']);
+const permissions = new Set(['resources.read', 'jobs.read', 'jobs.cancel', 'ui.navigate', 'platform.read', 'platform.write', 'platform.ui']);
 const pages = new Set(['work', 'jobs', 'resources', 'datasets', 'community', 'workshop']);
 const terminal = new Set(['SUCCEEDED', 'FAILED', 'CANCELED']);
 const text = (value, length = 160) => typeof value === 'string' ? value.slice(0, length) : '';
@@ -40,7 +41,7 @@ body.sb[data-workshop-theme] #workshop-widgets{gap:var(--workshop-gap)}
 ${theme.density === 'compact' ? 'body.sb[data-workshop-theme] .page-heading{padding-block:24px 20px}body.sb[data-workshop-theme] #workshop-widgets>.workshop-widget{padding:12px}' : ''}`;
 }
 
-export function createWorkshopRuntime({store, root, navigate, toast, exitInterface}) {
+export function createWorkshopRuntime({store, root, navigate, toast, exitInterface, nativeView}) {
   const document = root.ownerDocument, window = document.defaultView;
   const disabled = new URLSearchParams(window.location.search).get('workshop') === 'off';
   const frames = new Map();
@@ -57,12 +58,14 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
   function close(instance) {
     clearTimeout(instance.timer);
     instance.port?.close();
+    if(instance.wholeInterface)nativeView?.close();
     instance.card.remove();
     if(instance.wholeInterface)restoreShell();
     frames.delete(instance.key);
     if (confirmation?.instance === instance) confirmation.finish(false);
   }
   function clear() {
+    nativeView?.close();
     for (const instance of [...frames.values()]) close(instance);
     installed = []; preview = null; themeStyle.textContent = ''; document.body.removeAttribute('data-workshop-theme');
     document.body.removeAttribute('data-workshop-layout');window.dispatchEvent(new CustomEvent('stargate:theme-change',{detail:{layout:'default'}}));
@@ -106,6 +109,8 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
   async function call(instance, method, args) {
     if (!current(instance)) throw new Error('组件已停用或账号已改变。');
     if (!permissions.has(method) || !instance.permissions.has(method)) throw new Error('安装时未授予此权限。');
+    if(method==='platform.read'||method==='platform.write')return platformCall(store,method,args,()=>workshopResources(store));
+    if(method==='platform.ui'){if(!nativeView)throw Error('平台面板尚未准备好。');return nativeView.open(args);}
     if (method === 'resources.read') return workshopResources(store);
     if (method === 'jobs.read') return workshopJobs(store);
     if (method === 'ui.navigate') {
@@ -137,7 +142,7 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
   function recoveryKey(event){
     if(!event.isTrusted||event.repeat||!event.ctrlKey||!event.altKey||event.shiftKey||event.metaKey||event.code!=='Digit0')return;
     const instance=[...frames.values()].find(entry=>entry.wholeInterface);
-    if(instance){event.preventDefault();void leaveInterface(instance);}
+    if(instance){event.preventDefault();event.stopImmediatePropagation();void leaveInterface(instance);}
   }
   function connect(event) {
     if (event.data?.type !== 'stargate:workshop:ready' || event.data.protocol !== 1) return;
@@ -154,7 +159,7 @@ export function createWorkshopRuntime({store, root, navigate, toast, exitInterfa
         const result = await call(instance, data.method, data.args);
         if (current(instance)) instance.port.postMessage({type: 'response', id: data.id, result});
       } catch (error) {
-        if (current(instance)) instance.port.postMessage({type: 'response', id: data.id, error: text(error.message, 200) || '操作失败。'});
+        if (current(instance)) instance.port.postMessage({type: 'response', id: data.id, error: text(error.message, 200) || '操作失败。',status:error.status});
       }
     };
     instance.port.start();

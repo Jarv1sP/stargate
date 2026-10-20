@@ -650,10 +650,13 @@ export function executionUI(store,refresh,toast){
     if(directoryRead)await directoryRead;
     if(!matches()||token!==currentToken()||!pageActive||!isVisible())return;
     if(projectBusy||operationBusy){toast('当前项目正在处理中，请稍后。');return;}
-    const entries=directoryEntries(),entry=entries.find(row=>row.machine===detail.machine&&row.info.project===detail.project&&(!detail.ownerId||row.info.ownerId===detail.ownerId)&&row.info.environmentMode==='oci');
+    const requested=row=>row.machine===detail.machine&&row.info.project===detail.project&&(!detail.ownerId||row.info.ownerId===detail.ownerId)&&row.info.environmentMode==='oci';
+    let entries=directoryEntries(),entry=entries.find(requested);
+    if(!entry&&detail.refresh){activateProjectActivity();await loadDirectory();if(!matches())return;entries=directoryEntries();entry=entries.find(requested);}
     if(!entry){toast('项目暂不可用，请刷新。');return;}
     await selectProject(projectDirectoryValue(entry,entries,machine));
     if(matches()&&detail.view==='trash'&&machine===detail.machine&&project===detail.project){const trash=projectManagement.element.querySelector('.project-trash');if(trash){projectManagement.element.open=true;trash.open=true;trash.scrollIntoView({block:'nearest'});}else toast('回收站暂不可用');}
+    return context();
   };
   return render;
 }

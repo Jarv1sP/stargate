@@ -16,7 +16,7 @@ const server=createServer(async(req,res)=>{
  const path=new URL(req.url,origin).pathname;
  if(path.startsWith('/workshop/frame/')){const frame=renderWorkshopFrame(pkg,{origin,nonce:'fixtureNonce1234567890abcd'});res.writeHead(200,{'Content-Type':'text/html','Content-Security-Policy':frame.csp});return res.end(frame.html);}
  if(path==='/'){res.writeHead(200,{'Content-Type':'text/html'});return res.end(`<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/workshop.css"></head><body class="sb"><div class="shell"><button id="portal-action">原平台</button><div id="widgets"></div></div><script type="module">import {createWorkshopRuntime} from '/workshop-runtime.js';const store={principal:{userId:'fixture'},authGeneration:1,onAuthChange:()=>()=>{},jobs:[],data:{}};window.exits=[];const runtime=createWorkshopRuntime({store,root:document.querySelector('#widgets'),navigate(){},toast(){},exitInterface:id=>{exits.push(id);runtime.setInstalled([]);}});runtime.setInstalled([{item:{id:'demo',version:'v1'},package:${JSON.stringify(pkg)}}]);</script></body></html>`);}
- if(['/workshop.css','/workshop-runtime.js','/workshop-package.js'].includes(path)){res.writeHead(200,{'Content-Type':extname(path)==='.css'?'text/css':'text/javascript'});return res.end(await readFile(resolve(mainline,'dist','.'+path)));}
+ if(['/workshop.css','/workshop-runtime.js','/workshop-package.js','/workshop-platform.js'].includes(path)){res.writeHead(200,{'Content-Type':extname(path)==='.css'?'text/css':'text/javascript'});return res.end(await readFile(resolve(mainline,'dist','.'+path)));}
  res.writeHead(404).end();
 });
 let browser;

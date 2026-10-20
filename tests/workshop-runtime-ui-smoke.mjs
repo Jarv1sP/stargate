@@ -32,7 +32,7 @@ const server=http.createServer(async(req,res)=>{
     const rendered=renderWorkshopFrame(pkg,{nonce,origin});
     res.writeHead(200,{'Content-Type':'text/html','Content-Security-Policy':rendered.csp,'X-Frame-Options':'SAMEORIGIN'});res.end(rendered.html);return;
   }
-  if(['/dist/workshop-runtime.js','/dist/workshop-package.js'].includes(pathname)){
+  if(['/dist/workshop-runtime.js','/dist/workshop-package.js','/dist/workshop-platform.js'].includes(pathname)){
     res.writeHead(200,{'Content-Type':'text/javascript'});res.end(await readFile(new URL('..'+pathname,import.meta.url)));return;
   }
   if(pathname==='/navigated'){res.writeHead(200,{'Content-Type':'text/html'});res.end('<p>离开组件</p>');return;}

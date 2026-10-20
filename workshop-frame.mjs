@@ -14,7 +14,7 @@ function bootstrap(payload, portalOrigin, nonce) {
     if (!request) return;
     pending.delete(data.id);
     clearTimeout(request.timer);
-    if (data.error) request.reject(new Error(data.error));
+    if (data.error) request.reject(Object.assign(new Error(data.error),{status:data.status}));
     else request.resolve(data.result);
   };
   if(pkg.presentation==='interface')window.addEventListener('keydown',event=>{

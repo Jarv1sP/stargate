@@ -1,0 +1,11 @@
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {resolve,dirname} from 'node:path';
+import {gzipSync} from 'node:zlib';
+import {normalizeWorkshopPackage} from '../dist/workshop-package.js';
+const output=resolve(process.argv[2]||'out/ceake-live/仓浪平台_真实后端.json');
+const root=new URL('../workshop-apps/ceake/',import.meta.url);
+const css=await readFile(new URL('style.css',root),'utf8');
+const script=(await readFile(new URL('ui.js',root),'utf8'))+'\n;\n'+await readFile(new URL('app.js',root),'utf8');
+const data=gzipSync(Buffer.from(JSON.stringify({css,script}))).toString('base64');
+const pkg=normalizeWorkshopPackage({apiVersion:1,kind:'plugin',presentation:'interface',name:'仓浪平台 · 真实工作界面',description:'仓浪布局连接当前 STARGATE 后端：团队项目、服务器/GPU、真实训练提交/取消/日志、数据集和回收站；终端与文件传输复用平台原生面板。所有操作是真实操作，Ctrl+Alt+0 恢复原界面。',permissions:['platform.read','platform.write','platform.ui','jobs.cancel'],html:'<p id="loading">正在连接 STARGATE…</p>',css:'body{margin:0;padding:0;background:#eef2f8;color:#333}',script:`(()=>{const nonce=document.currentScript.nonce;(async()=>{try{const bytes=Uint8Array.from(atob('${data}'),c=>c.charCodeAt(0));const data=await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).json();const style=document.createElement('style');style.textContent=data.css;document.head.append(style);document.querySelector('#workshop-root').innerHTML='<div id="app"></div><div id="layers"></div><div id="toasts"></div>';const script=document.createElement('script');script.nonce=nonce;script.textContent=data.script;document.body.append(script);}catch(error){const target=document.querySelector('#loading');if(target)target.textContent='打开失败：'+error.message;}})();})();`});
+await mkdir(dirname(output),{recursive:true});await writeFile(output,JSON.stringify(pkg)+'\n');console.log(output+' '+Buffer.byteLength(JSON.stringify(pkg))+' bytes');
