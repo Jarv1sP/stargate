@@ -1,13 +1,14 @@
 /* Collaboration room, from the approved prototype: posts with the pinned notice on top, chat as a card. */
 .sb #page-community .community-layout{gap:32px}
 @media (min-width:900px){.sb #page-community .community-layout{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr)}}
+@media (min-width:1200px){.sb #page-community .community-layout{grid-template-columns:minmax(0,1.2fr) minmax(420px,1fr)}}
 .sb #page-community .community-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px}
 .sb #page-community .community-toolbar label{display:flex;align-items:center;gap:8px}
 .sb #page-community .community-toolbar .field-caption{min-height:0;font-size:0}
 .sb #page-community .community-toolbar .field-caption .ui-info,.sb #page-community .community-toolbar .field-caption button{font-size:12px}
 .sb #page-community .community-toolbar select{height:36px;border-radius:999px;background:var(--bg-2);border:1px solid transparent;padding:0 32px 0 14px;color:#F2F2EF;font-size:13px;width:auto}
 .sb #page-community .community-toolbar-actions{margin-left:auto;gap:8px;align-items:center}
-.sb #page-community .community-toolbar-actions>.button{min-height:36px;height:36px;border-radius:999px;padding:0 16px;font-size:13px;background:none;border:1px solid var(--line-2);color:var(--ink-2);transition:border-color .2s,color .2s,transform .18s var(--jr-spring)}
+.sb #page-community .community-toolbar-actions>.button{min-height:36px;height:36px;border-radius:999px;padding:0 16px;font-size:13px;background:none;border:1px solid var(--line-2);color:var(--ink-2);transition:transform .18s var(--jr-out)}
 .sb #page-community .community-toolbar-actions>.button:hover{color:#F2F2EF;border-color:var(--line-3)}
 .sb #page-community .community-toolbar-actions>.button:active{transform:scale(.96)}
 .sb #page-community .community-toolbar-actions>#community-create{color:#F2F2EF}
@@ -24,43 +25,94 @@
 .sb #page-community .community-post.is-pinned::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,var(--ink-3),transparent);animation:collab-scan 6s linear infinite}
 @keyframes collab-scan{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
 
-/* Chat card */
-@media (min-width:900px){.sb #page-community #community-chat{position:sticky;top:88px;height:min(560px,calc(100dvh - 184px));overflow:hidden}}
-.sb #page-community #community-chat{background:var(--bg-1);border:1px solid var(--line-2);border-radius:14px;padding:0}
-.sb #page-community .chat-topline{display:flex;justify-content:space-between;align-items:center;padding:12px 12px 12px 18px;border-bottom:1px solid var(--line-2);margin:0}
+/* Chat card: keep the composer in reach and give the remaining space to messages. */
+.sb #page-community #community-chat{--chat-top:88px;position:sticky;top:88px;height:calc(100dvh - var(--chat-top) - 24px);min-height:520px;max-height:none;overflow:hidden;background:var(--bg-1);border:1px solid var(--line-2);border-radius:14px;padding:0}
+.sb #page-community .chat-topline{display:flex;justify-content:space-between;align-items:center;padding:10px 10px 10px 14px;border-bottom:1px solid var(--line-2);margin:0}
 .sb #page-community .chat-topline h3{font-size:15px;font-weight:500}
-.sb #page-community #chat-refresh,.sb #page-community #chat-room-settings{min-height:32px;height:32px;border:0;background:none;color:var(--ink-3);font-size:12px;padding:0 6px}
-.sb #page-community #chat-refresh:hover,.sb #page-community #chat-room-settings:hover{color:#F2F2EF}
-.sb #page-community .community-task-notes{margin:0;padding:8px 18px;border-bottom:1px solid var(--line-2)}
-.sb #page-community .community-messages{flex:1;min-height:200px;overflow:auto;padding:18px;display:flex;flex-direction:column;gap:14px;border:0}
-.sb #page-community .chat-message{display:block;max-width:85%;border:0;padding:0;background:none;animation:jr-rise .4s var(--jr-out) both}
-.sb #page-community .chat-avatar{display:none}
-.sb #page-community .chat-message .community-meta{font-size:12px;color:var(--ink-3);margin:0}
-.sb #page-community .chat-message .community-body{background:var(--bg-2);border-radius:14px 14px 14px 4px;padding:9px 13px;margin:4px 0 0;color:#F2F2EF;font-size:14px;line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}
-.sb #page-community .chat-message.own{align-self:flex-end;text-align:right}
-.sb #page-community .chat-message.own .community-body{background:#F2F2EF;color:#0A0B0D;border-radius:14px 14px 4px 14px;text-align:left}
-.sb #page-community #community-chat-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin:0;padding:12px;border-top:1px solid var(--line-2)}
+.sb #page-community #chat-refresh,.sb #page-community #chat-room-settings{width:32px;height:32px;min-height:32px;padding:0}
+.sb #page-community #chat-room-settings{display:flex;align-items:center;gap:3px;width:auto;min-width:32px}
+.sb #page-community #chat-room-count{font-size:11px;font-variant-numeric:tabular-nums}
+.sb #page-community .community-task-notes{margin:20px 0 0;padding:0;border-block:1px solid var(--line-2)}
+.sb #page-community .chat-timeline{position:relative;display:flex;flex-direction:column;flex:1;min-height:0}
+.sb #page-community .chat-history{position:absolute;top:4px;left:0;right:0;z-index:2;display:flex;justify-content:center;gap:10px;pointer-events:none}
+.sb #page-community .chat-history button{pointer-events:auto;min-height:28px;padding:0 10px;font-size:11px;background:var(--bg-1);border-radius:14px;color:var(--ink-3)}
+.sb #page-community .community-messages{flex:1;min-height:0;height:auto;overflow:auto;padding:16px 14px;display:flex;flex-direction:column;gap:0;border:0;overflow-anchor:none}
+.sb #page-community .chat-history:has(button:not([hidden]))+.community-messages{padding-top:48px}
+.sb #page-community .community-messages.chat-swapping{animation:sb-swap 220ms var(--jr-out)}
+.sb #page-community .chat-day{flex:none;text-align:center;color:var(--ink-3);font-size:11px;margin:8px 0 16px}
+.sb #page-community .chat-message{position:relative;display:flex;gap:8px;flex:none;max-width:75%;border:0;padding:0 0 0 36px;margin:14px 0 0;background:none;animation:none;align-self:flex-start;min-width:0}
+.sb #page-community .chat-day+.chat-message{margin-top:0}
+.sb #page-community .chat-message.is-grouped{margin-top:4px}
+.sb #page-community .chat-message-content{flex:1;min-width:0}
+.sb #page-community .chat-avatar{position:absolute;left:0;top:28px;display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--line-2);border-radius:50%;background:linear-gradient(135deg,var(--bg-4),var(--bg-1));color:var(--ink-2);font-size:12px}
+.sb #page-community .chat-message .community-meta{position:relative;display:flex;flex-wrap:nowrap;align-items:center;gap:8px;min-height:28px;font-size:11px;line-height:1.4;color:var(--ink-3);margin:0}
+.sb #page-community .chat-author{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.sb #page-community .chat-message time{font-size:10px;white-space:nowrap}
+.sb #page-community .chat-message .community-item-actions{display:flex;flex-wrap:nowrap;gap:8px;margin:0 0 0 auto;flex:none;transition:opacity 160ms var(--jr-out)}
+.sb #page-community .chat-message .community-text-button{min-height:32px;height:32px;padding:0;font-size:11px;line-height:1;color:var(--ink-3)}
+.sb #page-community .chat-message.is-grouped .community-meta{min-height:0;height:0;z-index:1}
+.sb #page-community .chat-message.is-grouped .community-item-actions{position:absolute;right:0;bottom:0;background:var(--bg-1);border-radius:6px;padding:0 5px}
+.sb #page-community .chat-bubble{position:relative;padding:9px 12px;background:var(--bg-2);border-radius:16px;color:var(--ink);overflow:hidden}
+.sb #page-community .chat-message .community-body{background:none;padding:0;margin:0;color:inherit;font-size:14px;line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}
+.sb #page-community .chat-message.own{align-self:flex-end;padding:0;text-align:left}
+.sb #page-community .chat-message.own .community-meta{justify-content:flex-end}
+.sb #page-community .chat-message.own .community-body{color:inherit}
+.sb #page-community .chat-message.own .chat-bubble{background:#F2F2EF;color:#0A0B0D}
+.sb #page-community .chat-message.has-next .chat-bubble{border-bottom-left-radius:6px}
+.sb #page-community .chat-message.is-grouped .chat-bubble{border-top-left-radius:6px}
+.sb #page-community .chat-message.own.has-next .chat-bubble{border-bottom-left-radius:16px;border-bottom-right-radius:6px}
+.sb #page-community .chat-message.own.is-grouped .chat-bubble{border-top-left-radius:16px;border-top-right-radius:6px}
+.sb #page-community .mentions-me .chat-bubble{box-shadow:inset 2px 0 var(--ink-3)}
+.sb #page-community .mentions-me .chat-bubble::after{content:"";position:absolute;inset:0;background:var(--ink-3);opacity:0;pointer-events:none}
+.sb #page-community .mention-arrival .chat-bubble::after{animation:chat-mention-glow 900ms var(--jr-out)}
+.sb #page-community .chat-message.is-new{animation:jr-rise 240ms var(--jr-out)}
+.sb #page-community .chat-message.own.is-new{animation:chat-sent 200ms var(--jr-out)}
+.sb #page-community .chat-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:24px 0}
+.sb #page-community .chat-empty strong{font-size:15px;font-weight:500;color:var(--ink)}
+.sb #page-community .chat-empty>span:last-child{font-size:12px;color:var(--ink-3)}
+.sb #page-community .chat-empty-icon{display:grid;place-items:center;width:48px;height:48px;border-radius:16px;background:var(--bg-2);margin-bottom:8px}
+.sb #page-community .chat-empty svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.5}
+.sb #page-community .chat-new{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:7px;min-height:32px;margin:0;padding:4px 12px;white-space:nowrap;border:1px solid var(--line-2);border-radius:999px;background:var(--bg-3);color:var(--ink);font-size:12px;animation:chat-unread 200ms var(--jr-out)}
+.sb #page-community #community-chat-form{position:relative;display:block;flex:none;margin:0;padding:8px;border-top:1px solid var(--line-2)}
 .sb #page-community #community-chat-form>label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
-.sb #page-community #community-chat-body{min-height:40px;height:40px;max-height:140px;resize:none;border-radius:10px;background:var(--bg-2);border:1px solid var(--line-2);padding:9px 14px;color:#F2F2EF;font:inherit;font-size:14px;line-height:1.5}
-.sb #page-community #community-chat-body:focus{border-color:var(--ink-3);outline:none}
-.sb #page-community .chat-compose-footer{display:flex;margin:0}
-.sb #page-community .chat-compose-footer>p{display:none}
-.sb #page-community .chat-compose-footer .button{min-height:40px;height:40px;border-radius:999px;padding:0 18px;background:#F2F2EF;color:#0A0B0D;border:0;font-weight:500}
-.sb #page-community #chat-error{grid-column:1/-1;margin:0}
-.sb #page-community #chat-error:empty{display:none}
-@media (prefers-reduced-motion:reduce){.sb #page-community .community-post,.sb #page-community .chat-message,.sb #page-community .community-post.is-pinned::before{animation:none}}
-
-/* Chat extras: tools, picture, @mentions */
-.sb #page-community #community-chat-form{position:relative;grid-template-columns:auto minmax(0,1fr) auto}
-.sb #page-community .chat-tools{display:flex;gap:2px;align-self:end}
-.sb #page-community .chat-tool{width:36px;height:40px;border:0;border-radius:10px;background:none;font-size:18px;line-height:1;padding:0;color:var(--ink-2)}
-.sb #page-community .chat-tool:hover{background:var(--bg-2)}
-.sb #page-community .chat-tool svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle}
+.sb #page-community .chat-compose-box{display:flex;align-items:flex-start;gap:2px;padding:4px;border:1px solid var(--line-2);border-radius:14px;background:var(--bg-2)}
+.sb #page-community .chat-compose-box:focus-within{border-color:var(--ink-3)}
+.sb #page-community #community-chat-body{flex:1;min-width:0;min-height:36px;height:36px;max-height:140px;resize:none;border-radius:0;background:none;border:0;padding:7px 4px;color:var(--ink);font:inherit;font-size:14px;line-height:22px;outline:none;box-shadow:none;transition:none}
+.sb #page-community #community-chat-body:focus-visible{outline:none}
+.sb #page-community .chat-tools{display:flex;gap:0;flex:none}
+.sb #page-community .chat-tool{display:grid;place-items:center;flex:none;width:32px;min-width:32px;height:36px;min-height:36px!important;border:0;border-radius:10px;background:none;padding:0;color:var(--ink-3);transition:transform 160ms var(--jr-out),opacity 160ms var(--jr-out)}
+.sb #page-community .chat-tool:hover{color:var(--ink);background:var(--bg-3)}
+.sb #page-community .chat-tool:active{transform:scale(.94)}
+.sb #page-community .chat-tool svg,.sb #page-community .chat-send svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .sb #page-community .chat-tool:disabled{opacity:.4}
-.sb #page-community .chat-attachment{grid-column:1/-1;display:flex;align-items:center;gap:12px}
+.sb #page-community .chat-send{display:grid;place-items:center;flex:none;min-width:36px;width:36px;min-height:36px;height:36px;padding:0;border:0;border-radius:50%;background:#F2F2EF;color:#0A0B0D;opacity:.4;transition:transform 160ms var(--jr-out),opacity 160ms var(--jr-out)}
+.sb #page-community .chat-send:active{transform:scale(.92)}
+.sb #page-community .chat-send.is-ready{opacity:1}
+.sb #page-community .chat-send>span{display:grid;place-items:center}
+.sb #page-community .chat-send.is-ready>span{animation:chat-send-ready 240ms cubic-bezier(.34,1.32,.5,1)}
+.sb #page-community #chat-error{margin:4px 0 0}
+.sb #page-community #chat-error:empty{display:none}
+@keyframes chat-sent{from{opacity:0;transform:translateY(8px) scale(.98)}}
+@keyframes chat-send-ready{from{transform:translateY(-2px)}}
+@keyframes chat-unread{from{opacity:0;transform:translate(-50%,6px)}}
+@keyframes chat-mention-glow{0%,100%{opacity:0}45%{opacity:.6}}
+@media (hover:hover){
+ .sb #page-community .chat-message .community-item-actions{opacity:0}
+ .sb #page-community .chat-message:hover .community-item-actions,.sb #page-community .chat-message:focus-within .community-item-actions{opacity:1}
+}
+@media (hover:none){
+ .sb #page-community .chat-message.is-grouped .community-meta:has(button){height:28px}
+ .sb #page-community .chat-message.is-grouped .community-item-actions{background:none;padding:0}
+}
+@media (max-width:899px){
+ .sb #page-community #community-chat{position:relative;top:auto;height:calc(100dvh - var(--chat-top) - var(--chat-bottom,0px));min-height:420px;scroll-margin-top:76px}
+ .sb #page-community .chat-message{max-width:85%}
+ .sb #page-community #community-chat-form{padding:6px}
+}
+.sb #page-community .chat-attachment{display:flex;align-items:center;gap:12px;padding-bottom:6px}
 .sb #page-community .chat-attachment[hidden]{display:none}
 .sb #page-community .chat-attachment img{max-width:96px;max-height:72px;border-radius:8px;border:1px solid var(--line-2)}
-.sb #page-community .chat-popover{position:absolute;left:12px;bottom:calc(100% - 4px);z-index:5;background:var(--bg-1);border:1px solid var(--line-3);border-radius:12px;box-shadow:var(--shadow-pop);padding:6px}
+.sb #page-community .chat-popover{position:absolute;left:12px;bottom:calc(100% - 4px);z-index:5;background:var(--bg-1);border:1px solid var(--line-2);border-radius:12px;padding:6px}
 .sb #page-community .chat-popover[hidden]{display:none}
 .sb #page-community .chat-emoji-panel{display:grid;grid-template-columns:repeat(8,36px);gap:2px;max-width:calc(100% - 24px)}
 .sb #page-community .chat-emoji{width:36px;height:36px;border:0;border-radius:8px;background:none;font-size:20px;padding:0}
@@ -71,16 +123,10 @@
 .sb #page-community .chat-mention-option.active{background:var(--bg-3)}
 .sb #page-community .chat-mention{font-weight:600}
 .sb #page-community .chat-mention.me{background:var(--ink);color:var(--bg);border-radius:4px;padding:0 4px}
-.sb #page-community .chat-image{display:inline-block;margin-top:4px;line-height:0}
-.sb #page-community .chat-image img{width:auto;height:auto;max-width:min(260px,60vw);max-height:260px;border-radius:12px;border:1px solid var(--line-2);background:var(--bg-2)}
+.sb #page-community .chat-image{display:block;margin:0;line-height:0}
+.sb #page-community .chat-image img{width:auto;height:auto;max-width:100%;max-height:260px;border-radius:12px;border:1px solid var(--line-2);background:var(--bg-2)}
 .sb .nav-mention{position:absolute;top:4px;right:0;min-width:18px;height:16px;padding:0 4px;border-radius:8px;background:var(--ink);color:var(--bg);font-size:10px;font-weight:600;line-height:16px;text-align:center;font-variant-numeric:tabular-nums;pointer-events:none}
-@media (max-width:479px){
-  .sb #page-community #community-chat-form{grid-template-columns:auto 1fr auto}
-  .sb #page-community #community-chat-body{grid-column:1/-1;grid-row:2}
-  .sb #page-community .chat-tools{grid-row:3}
-  .sb #page-community .chat-compose-footer{grid-column:3;grid-row:3}
-  .sb #page-community .chat-emoji-panel{grid-template-columns:repeat(6,36px)}
-}
+@media (max-width:479px){.sb #page-community .chat-emoji-panel{grid-template-columns:repeat(6,36px)}}
 /* @mention pop-up, shown like an announcement when someone mentions you. */
 .sb .mention-dialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 40px);padding:24px;border:1px solid var(--line-2);border-radius:12px;background:var(--bg-1);color:var(--ink);overflow:hidden}
 .sb .mention-dialog[open]{display:flex;flex-direction:column;gap:16px}
@@ -106,9 +152,9 @@
 .sb #page-community .chat-topline .copy-caption{min-width:0;gap:8px;justify-content:flex-start}
 .sb #page-community #chat-room-private{font-size:11px;white-space:nowrap;flex:none}
 .sb #page-community #chat-room-title{min-width:0;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sb #page-community .chat-rooms{display:flex;flex-wrap:nowrap;gap:8px;min-width:0;overflow-x:auto;padding:8px 12px;border-bottom:1px solid var(--line-2);scrollbar-width:none;flex:none}
+.sb #page-community .chat-rooms{display:flex;flex-wrap:nowrap;gap:8px;min-width:0;overflow-x:auto;padding:6px 12px;border-bottom:1px solid var(--line-2);scrollbar-width:none;flex:none}
 .sb #page-community .chat-rooms[hidden]{display:none}
-.sb #page-community .chat-room{display:flex;align-items:center;flex:none;min-height:34px;height:34px;max-width:12em;overflow:hidden;text-overflow:ellipsis;padding:0 14px;border-radius:999px;border:1px solid var(--line-2);background:var(--bg-2);color:var(--ink-2);font-size:13px;white-space:nowrap;transition:none}
+.sb #page-community .chat-room{display:flex;align-items:center;flex:none;min-height:32px;height:32px;max-width:12em;overflow:hidden;text-overflow:ellipsis;padding:0 14px;border-radius:999px;border:1px solid var(--line-2);background:var(--bg-2);color:var(--ink-2);font-size:13px;white-space:nowrap;transition:none}
 .sb #page-community .chat-room:hover{background:var(--bg-3);color:var(--ink)}
 .sb #page-community .chat-room[aria-selected=true]{background:#F2F2EF;color:#0A0B0D;border-color:transparent}
 .sb #page-community .chat-room-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
@@ -134,3 +180,16 @@
 .sb .chat-room-dialog #chat-room-rename{margin:0 0 16px}
 .sb .chat-room-dialog #chat-room-delete{color:var(--err);margin-right:auto}
 .sb .chat-room-dialog .modal-actions{flex-wrap:wrap}
+
+/* Colours change immediately; only composited properties move. */
+.sb #page-community button,.sb .community-dialog button{transition-property:transform,opacity}
+.sb #page-community .chat-room,.sb .chat-room-dialog button{transition:none}
+@media (prefers-reduced-motion:reduce){
+ .sb #page-community *,.sb #page-community *::before,.sb #page-community *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
+
+/* These compact chat controls have explicit sizes, including on touch screens. */
+.sb #page-community :is(#chat-room-settings,#chat-refresh,.chat-room){min-height:32px!important}
+.sb #page-community #community-chat>.chat-topline [data-copy-help]{min-height:32px!important;min-width:32px;height:32px;width:32px}
+.sb #page-community .chat-send{min-height:36px!important}
+.sb #page-community .chat-message .community-text-button{min-height:32px!important}

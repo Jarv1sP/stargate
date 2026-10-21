@@ -29,7 +29,9 @@ export async function compressChatImage(file){
 }
 export function createChatComposer({form,input,members,onError}){
   let image=null,choices=[],active=0,busy=false;
-  const tools=el('div','chat-tools'),emojiButton=el('button','chat-tool','😊'),imageButton=el('button','chat-tool'),file=el('input');
+  const tools=el('div','chat-tools'),emojiButton=el('button','chat-tool'),imageButton=el('button','chat-tool'),file=el('input');
+  emojiButton.innerHTML='<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 14s1 3 4 3 4-3 4-3M8 9h.01M16 9h.01"/></svg>';
+  emojiButton.title='插入表情';imageButton.title='发送图片';
   emojiButton.type=imageButton.type='button';emojiButton.setAttribute('aria-label','插入表情');emojiButton.setAttribute('aria-expanded','false');
   imageButton.innerHTML='<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg>';
   imageButton.setAttribute('aria-label','发送图片');file.type='file';file.accept=CHAT_IMAGE.types.join(',');file.hidden=true;
@@ -38,6 +40,13 @@ export function createChatComposer({form,input,members,onError}){
   const mentionList=el('div','chat-popover chat-mention-list');mentionList.hidden=true;mentionList.setAttribute('role','listbox');mentionList.setAttribute('aria-label','提及成员');
   const attachment=el('div','chat-attachment');attachment.hidden=true;
   tools.append(emojiButton,imageButton,file);form.prepend(attachment);form.append(emojiPanel,mentionList);input.before(tools);
+  const submit=form.querySelector('[type=submit]');
+  function fit(){
+    input.style.height='36px';input.style.height=(input.value?Math.min(140,Math.max(36,input.scrollHeight)):36)+'px';
+    const ready=Boolean(input.value.trim()||image);submit.setAttribute('aria-disabled',String(!ready));submit.classList.toggle('is-ready',ready);
+  }
+  const resize=new ResizeObserver(()=>{if(input.clientWidth)fit();});resize.observe(input.parentElement);
+  fit();
   const locked=()=>input.readOnly||input.disabled;
   function insert(text){
     if(locked())return;const start=input.selectionStart??input.value.length,end=input.selectionEnd??start;
@@ -45,7 +54,7 @@ export function createChatComposer({form,input,members,onError}){
   }
   function toggleEmoji(open=emojiPanel.hidden){emojiPanel.hidden=!open||locked();emojiButton.setAttribute('aria-expanded',String(!emojiPanel.hidden));if(open)closeMentions();}
   function renderAttachment(){
-    attachment.replaceChildren();attachment.hidden=!image;input.required=!image;if(!image)return;
+    attachment.replaceChildren();attachment.hidden=!image;input.required=!image;fit();if(!image)return;
     const preview=el('img');preview.src=image.preview;preview.alt='待发送的图片';
     const remove=el('button','community-text-button','移除');remove.type='button';remove.addEventListener('click',()=>{if(!locked()){image=null;renderAttachment();input.focus();}});
     attachment.append(preview,remove);
@@ -87,7 +96,7 @@ export function createChatComposer({form,input,members,onError}){
   input.addEventListener('paste',event=>{const item=[...event.clipboardData?.files||[]].find(f=>f.type.startsWith('image/'));if(item){event.preventDefault();attach(item);}});
   form.addEventListener('dragover',event=>{if([...event.dataTransfer?.items||[]].some(i=>i.kind==='file'))event.preventDefault();});
   form.addEventListener('drop',event=>{const item=[...event.dataTransfer?.files||[]].find(f=>f.type.startsWith('image/'));if(item){event.preventDefault();attach(item);}});
-  input.addEventListener('input',()=>{active=0;suggest();});
+  input.addEventListener('input',()=>{active=0;fit();suggest();});
   input.addEventListener('click',suggest);
   input.addEventListener('blur',()=>setTimeout(closeMentions,0));
   input.addEventListener('keydown',event=>{
@@ -106,6 +115,7 @@ export function createChatComposer({form,input,members,onError}){
     payload(){return image?{body:input.value,image:{type:image.type,data:image.data,width:image.width,height:image.height}}:{body:input.value};},
     clear(){image=null;renderAttachment();closeMentions();toggleEmoji(false);},
     lock(value){emojiButton.disabled=value;imageButton.disabled=value||busy;if(value){toggleEmoji(false);closeMentions();}},
+    destroy(){resize.disconnect();},
     hasImage:()=>!!image
   };
 }

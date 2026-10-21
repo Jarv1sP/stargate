@@ -2,7 +2,7 @@
 // User content is plain text. No localStorage, markdown execution or HTML input.
 import {createSubmissionKeys} from './submission-keys.js';
 import {createTaskNotesUI,taskNotesMarkup} from './task-notes-ui.js';
-import {revealSheet,dismissSheet} from './motion-ui.js';
+import {revealSheet,dismissSheet,reducedMotion} from './motion-ui.js';
 import {copyHelp} from './copy-help-ui.js';
 import {defaultAppearance,applyAnnouncementAppearance} from './announcement-appearance.js';
 import {chatSegments} from './chat-content.js';
@@ -34,41 +34,39 @@ export function createCommunityUI(store,toast){
   let posts=[],postCursor=null,postRequest=0,selected=null,comments=[],commentCursor=null,detailRequest=0,commentRequest=0;
   const commentDrafts=new Map();
   let messages=[],chatCursor=null,chatBefore=null,chatBusy=false,history=false,unread=0,lastChatReconcile=0,chatLoaded=false,postsLoaded=false;
-  let chatComposer=null,chatImages=new Map(),mentionRead='';
+  let chatComposer=null,chatImages=new Map(),mentionRead='',roomMotion=false;
+  let mentionObserver=null;const seenMentions=new Set();
   let rooms=[],room=null,canCreateRoom=false,roomsAt=0,roomsMentions=-1,roomDialog=null;
   let detail,composer,notes,notesCapable=false,editing=null,composeBusy=false,commentBusy=false,chatSending=false;
   const q=selector=>root.querySelector(selector),context=()=>epoch+':'+identity;
   const valid=stamp=>stamp===context()&&identity===principal(store);
   const admin=()=>store.principal?.role==='admin';
   const postsShown=()=>wide.matches||tab==='posts',chatShown=()=>wide.matches||tab==='chat';
-  const message=(text,error=false)=>{q('#community-status').textContent=text;q('#community-status').classList.toggle('form-error',error);};
+  const message=(text,error=false)=>{q('#community-status').textContent=text;q('#community-status').classList.toggle('form-error',error);fitChat();};
   let chatStatus='',chatFailed=false,postStatus='',postFailed=false;
   function postMessage(text,error=false){postStatus=text;postFailed=error;if(wide.matches||tab==='posts')message(text,error);}
-  function chatMessage(text,error=false){chatStatus=text;chatFailed=error;q('#chat-status').textContent=text;q('#chat-status').classList.toggle('form-error',error);if(!wide.matches&&tab==='chat')message(text,error);}
-  // Fit the companion rail between its actual starting point and the shared
-  // control strip. A maintenance notice or wrapped heading can change that
-  // space; the chat composer must remain reachable in the same viewport.
+  function chatMessage(text,error=false){const changed=text!==chatStatus;chatStatus=text;chatFailed=error;q('#chat-status').textContent=text;q('#chat-status').classList.toggle('form-error',error);if(!wide.matches&&tab==='chat'){message(text,error);if(changed&&!error)showChatCard();}}
+  // Use the measured top, including notices and the workshop's borrowed panel.
   let fitFrame=0;
   function fitChat(){
     cancelAnimationFrame(fitFrame);fitFrame=requestAnimationFrame(()=>{
-      const rail=q('#community-chat');if(!rail)return;
-      if(!wide.matches||!visible){rail.style.removeProperty('height');return;}
-      const strip=document.querySelector('#room-nav'),boundary=strip&&getComputedStyle(strip).position==='fixed'?strip.getBoundingClientRect().top-12:innerHeight-24;
-      const height=Math.max(180,Math.min(900,boundary-Math.max(88,rail.getBoundingClientRect().top)));
-      const value=Math.floor(height)+'px';if(rail.style.height!==value)rail.style.height=value;
+      const rail=q('#community-chat');if(!rail||!visible||!chatShown())return;
+      const strip=document.querySelector('#room-nav'),bottom=strip&&getComputedStyle(strip).position==='fixed'?innerHeight-strip.getBoundingClientRect().top+8:0;
+      rail.style.setProperty('--chat-top',Math.ceil(Math.max(wide.matches?88:0,rail.getBoundingClientRect().top))+'px');rail.style.setProperty('--chat-bottom',bottom+'px');
     });
   }
+  function showChatCard(){if(!wide.matches)requestAnimationFrame(()=>{const card=q('#community-chat');if(card&&card.getBoundingClientRect().bottom>innerHeight-parseFloat(card.style.getPropertyValue('--chat-bottom')||0))card.scrollIntoView({block:'start'});});}
   const railObserver=new ResizeObserver(fitChat);
   for(const node of document.querySelectorAll('.page-heading,.demo-note,#operational-maintenance,#room-nav'))railObserver.observe(node);
   addEventListener('resize',fitChat);addEventListener('scroll',fitChat,{passive:true});
   function stop(){clearTimeout(timer);timer=null;}
-  function reset(){epoch++;stop();notes?.reset();notes=null;notesCapable=false;tab='posts';ready=false;infoBusy=false;loading=false;chatBusy=false;composeBusy=false;commentBusy=false;chatSending=false;posts=[];postCursor=null;selected=null;comments=[];messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;chatLoaded=false;postsLoaded=false;chatComposer=null;chatImages=new Map();mentionRead='';rooms=[];room=null;canCreateRoom=false;roomsAt=0;roomsMentions=-1;roomDialog?.close();roomDialog?.remove();roomDialog=null;chatStatus='';chatFailed=false;postStatus='';postFailed=false;keys.reset();commentDrafts.clear();editing=null;detail?.close();composer?.close();detail?.remove();composer?.remove();detail=null;composer=null;root.replaceChildren();}
+  function reset(){chatComposer?.destroy();mentionObserver?.disconnect();seenMentions.clear();roomMotion=false;epoch++;stop();notes?.reset();notes=null;notesCapable=false;tab='posts';ready=false;infoBusy=false;loading=false;chatBusy=false;composeBusy=false;commentBusy=false;chatSending=false;posts=[];postCursor=null;selected=null;comments=[];messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;chatLoaded=false;postsLoaded=false;chatComposer=null;chatImages=new Map();mentionRead='';rooms=[];room=null;canCreateRoom=false;roomsAt=0;roomsMentions=-1;roomDialog?.close();roomDialog?.remove();roomDialog=null;chatStatus='';chatFailed=false;postStatus='';postFailed=false;keys.reset();commentDrafts.clear();editing=null;detail?.close();composer?.close();detail?.remove();composer?.remove();detail=null;composer=null;root.replaceChildren();}
   store.onAuthChange?.(()=>{identity='';reset();});
   function install(){
     root.innerHTML=`<div class="community-tabs" id="community-tabs" role="tablist" aria-label="协作内容"><button type="button" role="tab" data-community-tab="posts">帖子</button><button type="button" role="tab" data-community-tab="chat">聊天</button></div>
       <p id="community-status" role="status" aria-live="polite"></p>
-      <div class="community-layout"><section id="community-forum" role="tabpanel"><div class="community-toolbar"><label><span class="field-caption"><span>类型</span>${copyHelp('协作区','帖子用于公告与问题反馈，聊天用于即时交流。留言不会改变额度、排队或取消任务。','/guide/queue')}</span><select id="community-kind"><option value="">全部帖子</option><option value="announcement">公告</option><option value="feedback">问题反馈</option><option value="discussion">讨论</option></select></label><label id="community-filter-label" hidden><span class="field-caption">处理状态</span><select id="community-filter"><option value="">全部</option><option value="open">待处理</option><option value="investigating">处理中</option><option value="resolved">已解决</option><option value="closed">已关闭</option></select></label><div class="community-toolbar-actions"><button class="button" id="community-refresh" type="button">刷新</button><button class="button primary" id="community-create" type="button">发帖</button></div></div><div class="community-feed-focus hero-frame"><span class="hero-label">公告与最新帖子</span><div id="community-posts" class="community-posts" tabindex="0" aria-label="公告与最新帖子"></div></div><button class="button community-more" id="community-more" type="button" hidden>加载更多</button></section>
-      <section id="community-chat" role="tabpanel" hidden><div class="chat-topline"><div><div class="copy-caption"><h3 id="chat-room-title">实验室聊天</h3><span id="chat-room-private" class="community-tag" hidden>私密</span>${copyHelp('聊天说明','实验室聊天所有登录成员可见；私密聊天室只有成员可见。消息和图片保留 30 天。输入 @ 选择成员提醒对方；图片可粘贴、拖入或点图片按钮选择。请勿发送密码或令牌。','/guide/queue')}</div></div><div class="chat-topline-actions"><button class="button" id="chat-room-settings" type="button" hidden>成员与设置</button><button class="button" id="chat-refresh" type="button">刷新</button></div></div><div id="chat-rooms" class="chat-rooms" role="tablist" aria-label="聊天室" hidden></div><p id="chat-status" role="status" aria-live="polite" hidden></p><details id="community-task-notes" class="community-task-notes" hidden><summary><span class="copy-caption"><span>任务留言</span>${copyHelp('任务留言','任务留言随任务确认结束删除，非任务留言需手动删除。所有登录成员可见，任务状态未知或停止尚未确认时继续保留。','/guide/results')}</span></summary>${taskNotesMarkup}</details><button class="button community-more" id="chat-older" type="button" hidden>查看更早消息</button><button class="button community-more" id="chat-latest" type="button" hidden>返回最新消息</button><div id="community-messages" class="community-messages" tabindex="0" aria-label="公共聊天消息"></div><button class="button chat-new" id="chat-new" type="button" hidden>查看新消息</button><form id="community-chat-form"><label for="community-chat-body">发送消息</label><textarea id="community-chat-body" rows="3" maxlength="2000" required placeholder="回车发送，Shift+回车换行"></textarea><div class="chat-compose-footer"><p>保留 30 天，可粘贴图片</p><button class="button" type="submit">发送消息</button></div><p id="chat-error" class="form-error" role="status"></p></form></section></div>`;
+      <div class="community-layout"><section id="community-forum" role="tabpanel"><div class="community-toolbar"><label><span class="field-caption"><span>类型</span>${copyHelp('协作区','帖子用于公告与问题反馈，聊天用于即时交流。留言不会改变额度、排队或取消任务。','/guide/queue')}</span><select id="community-kind"><option value="">全部帖子</option><option value="announcement">公告</option><option value="feedback">问题反馈</option><option value="discussion">讨论</option></select></label><label id="community-filter-label" hidden><span class="field-caption">处理状态</span><select id="community-filter"><option value="">全部</option><option value="open">待处理</option><option value="investigating">处理中</option><option value="resolved">已解决</option><option value="closed">已关闭</option></select></label><div class="community-toolbar-actions"><button class="button" id="community-refresh" type="button">刷新</button><button class="button primary" id="community-create" type="button">发帖</button></div></div><div class="community-feed-focus hero-frame"><span class="hero-label">公告与最新帖子</span><div id="community-posts" class="community-posts" tabindex="0" aria-label="公告与最新帖子"></div></div><button class="button community-more" id="community-more" type="button" hidden>加载更多</button><details id="community-task-notes" class="community-task-notes" hidden><summary><span class="copy-caption"><span>任务留言</span>${copyHelp('任务留言','任务留言随任务确认结束删除，非任务留言需手动删除。所有登录成员可见，任务状态未知或停止尚未确认时继续保留。','/guide/results')}</span></summary>${taskNotesMarkup}</details></section>
+      <section id="community-chat" role="tabpanel" hidden><div class="chat-topline"><div><div class="copy-caption"><h3 id="chat-room-title">实验室聊天</h3><span id="chat-room-private" class="community-tag" hidden>私密</span>${copyHelp('聊天说明','实验室聊天所有登录成员可见；私密聊天室只有成员可见。消息和图片保留 30 天。输入 @ 选择成员提醒对方；图片可粘贴、拖入或点图片按钮选择。请勿发送密码或令牌。','/guide/queue')}</div></div><div class="chat-topline-actions"><button class="chat-tool" id="chat-room-settings" type="button" aria-label="成员与设置" title="成员与设置" hidden><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2"/></svg><span id="chat-room-count" aria-hidden="true"></span></button><button class="chat-tool" id="chat-refresh" type="button" aria-label="刷新" title="刷新"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg></button></div></div><div id="chat-rooms" class="chat-rooms" role="tablist" aria-label="聊天室" hidden></div><p id="chat-status" role="status" aria-live="polite" hidden></p><div class="chat-timeline"><div class="chat-history"><button class="community-text-button" id="chat-older" type="button" hidden>查看更早消息</button><button class="community-text-button" id="chat-latest" type="button" hidden>返回最新消息</button></div><div id="community-messages" class="community-messages" tabindex="0" aria-label="公共聊天消息"></div><button class="button chat-new" id="chat-new" type="button" hidden><span aria-hidden="true">↓</span><span></span></button></div><form id="community-chat-form"><label for="community-chat-body">发送消息</label><div class="chat-compose-box"><textarea id="community-chat-body" rows="1" maxlength="2000" required placeholder="输入消息，@ 提醒" title="回车发送，Shift+回车换行"></textarea><button class="chat-send" type="submit" aria-label="发送消息" title="发送消息（回车）"><span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 12 6-6 6 6M12 6v13"/></svg></span></button></div><p id="chat-error" class="form-error" role="status"></p></form></section></div>`;
     for(const [index,node] of [...root.querySelectorAll('[data-community-tab]')].entries()){
       node.id='community-tab-'+node.dataset.communityTab;node.setAttribute('aria-controls',node.dataset.communityTab==='chat'?'community-chat':'community-forum');
       node.addEventListener('click',()=>selectTab(node.dataset.communityTab));
@@ -76,8 +74,9 @@ export function createCommunityUI(store,toast){
     }
     q('#community-kind').addEventListener('change',()=>{setTabs();loadPosts();});q('#community-filter').addEventListener('change',()=>loadPosts());q('#community-refresh').addEventListener('click',()=>loadPosts());q('#community-more').addEventListener('click',()=>loadPosts(true));q('#community-create').addEventListener('click',()=>openComposer('post'));
     q('#chat-refresh').addEventListener('click',()=>{history=false;loadChat('refresh');});q('#chat-older').addEventListener('click',()=>loadChat('older'));q('#chat-latest').addEventListener('click',()=>{history=false;loadChat('refresh');});
-    q('#chat-new').addEventListener('click',()=>{q('#community-messages').scrollTop=q('#community-messages').scrollHeight;unread=0;q('#chat-new').hidden=true;});
-    q('#community-messages').addEventListener('scroll',readMentions,{passive:true});
+    q('#chat-new').addEventListener('click',()=>{q('#community-messages').scrollTo({top:q('#community-messages').scrollHeight,behavior:reducedMotion()?'instant':'smooth'});unread=0;q('#chat-new').hidden=true;});
+    q('#community-messages').addEventListener('scroll',()=>{readMentions();const list=q('#community-messages');if(list.scrollHeight-list.scrollTop-list.clientHeight<40){unread=0;q('#chat-new').hidden=true;}},{passive:true});
+    mentionObserver=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){const row=entry.target;mentionObserver.unobserve(row);if(seenMentions.has(row.dataset.messageId))continue;seenMentions.add(row.dataset.messageId);if(!reducedMotion())row.classList.add('mention-arrival');}},{root:q('#community-messages'),threshold:.25});
     q('#chat-room-settings').addEventListener('click',()=>{const current=currentRoom();if(current)roomsDialog().open(current);});
     const announcements=button('全部公告',()=>{q('#community-kind').value='announcement';if(tab!=='posts')selectTab('posts');else{setTabs();loadPosts();}});announcements.id='community-announcements';
     const publish=button('发布公告',()=>{if(admin())openComposer('post',null,true);});publish.id='community-publish-announcement';publish.hidden=!admin();
@@ -90,20 +89,19 @@ export function createCommunityUI(store,toast){
   function setTabs(){
     q('#community-task-notes').hidden=!ready||!notesCapable;
     q('#community-tabs').hidden=wide.matches;q('#chat-status').hidden=!wide.matches;
-    q('#community-chat-form [type=submit]').classList.toggle('primary',!wide.matches);
     for(const node of root.querySelectorAll('[data-community-tab]')){const active=node.dataset.communityTab===tab;node.setAttribute('aria-selected',String(active));node.tabIndex=active?0:-1;}
     q('#community-forum').hidden=!postsShown();q('#community-chat').hidden=!chatShown();q('#community-filter-label').hidden=q('#community-kind').value!=='feedback';
     q('#community-forum').setAttribute('aria-labelledby','community-tab-posts');q('#community-chat').setAttribute('aria-labelledby','community-tab-chat');
     if(ready)message(wide.matches||tab==='posts'?postStatus:chatStatus,wide.matches||tab==='posts'?postFailed:chatFailed);fitChat();
   }
-  function syncNotes(){notes?.sync(visible&&chatShown()&&q('#community-task-notes').open,ready&&notesCapable);}
+  function syncNotes(){notes?.sync(visible&&postsShown()&&q('#community-task-notes').open,ready&&notesCapable);}
   async function enable(){
     if(infoBusy||ready||!identity)return;infoBusy=true;const stamp=context();message('正在连接协作区…');
     try{if(!valid(stamp))return;ready=true;notesCapable=true;setTabs();for(const control of root.querySelectorAll('button,input,select,textarea'))control.disabled=false;syncNotes();message('');await Promise.all([...(postsShown()?[loadPosts()]:[]),...(chatShown()?[loadChat('refresh'),loadRooms()]:[])]);}
     catch(error){if(valid(stamp))message('协作区暂不可用，请稍后刷新。尚未发送任何内容。',true);}
     finally{if(valid(stamp))infoBusy=false;}
   }
-  function selectTab(next){if(!['posts','chat'].includes(next)||next===tab)return;tab=next;stop();setTabs();message('');syncNotes();if(tab==='posts'){posts=[];postsLoaded=false;postCursor=null;renderPosts();}if(!ready){enable();return;}if(tab==='chat')loadChat(messages.length?'poll':'refresh');else loadPosts();}
+  function selectTab(next){if(!['posts','chat'].includes(next)||next===tab)return;tab=next;stop();setTabs();message('');syncNotes();if(next==='chat')showChatCard();if(tab==='posts'){posts=[];postsLoaded=false;postCursor=null;renderPosts();}if(!ready){enable();return;}if(tab==='chat')loadChat(messages.length?'poll':'refresh');else loadPosts();}
   async function loadPosts(more=false){
     if(!ready||!postsShown()||(more&&loading))return;loading=true;const stamp=context(),request=++postRequest,kind=q('#community-kind').value;postMessage(more?'正在加载更多…':'正在读取帖子…');q('#community-posts').setAttribute('aria-busy','true');fitChat();
     try{const result=await store.call('community.posts.list',{...(kind?{kind}:{}),...(kind==='feedback'&&q('#community-filter').value?{status:q('#community-filter').value}:{}),...(more&&postCursor?{cursor:postCursor}:{}),limit:20});if(!valid(stamp)||request!==postRequest||!postsShown())return;posts=more?mergeCommunityItems(posts,result.posts):result.posts;postCursor=result.nextCursor;postsLoaded=true;renderPosts();postMessage('');}
@@ -223,7 +221,7 @@ export function createCommunityUI(store,toast){
         messages=oldest?[...messages.filter(row=>BigInt(row.id)<BigInt(oldest)),...recent.messages].slice(-200):[];
         chatBefore=recent.hasMore?messages[0]?.id||null:null;lastChatReconcile=Date.now();
       }
-      renderMessages(mode==='refresh'||(atEnd&&mode!=='older'));q('#chat-older').hidden=!chatBefore;q('#chat-latest').hidden=!history;
+      q('#chat-older').hidden=!chatBefore;q('#chat-latest').hidden=!history;renderMessages(mode==='refresh'||(atEnd&&mode!=='older'),mode!=='older'&&chatLoaded&&!roomMotion);if(roomMotion){roomMotion=false;const list=q('#community-messages');list.classList.remove('chat-swapping');void list.offsetWidth;list.classList.add('chat-swapping');}
       chatLoaded=true;chatMessage(history?'正在查看历史消息。返回最新消息后恢复自动更新。':'');
       const mentioned=Number(store.data?.chatMentions)||0;if(mentioned!==roomsMentions||Date.now()-roomsAt>30000){roomsMentions=mentioned;loadRooms();}
     }catch(error){if(here()){chatMessage('消息读取失败：'+error.message,true);if(place&&error.status===404){unavailableRoom();loadRooms();}}}finally{if(valid(stamp)){chatBusy=false;if(place!==room)loadChat('refresh');else arm();}}
@@ -252,11 +250,12 @@ export function createCommunityUI(store,toast){
     }
     if(canCreateRoom)bar.append(button('+ 私密聊天室',()=>roomsDialog().open(null),'chat-room chat-room-new'));
     const current=currentRoom(),name=current?current.name:'实验室聊天';
-    q('#chat-room-title').textContent=name;q('#chat-room-title').title=name;q('#chat-room-private').hidden=!current;q('#chat-room-settings').hidden=!current;
+    const empty=q('.chat-empty strong');if(empty)empty.textContent=current?'这是「'+name+'」的开始':'还没有消息';
+    q('#chat-room-count').textContent=current?String(current.members.length):'';q('#chat-room-title').textContent=name;q('#chat-room-title').title=name;q('#chat-room-private').hidden=!current;q('#chat-room-settings').hidden=!current;
     q('#community-messages').setAttribute('aria-label',current?current.name+'的消息':'公共聊天消息');
   }
   function switchRoom(next){
-    if(next===room)return;stop();room=next;messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;mentionRead='';chatLoaded=false;
+    if(next===room)return;stop();roomMotion=true;room=next;messages=[];chatCursor=null;chatBefore=null;history=false;unread=0;mentionRead='';chatLoaded=false;
     q('#chat-error').textContent='';renderRooms();q('.chat-room[aria-selected=true]')?.scrollIntoView({block:'nearest',inline:'nearest'});renderMessages(true);loadChat('refresh');
   }
   function chatBody(item){
@@ -277,7 +276,32 @@ export function createCommunityUI(store,toast){
     }
     return link;
   }
-  function renderMessages(toEnd){const list=q('#community-messages'),oldTop=list.scrollTop;list.replaceChildren();const shown=new Set();for(const item of messages){const body=item.body?chatBody(item):null,mine=body?.querySelector('.chat-mention.me');const row=el('article','chat-message'+(item.author?.id===store.principal?.userId?' own':'')+(mine?' mentions-me':''));row.dataset.messageId=item.id;const avatar=el('span','chat-avatar',(item.author?.name||item.author?.username||'成员').slice(0,1));avatar.setAttribute('aria-hidden','true');const content=el('div','chat-message-content');content.append(el('p','community-meta',(item.author?.name||item.author?.username||'成员')+' · '+date(item.createdAt)));if(item.image){shown.add(item.image.url);content.append(chatImage(item.image));}if(body)content.append(body);content.append(itemActions(item,'message'));row.append(avatar,content);list.append(row);}for(const url of chatImages.keys())if(!shown.has(url))chatImages.delete(url);if(!messages.length)list.append(el('p','community-empty','还没有消息，先聊聊用卡计划吧。'));if(toEnd){list.scrollTop=list.scrollHeight;unread=0;}else list.scrollTop=oldTop;q('#chat-new').hidden=!unread;q('#chat-new').textContent=unread+' 条新消息 · 查看';readMentions();}
+  function dayLabel(value){
+    const d=new Date(value),today=new Date(),yesterday=new Date();yesterday.setDate(today.getDate()-1);
+    if(d.toDateString()===today.toDateString())return '今天';if(d.toDateString()===yesterday.toDateString())return '昨天';
+    return (d.getFullYear()===today.getFullYear()?'':d.getFullYear()+'年')+(d.getMonth()+1)+'月'+d.getDate()+'日';
+  }
+  function sameGroup(a,b){return a&&b&&a.author?.id===b.author?.id&&new Date(a.createdAt).toDateString()===new Date(b.createdAt).toDateString()&&Math.abs(new Date(b.createdAt)-new Date(a.createdAt))<=300000;}
+  function renderMessages(toEnd,animate=false){
+    const list=q('#community-messages'),oldTop=list.scrollTop,known=new Set([...list.querySelectorAll('[data-message-id]')].map(row=>row.dataset.messageId)),shown=new Set();
+    mentionObserver?.disconnect();list.replaceChildren();
+    for(const [index,item] of messages.entries()){
+      const previous=messages[index-1],grouped=sameGroup(previous,item),continued=sameGroup(item,messages[index+1]),own=item.author?.id===store.principal?.userId;
+      if(!previous||new Date(previous.createdAt).toDateString()!==new Date(item.createdAt).toDateString())list.append(el('div','chat-day',dayLabel(item.createdAt)));
+      const body=item.body?chatBody(item):null,mine=body?.querySelector('.chat-mention.me'),name=item.author?.name||item.author?.username||'成员';
+      const row=el('article','chat-message'+(own?' own':'')+(mine?' mentions-me':'')+(grouped?' is-grouped':'')+(continued?' has-next':'')+(animate&&!known.has(String(item.id))?' is-new':''));row.dataset.messageId=item.id;row.title=name+' · '+date(item.createdAt);
+      if(!own&&!grouped){const avatar=el('span','chat-avatar',Array.from(name)[0]);avatar.setAttribute('aria-hidden','true');row.append(avatar);}
+      const content=el('div','chat-message-content'),meta=el('div','community-meta');
+      if(!grouped){meta.append(el('span','chat-author',name),el('time','',date(item.createdAt)));}
+      meta.append(itemActions(item,'message'));content.append(meta);
+      const bubble=el('div','chat-bubble');if(item.image){shown.add(item.image.url);bubble.append(chatImage(item.image));}if(body)bubble.append(body);content.append(bubble);row.append(content);list.append(row);
+      if(mine&&!seenMentions.has(String(item.id)))mentionObserver?.observe(row);
+    }
+    for(const url of chatImages.keys())if(!shown.has(url))chatImages.delete(url);
+    if(!messages.length){const empty=el('div','community-empty chat-empty'),icon=el('span','chat-empty-icon');icon.setAttribute('aria-hidden','true');icon.innerHTML='<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 1-8 8H5l-3 3V11a9 9 0 0 1 18 0Z"/><path d="M7 10h8M7 14h5"/></svg>';empty.append(icon,el('strong','',room?'这是「'+(currentRoom()?.name||'聊天室')+'」的开始':'还没有消息'),el('span','',room?'只有聊天室成员能看到这里的消息':'输入 @ 可以提醒成员'));list.append(empty);}
+    if(toEnd){list.scrollTop=list.scrollHeight;unread=0;}else list.scrollTop=oldTop;
+    q('#chat-new').hidden=!unread;q('#chat-new span:last-child').textContent=unread+' 条新消息';readMentions();
+  }
   // Seeing the newest messages clears this account's unread @mentions.
   async function readMentions(){
     const list=q('#community-messages'),last=messages.at(-1)?.id;
