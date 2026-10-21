@@ -274,3 +274,11 @@ test('idle detached close confirms a physical stop without acquiring a writer or
   assert.deepEqual(f.calls.map(call=>call.operation),['terminal.close']);
   const args=f.calls[0].args;assert.equal(args.project,'alpha');assert.equal(args.id,original);assert.equal(args.writerToken,undefined);assert.equal(args.clientId,undefined);
 });
+
+for(const argv of [['ssh'],['ssh','--reconnect',original]])test(`voided ${argv.join(' ')} explains NOT_FOUND without interacting or reopening`,async t=>{
+ const f=await fixture(t,{open:args=>({id:args.id||args.key,state:'NOT_FOUND',canCreate:true,created:false,error:'这个终端连接键已确认未创建并作废，请重新新建终端。'})});
+ const result=await f.cli(argv),error=errorJSON(result);
+ assert.equal(result.code,1);assert.equal(error.terminal.state,'NOT_FOUND');assert.match(error.error,/可以直接新建/);assert.match(error.error,/作废/);
+ assert.ok(error.terminal.newCommand.includes('gpuctl ssh'));assert.ok(!error.terminal.newCommand.includes('--reconnect'));
+ assert.deepEqual(f.calls.map(c=>c.operation),['terminal.open']);assert.equal(await readFile(f.marker,'utf8').catch(()=>''),'');
+});
