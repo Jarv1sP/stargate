@@ -92,12 +92,13 @@ export async function downloadDirectory(call,options,downloadFile){
   for(const [index,entry] of row.files.entries()){
    const local=join(root,remotePath(entry.path));await realDirectory(dirname(local));
    const value=await downloadFile(call,{...options,path:childPath(options.path,entry.path),destination:local,
-    receiptPath:join(records,index+'.json'),keepReceipt:true});
+    receiptPath:join(records,index+'.json'),keepReceipt:true,expectedSize:entry.size});
+   if(value.bytes!==entry.size)fail('文件大小与目录列表不符：'+entry.path+'；已保留下载进度，请确认源文件未改动后重试。');
    row.bytes+=value.bytes;row.completedFiles++;await save();
    options.onProgress?.({downloadId:row.id,path:entry.path,bytes:row.bytes,totalBytes:row.totalBytes,completedFiles:row.completedFiles,files:row.files.length});
   }
   if(root!==target){if(await missing(target))fail('Destination appeared during download; no overwrite performed');row.state='FINALIZING';await save();await rename(partial,target);}
-  row.state='COMPLETE';row.installed=true;row.totalBytes=row.bytes;await save();
+  row.state='COMPLETE';row.installed=true;await save();
   return {downloaded:target,downloadId:row.id,scope:'local-client',state:row.state,bytes:row.bytes,files:row.files.length,receipt};
  }catch(error){
   row.state='PAUSED';row.error=String(error.message??error).slice(0,1000);await save().catch(()=>{});

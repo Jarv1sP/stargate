@@ -8,7 +8,7 @@ import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {createServer} from 'node:http';
 import {downloadFile} from '../client-file-download.mjs';
-import {directoryDownloadReceipt,directoryDownloadStatus} from '../client-directory-download.mjs';
+import {downloadDirectory,directoryDownloadReceipt,directoryDownloadStatus} from '../client-directory-download.mjs';
 const {downloadResultFile}=await import(process.env.DIRECTORY_DOWNLOAD_SOURCE??'../client-result-download.mjs');
 
 async function fixture(t,{count=3,pageSize=1000}={}){
@@ -61,13 +61,32 @@ test('directory interruption retains the UUID and exact partial offset for the o
  const resumed=f.calls.slice(mark).find(row=>row.op==='files.get'&&row.path==='render/0000.bin');assert.equal(resumed.offset,3);
  assert.equal((await directoryDownloadStatus(f.options.destination)).state,'COMPLETE');
 });
-test('directory download accepts the actual file size when the earlier listing is stale',async t=>{
- const f=await fixture(t);let changed=false;
- const call=async(op,args)=>{if(op==='files.get'&&args.path==='render/0000.bin'&&!changed){changed=true;f.files.set(args.path,Buffer.from('updated after listing'));}return f.call(op,args);};
- const value=await downloadResultFile(call,f.options,{directDownload:downloadFile});
- assert.equal(value.state,'COMPLETE');assert.equal(value.bytes,[...f.files.values()].reduce((n,b)=>n+b.length,0));
- assert.equal((await directoryDownloadStatus(f.options.destination)).totalBytes,value.bytes);
+for(const size of [9,11])test(`directory download cannot complete when a 10-byte child reports ${size} bytes`,async t=>{
+ const f=await fixture(t,{count:0});f.files.clear();f.files.set('render/checkpoint.pth',Buffer.alloc(10));
+ const child=async(_call,args)=>{await writeFile(args.destination,Buffer.alloc(size));return {bytes:size};};
+ await assert.rejects(downloadDirectory(f.call,f.options,child),/文件大小与目录列表不符/);
+ const state=await directoryDownloadStatus(f.options.destination);
+ assert.equal(state.state,'PAUSED');assert.equal(state.totalBytes,10);assert.equal(state.completedFiles,0);
+ await assert.rejects(lstat(f.options.destination),{code:'ENOENT'});
+ assert.equal((await lstat(join(f.options.destination+'.gpuctl-partial-'+state.downloadId,'checkpoint.pth'))).size,size);
+});
+for(const size of [0,20])test(`a child changing to ${size} bytes pauses before saving it and resumes with the original directory UUID`,async t=>{
+ const f=await fixture(t),original=f.files.get('render/0000.bin');let changed=false;
+ const total=[...f.files.values()].reduce((n,b)=>n+b.length,0);
+ const call=async(op,args)=>{if(op==='files.get'&&args.path==='render/0000.bin'&&!changed){changed=true;f.files.set(args.path,Buffer.alloc(size));}return f.call(op,args);};
+ await assert.rejects(downloadResultFile(call,f.options,{directDownload:downloadFile}),/文件大小与目录列表不符/);
+ const paused=await directoryDownloadStatus(f.options.destination);
+ assert.equal(paused.state,'PAUSED');assert.equal(paused.totalBytes,total);assert.equal(paused.bytes,0);
+ f.files.set('render/0000.bin',original);
+ const value=await f.download();assert.equal(value.downloadId,paused.downloadId);assert.equal(value.state,'COMPLETE');
+ assert.equal(value.bytes,total);assert.equal((await directoryDownloadStatus(f.options.destination)).totalBytes,total);
  for(const [path,bytes] of f.files)assert.deepEqual(await readFile(join(f.options.destination,path.slice('render/'.length))),bytes);
+});
+test('zero-byte children and empty directories still complete',async t=>{
+ const f=await fixture(t,{count:0});f.files.clear();f.files.set('render/empty.bin',Buffer.alloc(0));
+ const value=await f.download();assert.equal(value.state,'COMPLETE');assert.equal(value.bytes,0);
+ assert.equal((await lstat(join(f.options.destination,'empty.bin'))).size,0);
+ assert.equal((await directoryDownloadStatus(f.options.destination)).totalBytes,0);
 });
 test('overlapping directory pages do not refuse or download the same child twice',async t=>{
  const f=await fixture(t,{pageSize:2});let first;

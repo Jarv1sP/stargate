@@ -16,7 +16,7 @@ async function save(path,value){
 
 // Resume the saved original request. Content is transported by
 // TLS, bounded by size, and published atomically after the final byte.
-export async function downloadFile(call,{machine,context={},path,destination,origin,userId,receiptPath:customReceipt,keepReceipt=false,getChunkBytes=()=>CHUNK,onWarning=size=>console.error(`下载文件超过 100 GiB（${size} B），仍允许分块下载；请确认本地磁盘空间。`)}){
+export async function downloadFile(call,{machine,context={},path,destination,origin,userId,receiptPath:customReceipt,keepReceipt=false,expectedSize,getChunkBytes=()=>CHUNK,onWarning=size=>console.error(`下载文件超过 100 GiB（${size} B），仍允许分块下载；请确认本地磁盘空间。`)}){
   const target=resolve(destination),receiptPath=customReceipt??target+'.gpuctl-download.json',partial=target+'.gpuctl-partial';
   let identity={origin,userId,machine,path,ownerId:context.ownerId??userId,project:context.project??null,area:context.area??null,dataset:context.dataset??null,runId:context.runId??null};
   let offset=0,size,resumed=false,file;
@@ -27,6 +27,7 @@ export async function downloadFile(call,{machine,context={},path,destination,ori
     try{if(!safe(await record.stat({bigint:true})))fail('Unsafe download state');value=JSON.parse(await record.readFile('utf8'));}finally{await record.close();}
     identity={...value.identity,origin,userId};machine=identity.machine;path=identity.path;context=Object.fromEntries(Object.entries({project:identity.project,area:identity.area,dataset:identity.dataset,runId:identity.runId,ownerId:identity.ownerId??value.identity.userId}).filter(([,v])=>v!=null));
     size=value.size;if(!Number.isSafeInteger(size)||size<0)fail('Invalid download size');resumed=true;
+    if(expectedSize!==undefined&&size!==expectedSize)fail('文件大小与目录列表不符：'+path+'；已有文件保留，请等源文件稳定后下载到新目录。');
     if(existing){
       if(existing.size===BigInt(size)&&value.offset===size){
         // A crash between exclusive publication and unlink can leave the two
@@ -47,6 +48,7 @@ export async function downloadFile(call,{machine,context={},path,destination,ori
   try{
     for(;;){
       const value=(await call('files.get',{machine,path,offset,...context})).result;
+      if(expectedSize!==undefined&&value.size!==expectedSize)fail('文件大小与目录列表不符：'+path+'；已保留下载进度，请确认源文件未改动后重试。');
       const bound=getChunkBytes();
       if(![CHUNK,16*CHUNK].includes(bound)||typeof value.data!=='string'||value.data.length>Math.ceil(bound/3)*4)fail('Download response exceeds its size bound');
       const bytes=Buffer.from(value.data,'base64');
