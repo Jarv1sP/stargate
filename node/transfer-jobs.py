@@ -82,8 +82,8 @@ class TransferJobs:
         return self.folder/(key+suffix)
 
     @contextlib.contextmanager
-    def lock(self,key):
-        fd=os.open(self.path(key,'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    def lock(self,key,*,source=False):
+        fd=os.open(self.path(key,'.source.lock' if source else '.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
         try:self.s.wait_project_lock(fd,fcntl.LOCK_EX,'传输忙，请沿原编号稍后重试。');yield
         finally:os.close(fd)
 
@@ -121,7 +121,7 @@ class TransferJobs:
                 if stat.S_ISLNK(info.st_mode):raise ValueError('路径不能跟随链接离开数据目录。')
                 if stat.S_ISREG(info.st_mode):selected=name;source=source.parent
         request={'source':ref}
-        with self.lock(key):
+        with self.lock(key,source=True):
             file=self.path(key,'.source.json')
             if file.exists():
                 row=self.s.read_json(file)

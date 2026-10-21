@@ -112,6 +112,7 @@ gpuctl pull train.py ./train.py
 ```sh local
 gpuctl project copy my-project --from SOURCE --to TARGET
 gpuctl project copy my-project --from SOURCE --to TARGET --name my-project-copy --detach
+gpuctl project copy my-project --from SOURCE --to SOURCE --name my-project-copy --detach
 gpuctl transfer status COPY_ID
 gpuctl transfer resume COPY_ID
 gpuctl transfer cancel COPY_ID
@@ -122,6 +123,8 @@ gpuctl transfer cancel COPY_ID
 同路径文件以源端内容更新，替换前的旧内容在同步完成、取消或安装失败后进入七天回收站。用 `gpuctl project trash list --machine TARGET` 查看备份编号，再用 `gpuctl project trash restore BACKUP_ID --kind output --machine TARGET` 恢复；旧文件包位于目标工作区 `.copy-backups/COPY_ID.tar`，成员按 `rootfs/`、`code/`、`home/` 区分。网络中断时保留传输字节、偏移和工作区中的旧文件包；续传再次覆盖同一路径时，该次旧内容追加在包内 `retries/尝试编号/` 下。安装或逻辑失败后两端临时文件会清理，按原 `COPY_ID` 续传时重新准备，已有回收站备份保留。无需停止或重建已有容器。断线查询原 `COPY_ID`，沿用 `--key COPY_ID` 或 `transfer resume COPY_ID` 续传。增量判断使用文件元数据，手动保持相同大小和修改时间的内容修改可能被跳过；源端仍需导出临时归档，但不将整个归档传过网络。
 
 手动同步遇到目标正在运行的任务、终端或容器 git 命令时，等待它们正常结束后才合并。AUTO 作业无变化就直接执行；有变化且目标空闲就增量合并，目标忙则准备独立任务副本，不等待，也不修改运行中作业的文件。手动复制按目标项目串行；AUTO 遇到另一份复制占用该项目时直接用独立副本。副本使用自己的执行锁，不占用公共项目；作业成功、失败或取消后在后台清理副本容器、镜像、代码和 HOME，终态查询不等磁盘清理，任务输出保留。已交给调度器的副本不会因 `transfer cancel` 被删除；停止作业用 `gpuctl cancel JOB_ID`。所需文件先下载到临时位置，合并只在本地备份和应用期间短暂排他；项目 Git 查询有超时。完成、取消或安装失败后清理本次传输的临时文件和不再使用的镜像，覆盖前备份进七天回收站。源节点暂时断开不会挡住取消，源端临时文件待后续查询或取消时补清理。
+
+同机复制时，`--from` 和 `--to` 填同一台服务器，`--name` 填另一个项目名。导出在后台进行，期间可以查询、取消或重复原编号请求，不必等导出结束才能创建传输；不停止源项目中的训练。接收端与导出端分别管理自己的状态，仍沿用同一个复制编号。
 
 这是文件合并：保留目标独有的依赖文件，同路径依赖及包管理器记录以源端为准，不自动合并两套包管理器数据库。
 
