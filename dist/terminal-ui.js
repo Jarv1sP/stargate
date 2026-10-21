@@ -14,6 +14,9 @@ export function terminalStoppedMessage(result,id){
   return result?.id===id&&result.state==='STOPPED'
     ?'此终端已结束。原会话不能恢复；需要继续工作时，请明确新建独立终端。':null;
 }
+function terminalMissingMessage(result,id){
+  return result?.id===id&&result.state==='NOT_FOUND'&&result.canCreate===true?'原终端没有创建，可以新建。':null;
+}
 export function terminalContext({machine,project,ownerId}){
   if(typeof machine!=='string'||!machine||machine==='auto')throw Error('先选择一台服务器，再打开终端。');
   if(project!==undefined&&project!==''&&(typeof project!=='string'||!/^[a-z][a-z0-9_-]{0,47}$/.test(project)))throw Error('项目名称无效。');
@@ -101,13 +104,15 @@ export function terminalUI(store,toast){
       let result;try{result=await store.call('terminal.status',{...terminalRequestContext(record),id:record.id},{signal:controller.signal});}catch{if(!current())return;}
       if(!current())return;if(sessions.get(record.id)!==record)continue;
       const confirmed=result?.id===record.id;
+      const missing=terminalMissingMessage(result,record.id);
+      if(missing){forget(record);announce();toast(missing);continue;}
       remember({...record,connectionState:confirmed&&result.state==='STOPPED'?'ended':confirmed&&result.state==='ALIVE'?'detached':'unknown'});announce();
     }}finally{if(recoveryController===controller)recoveryController=null;}
   }
-  function connectionNote(text='',{query=false,reconnect=false,ended=false}={}){
+  function connectionNote(text='',{query=false,reconnect=false,ended=false,create=false}={}){
     const note=document.querySelector('#terminal-connection-note');
     if(note){note.textContent=text;note.hidden=!text;note.className='st '+(ended?'st-cancel':'st-unknown');}
-    for(const [id,show]of [['terminal-query',query],['terminal-retry',reconnect],['terminal-new',ended]]){const button=document.querySelector('#'+id);if(button)button.hidden=!show;}
+    for(const [id,show]of [['terminal-query',query],['terminal-retry',reconnect],['terminal-new',ended||create]]){const button=document.querySelector('#'+id);if(button)button.hidden=!show;}
   }
   function syncMaintenance(){
     const locked=paused(session),canWrite=!!session&&session.connectionState==='connected'&&!locked&&!closing;
@@ -128,9 +133,13 @@ export function terminalUI(store,toast){
     return attachmentCurrent(target);
   }
   async function release(target,call=(operation,fields)=>store.call(operation,fields)){
+    if(target.connectionState==='missing'){forget(target);announce();return;}
     const request=target.writerToken?args(target):null;
     delete target.writerToken;target.detached=true;target.connectionState='detached';remember(target);announce();
-    if(request)await call('terminal.detach',request);
+    if(request){
+      const result=await call('terminal.detach',request),missing=terminalMissingMessage(result,target.id);
+      if(missing){forget(target);announce();if(target.userId===store.principal?.userId)toast(missing);}
+    }
   }
   async function detach(releaseWriter=true,invalidateOpening=true){
     if(invalidateOpening)openingGeneration++;
@@ -156,6 +165,8 @@ export function terminalUI(store,toast){
   function sendSoon(){if(session?.connectionState==='connected'&&!busy&&!inputScheduled){schedule(20);inputScheduled=true;}}
   function openRequest(target,mode,id){return {...terminalRequestContext(target),key:crypto.randomUUID(),clientId:crypto.randomUUID(),mode,...(mode==='reconnect'?{id}:{})};}
   function connection(result,target,request,startedAt){
+    const missing=terminalMissingMessage(result,request.mode==='new'?request.key:request.id);
+    if(missing)throw Object.assign(Error(missing),{code:'TERMINAL_NOT_FOUND',id:result.id});
     if(typeof result?.id!=='string'||!result.id||typeof result.writerToken!=='string'||!result.writerToken)throw Error('终端连接未确认，未发送输入。');
     return {...target,id:result.id,clientId:request.clientId,writerToken:result.writerToken,authGeneration:store.authGeneration,writeUntil:startedAt+30000,detached:false,connectionState:'connecting'};
   }
@@ -180,8 +191,10 @@ export function terminalUI(store,toast){
     try{
       const result=await store.call('terminal.close',{...terminalRequestContext(record),id:record.id},{signal});
       if(owner!==store.principal?.userId||auth!==store.authGeneration)return;
-      if(result?.closed!==true&&result?.state!=='STOPPED'){if(attached)stopInput(session,'终端状态未知，请按原编号查询：'+record.id);throw Error('终端状态未知，请按原编号查询：'+record.id);}
+      const missing=terminalMissingMessage(result,record.id);
+      if(!missing&&result?.closed!==true&&result?.state!=='STOPPED'){if(attached)stopInput(session,'终端状态未知，请按原编号查询：'+record.id);throw Error('终端状态未知，请按原编号查询：'+record.id);}
       forget(record);if(attached)await detach(false);announce();
+      if(missing)toast(missing);
     }finally{closing=false;syncMaintenance();}
   }
   async function exchange(queryOnly=false){
@@ -195,6 +208,8 @@ export function terminalUI(store,toast){
       const size={cols:term.cols,rows:term.rows},sizeKey=JSON.stringify(size);
       const result=await store.call('terminal.exchange',{...args(target),offset,input:btoa(String.fromCharCode(...bytes)),...(sizeKey===lastSize?{}:size)});
       if(turn!==generation||session!==target||!attachmentCurrent(target))return;
+      const missing=terminalMissingMessage(result,target.id);
+      if(missing){input=new Uint8Array();backoff=0;target.connectionState='missing';delete target.writerToken;forget(target);announce();connectionNote(missing,{create:true});syncMaintenance();return;}
       if(!Number.isSafeInteger(result?.offset)||result.offset<0||typeof result.exited!=='boolean')throw Error('终端暂未返回结果，请重连查看。');
       lastSize=sizeKey;if(result.data){
         const output=Uint8Array.from(atob(result.data),char=>char.charCodeAt(0));term.write(output);
@@ -283,6 +298,8 @@ export function terminalUI(store,toast){
     }catch(error){
       if(pendingOpen&&pendingOpen.userId===store.principal?.userId&&pendingOpen.authGeneration===store.authGeneration&&(error.code==='REQUEST_TIMEOUT'||error instanceof TypeError||/reply lost|connection reset|请求超时/i.test(error.message))){
         remember(pendingOpen);announce();toast('终端连接未确认；会话 ID '+pendingOpen.id+'，请用原 ID 重连检查。');
+      }else if(error.code==='TERMINAL_NOT_FOUND'&&pendingOpen?.id===error.id&&pendingOpen.userId===store.principal?.userId&&pendingOpen.authGeneration===store.authGeneration){
+        forget(pendingOpen);announce();pendingOpen=null;toast(error.message);
       }else if(error.code==='TERMINAL_STOPPED'&&pendingOpen?.id===error.id&&pendingOpen.userId===store.principal?.userId&&pendingOpen.authGeneration===store.authGeneration){
         pendingOpen.connectionState='ended';remember(pendingOpen);announce();pendingOpen=null;toast(error.message);
       }else toast(error.message);

@@ -167,15 +167,40 @@ def terminal_alive(folder,jid):
 
 def terminal_output():return module('terminal-output')
 
+def terminal_absent(folder,jid):
+    # Caller holds this ID's exclusive lock, including when voiding a late open.
+    try:
+        if any((folder/(jid+suffix)).exists() for suffix in ('.json','.session.json','.sock')):return False
+        props=run(['/usr/bin/systemctl','--user','show','amax-term-'+jid+'.service','--property=LoadState,ActiveState,MainPID'],timeout=5)
+        state=dict(line.split('=',1) for line in props.splitlines() if '=' in line)
+        if state.get('LoadState')!='not-found':return False
+        atomic_json(folder/(jid+'.void.json'),{'id':jid,'voidedAt':time.time()})
+        return True
+    except Exception:return False
+
+def terminal_missing(folder,jid):
+    return {'id':jid,'state':'NOT_FOUND','canCreate':True,'created':False} if terminal_absent(folder,jid) else {'id':jid,'state':'UNKNOWN'}
+
 def terminal_status(args):
     folder=ROOT/'terminals';rows=[]
     ids=[args['id']] if args.get('id') else [p.stem for p in folder.glob('*.json') if UUID.fullmatch(p.stem)]
     for jid in ids:
         if not UUID.fullmatch(jid):raise ValueError('终端编号无效。')
         try:spec=module('project-store').read_json(folder/(jid+'.json'))
-        except FileNotFoundError:continue
+        except FileNotFoundError:
+            if not args.get('id'):continue
+            fd=None
+            try:
+                folder=module('project-store').private_dir(folder,create=True)
+                fd=os.open(folder/(jid+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+                module('project-store').wait_project_lock(fd,fcntl.LOCK_EX,'终端忙，请按原编号稍后查询。')
+                if not (folder/(jid+'.json')).exists():return terminal_missing(folder,jid)
+                spec=module('project-store').read_json(folder/(jid+'.json'))
+            except Exception:return {'id':jid,'state':'UNKNOWN'}
+            finally:
+                if fd is not None:os.close(fd)
         live=terminal_alive(folder,jid)
-        rows.append({**spec,'id':jid,'state':'RUNNING' if live is True else 'STOPPED' if live is False else 'UNKNOWN',
+        rows.append({**spec,'id':jid,'state':('ALIVE' if args.get('id') else 'RUNNING') if live is True else 'STOPPED' if live is False else 'UNKNOWN',
                      'alive':live,'readOnly':live is not True})
     if args.get('id'):return rows[0] if rows else {'id':args['id'],'state':'UNKNOWN'}
     return {'sessions':rows}
@@ -191,10 +216,12 @@ def terminal_op(operation,args):
     fd=os.open(folder/(jid+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
         module('project-store').wait_project_lock(fd,fcntl.LOCK_EX,'终端忙，请重连原会话。')
+        if opening and mode=='new' and (folder/(jid+'.void.json')).exists():
+            return {'id':jid,'state':'NOT_FOUND','canCreate':True,'created':False,'error':'这个终端连接键已确认未创建并作废，请重新新建终端。'}
+        if not file.exists() and (not opening or mode!='new'):return terminal_missing(folder,jid)
         session_state=module('project-store').read_json(session) if session.exists() else None
         if opening:
             if not file.exists():
-                if mode!='new':return {'id':jid,'state':'UNKNOWN','error':'未知，请重连原编号。'}
                 projects().store.admit(args.get('ownerId') or args['userId'],args['project'])
                 spec={'id':jid,'userId':args['userId'],'ownerId':args.get('ownerId') or args['userId'],'username':args.get('username'),'project':args['project'],
                       'cards':0,'argv':['/bin/bash','--noprofile','--norc','-i'],'hostAdmin':False}
@@ -217,7 +244,6 @@ def terminal_op(operation,args):
             live=terminal_alive(folder,jid)
             return {'id':jid,'clientId':args['clientId'],'writerToken':session_state['writerToken'],'leaseExpiresAt':session_state['leaseExpiresAt'],
                     'state':'OPEN' if live else 'UNKNOWN' if live is None else 'STOPPED','readOnly':live is False,'hostAdmin':False}
-        if not file.exists():return {'id':jid,'state':'UNKNOWN'}
         # The writer token authenticates one PTY writer; any team member may explicitly take over.
         if args.get('writerToken') and (session_state is None or not __import__('hmac').compare_digest(session_state.get('writerToken',''),args['writerToken'])):
             raise PermissionError('终端连接已被接管，请重新连接。')

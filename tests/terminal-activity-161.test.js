@@ -26,3 +26,9 @@ test('bad labels and revoked accounts cannot reach the terminal bridge',async()=
 test('optional terminal labels do not add an admission gate',async()=>{
   const f=fixture(),{clientLabel,...args}=open();await executionCall(f.service,f.principal,'terminal.open',args);assert.equal(f.calls.length,1);assert.equal(f.calls[0].args.clientLabel,undefined);
 });
+test('terminal recovery fields pass through the portal for status and late open',async()=>{
+  const f=fixture(),args=open(),result={id:args.key,state:'NOT_FOUND',canCreate:true,created:false,error:'这个终端连接键已确认未创建并作废，请重新新建终端。'};
+  f.service.bridge=async()=>result;
+  assert.deepEqual(await executionCall(f.service,f.principal,'terminal.status',{machine,id:args.key}),result);
+  assert.deepEqual(await executionCall(f.service,f.principal,'terminal.open',args),result);
+});

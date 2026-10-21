@@ -519,6 +519,7 @@ ${terminal.state==='REJECTED'?`终端未创建：${terminal.reason||error2.messa
         openDispatched=true;
         opened = (await call("terminal.open", { machine, key, clientId, mode: openMode, ...options.reconnect ? { id: id2, takeover: options.takeover === true } : {}, ...context })).result;
         openResponded=true;
+        if(opened?.state==='NOT_FOUND'&&opened.canCreate===true){terminal.state='NOT_FOUND';terminal.newCommand=commandText(['gpuctl','ssh','--machine',machine,...scope,'--url',base.origin,'--session-file',sessionFile]);fail9(opened.error||'原终端未创建，请重新新建终端。');}
         if(!opened?.id||!opened.writerToken)fail9('终端连接结果未知，未发送输入；请按原编号查询：'+id2);
       } catch (error2) {
         if(error2.status===400&&error2.code==='TERMINAL_OPEN_REJECTED'){terminal.state='REJECTED';terminal.reason=error2.message;}
