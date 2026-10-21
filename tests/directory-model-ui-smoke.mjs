@@ -127,7 +127,8 @@ try{
   const directoryDownloaded=page.waitForEvent('download');await page.locator('[data-dataset-download=images]').click();const directoryDownload=await directoryDownloaded;const tar=await readFile(await directoryDownload.path());assert.ok(tar.includes(Buffer.from('sample.bin')));assert.ok(tar.includes(Buffer.from('abc')));
   await page.locator('[data-dataset-delete=images]').click();await page.locator('.sg-confirm [data-confirm-go]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent.includes('7 天'));
   await page.locator('[data-storage-trash]').click();await page.locator('#page-datasets [data-trash-restore]').last().click();await page.locator('[data-dataset-open=images]').waitFor();
-  await page.locator('#page-datasets [data-trash-restore]').first().click();assert.ok(calls.some(row=>row.op==='projects.retire.restore'&&row.args.kind==='output'));await page.locator('#dr-trash-sheet [data-sheet-close]').click();await page.locator('#dr-trash-sheet').waitFor({state:'hidden'});
+  await page.waitForFunction(()=>document.querySelectorAll('#page-datasets [data-trash-restore]').length===1);
+  await page.locator('#page-datasets [data-trash-restore]').first().click();await page.waitForFunction(()=>document.querySelector('#page-datasets [data-trash-status]')?.textContent==='回收站为空。');assert.ok(calls.some(row=>row.op==='projects.retire.restore'&&row.args.kind==='output'));await page.locator('#dr-trash-sheet [data-sheet-close]').click();await page.locator('#dr-trash-sheet').waitFor({state:'hidden'});
   if(role==='admin'){
    await page.locator('[data-dataset-delete=images]').click();await page.locator('.sg-confirm [data-confirm-go]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent.includes('7 天'));await page.locator('[data-storage-trash]').click();await page.locator('#page-datasets [data-trash-refresh]').click();await page.locator('#page-datasets [data-trash-purge]').waitFor();page.once('dialog',dialog=>dialog.accept());await page.locator('#page-datasets [data-trash-purge]').click();await page.waitForFunction(()=>document.querySelector('[data-dataset-status]').textContent==='已彻底删除。',null,{timeout:2000});
    assert.equal(datasets.some(row=>row.dataset==='images'),false,'purged data stays absent from the catalog');
@@ -159,6 +160,7 @@ try{
    await page.locator('#maintenance-settings-dialog [type=submit]').click();await page.locator('#maintenance-settings-dialog').waitFor({state:'hidden'});
    assert.equal(state.operationalMaintenance.global.reason,'隔离测试维护');assert.equal(await globalToggle.getAttribute('aria-checked'),'true');
    await globalToggle.click();await page.locator('.sg-confirm [data-confirm-go]').click();await page.locator('.sg-confirm').waitFor({state:'detached'});assert.equal(state.operationalMaintenance.global,null);
+   await page.waitForFunction(()=>document.activeElement===document.querySelector('[data-adm-scope=all] [data-maintenance-settings]'));
    assert.equal(await globalToggle.getAttribute('aria-checked'),'false');assert.equal(await globalToggle.evaluate(node=>document.activeElement===node),true);
    await globalToggle.click();await page.evaluate(()=>{location.hash='#resources';});
    await page.locator('#maintenance-settings-dialog').waitFor({state:'detached'});assert.equal(await page.locator('[data-nav=resources][aria-current=page]').count(),1,'leaving admin also closes and removes its maintenance dialog');
