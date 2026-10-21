@@ -1,5 +1,7 @@
 """Project transport preserves workspace, HOME and the OCI environment."""
 import contextlib,importlib.util,json,os,subprocess,tarfile,unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -88,6 +90,66 @@ class ProjectCopy(unittest.TestCase):
                     interrupted[0]=True;raise TimeoutError('fixture network interruption')
                 return jobs.read({'id':key,'action':action,**fields},ticket['token'])
         return SimpleNamespace(store=store,paths=paths,key=key,source=jobs,target=target,transfers=transfers,peer=Peer,ref=ref,target_store=target_store,native=native,oci=oci)
+
+    def test_same_node_copy_starts_and_retries_while_its_export_is_running(self):
+        t=self.transport(interrupt=False);jobs=t.source
+        file=jobs.path(t.key,'.source.json');row=jobs.s.read_json(file);row['state']='PREPARING';jobs.s.atomic_json(file,row)
+        jobs.config['transferPeers']={'source':{}}
+        commands=[]
+        def systemctl(argv,**kwargs):
+            commands.append(argv)
+            return 'active' if 'show' in argv else ''
+        jobs.e.run=systemctl
+        copy=t.transfers.module('project-copy').ProjectCopy(jobs)
+        entered,release,cleaning,cleaned=Event(),Event(),Event(),Event()
+        # transport() supplies its own engine subclass; pause the actual exporter
+        # with real flock files, not a mocked "busy" error.
+        engine=jobs.e.projects().oci('alice');engine_type=type(engine);run=engine_type.run
+        def slow(engine,*args,**kwargs):
+            if args[0]=='container':
+                entered.set()
+                if not release.wait(10):raise AssertionError('export was not released')
+            if args[0]=='rmi':
+                cleaning.set()
+                if not cleaned.wait(10):raise AssertionError('image cleanup was not released')
+            return run(engine,*args,**kwargs)
+        with patch.object(engine_type,'run',slow),ThreadPoolExecutor(max_workers=1) as pool:
+            exporting=pool.submit(copy.export,t.key)
+            try:
+                self.assertTrue(entered.wait(5))
+                args={'id':t.key,'sourceMachine':'source','ticket':{'id':t.key,'token':row['token']},
+                      'source':t.ref,'target':{**t.ref,'project':'independent-copy'}}
+                self.assertEqual(jobs.start(args)['state'],'PENDING')
+                self.assertEqual(jobs.start(args)['state'],'PENDING')
+                ticket=jobs.prepare({'id':t.key,'source':t.ref})
+                self.assertEqual(ticket['state'],'PREPARING');self.assertEqual(ticket['token'],row['token'])
+                self.assertEqual(jobs.status({'id':t.key})['state'],'PENDING')
+                release.set();self.assertTrue(cleaning.wait(5))
+                # Both ends share Podman's image tags on the same node. Do not
+                # let the receiver load that tag before export cleanup finishes.
+                self.assertEqual(jobs.read({'id':t.key,'action':'list'},row['token'])['state'],'PREPARING')
+            finally:release.set();cleaned.set()
+            self.assertEqual(exporting.result(timeout=5),0)
+        self.assertEqual(sum('--transfer-worker' in argv for argv in commands),1)
+        with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(jobs.worker(t.key),0,jobs.status({'id':t.key}))
+        self.assertEqual(jobs.status({'id':t.key})['state'],'SUCCEEDED')
+        destination=t.store.dev_paths('alice','independent-copy')
+        self.assertEqual((destination['code']/'train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
+        self.assertEqual((destination['home']/'settings').read_text(),'original-home')
+        self.assertEqual((self.base/'loaded-rootfs/installed-dependency').read_text(),'dependency-v1')
+        self.assertFalse(any('stop' in argv for argv in commands))
+        self.assertFalse((Path(jobs.config['workspacesRoot'])/'.copy-exports'/t.key).exists())
+
+    def test_same_node_receiver_can_cancel_while_the_source_lock_is_held(self):
+        t=self.transport(interrupt=False);jobs=t.source
+        jobs.e.run=lambda argv,**kw:'active' if 'show' in argv else ''
+        ticket={'id':t.key,'token':jobs.s.read_json(jobs.path(t.key,'.source.json'))['token']}
+        with jobs.lock(t.key,source=True):
+            jobs.start({'id':t.key,'sourceMachine':'source','ticket':ticket,'source':t.ref,
+                        'target':{**t.ref,'project':'canceled-copy'}})
+            self.assertEqual(jobs.cancel({'id':t.key})['state'],'CANCELED')
+            self.assertEqual(jobs.status({'id':t.key})['state'],'CANCELED')
+        self.assertEqual((t.paths['home']/'settings').read_text(),'original-home')
 
     def test_existing_container_is_reused_and_only_changed_file_bodies_cross_the_peer(self):
         t=self.transport(interrupt=False,mode='incremental');t.target_store.create('alice','demo')

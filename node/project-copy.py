@@ -26,7 +26,7 @@ class ProjectCopy:
         try:active=self.j.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value','gpuq-project-export-'+row['id']+'.service']).strip()
         except (ValueError,OSError):return row
         if active in ('inactive','failed'):
-            with self.j.lock(row['id']):
+            with self.j.lock(row['id'],source=True):
                 file=self.j.path(row['id'],'.source.json');row=self.s.read_json(file)
                 if row['state']=='PREPARING':
                     row.update(state='FAILED',error='项目导出中断，请按原复制编号续传。');self.s.atomic_json(file,row)
@@ -34,8 +34,12 @@ class ProjectCopy:
 
     def prepare(self,args):
         key=args.get('key',args.get('id'));ref=args['source'];self.j.root(ref)
-        with self.j.lock(key):
-            file=self.j.path(key,'.source.json')
+        file=self.j.path(key,'.source.json')
+        # The atomic source record is readable while its exporter owns the lock.
+        # Repeating the original request must return its ticket, not wait for tar.
+        row=self.s.read_json(file) if file.exists() else None
+        if row and row['state'] not in ('FAILED','COMPLETE'):return {k:row[k] for k in ('id','token','state')}
+        with self.j.lock(key,source=True):
             row=self.s.read_json(file) if file.exists() else None
             if row and row['state'] not in ('FAILED','COMPLETE'):return {k:row[k] for k in ('id','token','state')}
             exports=self.s.private_dir(self.d.root(self.j.config,'workspacesRoot')/'.copy-exports',create=True)
@@ -53,12 +57,12 @@ class ProjectCopy:
                 '--property=KillMode=control-group','--property=MemoryMax=1G','--property=TasksMax=2048',
                 '/usr/bin/python3',str(Path(__file__).with_name('node-executor.py')),'--project-copy-export-worker',key])
         except Exception as error:
-            with self.j.lock(key):row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(self.j.path(key,'.source.json'),row)
+            with self.j.lock(key,source=True):row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(self.j.path(key,'.source.json'),row)
             raise
 
     def full(self,row):
         if not row.get('fullImage'):
-            with self.j.lock(row['id']):
+            with self.j.lock(row['id'],source=True):
                 file=self.j.path(row['id'],'.source.json');row=self.s.read_json(file)
                 row.update(fullImage=True,state='PREPARING');self.s.atomic_json(file,row)
             self.launch_export(row['id'],row)
@@ -67,8 +71,9 @@ class ProjectCopy:
                     if entry['path'] in ('image.tar','workspace.tar','manifest.json')],'nextOffset':None}
 
     def export(self,key):
-        # One worker owns this original operation. Never pause or replace the source.
-        with self.j.lock(key):
+        # Serialize exporters without blocking this same node's receiver/control.
+        # Never pause or replace the source project.
+        with self.j.lock(key,source=True):
             file=self.j.path(key,'.source.json');row=self.s.read_json(file)
             if row['state'] in ('READY','COMPLETE'):return 0
             ref=row['request']['source'];owner=ref.get('ownerId') or ref['userId'];project=ref['project']
@@ -95,13 +100,15 @@ class ProjectCopy:
                         '-C',str(paths['code'].parent),'code','home',timeout=3600)
                 self.s.atomic_json(folder/'manifest.json',{'image':tag,'rootfsBytes':rootfs})
                 if row['mode']=='incremental' and not image_only:self.sync().index(folder,rootfs=True)
-                row.update(state='READY');row.pop('error',None);self.s.atomic_json(file,row);return 0
             except Exception as error:
                 row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(file,row);return 1
             finally:
                 if row['mode']=='full' or image_only:
                     try:engine.run('rmi',tag)
                     except ValueError:pass
+            # A same-node receiver loads this same tag; finish export cleanup
+            # before allowing it to start importing the bundle.
+            row.update(state='READY');row.pop('error',None);self.s.atomic_json(file,row);return 0
 
     def target(self,row):
         return self.s.private_dir(runtime_folder(self.j.config,row['id']),create=True)
@@ -269,7 +276,7 @@ class ProjectCopy:
             # Cancel only this operation's exporter before removing its staging.
             try:self.j.e.run(['/usr/bin/systemctl','--user','stop','gpuq-project-export-'+key+'.service'])
             except ValueError:pass
-        with self.j.lock(key):
+        with self.j.lock(key,source=True):
             row=self.s.read_json(file)
             # This directory contains only this operation's generated transport files.
             if row['state']=='PREPARING':
