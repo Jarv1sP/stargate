@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package main
 
@@ -8,7 +8,7 @@ import (
 	"net"
 )
 
-// The Linux WSL process never takes the public control lane itself.
+// The native public control lane is Windows-only. Other hosts use Node HTTPS.
 func controlDial(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("PLATFORM_UNSUPPORTED")
 }

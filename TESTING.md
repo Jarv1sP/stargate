@@ -15,7 +15,7 @@ npm run test:python
 cd native/campus-http && go test ./...
 ```
 
-`build/` 不进 Git；`build:release` 从当前源码生成四平台 Go helper，再构建 CLI 和 vendor。test-entry 每次也从当前源码构建测试所需产物；独立 CLI 行为测试默认用 cli.mjs。`npm run cli` 先生成 helper，再直接运行源码。为什么：不能拿旧 helper 验新代码或发布，否则校园直连可能返回 INVALID_GRANT。
+`build/` 不进 Git；`build:release` 从当前源码生成 Linux、macOS、Windows 各 x64/arm64 共六套 Go helper，再构建 CLI 和 vendor。test-entry 每次也从当前源码构建测试所需产物；独立 CLI 行为测试默认用 cli.mjs。`npm run cli` 先生成 helper，再直接运行源码。为什么：不能拿旧 helper 验新代码或发布，否则校园直连可能返回 INVALID_GRANT。
 
 全量及浏览器测试串行运行，外层使用 3GiB systemd scope。启动前可用内存须 ≥3000MiB、swap 已用 ≤12GiB。为什么：WSL 和 VPS 曾因测试/构建内存耗尽卡死，串行和上限能保护共享环境。
 
@@ -32,7 +32,9 @@ cd native/campus-http && go test ./...
 
 ## 发布构建与验收
 
-本地用 `npm run build:release`（包含四平台 Go helper）验证构建；发布镜像只在 CI 从同一提交运行 `build:release` 后按 `deploy/Dockerfile` 构建，不从 Git 恢复旧产物。为什么：Portal、CLI 与 helper 必须来自同一发布树，服务器不承担构建负载。
+本地用 `npm run build:release`（包含六套 Go helper）验证构建；发布镜像只在 CI 从同一提交运行 `build:release` 后按 `deploy/Dockerfile` 构建，不从 Git 恢复旧产物。为什么：Portal、CLI 与 helper 必须来自同一发布树，服务器不承担构建负载。
+
+macOS 路由解析和 `IP_BOUND_IF` 绑定用 `native/campus-http/route_darwin_test.go` 在 Mac 上运行；交叉编译和提取助手测试不能代替 Mac 真机校园链路验收。后者使用原反馈者设备、官方 CLI 和自有的小测试文件，不操作现役训练数据。
 
 PR 和 main 都自动跑灰测，灰测不过不能合并、不上线；合并到 main 后自动部署门户、CLI 和节点，上线失败保持上一版。具体操作见 [维护手册](docs/MAINTAINING.md)。为什么：2026-10-15 用户定管理员自助修复、合并即上线，失败候选不能影响现役功能。
 

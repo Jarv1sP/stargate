@@ -1,10 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,readFile,writeFile,rm,access} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rm,access,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {extractCampusNative} from '../client-campus-native.mjs';
 import {prepareWindowsNativeFolder} from '../client-campus-native-runtime.mjs';
+
+for(const arch of ['x64','arm64'])test(`macOS ${arch} extracts its bundled helper without Windows bootstrap`,async t=>{
+ const root=await mkdtemp(join(tmpdir(),'campus-mac-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const bytes=Buffer.from('Darwin '+arch),artifacts={version:'mac-'+arch,artifacts:{['darwin-'+arch]:{bytes:bytes.length,base64:bytes.toString('base64')}}};
+ const options={platform:'darwin',arch,directory:root,prepareWindows:()=>assert.fail('macOS does not use PowerShell')};
+ const first=await extractCampusNative(artifacts,options);assert.equal(first.platform,'darwin');
+ assert.equal(first.interop,false);assert.deepEqual(await readFile(first.path),bytes);
+ if(process.platform!=='win32')assert.equal((await stat(first.path)).mode&0o777,0o700);
+ await first.cleanup();
+ const second=await extractCampusNative({version:artifacts.version,get artifacts(){assert.fail('cache must be reused');}},options);
+ assert.equal(second.path,first.path);
+});
 
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'campus-cache-fixture-'));t.after(()=>rm(root,{recursive:true,force:true}));

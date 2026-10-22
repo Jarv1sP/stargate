@@ -29,6 +29,8 @@ curl -fsSL https://gpu.example.com/install.sh | sh
 
 将示例地址换成平台地址。安装只写用户目录，无需管理员权限；更新运行同一安装命令。Windows 与 WSL 分别安装和登录。
 
+校园直传助手随客户端内置，支持 Linux、Windows 和 macOS 的 x64/arm64（Mac 包括 Intel 与 Apple Silicon），无需另装 Go 或配置 SSH。macOS 的数据集传输同样需要校园入口可达；项目文件和任务输出仍按现有规则在直连失败时改走门户。
+
 ### 研究工具包装器
 
 通过研究工具包装器启动时，包装器由其维护者修改，转调官方启动器并保留参数和退出码。Linux、macOS、WSL 的脚本末尾用 `exec "$HOME/.local/bin/gpuctl" "$@"`；PowerShell 用 `& "$env:LOCALAPPDATA\GPUQConsole\bin\gpuctl.cmd" @args`，紧接 `exit $LASTEXITCODE`。为什么：更新官方入口不会更新包装器另存的旧副本，丢掉退出码还会把失败当成功。

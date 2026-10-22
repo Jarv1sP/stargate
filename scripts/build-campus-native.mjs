@@ -8,6 +8,7 @@ import {randomUUID} from 'node:crypto';
 
 const execute=promisify(execFile);
 const targets=[['linux-x64','linux','amd64'],['linux-arm64','linux','arm64'],
+  ['darwin-x64','darwin','amd64'],['darwin-arm64','darwin','arm64'],
   ['windows-x64','windows','amd64'],['windows-arm64','windows','arm64']];
 
 export async function buildCampusNative({root=fileURLToPath(new URL('..',import.meta.url)),
@@ -25,7 +26,7 @@ export async function buildCampusNative({root=fileURLToPath(new URL('..',import.
       manifest.artifacts[platform]={bytes:bytes.length,base64:bytes.toString('base64')};
     }
     await mkdir(dirname(outfile),{recursive:true});
-    // Publish the complete four-platform input together; a failed build keeps
+    // Publish all supported platforms together; a failed build keeps
     // the previous usable input.
     const pending=outfile+'.tmp-'+process.pid;
     try{await writeFile(pending,JSON.stringify(manifest)+'\n');await rename(pending,outfile);}
