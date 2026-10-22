@@ -32,6 +32,18 @@ test('a team member can read another member job after their own submit quota is 
  for(const operation of operations)assert.ok((await f.service.invoke(f.token,operation,{jobId:id,extension:'ignored'})).result);
  assert.equal(f.calls.length,operations.length);
 });
+test('log downloads preserve the original attempt and byte offset through the authenticated read lane',async t=>{
+ const f=await fixture(t),request={jobId:id,download:true,attemptId:'A'+'1'.repeat(32),offset:1024**2};
+ f.service.bridge=async(host,operation,args)=>{
+  assert.equal(host,machine);assert.equal(operation,'logs');
+  assert.deepEqual({download:args.download,attemptId:args.attemptId,offset:args.offset},
+   {download:true,attemptId:request.attemptId,offset:request.offset});
+  assert.equal(args.job.id,id);assert.equal(args.path,undefined);
+  return {size:request.offset+1,data:'YQ==',offset:request.offset,eof:true};
+ };
+ const value=await f.service.invoke(f.token,'jobs.logs',{...request,path:'/etc/passwd',futureField:true});
+ assert.equal(value.result.data,'YQ==');
+});
 test('state returns immediately while approval metadata and collector refresh change independently',async t=>{
  const f=await fixture(t),blocked=deferred();f.service.state=()=>({jobs:[]});
  f.service.refreshGPUQ=()=>blocked.promise;

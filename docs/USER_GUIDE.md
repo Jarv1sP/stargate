@@ -349,12 +349,15 @@ gpuctl jobs
 gpuctl queue
 gpuctl watch JOB_ID
 gpuctl logs JOB_ID
+gpuctl logs JOB_ID --output ./job.log
 gpuctl diagnostics JOB_ID --json
 gpuctl completion JOB_ID --json
 gpuctl reconcile-resources JOB_ID --json
 ```
 
 `watch` 默认每 5 秒查询，`--interval 1` 可调整；Ctrl+C 不取消任务。日志和诊断用于排查 CPU、内存、OOM 和 worker；`completion` 查完成情况，`reconcile-resources` 收尾已结束任务的资源，不重跑训练。进度需要代码接入 `gpuq.progress.ProgressReporter`；未上报不填假进度，上报 100% 也不等于进程已结束。
+
+`logs` 默认查看最后 200 行；加 `--output 本机文件` 经门户 HTTPS 分块下载最近一次运行的完整主日志（stdout/stderr，不附加诊断摘要）。中断后保留本机临时文件和 `.gpuctl-download.json`，重复原命令从原运行、原字节偏移续传，不会混入后来重跑的日志。首次不覆盖已有文件。建议任务结束后导出；日志仍在增长或被改写导致大小变化时会暂停，应等它稳定后下载到新文件。尚未启动的任务没有运行日志，不会生成假成功的空文件。
 
 任务容器按实际分到的 GPU 绑定 CPU：每张卡固定分一段 NUMA 就近的可用逻辑核；无法读取 NUMA，或就近分配导致某张卡少于全机平均核数时，按 GPU 编号顺序均分。同一物理核的超线程放在同一段。例如 128 个可用逻辑核、8 张卡通常每卡 16 核，2 卡任务可见约 32 核；弹性任务按当前卡数，共享同一张卡的任务使用该卡同一段 CPU。原 CPU 时间配额不变，普通开发终端仍为 2 核配额、不绑定 CPU。节点未委托 cpuset 或无法查询 GPU 拓扑时省略绑核，仍注入线程默认值，任务照常启动。
 
