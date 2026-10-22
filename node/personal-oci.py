@@ -111,10 +111,13 @@ class PersonalOCI:
         return folder/'oci.json'
 
     @contextlib.contextmanager
-    def locked(self,slug,wait=True):
+    def locked(self,slug,wait=False):
         import fcntl
         fd=os.open(self.state_path(slug).with_suffix('.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
-        try:self.s.wait_project_lock(fd,fcntl.LOCK_EX,'容器忙，请稍后重试。');yield
+        try:
+            if wait:fcntl.flock(fd,fcntl.LOCK_EX)
+            else:self.s.wait_project_lock(fd,fcntl.LOCK_EX,'容器忙，请稍后重试。')
+            yield
         finally:os.close(fd)
 
     def load(self,slug):
@@ -122,7 +125,11 @@ class PersonalOCI:
         except FileNotFoundError:return {'image':self.policy['baseImage'],'container':None}
 
     def workspace_container(self,slug):
-        with self.locked(slug):
+        head=self.load(slug)
+        if head.get('container') is not None:return head
+        # Pull/create is shared initialization, not a reason to fail another
+        # admitted job after the short metadata-lock timeout.
+        with self.locked(slug,wait=True):
             head=self.load(slug)
             if head.get('container') is None:
                 self.run('pull','--tls-verify=true',head['image'],timeout=1800)
