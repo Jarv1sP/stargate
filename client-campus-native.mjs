@@ -33,7 +33,7 @@ export async function extractCampusNative(artifacts=EMBEDDED,{platform,arch=proc
   for(let attempt=0;;attempt++){
     let windowsFolder;if(runtime.platform==='windows')windowsFolder=await prepareWindows(runtime);
     platform=runtime.platform;arch=windowsFolder?.arch||runtime.arch;
-    if(!['linux','windows'].includes(platform)||!['x64','arm64'].includes(arch))throw failed('PLATFORM_UNSUPPORTED');
+    if(!['linux','darwin','windows'].includes(platform)||!['x64','arm64'].includes(arch))throw failed('PLATFORM_UNSUPPORTED');
     if(artifacts==null&&arguments[0]===undefined){
       // Source CLI uses the native build input; the installed client embeds it.
       const path=new URL('./build/campus-native/embedded-artifacts.private.json',import.meta.url);

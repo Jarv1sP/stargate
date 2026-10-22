@@ -10,6 +10,21 @@ import {buildCampusNative} from '../scripts/build-campus-native.mjs';
 import {buildClient} from '../scripts/build-client.mjs';
 import {extractCampusNative} from '../client-campus-native.mjs';
 
+test('release input contains actual Intel and Apple Silicon Mach-O helpers',async()=>{
+ const input=JSON.parse(await readFile(new URL('../build/campus-native/embedded-artifacts.private.json',import.meta.url),'utf8'));
+ for(const [platform,cpu] of [['darwin-x64',0x01000007],['darwin-arm64',0x0100000c]]){
+  const item=input.artifacts[platform];assert.ok(item,platform+' must be built from source');
+  const bytes=Buffer.from(item.base64,'base64');assert.equal(bytes.length,item.bytes);
+  assert.equal(bytes.readUInt32LE(0),0xfeedfacf);assert.equal(bytes.readUInt32LE(4),cpu);
+  let at=32,signed=false;
+  for(let i=0;i<bytes.readUInt32LE(16);i++){
+   if(bytes.readUInt32LE(at)===0x1d)signed=true;
+   at+=bytes.readUInt32LE(at+4);
+  }
+  if(platform==='darwin-arm64')assert.ok(signed,'Apple Silicon executable needs the Go linker code signature');
+ }
+});
+
 test('a failed cross-build preserves the old input; success replaces both old Linux helpers with compiled outputs',async t=>{
   const root=await mkdtemp(join(tmpdir(),'native build fixture ')),outfile=join(root,'build/input.json');
   t.after(()=>rm(root,{recursive:true,force:true}));await mkdir(join(root,'build'));
@@ -24,9 +39,9 @@ test('a failed cross-build preserves the old input; success replaces both old Li
   fail=false;await buildCampusNative({root,outfile,run});
   const input=JSON.parse(await readFile(outfile,'utf8'));
   await buildCampusNative({root,outfile,run});assert.notEqual(JSON.parse(await readFile(outfile,'utf8')).version,input.version);
-  assert.deepEqual(Object.keys(input.artifacts),['linux-x64','linux-arm64','windows-x64','windows-arm64']);
+  assert.deepEqual(Object.keys(input.artifacts),['linux-x64','linux-arm64','darwin-x64','darwin-arm64','windows-x64','windows-arm64']);
   assert.deepEqual(Object.values(input.artifacts).map(row=>Buffer.from(row.base64,'base64').toString()),
-    ['linux/amd64','linux/arm64','windows/amd64','windows/arm64']);
+    ['linux/amd64','linux/arm64','darwin/amd64','darwin/arm64','windows/amd64','windows/arm64']);
   const binary=await extractCampusNative(input,{directory:join(root,'temporary'),resolveRuntime:async()=>({platform:'linux',arch:'x64',interop:false})});
   try{assert.equal(await readFile(binary.path,'utf8'),'linux/amd64');}finally{await binary.cleanup();}
 });
