@@ -130,7 +130,9 @@ def job_operation(operation,args):
             gpu('set-rank',node_id,'P'+str(PRIORITY_RANKS[rank]))
             data=gpu('show',node_id);state=data.get('job',data)
         if job.get('projectCopy') and scheduler_finished(data):transfers().finish_runtime(job['projectCopy'])
-        if operation=='logs':return job_log_result(job,data,run([CONFIG['gpu'],'logs','-n','200',node_id])[-200000:])
+        if operation=='logs':
+            if args.get('download') is True:return job_log_download(data,args)
+            return job_log_result(job,data,run([CONFIG['gpu'],'logs','-n','200',node_id])[-200000:])
         if operation=='diagnostics':return job_diagnostics(job,data)
         if 'metadata' in args:
             try:module('task-display').sync(sys.modules[__name__],job,args['metadata'],state)
@@ -315,6 +317,16 @@ def job_diagnostics(job,data):
         spec=importlib.util.spec_from_file_location('gpuq_job_diagnostics',HERE/'job-diagnostics.py')
         DIAGNOSTICS=importlib.util.module_from_spec(spec);spec.loader.exec_module(DIAGNOSTICS)
     return DIAGNOSTICS.bundle(ROOT,job,data)
+
+def job_log_download(data,args):
+    attempts=data.get('attempts',[])
+    attempt=next((row for row in attempts if row['id']==args['attemptId']),None) if args.get('attemptId') else next(iter(attempts),None)
+    if not attempt or not attempt.get('log_path'):raise ValueError('找不到该次运行的日志，请按原任务编号查询。')
+    if 'offset' not in args:return {'attemptId':attempt['id']}
+    path=Path(attempt['log_path'])
+    # The scheduler supplies the path. Reuse the data-disk boundary and bounded
+    # byte reader; never accept a host path or arbitrary length from the client.
+    return module('dataset-files').process(CONFIG,'files.get',{'path':path.name,'offset':args['offset']},root=path.parent)
 
 def job_log_result(job,data,text):
     try:

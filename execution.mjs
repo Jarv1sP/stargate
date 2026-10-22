@@ -413,7 +413,10 @@ export async function executionCall(service,principal,operation,args,readContext
     }
     return jobView(job);
   }
-  if(operation==='jobs.logs'){const job=jobById(args.jobId);return observeJob(job,'logs',{job:nativeJobSpec(job)});}
+  if(operation==='jobs.logs'){
+    const job=jobById(args.jobId);
+    return observeJob(job,'logs',{job:nativeJobSpec(job),...selectFields(args,['download','attemptId','offset'])});
+  }
   if(operation==='jobs.reconcile-resources'){
     const job=jobById(args.jobId);
     service.audit(principal.username,operation,job.id,'requested');

@@ -16,6 +16,7 @@ import {commandPost} from './client-http.mjs';
 import {readCLIState,submitJobWithReceipt} from './client-state.mjs';
 import {defaultPlatformControlTransport,finishPlatformControlTransport} from './client-windows-control.mjs';
 import {downloadResultFile} from './client-result-download.mjs';
+import {downloadJobLog} from './client-job-log-download.mjs';
 import {directoryDownloadStatus} from './client-directory-download.mjs';
 import { readFile as readFile2, mkdir as mkdir4, writeFile as writeFile2, chmod, unlink as unlink3, lstat as lstat5 } from "node:fs/promises";
 import { dirname as dirname2, join as join5, basename as basename2 } from "node:path";
@@ -64,6 +65,7 @@ gpuctl run --gpu 0 -g 1 --memory-limit-gib 60 -- python train.py
 工作区 /workspace，数据集 /datasets；任务输出 /outputs。
 未选项目使用默认 OCI 容器。Ctrl+] 只断开终端；exit 结束，GPU 终端结束后释放卡。
 gpuctl logs JOB / watch JOB / diagnostics JOB / cancel JOB
+gpuctl logs JOB --output ./job.log （完整日志，断线后原命令续传）
 gpuctl priority JOB P0|P1|P2|P3|P4 （P4 最优先，P0 最低） / completion JOB / reconcile-resources JOB
 gpuctl note TEXT --job JOB / notes / notify JOB on|off|status
 gpuctl files rm PATH --job JOB [--recursive] / outputs delete --job JOB
@@ -124,7 +126,7 @@ function fail9(message) {
 }
 var CLI_OPTIONS = new Map([
   ...['overwrite','json','password-stdin','credentials-stdin','help','full','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','recursive','interactive','pin','sync'].map(key=>[key,'flag']),
-  ...['url','session-file','total','cards','role','name','description','display-name','min-vram','key','project','job','priority','timeout','reconnect','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','gpu','vram-mib','sm-percent','reason','revision','cursor','limit','members','primary','owner','via','memory-limit-gib','repo','dataset','kind','status','title','body','body-file','announcement-type','layout','background','text-color','accent','file-id','password-code','source-url','sync-dir','candidates'].map(key=>[key,'value']),
+  ...['url','session-file','total','cards','role','name','description','display-name','min-vram','key','project','job','priority','timeout','reconnect','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','gpu','vram-mib','sm-percent','reason','revision','cursor','limit','members','primary','owner','via','memory-limit-gib','repo','dataset','kind','status','title','body','body-file','announcement-type','layout','background','text-color','accent','file-id','password-code','source-url','sync-dir','candidates','output'].map(key=>[key,'value']),
   ['machine','machines'], ['after','after']
 ]);
 function parseCLIOptions(argv) {
@@ -189,6 +191,7 @@ async function secret(label = "Password") {
 }
 async function main() {
   ({ options, positionals, training } = parseCLIOptions(args));
+  if(options.output!==undefined&&positionals[0]!=='logs')fail9('--output 只用于 logs JOB --output 本机文件。');
   if(options.after.length&&positionals[0]!=='run')fail9('--after 只用于 run。');
   if(!options.after.length)delete options.after;
   const ownerUsername=options.owner;
@@ -267,7 +270,7 @@ async function main() {
   const continuous=['push','upload','push-status','upload-status','pull','download','ssh','shell','watch'].includes(verb)||
     ['project','transfer'].includes(verb)&&['copy','upload','download','watch'].includes(action)||
     verb==='data'&&['upload','put','get','download','import','cloud'].includes(action)||
-    verb==='run'&&(options.sync||options.interactive);
+    verb==='run'&&(options.sync||options.interactive)||verb==='logs'&&options.output!==undefined;
   const post=commandPost(base,{token:session?.token,fetchImpl:controlTransport.fetchImpl,continuous});
   let targetOwnerId;
   const call = (operation, args2 = {}, signal) => post("call", { operation, args: {...(targetOwnerId&&/^(projects\.|files\.|data\.|datasets\.|cloud\.|terminal\.|jobs\.submit$)/.test(operation)?{ownerId:targetOwnerId}:{}),...args2} }, signal);
@@ -673,7 +676,9 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       result = (await call("community.notes.create", { body: positionals[1], key, ...options.job ? { jobId: options.job } : {} })).result;
     } else if (command === "note-delete" && positionals.length === 2) {
       result = (await call("community.notes.delete", { id: positionals[1] })).result;
-    } else if (["logs", "cancel"].includes(command) && positionals.length === 2) result = (await call(command === "logs" ? "jobs.logs" : "jobs.cancel", { jobId: positionals[1] })).result;
+    } else if(command==='logs'&&positionals.length===2&&options.output!==undefined)
+      result=await downloadJobLog(call,{jobId:positionals[1],destination:options.output,origin:base.origin,userId:session.principal.userId});
+    else if (["logs", "cancel"].includes(command) && positionals.length === 2) result = (await call(command === "logs" ? "jobs.logs" : "jobs.cancel", { jobId: positionals[1] })).result;
     else if(outputDelete){
       const key=options.key||randomUUID7();
       if(!options.json)process.stderr.write('删除编号：'+key+'；重试沿用 --key '+key+'\n');
@@ -794,7 +799,8 @@ ${n.body}
     return;
   }
   if (command === "logs") {
-    process.stdout.write(result.text + (result.text.endsWith("\n") ? "" : "\n"));
+    if(result.downloaded)console.log(`日志已保存：${result.downloaded}（${result.bytes} 字节）`);
+    else process.stdout.write(result.text + (result.text.endsWith("\n") ? "" : "\n"));
     return;
   }
   if (command === "cancel") {

@@ -247,7 +247,7 @@ export class PortalService extends DemoService{
     if(!['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation))throw Error('Invalid job read operation');
     if(!args||typeof args!=='object'||Array.isArray(args))
       throw Object.assign(Error('任务查询仅接受任务 ID。'),{status:400});
-    const request=selectFields(args,['jobId']),admitted=this.principal(token);
+    const request=selectFields(args,['jobId',...(operation==='jobs.logs'?['download','attemptId','offset']:[])]),admitted=this.principal(token);
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
       const current=this.principal(token);
