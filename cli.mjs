@@ -727,7 +727,7 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
     console.log(`已登录：${result.principal.username}`);
     return;
   }
-  if(outputDelete){if(!result.dryRun&&result.state!=='TRASHED'){console.log('结果未知，请按原编号查询：'+(result.key||options.key||''));process.exitCode=2;return;}console.log(result.dryRun?`将删除 ${result.files} 个文件 · ${result.bytes} B`:`已删除，7 天内可在项目回收站恢复`);return;}
+  if(outputDelete){if(!result.dryRun&&result.state!=='TRASHED'){console.log('结果未知，请按原编号查询：'+(result.key||options.key||''));process.exitCode=2;return;}console.log(result.dryRun?`将删除 ${Number.isFinite(result.size)?result.size+' B':'大小未知'}（仅预览，未删除）`:`已删除，7 天内可在项目回收站恢复`);return;}
   if (command === "profile") {
     console.log(`姓名／显示名：${result.name}
 登录用户名：${result.username}`);
