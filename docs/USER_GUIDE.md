@@ -107,6 +107,8 @@ gpuctl pull train.py ./train.py
 
 传输采用 TLS、大小核对和原子提交。中断保留原文件、路径、大小和原 key，按输出的 `--key UUID` 重复原 `push` 从偏移续传；`gpuctl push-status 本机路径 远端路径 --key UUID --json` 只查原上传。不要用新 key 重投未知操作，也不要在续传期间修改同一路径。
 
+目录上传同时保留 `SESSION_FILE.uploads/UUID.json` 文件清单（`SESSION_FILE` 为登录文件路径）。清单缺失或文件没有原编号时，`push-status` 显示 `UNKNOWN`，不新建编号、不改清单；单文件可直接按原 key 查询。
+
 `gpuctl project quota` 查看工作区盘和数据集盘的已用、可用、总量；加 `--project my-project` 查看该项目文件用量。同名项目用 `--owner USERNAME` 定位。项目大小不分摊共享容器镜像，盘已用包含同盘其他内容；“至少”表示部分目录读不到，“未知”不表示零。包构建可临时设置 `TMPDIR="$HOME/.cache/build-tmp"`，先创建该目录，完成后清理不用的文件。
 
 同一项目首次使用时，镜像拉取和容器创建只执行一次，其他任务等待这次初始化完成；不会因初始化超过两秒就退出 125。已有工作区可直接进入，不等待初始化锁。GPU 初始化在启动阶段短暂排队，同项目训练仍可并发。同步已有目标项目时的执行互斥规则仍按下文处理。

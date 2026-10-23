@@ -51,8 +51,9 @@ export async function uploadLocalFile(call,{machine,context,path,local,key=rando
     return {...result,machine,path,bytes:size};
   }finally{await file.close();await transport?.close();}
 }
-export async function uploadLocalTree(call,{machine,context,local,remote='.',key=randomUUID(),stateDirectory,transferId,via,probe,inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
-  if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key))throw Error('上传编号必须是完整 UUID。');
+export async function uploadLocalTree(call,{machine,context,local,remote='.',key,stateDirectory,transferId,via,probe,inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
+  if(key===undefined&&!inspectOnly)key=randomUUID();
+  if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key||''))throw Error(inspectOnly?'查询原上传请提供 --key UUID。':'上传编号必须是完整 UUID。');
   const keyFile=stateDirectory?join(stateDirectory,key+'.json'):null;let keys={};
   if(keyFile)try{keys=JSON.parse(await readFile(keyFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
   const save=async()=>{if(!keyFile)return;await mkdir(dirname(keyFile),{recursive:true,mode:0o700});const temporary=keyFile+'.'+randomUUID()+'.new';await writeFile(temporary,JSON.stringify(keys),{mode:0o600});await rename(temporary,keyFile);};
@@ -63,9 +64,16 @@ export async function uploadLocalTree(call,{machine,context,local,remote='.',key
     const info=await lstat(source);if(info.isSymbolicLink())throw Error('链接不会上传：'+source);
     if(info.isDirectory()){for(const name of (await readdir(source)).sort())await visit(join(source,name),path==='.'?name:path+'/'+name);return;}
     if(!info.isFile())throw Error('请选择普通文件或目录：'+source);dataPath(path);
-    keys[path] ||= single?key:randomUUID();await save();
-    if(!inspectOnly)selected??=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{machine,...context,path,action:'put',uploadId:keys[path],totalSize:info.size,overwrite:true})).result});
-    const result=inspectOnly?(await call('data.upload.status',{machine,...context,path,key:keys[path]})).result:await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via,route:selected,initialGrant:selected.grant,progress});
+    let result;
+    if(inspectOnly){
+      const originalKey=keys[path]||(single?key:null);
+      result=originalKey?(await call('data.upload.status',{machine,...context,path,key:originalKey})).result:
+        {key:null,state:'UNKNOWN',message:'没有该文件的原上传编号，状态未知；请使用原本地上传记录查询。'};
+    }else{
+      keys[path] ||= single?key:randomUUID();await save();
+      selected??=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{machine,...context,path,action:'put',uploadId:keys[path],totalSize:info.size,overwrite:true})).result});
+      result=await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via,route:selected,initialGrant:selected.grant,progress});
+    }
     if(selected)delete selected.grant;
     files.push({path,...result});count++;bytes+=info.size;
   }
