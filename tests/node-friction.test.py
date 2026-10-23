@@ -241,6 +241,22 @@ class DirectoryContract(unittest.TestCase):
             fail=False;jobs.process('datasets.import.resume',{'operationId':key});self.assertEqual(jobs.worker(key),0)
         self.assertIn((6,None),calls);self.assertEqual(Path(self.config['datasetsRoot'],'shared/retry-range.bin').read_bytes(),raw)
 
+    def test_same_node_directory_copy_needs_no_self_peer(self):
+        raw=b'same-node data';self.upload('train/data.bin',raw)
+        (Path(self.config['datasetsRoot'])/'shared/empty').mkdir()
+        self.config['transferPeers']={}
+        transfers=module('transfer-jobs')
+        jobs=transfers.TransferJobs(SimpleNamespace(CONFIG=self.config,run=lambda *a,**k:''))
+        key=self.key();source={'dataset':'shared'}
+        ticket=jobs.prepare({'key':key,'source':source})
+        jobs.start({'key':key,'sourceMachine':self.config['machine'],'ticket':ticket,'source':source,'target':{'dataset':'copy'}})
+        with patch.object(transfers,'PeerClient',side_effect=AssertionError('same-node copy must not use LAN')):
+            self.assertEqual(jobs.worker(key),0,jobs.status({'key':key}))
+        self.assertEqual(jobs.status({'key':key})['state'],'SUCCEEDED')
+        for dataset in ['shared','copy']:
+            self.assertEqual((Path(self.config['datasetsRoot'])/dataset/'train/data.bin').read_bytes(),raw)
+            self.assertTrue((Path(self.config['datasetsRoot'])/dataset/'empty').is_dir())
+
     def test_cross_node_directory_copy_resumes_uuid_and_keeps_empty_directories(self):
         raw=b'a'*(1024**2)+b'end';self.upload('train/data.bin',raw)
         (Path(self.config['datasetsRoot'])/'shared/empty').mkdir()

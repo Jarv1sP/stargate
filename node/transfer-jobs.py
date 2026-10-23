@@ -72,6 +72,17 @@ class PeerClient:
                 raise
 
 
+class LocalPeerClient:
+    """Use the same source reader without networking for a same-node copy."""
+    def __init__(self, jobs, ticket):
+        self.jobs, self.ticket = jobs, ticket
+
+    def call(self, action, **fields):
+        return self.jobs.read({'id': self.ticket['id'], 'action': action, **fields}, self.ticket['token'])
+
+    def close(self):pass
+
+
 class TransferJobs:
     def __init__(self,executor):
         self.e=executor;self.config=executor.CONFIG;self.s=module('project-store');self.d=module('local-data')
@@ -171,12 +182,17 @@ class TransferJobs:
             '--property=KillMode=control-group','--property=MemoryMax=1G','--property=TasksMax=2048',
             '/usr/bin/python3',str(Path(__file__).with_name('node-executor.py')),'--transfer-worker',key],timeout=18)
 
+    def peer_client(self,row):
+        if row['sourceMachine']==self.config['machine']:
+            return LocalPeerClient(self,row['ticket'])
+        return PeerClient(self.config['transferPeers'][row['sourceMachine']],row['ticket'])
+
     def complete_copy(self,row,peer=None):
         own_peer=peer is None
         with self.lock(row['id']):
             current=self.s.read_json(self.path(row['id']));current['sourceCompletePending']=True;self.s.atomic_json(self.path(row['id']),current)
         try:
-            if peer is None:peer=PeerClient(self.config['transferPeers'][row['sourceMachine']],row['ticket'])
+            if peer is None:peer=self.peer_client(row)
             peer.call('complete')
         except Exception:pass  # Source staging cleanup never blocks a local terminal result.
         else:
@@ -251,10 +267,10 @@ class TransferJobs:
         return self.receive_worker(key)
 
     def receive_worker(self,key,independent=False):
-        row=self.s.read_json(self.path(key));ticket=row['ticket']
+        row=self.s.read_json(self.path(key))
         peer=None
         try:
-            peer=PeerClient(self.config['transferPeers'][row['sourceMachine']],ticket)
+            peer=self.peer_client(row)
             target=row['target'];copy=module('project-copy').ProjectCopy(self) if target.get('environment') is True else None
             if row['state']=='CANCELED':return 0
             if copy:

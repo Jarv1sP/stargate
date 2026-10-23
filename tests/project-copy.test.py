@@ -94,7 +94,7 @@ class ProjectCopy(unittest.TestCase):
     def test_same_node_copy_starts_and_retries_while_its_export_is_running(self):
         t=self.transport(interrupt=False);jobs=t.source
         file=jobs.path(t.key,'.source.json');row=jobs.s.read_json(file);row['state']='PREPARING';jobs.s.atomic_json(file,row)
-        jobs.config['transferPeers']={'source':{}}
+        jobs.config['transferPeers']={}
         commands=[]
         def systemctl(argv,**kwargs):
             commands.append(argv)
@@ -117,7 +117,7 @@ class ProjectCopy(unittest.TestCase):
             exporting=pool.submit(copy.export,t.key)
             try:
                 self.assertTrue(entered.wait(5))
-                args={'id':t.key,'sourceMachine':'source','ticket':{'id':t.key,'token':row['token']},
+                args={'id':t.key,'sourceMachine':jobs.config['machine'],'ticket':{'id':t.key,'token':row['token']},
                       'source':t.ref,'target':{**t.ref,'project':'independent-copy'}}
                 self.assertEqual(jobs.start(args)['state'],'PENDING')
                 self.assertEqual(jobs.start(args)['state'],'PENDING')
@@ -131,7 +131,8 @@ class ProjectCopy(unittest.TestCase):
             finally:release.set();cleaned.set()
             self.assertEqual(exporting.result(timeout=5),0)
         self.assertEqual(sum('--transfer-worker' in argv for argv in commands),1)
-        with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(jobs.worker(t.key),0,jobs.status({'id':t.key}))
+        with patch.object(t.transfers,'PeerClient',side_effect=AssertionError('same-node copy must not use LAN')):
+            self.assertEqual(jobs.worker(t.key),0,jobs.status({'id':t.key}))
         self.assertEqual(jobs.status({'id':t.key})['state'],'SUCCEEDED')
         destination=t.store.dev_paths('alice','independent-copy')
         self.assertEqual((destination['code']/'train.py').read_bytes(),(t.paths['code']/'train.py').read_bytes())
@@ -139,6 +140,11 @@ class ProjectCopy(unittest.TestCase):
         self.assertEqual((self.base/'loaded-rootfs/installed-dependency').read_text(),'dependency-v1')
         self.assertFalse(any('stop' in argv for argv in commands))
         self.assertFalse((Path(jobs.config['workspacesRoot'])/'.copy-exports'/t.key).exists())
+        # Cleanup retried without a live reader must choose the same local path.
+        pending=jobs.s.read_json(jobs.path(t.key));pending['sourceCompletePending']=True;jobs.s.atomic_json(jobs.path(t.key),pending)
+        with patch.object(t.transfers,'PeerClient',side_effect=AssertionError('same-node cleanup must not use LAN')):
+            jobs.complete_copy(pending)
+        self.assertNotIn('sourceCompletePending',jobs.s.read_json(jobs.path(t.key)))
 
     def test_same_node_receiver_can_cancel_while_the_source_lock_is_held(self):
         t=self.transport(interrupt=False);jobs=t.source
