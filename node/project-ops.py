@@ -38,7 +38,7 @@ class ProjectOperations:
     def process(self,operation,args):
         user=args.get('ownerId',args.get('userId'));slug=args.get('project')
         if operation=='projects.list':
-            return self.store.list(include_usage=True) if args.get('includeUsage') is True else {'projects':self.store.list()}
+            return module('storage-usage').cached(self,self.store.list(include_usage=True)) if args.get('includeUsage') is True else {'projects':self.store.list()}
         if operation=='projects.create':
             value=self.store.create(user,slug,args.get('repo'))
             path,_=self.store._project(user,slug)

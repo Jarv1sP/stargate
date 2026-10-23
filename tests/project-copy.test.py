@@ -52,6 +52,8 @@ class ProjectCopy(unittest.TestCase):
                     return ''
                 if args[:2]==('unshare','/usr/bin/tar'):
                     subprocess.run(args[1:],check=True);return ''
+                if args[:2]==('unshare','/usr/bin/rm'):
+                    subprocess.run(args[1:],check=True);return ''
                 raise AssertionError(args)
             def copy_files(self,project,action,*,paths,**kwargs):
                 root=outer.base/'loaded-image' if action=='image' else container_roots.get(self.load(project).get('container'),outer.base/'loaded-rootfs')

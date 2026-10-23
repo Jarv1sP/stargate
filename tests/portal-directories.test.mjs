@@ -161,6 +161,7 @@ test('canceling after a lost copy start reply still cancels the original target 
   if(op==='transfers.project.prepare')return {id:args.id,token:'source-token'};
   if(op==='transfers.project.start')throw Error('lost response after starting copy');
   if(op==='transfers.cancel')return {id:args.id,state:'CANCELED'};
+  if(op==='transfers.project.complete')return {state:'COMPLETE'};
  });
  const submitted=await f.call('jobs.submit',{machine:target,sourceMachine:machine,project:'sample',cards:1,argv:['true'],key:randomUUID()},f.admin);
  await f.service.reconcile();const row=f.service.store.jobs.find(job=>job.id===submitted.id);
@@ -168,6 +169,7 @@ test('canceling after a lost copy start reply still cancels the original target 
  await f.call('jobs.cancel',{jobId:row.id},f.admin);await f.service.reconcile();
  assert.equal(row.state,'CANCELED');
  assert.ok(f.calls.some(call=>call.host===target&&call.op==='transfers.cancel'&&call.args.id===row.id));
+ assert.ok(f.calls.some(call=>call.host===machine&&call.op==='transfers.project.complete'&&call.args.id===row.id));
  assert.equal(f.calls.filter(call=>call.op==='sync').length,0);
 });
 test('unknown node transfer listings are reported as unknown, rather than an empty successful list',async t=>{

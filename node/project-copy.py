@@ -38,7 +38,8 @@ class ProjectCopy:
         # The atomic source record is readable while its exporter owns the lock.
         # Repeating the original request must return its ticket, not wait for tar.
         row=self.s.read_json(file) if file.exists() else None
-        if row and row['state'] not in ('FAILED','COMPLETE'):return {k:row[k] for k in ('id','token','state')}
+        if row and row['state'] not in ('FAILED','COMPLETE'):
+            os.utime(file,None);return {k:row[k] for k in ('id','token','state')}
         with self.j.lock(key,source=True):
             row=self.s.read_json(file) if file.exists() else None
             if row and row['state'] not in ('FAILED','COMPLETE'):return {k:row[k] for k in ('id','token','state')}
@@ -266,23 +267,46 @@ class ProjectCopy:
         image='localhost/gpuq-copy:'+key
         if head.get('image')!=image:
             if engine.run('images','--quiet','--filter','reference='+image):engine.run('rmi',image)
-        if folder.exists():shutil.rmtree(self.s.private_dir(folder))
+        if folder.exists():engine.run('unshare','/usr/bin/rm','-rf','--',str(self.s.private_dir(folder)),timeout=3600)
         received=destination/'received'
-        if row.get('createdProject') and received.exists():shutil.rmtree(self.s.private_dir(received))
+        if row.get('createdProject') and received.exists():engine.run('unshare','/usr/bin/rm','-rf','--',str(self.s.private_dir(received)),timeout=3600)
 
-    def complete(self,key):
+    def complete(self,key,*,expired_before=None):
         file=self.j.path(key,'.source.json');row=self.s.read_json(file)
+        if expired_before is not None and row['state'] not in ('COMPLETE','FAILED') and file.stat().st_mtime>expired_before:return {'state':row['state']}
         if row['state']=='PREPARING':
             # Cancel only this operation's exporter before removing its staging.
             try:self.j.e.run(['/usr/bin/systemctl','--user','stop','gpuq-project-export-'+key+'.service'])
             except ValueError:pass
         with self.j.lock(key,source=True):
             row=self.s.read_json(file)
+            if expired_before is not None and row['state'] not in ('COMPLETE','FAILED') and file.stat().st_mtime>expired_before:return {'state':row['state']}
             # This directory contains only this operation's generated transport files.
-            if row['state']=='PREPARING':
+            if row['state'] in ('PREPARING','FAILED'):
                 ref=row['request']['source'];engine=self.j.e.projects().oci(ref.get('ownerId') or ref['userId'])
-                engine.run('rmi','--ignore','localhost/gpuq-copy:'+key)
+                try:engine.run('rmi','--ignore','localhost/gpuq-copy:'+key)
+                except ValueError:pass
             folder=Path(row['root']).parent
             if folder.exists():shutil.rmtree(self.s.private_dir(folder))
-            row['state']='COMPLETE';self.s.atomic_json(file,row)
+            if expired_before is None:row['state']='COMPLETE'
+            elif row['state'] not in ('COMPLETE','FAILED'):row.update(state='FAILED',error='复制已过期，请重新发起复制')
+            self.s.atomic_json(file,row)
         return {'state':row['state']}
+
+    def collect(self):
+        results=[];cutoff=time.time()-86400
+        for file in self.j.folder.glob('*.source.json'):
+            try:
+                row=self.s.read_json(file)
+                if not row.get('environment'):continue
+                folder=Path(row['root']).parent
+                if row['state'] in ('COMPLETE','FAILED'):
+                    if folder.exists():
+                        result=self.complete(row['id'],expired_before=cutoff)
+                        if result['state'] in ('COMPLETE','FAILED'):results.append({'id':row['id'],'kind':'copy-export',**result})
+                elif file.stat().st_mtime<=cutoff:
+                    result=self.complete(row['id'],expired_before=cutoff)
+                    if result['state']=='FAILED':results.append({'id':row['id'],'kind':'copy-export',**result})
+            except (OSError,ValueError) as error:
+                results.append({'id':file.name.removesuffix('.source.json'),'kind':'copy-export','state':'UNKNOWN','error':str(error)[:400]})
+        return results

@@ -44,6 +44,16 @@ def workspace(user):return module('local-data').root(CONFIG,'workspacesRoot')
 
 def transfers():return module('transfer-jobs').TransferJobs(sys.modules[__name__])
 
+def low_priority_scan():
+    os.setpriority(os.PRIO_PROCESS,0,19)
+    subprocess.run(['/usr/bin/ionice','-c3','-p',str(os.getpid())],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+
+def storage_collect():
+    low_priority_scan()
+    collected=module('project-purge').Trash(CONFIG).collect()+transfers().collect()
+    module('storage-usage').refresh(projects())
+    return collected
+
 def data_imports():return module('data-import').DataImports(sys.modules[__name__])
 
 def cloud_files():return module('cloud-files').CloudFiles(sys.modules[__name__])
@@ -391,7 +401,7 @@ if __name__=='__main__':
                 raise SystemExit(0)
             if action=='--transfer-peer-daemon':module('transfer-peer').serve(sys.modules[__name__],transfers());raise SystemExit(0)
             if action=='--direct-upload-daemon':module('direct-upload').serve(sys.modules[__name__]);raise SystemExit(0)
-            if action=='--storage-collect':print(json.dumps(module('project-purge').Trash(CONFIG).collect()));raise SystemExit(0)
+            if action=='--storage-collect':print(json.dumps(storage_collect()));raise SystemExit(0)
             if action=='--data-import-worker':raise SystemExit(data_imports().worker(sys.argv[2]))
             if action=='--cloud-files-worker':raise SystemExit(cloud_files().worker(sys.argv[2]))
         reader=BoundedRPCInput(sys.stdin.fileno());first=reader.line(1600000,time.monotonic()+27)
@@ -401,8 +411,6 @@ if __name__=='__main__':
             serve_terminal_stream(header,reader,write_rpc_line)
         else:
             request=json.loads(reader.rest(first,1600000))
-            if request['operation']=='datasets.list' or request['operation']=='projects.list' and request['args'].get('includeUsage') is True:
-                os.setpriority(os.PRIO_PROCESS,0,19)
-                subprocess.run(['/usr/bin/ionice','-c3','-p',str(os.getpid())],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            if request['operation']=='datasets.list':low_priority_scan()
             print(json.dumps({'ok':True,'result':process(request['operation'],request['args'])}))
     except Exception as error:print(json.dumps({'ok':False,'error':str(error)[:400]}))

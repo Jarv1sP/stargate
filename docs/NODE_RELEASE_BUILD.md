@@ -18,6 +18,9 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 
 节点状态采样使用 GPUQ 现有查询上限 1000，从返回的活跃作业中保留全部运行中、启动中和让位中作业，以及按优先级/FIFO 排序的前 100 个 `PENDING`；快照 `limit` 为 100 加非 `PENDING` 数量，门户保留该列表，避免排队作业挤掉 GPU 进程对应的任务信息。
 
+现有 `7IM` 的每小时 `--storage-collect` 服务以 nice19/idle I/O 清理暂存并统计存储，原子保存数据盘 `samples/storage-areas.json`（含 `checkedAt`）。项目用量请求只读缓存并返回 `areasCheckedAt`，缺失或损坏时保留项目列表、用量显示未知；部分可读保留大小下限。该服务与容器服务使用安装器配置的同一账户，复用已有 Podman 用户命名空间，不新增服务。
+升级后先手动触发一次配置中的 storage-collect 服务，生成首份采样；无需等到下一个小时。该步骤由节点安装者执行。
+
 ## 安装
 
 调用者负责 SSH/传输；节点本机用 Python 3.10 以管理员权限运行 `python3 deploy/node/install.py <单机包目录或tar包> --config <本机私有JSON>`。

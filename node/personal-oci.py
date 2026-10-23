@@ -11,6 +11,27 @@ def module(name):
 def need(condition,message):
     if not condition:raise ValueError(message)
 
+def engine_command(config,folder,*args):
+    return ['/usr/bin/podman','--root='+str(folder/'graph'),'--runroot='+str(folder/'run'),
+            '--tmpdir='+str(folder/'tmp'),'--storage-driver=overlay','--cgroup-manager=cgroupfs',
+            '--runtime=/usr/bin/crun','--hooks-dir='+str(folder/'empty-hooks'),
+            '--cdi-spec-dir='+str(Path(config.get('personalOci',{}).get('cdiSpec','/etc/gpuq-console/cdi/gpuq-nvidia.json')).parent),'--events-backend=file',*args]
+
+def engine_environment(folder):
+    return {'PATH':'/usr/bin:/bin','HOME':str(folder/'home'),'TMPDIR':str(folder/'tmp'),
+            'XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid()),'LANG':'C.UTF-8',
+            'REGISTRY_AUTH_FILE':str(folder/'auth.json'),
+            'CONTAINERS_REGISTRIES_CONF':str(folder/'registries.conf'),
+            'CONTAINERS_CONF':str(folder/'containers.conf')}
+
+def storage_size(config,folder):
+    # Counting existing storage must not initialize/reset an owner's runtime.
+    result=subprocess.run(engine_command(config,folder,'unshare','/usr/bin/du','-sb','--one-file-system',str(folder)),
+                          env=engine_environment(folder),capture_output=True,text=True,timeout=3600)
+    try:size=int(result.stdout.split()[0])
+    except (ValueError,IndexError):size=None
+    return {'size':size,'complete':result.returncode==0 and size is not None}
+
 def translate_control(arguments, sources=None):
     """Translate only the trusted training-control module's narrow bwrap DSL."""
     result, i = [], 0
@@ -69,11 +90,7 @@ class PersonalOCI:
                     self.s.private_dir(self.folder/name,create=True)
         finally:os.close(lock)
         self.runtime_tmp=self.folder/'run'
-        self.env={'PATH':'/usr/bin:/bin','HOME':str(self.folder/'home'),'TMPDIR':str(self.folder/'tmp'),
-                  'XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid()),'LANG':'C.UTF-8',
-                  'REGISTRY_AUTH_FILE':str(self.folder/'auth.json'),
-                  'CONTAINERS_REGISTRIES_CONF':str(self.folder/'registries.conf'),
-                  'CONTAINERS_CONF':str(self.folder/'containers.conf')}
+        self.env=engine_environment(self.folder)
         # The node's outbound proxy serves image pulls and every container (git, pip, conda).
         proxy=config.get('proxy')
         self.proxy={} if not proxy else {name:value for key,value in (('http_proxy',proxy),('https_proxy',proxy),
@@ -91,10 +108,7 @@ class PersonalOCI:
     def registry_auth(self):yield dict(self.env),None
 
     def command(self,*args):
-        return ['/usr/bin/podman','--root='+str(self.folder/'graph'),'--runroot='+str(self.folder/'run'),
-                '--tmpdir='+str(self.folder/'tmp'),'--storage-driver=overlay','--cgroup-manager=cgroupfs',
-                '--runtime=/usr/bin/crun','--hooks-dir='+str(self.folder/'empty-hooks'),
-                '--cdi-spec-dir='+str(Path(self.config.get('personalOci',{}).get('cdiSpec','/etc/gpuq-console/cdi/gpuq-nvidia.json')).parent),'--events-backend=file',*args]
+        return engine_command(self.config,self.folder,*args)
 
     def run(self,*args,timeout=30):
         self.s.private_dir(self.folder/'empty-hooks',create=True);self.s.private_dir(self.folder/'empty-cdi',create=True)
