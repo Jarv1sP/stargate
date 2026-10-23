@@ -85,6 +85,18 @@ test('cache survives Portal restart without node reads and preserves partial and
  await f.service.invoke(f.token(),'storage.refresh',{machine});assert.equal(f.calls.length,0);
 });
 
+test('project presentation and persisted storage snapshots pass through outputs and all area readings',async t=>{
+ const f=await fixture(t),outputs={size:17,complete:true,count:2};
+ const areas={outputs:{size:23,complete:true},environments:{size:null,complete:false},trash:{size:5,complete:true},temporary:{size:7,complete:true}};
+ f.read(async(_host,operation)=>operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:true,outputs}],areas,complete:true}:operation==='projects.quota'?{volumes:[]}:{datasets:[]});
+ await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
+ const before=(await f.snapshot(machine)).machines[0].projects;
+ assert.deepEqual(before.areas,areas);assert.deepEqual(before.projects[0].outputs,outputs);
+ const direct=(await f.service.invoke(f.token(),'projects.list',{machine,includeUsage:true})).result;
+ assert.deepEqual(direct.areas,areas);assert.deepEqual(direct.projects[0].outputs,outputs);
+ await f.reopen();assert.deepEqual((await f.snapshot(machine)).machines[0].projects,before);
+});
+
 test('a failed refresh retains the last readings and timestamps with an error, never invented zeros',async t=>{
  const f=await fixture(t);let now=Date.now();t.mock.method(Date,'now',()=>now);
  await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;const saved=(await f.snapshot(machine)).machines[0];

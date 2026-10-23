@@ -151,7 +151,10 @@ class TransferJobs:
         if not hmac.compare_digest(row['token'],token):raise PermissionError('请重新获取已登录的传输凭据。')
         action=args['action']
         if row.get('environment'):
-            if action=='complete':return module('project-copy').ProjectCopy(self).complete(args['id'])
+            # The source record's mtime is the last ticket/read activity, even
+            # while its exporter holds the separate source lock.
+            if action!='complete':os.utime(self.path(args['id'],'.source.json'),None)
+            if action=='complete':return module('project-copy').ProjectCopy(self).complete(args['id'],expired_before=args.get('expiredBefore'))
             row=module('project-copy').ProjectCopy(self).observe(row)
             if row['state']=='PREPARING':return {'state':'PREPARING','entries':[],'nextOffset':0}
             if row['state']=='FAILED':return {'state':'FAILED','error':row['error']}
@@ -187,28 +190,30 @@ class TransferJobs:
             return LocalPeerClient(self,row['ticket'])
         return PeerClient(self.config['transferPeers'][row['sourceMachine']],row['ticket'])
 
-    def complete_copy(self,row,peer=None):
+    def complete_copy(self,row,peer=None,*,locked=False,expired_before=None):
         own_peer=peer is None
-        with self.lock(row['id']):
+        with contextlib.nullcontext() if locked else self.lock(row['id']):
             current=self.s.read_json(self.path(row['id']));current['sourceCompletePending']=True;self.s.atomic_json(self.path(row['id']),current)
         try:
             if peer is None:peer=self.peer_client(row)
-            peer.call('complete')
+            peer.call('complete',**({'expiredBefore':expired_before} if expired_before is not None else {}))
         except Exception:pass  # Source staging cleanup never blocks a local terminal result.
         else:
-            with self.lock(row['id']):
+            with contextlib.nullcontext() if locked else self.lock(row['id']):
                 current=self.s.read_json(self.path(row['id']));current.pop('sourceCompletePending',None);self.s.atomic_json(self.path(row['id']),current)
         finally:
             if own_peer and peer is not None:peer.close()
 
-    def cleanup_copy(self,row,peer=None):
-        try:
-            module('project-copy').ProjectCopy(self).cleanup(row)
-            uploads=module('data-uploads').Uploads(self.config,row['target'].get('userId','team'))
-            for upload_key in row.get('uploadKeys',{}).values():uploads.record(upload_key).unlink(missing_ok=True)
-            with self.lock(row['id']):
-                current=self.s.read_json(self.path(row['id']));current.pop('runtime',None);self.s.atomic_json(self.path(row['id']),current)
-        finally:self.complete_copy(row,peer)
+    def cleanup_copy(self,row,peer=None,*,locked=False,expired_before=None):
+        with contextlib.nullcontext() if locked else self.lock(row['id']):
+            row=self.s.read_json(self.path(row['id']))
+            if row['state'] not in ('SUCCEEDED','FAILED','CANCELED'):return
+            try:
+                module('project-copy').ProjectCopy(self).cleanup(row)
+                uploads=module('data-uploads').Uploads(self.config,row['target'].get('userId','team'))
+                for upload_key in row.get('uploadKeys',{}).values():uploads.record(upload_key).unlink(missing_ok=True)
+                row.pop('runtime',None);self.s.atomic_json(self.path(row['id']),row)
+            finally:self.complete_copy(row,peer,locked=True,expired_before=expired_before)
 
     def finish_runtime(self,key):
         try:
@@ -234,7 +239,12 @@ class TransferJobs:
                 return self.view(row)
             row={**request,'request':request,'actor':args.get('actor',{'userId':args.get('userId')}),'id':key,'key':key,'state':'PENDING','bytes':0,'totalBytes':None,'createdAt':time.time(),'uploadKeys':{}}
             self.s.atomic_json(file,row)
-        self.launch(key);return self.status({'key':key})
+        try:self.launch(key)
+        except (ValueError,OSError) as error:
+            with self.lock(key):
+                row=self.s.read_json(file);row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(file,row)
+            if row['target'].get('environment'):self.cleanup_copy(row)
+        return self.status({'key':key})
 
     def cancel(self,args):
         key=args.get('key',args.get('id'))
@@ -262,9 +272,47 @@ class TransferJobs:
     def worker(self,key):
         row=self.s.read_json(self.path(key))
         if row['target'].get('environment') is True:
-            with module('project-copy').ProjectCopy(self).serialized(row) as available:
+            with contextlib.ExitStack() as stack:
+                try:available=stack.enter_context(module('project-copy').ProjectCopy(self).serialized(row))
+                except Exception as error:
+                    with self.lock(key):
+                        row=self.s.read_json(self.path(key))
+                        if row['state']!='CANCELED':row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(self.path(key),row)
+                    self.cleanup_copy(row);return 1
                 return self.receive_worker(key,independent=not available)
         return self.receive_worker(key)
+
+    def collect(self):
+        copy=module('project-copy').ProjectCopy(self);results=copy.collect();cutoff=time.time()-86400
+        for file in self.folder.glob('*.json'):
+            if file.name.endswith('.source.json'):continue
+            try:
+                row=self.s.read_json(file)
+                if not row.get('target',{}).get('environment'):continue
+                if row.get('sourceCompletePending'):self.complete_copy(row)
+                if row.get('runtime'):
+                    node_id=self.e.native({'id':row['id']})
+                    if node_id:
+                        if self.e.gpu('show',node_id).get('job',{}).get('state') not in ('SUCCEEDED','FAILED','CANCELED','LOST'):continue
+                    elif row['state']=='SUCCEEDED' and file.stat().st_mtime>cutoff:continue
+                terminal=row['state'] in ('SUCCEEDED','FAILED','CANCELED')
+                if not terminal and file.stat().st_mtime>cutoff:continue
+                folder=module('project-copy').runtime_folder(self.config,row['id'])
+                destination=copy.destination(row);backup=destination/'code'/'.copy-backups'/(row['id']+'.tar')
+                local=folder.exists() or backup.exists() or row.get('createdProject') and (destination/'received').exists() or row.get('runtime')
+                if terminal and not local:continue
+                with self.lock(row['id']):
+                    row=self.s.read_json(file)
+                    if row['state'] not in ('SUCCEEDED','FAILED','CANCELED') and file.stat().st_mtime>cutoff:continue
+                    active=self.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value','gpuq-transfer-'+row['id']+'.service*']).strip()
+                    if active not in ('','inactive','failed'):continue
+                    if row['state'] not in ('SUCCEEDED','FAILED','CANCELED'):
+                        row.update(state='FAILED',error='复制已过期，请重新发起复制');self.s.atomic_json(file,row)
+                    self.cleanup_copy(row,locked=True,expired_before=cutoff)
+                    results.append({'id':row['id'],'kind':'copy-receive','state':row['state']})
+            except (OSError,ValueError) as error:
+                results.append({'id':file.stem,'kind':'copy-receive','state':'UNKNOWN','error':str(error)[:400]})
+        return results
 
     def receive_worker(self,key,independent=False):
         row=self.s.read_json(self.path(key))
@@ -365,6 +413,7 @@ class TransferJobs:
         action=operation.removeprefix('transfers.')
         if action=='project.mode':return module('project-copy').ProjectCopy(self).mode(args)
         if action=='project.prepare':return self.prepare(args)
+        if action=='project.complete':return module('project-copy').ProjectCopy(self).complete(args['id'])
         if action=='project.start':return self.start(args)
         if action=='prepare':return self.prepare(args)
         if action=='start':return self.start(args)

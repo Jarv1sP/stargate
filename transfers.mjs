@@ -43,6 +43,14 @@ export async function transferCall(service,principal,operation,input,check=()=>{
     return call(args.machine,operation,{...args,id});
   }
   const view=value=>({...row,...value,id,key:id});
+  const finish=async value=>{
+    if(row.reference.environment&&['FAILED','CANCELED'].includes(value.state)){
+      row.state=value.state;row.sourceCompletePending=true;save(service,row);
+      try{await call(row.from,'transfers.project.complete',{id});delete row.sourceCompletePending;save(service,row);}
+      catch{} // The original status/cancel retries; the source's hourly collect also expires abandoned exports.
+    }
+    return view(value);
+  };
   if(row.kind!=='copy'){
     if(action==='cancel'||row.state==='CANCELING'&&action==='resume'){
       row.state='CANCELING';save(service,row);
@@ -54,18 +62,19 @@ export async function transferCall(service,principal,operation,input,check=()=>{
   }
   if(action==='status'){
     if(service.transferWrites.has(id))return view({state:'RUNNING'});
-    return view(await call(row.machine,'transfers.status',{id}));
+    return finish(await call(row.machine,'transfers.status',{id}));
   }
-  if(action==='cancel')return view(await call(row.machine,'transfers.cancel',{id}));
+  if(action==='cancel')return finish(await call(row.machine,'transfers.cancel',{id}));
   if(!['create','resume'].includes(action))fail('未知传输操作。');
   if(service.transferWrites.has(id))return service.transferWrites.get(id);
   const write=(async()=>{
     if(!fresh){
       const status=await call(row.machine,'transfers.status',{id});
-      if(terminal.has(status.state)||!['ABSENT','FAILED','PAUSED'].includes(status.state))return view(status);
+      if(terminal.has(status.state)||!['ABSENT','FAILED','PAUSED'].includes(status.state))return finish(status);
       if(['FAILED','PAUSED'].includes(status.state)){
         if(row.reference.environment)await call(row.from,'transfers.project.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine,mode:row.mode});
-        return view(await call(row.machine,'transfers.resume',{id}));
+        delete row.sourceCompletePending;save(service,row);
+        return finish(await call(row.machine,'transfers.resume',{id}));
       }
     }
     // Only one source authorization, then one target start. Both nodes dedupe
@@ -76,10 +85,10 @@ export async function transferCall(service,principal,operation,input,check=()=>{
     }
     const source=await call(row.from,row.reference.environment?'transfers.project.prepare':'transfers.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine,mode:row.mode});
     if(typeof source?.token!=='string')return view({state:source?.state||'UNKNOWN',message:'来源目录正在读取，请按原编号查询。'});
-    row.state='DISPATCHING';save(service,row);
+    row.state='DISPATCHING';delete row.sourceCompletePending;save(service,row);
     const result=await call(row.machine,row.reference.environment?'transfers.project.start':'transfers.start',{id,source:{...row.reference,userId:principal.userId},target:{...target,...(row.mode?{mode:row.mode}:{})},ticket:{id:source.id??id,token:source.token},sourceMachine:row.from});
     service.audit(principal.username,operation,id,JSON.stringify({from:row.from,machine:row.machine,reference:row.reference}));
-    return view(result);
+    return finish(result);
   })().finally(()=>service.transferWrites.delete(id));
   service.transferWrites.set(id,write);return write;
 }

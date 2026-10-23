@@ -64,6 +64,8 @@ export function installExecution(service,bridge){
     try{
       if(job.cancelRequested&&job.dispatchPending===true&&job.spec.projectCopy){
         await service.bridge(job.machine,'transfers.cancel',{id:job.id,userId:job.userId});
+        try{await service.bridge(job.sourceMachine,'transfers.project.complete',{id:job.id,userId:job.userId});}
+        catch{} // The target may never have received its ticket; source expiry also collects this export.
         await service.enqueue(()=>{job.state='CANCELED';job.finishedAt=new Date().toISOString();job.notSubmitted=true;service.save();});
         return;
       }

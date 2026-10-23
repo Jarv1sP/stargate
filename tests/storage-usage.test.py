@@ -1,5 +1,5 @@
 """Disk readings are independent of partial directory-size observations."""
-import importlib.util,os,tempfile,unittest
+import importlib.util,json,os,subprocess,tempfile,unittest,uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -120,8 +120,57 @@ class StorageUsage(unittest.TestCase):
         (ops.store.dev_paths('bob','healthy')['code']/'file').write_bytes(b'abc')
         with self.deny('unreadable'):result=ops.process('projects.list',{'userId':'alice','includeUsage':True})
         rows={row['project']:row for row in result['projects']}
-        self.assertEqual(rows['unreadable'],{'project':'unreadable','ownerId':'alice','size':None,'complete':False})
+        self.assertEqual(rows['unreadable'],{'project':'unreadable','ownerId':'alice','size':None,'complete':False,'outputs':{'size':0,'complete':True,'count':0}})
         self.assertFalse(result['complete']);self.assertGreaterEqual(rows['healthy']['size'],3)
+
+    def test_scan_accounts_for_project_outputs_orphans_environments_trash_and_copy_staging(self):
+        ops=self.ops();ops.store.create('alice','demo');ops.store.create('bob','demo')
+        root=ops.store.root;records=root/'jobs';records.mkdir()
+        for owner,actor,size in [('alice','bob',3),('bob','alice',5),(None,None,7)]:
+            key=str(uuid.uuid4());folder=root/'outputs'/key;folder.mkdir(parents=True);(folder/'out').write_bytes(b'x'*size)
+            if owner:(records/(key+'.json')).write_text(json.dumps({'ownerId':owner,'userId':actor,'project':'demo'}))
+        engines=[]
+        for owner in ('alice','bob'):(ops.store.path/'.oci'/owner/'graph').mkdir(parents=True)
+        def unshare(argv,**kwargs):
+            owner=Path(argv[-1]).name;engines.append((owner,argv,kwargs))
+            return subprocess.CompletedProcess(argv,0,str({'alice':11,'bob':13}[owner])+'\tgraph','')
+        for base in (root,ops.store.path):
+            (base/'.trash').mkdir();(base/'.trash'/'payload').write_bytes(b'xx')
+        for name in ('.copies','.copy-exports'):
+            (ops.store.path/name).mkdir();(ops.store.path/name/'payload').write_bytes(b'xxx')
+        with patch.object(ops,'oci',side_effect=AssertionError('usage must not initialize OCI')),patch('subprocess.run',unshare):
+            result=ops.process('projects.list',{'includeUsage':True})
+        self.assertEqual(result['areas'],{name:{'size':size,'complete':True} for name,size in [('outputs',15),('environments',24),('trash',4),('temporary',6)]})
+        self.assertEqual({row['ownerId']:row['outputs'] for row in result['projects']},
+                         {owner:{'size':size,'complete':True,'count':1} for owner,size in [('alice',3),('bob',5)]})
+        self.assertEqual(len(engines),2)
+        for owner,args,kwargs in engines:
+            self.assertEqual(args[-5:],['unshare','/usr/bin/du','-sb','--one-file-system',str(ops.store.path/'.oci'/owner)])
+            self.assertIn('--root='+str(ops.store.path/'.oci'/owner/'graph'),args)
+            self.assertEqual(kwargs['timeout'],3600)
+            self.assertEqual(kwargs['env']['HOME'],str(ops.store.path/'.oci'/owner/'home'))
+            self.assertEqual([path.name for path in (ops.store.path/'.oci'/owner).iterdir()],['graph'])
+
+    def test_unreadable_area_is_unknown_and_never_zero(self):
+        ops=self.ops();ops.store.create('alice','demo');key=str(uuid.uuid4())
+        jobs=ops.store.root/'jobs';jobs.mkdir();(jobs/(key+'.json')).write_text(json.dumps({'userId':'alice','project':'demo'}))
+        output=ops.store.root/'outputs'/key;output.mkdir(parents=True);(output/'hidden').mkdir()
+        (ops.store.path/'.oci'/'alice'/'graph').mkdir(parents=True)
+        with self.deny('hidden'),patch('subprocess.run',side_effect=OSError('unshare unavailable')):
+            result=ops.process('projects.list',{'includeUsage':True})
+        self.assertEqual(result['areas']['outputs'],{'size':None,'complete':False})
+        self.assertEqual(result['areas']['environments'],{'size':None,'complete':False})
+        self.assertEqual(result['projects'][0]['outputs'],{'size':None,'complete':False,'count':1})
+
+    def test_trash_on_a_separate_dataset_disk_is_not_counted_on_the_workspace_disk(self):
+        ops=self.ops();dataset=Path(self.config['datasetsRoot']);(dataset/'.trash').mkdir();(dataset/'.trash'/'data').write_bytes(b'data')
+        original=Path.stat
+        def separate(path,*args,**kwargs):
+            value=original(path,*args,**kwargs)
+            if path==dataset:value=os.stat_result([value.st_mode,value.st_ino,value.st_dev+2,value.st_nlink,value.st_uid,value.st_gid,value.st_size,value.st_atime,value.st_mtime,value.st_ctime])
+            return value
+        with patch.object(Path,'stat',separate):result=ops.process('projects.list',{'includeUsage':True})
+        self.assertEqual(result['areas']['trash'],{'size':0,'complete':True})
 
     def test_scan_processes_use_idle_io_and_nice_19_without_lowering_ordinary_reads(self):
         import json,subprocess,sys

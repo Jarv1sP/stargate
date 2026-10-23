@@ -391,7 +391,7 @@ if __name__=='__main__':
                 raise SystemExit(0)
             if action=='--transfer-peer-daemon':module('transfer-peer').serve(sys.modules[__name__],transfers());raise SystemExit(0)
             if action=='--direct-upload-daemon':module('direct-upload').serve(sys.modules[__name__]);raise SystemExit(0)
-            if action=='--storage-collect':print(json.dumps(module('project-purge').Trash(CONFIG).collect()));raise SystemExit(0)
+            if action=='--storage-collect':print(json.dumps(module('project-purge').Trash(CONFIG).collect()+transfers().collect()));raise SystemExit(0)
             if action=='--data-import-worker':raise SystemExit(data_imports().worker(sys.argv[2]))
             if action=='--cloud-files-worker':raise SystemExit(cloud_files().worker(sys.argv[2]))
         reader=BoundedRPCInput(sys.stdin.fileno());first=reader.line(1600000,time.monotonic()+27)
