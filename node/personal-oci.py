@@ -392,6 +392,8 @@ print(json.dumps(result))
                  'workspaceLock':str(self.folder/('use-'+('copy-'+spec['projectCopy'] if spec.get('projectCopy') else self.d.name(spec['project']))+'.lock')),
                  'execution':'gpuq-live-'+uuid.uuid4().hex,'flags':flags,'argv':spec['argv'],
                  'threadDefaults':getattr(self,'thread_defaults',{})}
+        if '--device' in flags:
+            request['cdiSpec']=str(self.policy.get('cdiSpec','/etc/gpuq-console/cdi/gpuq-nvidia.json'))
         if spec.get('interactive'):
             request['terminalSocket']=str(self.root/'terminals'/(spec['id']+'.sock'))
         path=self.folder/'tmp'/('live-'+uuid.uuid4().hex+'.json')
