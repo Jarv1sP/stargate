@@ -35,6 +35,7 @@ var daily = `STARGATE — 团队项目、数据集与训练
 
 gpuctl login [USERNAME] / register USERNAME / logout
 gpuctl state / use MACHINE_ID / jobs / queue
+gpuctl jobs --key UUID --json （按原提交 key 查询，包括已结束任务）
 
 gpuctl project create NAME [--repo GIT_URL]
 gpuctl project list / use NAME / status / quota
@@ -312,7 +313,8 @@ async function main() {
   } else {
     if (!session) fail9("请先登录：gpuctl login");
     const pulling=['pull','download'].includes(command);
-    const state = pulling&&options.job?(await call('state',{view:'summary',jobId:options.job})).state
+    const state = command==='jobs'&&options.key?(await call('state',{jobKey:options.key})).state
+      :pulling&&options.job?(await call('state',{view:'summary',jobId:options.job})).state
       :ownerUsername!==undefined||options.job&&!outputDelete?(await call('state',pulling?{view:'summary'}:{})).state:outputDelete?{machines:[],users:[]}:await readCLIState(call,command);
     if(ownerUsername!==undefined){const owner=state.users?.find(user=>user.username===ownerUsername);if(!owner)fail9('没有这个用户名：'+ownerUsername);targetOwnerId=owner.id;}
     if(!(command==='community'&&['announcements','ack'].includes(positionals[1])))await showCLIAnnouncements(call,state.announcements?.pending);
@@ -822,7 +824,7 @@ ${n.body}
   if (command === "jobs") {
     console.log(result.length ? [...result].slice(-50).reverse().map((j) => `${j.id}  ${j.state}${j.preempted ? "（让位中断，不会自动重跑）" : ""}
   ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${Number.isInteger(j.schedulerPriority) ? 'P'+j.schedulerPriority : ["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}
-  ${j.after?.length?'依赖：'+j.after.map(item=>`${item.name} (${item.id})`).join('、')+(j.error||j.reason?' · '+(j.error||j.reason):'')+'\n  ':''}${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}\n  ${gpuMetricsText(j.gpuMetrics)}`).join("\n") : "暂无任务。");
+  ${j.after?.length?'依赖：'+j.after.map(item=>`${item.name} (${item.id})`).join('、')+(j.error||j.reason?' · '+(j.error||j.reason):'')+'\n  ':''}${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}\n  ${gpuMetricsText(j.gpuMetrics)}`).join("\n") : options.key?"当前平台记录中未找到此 key；提交结果仍未知，请保留原 key 继续查询。":"暂无任务。");
     if (result.length > 50) console.log("显示最近 50 条；完整记录：gpuctl jobs --json");
     return;
   }
