@@ -49,7 +49,7 @@ def scan(ops,result):
     except OSError:all_outputs.append({'size':None,'complete':False});records_complete=False
     for project in result['projects']:
         rows=by_project.get((project.get('ownerId') or project.get('userId'),project['project']),[])
-        project['outputs']={**(total(rows) if records_complete else {'size':None,'complete':False}),'count':len(rows)}
+        project['outputs']={**(total(rows) if records_complete else {'size':None,'complete':False}),'count':len(rows) if records_complete else None}
     environments=[]
     try:
         for owner in (store.path/'.oci').iterdir():

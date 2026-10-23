@@ -294,7 +294,7 @@ class TransferJobs:
                     node_id=self.e.native({'id':row['id']})
                     if node_id:
                         if self.e.gpu('show',node_id).get('job',{}).get('state') not in ('SUCCEEDED','FAILED','CANCELED','LOST'):continue
-                    elif row['state']=='SUCCEEDED' and file.stat().st_mtime>cutoff:continue
+                    elif row['state']=='SUCCEEDED':continue  # Portal may still be waiting to dispatch this runtime.
                 terminal=row['state'] in ('SUCCEEDED','FAILED','CANCELED')
                 if not terminal and file.stat().st_mtime>cutoff:continue
                 folder=module('project-copy').runtime_folder(self.config,row['id'])

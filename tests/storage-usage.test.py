@@ -172,6 +172,12 @@ class StorageUsage(unittest.TestCase):
         with patch.object(Path,'stat',separate):result=ops.process('projects.list',{'includeUsage':True})
         self.assertEqual(result['areas']['trash'],{'size':0,'complete':True})
 
+    def test_unreadable_output_root_does_not_invent_zero_bytes_or_zero_jobs(self):
+        ops=self.ops();ops.store.create('alice','demo');(ops.store.root/'outputs').mkdir()
+        with self.deny('outputs'):result=ops.process('projects.list',{'includeUsage':True})
+        self.assertEqual(result['projects'][0]['outputs'],{'size':None,'complete':False,'count':None})
+        self.assertEqual(result['areas']['outputs'],{'size':None,'complete':False})
+
     def test_scan_processes_use_idle_io_and_nice_19_without_lowering_ordinary_reads(self):
         import json,subprocess,sys
         program=r'''

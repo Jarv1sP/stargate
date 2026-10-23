@@ -133,5 +133,12 @@ class CopyCollect(unittest.TestCase):
         with patch.object(t.transfers,'PeerClient',t.peer):t.target.collect()
         self.assertFalse(folder.exists());self.assertTrue((t.target_store.dev_paths('alice','demo')['code']/'train.py').exists())
 
+    def test_successful_runtime_waiting_for_portal_dispatch_is_not_expired(self):
+        t,node,job,folder=self.runtime_job();t.target.e.native=lambda job:None
+        self.age(t.target.path(t.key))
+        with patch.object(t.target,'cleanup_copy',side_effect=AssertionError('deleted a prepared job before dispatch')):
+            self.assertEqual(t.target.collect(),[])
+        self.assertTrue((folder/'project.json').exists())
+
 
 if __name__=='__main__':unittest.main()
