@@ -17,7 +17,7 @@ test('lost submit reply recovers the original owner-bound UUID with one write an
   const result=await submitJobWithReceipt(async(operation,value)=>{
     calls.push({operation,args:value});
     if(operation==='jobs.submit')throw error;
-    assert.equal(operation,'state');assert.deepEqual(value,{});return {state:{jobs:[job]},principal};
+    assert.equal(operation,'state');assert.deepEqual(value,{jobKey:key});return {state:{jobs:[job]},principal};
   },args,principal);
   assert.equal(result.result.id,id);assert.equal(result.receiptRecovered,true);
   assert.deepEqual(calls.map(row=>row.operation),['jobs.submit','state']);assert.deepEqual(args,before);
@@ -77,4 +77,25 @@ test('source CLI returns the original UUID after a dropped response without subm
   assert.equal(requests.filter(row=>row.operation==='jobs.submit').length,1);
   assert.equal(requests.filter(row=>row.operation==='state').length,1);
   assert.deepEqual(requests.find(row=>row.operation==='jobs.submit').args.argv,args.argv);
+  assert.deepEqual(requests.find(row=>row.operation==='state').args,{jobKey:key});
+});
+
+test('source CLI jobs --key queries the original key instead of the recent dashboard window',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'jobs-key-lookup-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const queries=[],server=createServer(async(req,res)=>{
+  let text='';for await(const part of req)text+=part;const call=JSON.parse(text);
+  res.setHeader('content-type','application/json');
+  if(call.operation==='community.announcements.pending'){res.end(JSON.stringify({result:{posts:[]}}));return;}
+  queries.push(call);res.end(JSON.stringify({state:{machines:[],users:[],jobs:call.args.jobKey===key?[{...job,state:'SUCCEEDED'}]:[]},principal}));
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
+ const sessionFile=join(dir,'session.json');await writeFile(sessionFile,JSON.stringify({url:'http://127.0.0.1:'+server.address().port,token:'fixture',principal}));
+ const result=await new Promise((resolve,reject)=>{
+  const child=spawn(process.execPath,[fileURLToPath(new URL('../cli.mjs',import.meta.url)),'--session-file',sessionFile,'jobs','--key',key,'--json'],{stdio:['ignore','pipe','pipe']});
+  let stdout='',stderr='';child.stdout.on('data',part=>stdout+=part);child.stderr.on('data',part=>stderr+=part);
+  child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));
+ });
+ assert.equal(result.code,0,result.stderr);assert.equal(JSON.parse(result.stdout).data[0].id,id);
+ assert.deepEqual(queries.map(({operation,args})=>({operation,args})),[{operation:'state',args:{jobKey:key}}]);
 });
