@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {projectStatusText,trainingTarget,projectDiskQuotaHTML} from '../dist/execution-ui.js';
-import {datasetRows,directoryBytes,gaugeDiskHTML} from '../dist/datasets-ui.js';
+import {datasetRows,directoryBytes,gaugeDiskHTML,storageMixHTML,projectStorageRows} from '../dist/datasets-ui.js';
 import {trashReference,trashLabel} from '../dist/trash-ui.js';
 import {uploadPersonalFile} from '../dist/personal-upload.js';
 import {resourceServerView,resourceCards} from '../dist/resources-ui.js';
@@ -65,4 +65,26 @@ test('quota labels use measured media and unknown media stays a data disk',()=>{
   assert.ok(html.includes('工作区 · '+label));assert.ok(html.includes('数据集 · '+label));
   assert.ok(projectDiskQuotaHTML({volumes:[{kind:'shared',media}]}).includes(label+' · 工作区与数据集共用'));
  }
+});
+
+test('space mix adds up to used space and never derives "other" from an unknown part',()=>{
+ const G=1024**3,disk={kind:'workspace',media:'ssd',usedBytes:1400*G,totalBytes:3500*G,availableBytes:2100*G};
+ const snapshot={projects:{complete:true,projects:[{size:437*G,complete:true}],areas:{outputs:{size:692*G,complete:true},environments:{size:208*G,complete:true},trash:{size:42*G,complete:true},temporary:{size:0,complete:true}}}};
+ const html=storageMixHTML(disk,snapshot);
+ for(const label of ['项目文件','任务输出','容器环境','回收站','传输暂存','其他'])assert.ok(html.includes(label),label);
+ assert.match(html,/data-k="other" data-fill="0\.6/);assert.doesNotMatch(html,/data-k="temporary" data-fill/);assert.doesNotMatch(html,/data-k="datasets"/);
+ const partial=storageMixHTML(disk,{projects:{...snapshot.projects,areas:{...snapshot.projects.areas,outputs:{size:600*G,complete:false}}}});
+ assert.match(partial,/至少 600 GiB/);assert.match(partial,/至多 /);
+ const unknown=storageMixHTML(disk,{projects:{complete:true,projects:[{size:437*G,complete:true}]}});
+ assert.doesNotMatch(unknown,/data-k="other" data-fill/);assert.match(unknown,/<li data-k="other" class="unk">/);assert.match(unknown,/<li data-k="outputs" class="unk">/);
+ assert.match(storageMixHTML({...disk,kind:'shared'},{...snapshot,datasets:{datasets:[{size:5*G,complete:true}]}},{datasets:true}),/数据集<span class="num">5 GiB/);
+ assert.equal(storageMixHTML({usedBytes:null,totalBytes:null},snapshot),'');
+});
+
+test('project rows count job outputs and sort by the combined footprint',()=>{
+ const G=1024**3,html=projectStorageRows([{project:'small',ownerName:'甲',size:10*G,complete:true,outputs:{size:0,complete:true,count:0}},
+  {project:'chga',ownerName:'乙',size:374*G,complete:true,outputs:{size:688*G,complete:true,count:1617}},{project:'old',size:5*G,complete:true}]);
+ assert.ok(html.indexOf('chga')<html.indexOf('small'));assert.match(html,/文件 374 GiB · 输出 688 GiB/);assert.match(html,/1,062 GiB|1062 GiB|1\.0 TiB/);
+ assert.match(html,/dr-split/);assert.doesNotMatch(html.slice(html.indexOf('small')),/dr-out/);
+ assert.match(projectStorageRows([{project:'p',size:G,complete:true,outputs:{size:null,complete:false}}]),/至少 /);
 });

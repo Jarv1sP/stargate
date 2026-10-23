@@ -11,7 +11,7 @@ const short=id=>String(id||'').replace(/^amax-/,'');
 const bytes=n=>!Number.isFinite(n)?'未知':n>=1024**4?(n/1024**4).toFixed(1)+' TiB':n>=1024**3?(n/1024**3).toLocaleString('en-US',{maximumFractionDigits:n>=100*1024**3?0:1})+' GiB':transferBytes(n);
 const when=value=>{if(!value)return '时间未知';const date=new Date(typeof value==='number'?value*1000:value);return Number.isFinite(date.getTime())?date.toLocaleDateString('zh-CN'):'时间未知';};
 const statisticsTime=value=>{const age=(Date.now()-Date.parse(value))/60000;return Number.isFinite(age)?`统计于 ${Math.max(0,Math.floor(age))} 分钟前`:'统计时间未知';};
-export const directoryBytes=row=>!Number.isFinite(row?.size)?'未知':(row.complete===false?'至少 ':'')+transferBytes(row.size);
+export const directoryBytes=row=>!Number.isFinite(row?.size)?'未知':(row.complete===false?'至少 ':'')+bytes(row.size);
 export function datasetRows(rows){return rows.map(row=>`<div class="dr-row dr-ds" data-dataset-row="${esc(row.dataset)}"><div class="dr-main"><div class="dr-t mono">${esc(row.name||row.dataset)}</div><div class="dr-s">${esc(row.ownerName||row.uploadedBy||'上传人未知')} 上传 · ${esc(when(row.modifiedAt))}</div></div><div class="dr-s dr-hide-m" data-directory-size>${directoryBytes(row)}</div><div class="dr-s dr-hide-m mono">共用 · /datasets/${esc(row.dataset)}</div><div class="dr-acts"><button type="button" class="jr-link" data-dataset-open="${esc(row.dataset)}">浏览</button><button type="button" class="jr-link" data-dataset-download="${esc(row.dataset)}">下载</button><button type="button" class="jr-link danger" data-dataset-delete="${esc(row.dataset)}">删除</button></div></div>`).join('');}
 // One disk line of a server gauge; unknown capacity stays unknown.
 export function gaugeDiskHTML(label,row,{loading=false}={}){
@@ -21,8 +21,40 @@ export function gaugeDiskHTML(label,row,{loading=false}={}){
   const low=row.availableBytes<64*1024**3,fill=Math.min(100,Math.max(0,row.usedBytes/row.totalBytes*100));
   return `<div class="dr-disk${low?' warn':''}">${label} · 可用 <span class="num">${bytes(row.availableBytes)}</span>${low?' · <span class="storage-warning">空间不足</span>':''}<div class="storage-bar"><i data-fill="${fill}"></i></div></div>`;
 }
+// Where one disk's used space goes. Parts that can't be read stay unknown;
+// "其他" is derived only when every part has a measured size.
+const MIX=[['files','项目文件'],['outputs','任务输出'],['environments','容器环境'],['datasets','数据集'],['trash','回收站'],['temporary','传输暂存'],['other','其他']];
+const partOf=(rows,complete=true)=>{const known=rows.filter(row=>Number.isFinite(row?.size));return {size:rows.length&&!known.length?null:known.reduce((sum,row)=>sum+row.size,0),complete:complete&&rows.every(row=>Number.isFinite(row?.size)&&row.complete!==false)};};
+const area=row=>Number.isFinite(row?.size)?{size:row.size,complete:row.complete!==false}:{size:null,complete:false};
+export function storageMixHTML(disk,snapshot,{datasets=false}={}){
+  if(!(Number.isFinite(disk?.usedBytes)&&Number.isFinite(disk?.totalBytes)&&disk.totalBytes>0))return '';
+  const projects=snapshot?.projects||{},areas=projects.areas||{},parts={
+    files:projects.error?area(null):partOf(projects.projects||[],projects.complete!==false),
+    outputs:area(areas.outputs),environments:area(areas.environments),
+    datasets:!datasets?null:snapshot?.datasets?.error?area(null):partOf(snapshot?.datasets?.datasets||[],snapshot?.datasets?.complete!==false),
+    trash:area(areas.trash),temporary:area(areas.temporary)};
+  const measured=Object.values(parts).filter(Boolean),sum=measured.reduce((total,row)=>total+(row.size||0),0);
+  parts.other=measured.every(row=>Number.isFinite(row.size))?{size:Math.max(0,disk.usedBytes-sum),complete:measured.every(row=>row.complete),upper:true}:area(null);
+  const rows=MIX.filter(([key])=>parts[key]),value=row=>!Number.isFinite(row.size)?'未知':(row.complete?'':row.upper?'至多 ':'至少 ')+bytes(row.size);
+  return `<div class="dr-mix-head"><strong>空间构成</strong><span>${esc(diskLabel(disk))}</span><span class="dr-flex"></span><span class="num">已用 ${bytes(disk.usedBytes)} / ${bytes(disk.totalBytes)}</span>${copyHelp('空间构成','已用空间按用途拆开，合计等于已用。数据集随列表统计，其余各项由服务器每小时统计一次。其他是盘上不归平台管理的文件，以及日志、正在上传的文件等。读不全的标至少或至多，读不到的标未知。')}</div>
+    <div class="dr-mix-bar" role="img" aria-label="${esc(rows.map(([key,label])=>label+' '+value(parts[key])).join('，'))}">${rows.filter(([key])=>parts[key].size>0).map(([key,label])=>`<i data-k="${key}" data-fill="${Math.min(100,parts[key].size/disk.totalBytes*100)}" title="${esc(label+' '+value(parts[key]))}"></i>`).join('')}</div>
+    <ul class="dr-mix-legend">${rows.map(([key,label])=>`<li data-k="${key}"${Number.isFinite(parts[key].size)?'':' class="unk"'}><b></b>${label}<span class="num">${value(parts[key])}</span></li>`).join('')}</ul>`;
+}
+// A project's footprint is its files plus its own job outputs; nodes that
+// don't report outputs yet show files alone.
+const projectTotal=row=>!Number.isFinite(row.size)?{size:null,complete:false}:!row.outputs?{size:row.size,complete:row.complete!==false}:{size:row.size+(Number.isFinite(row.outputs.size)?row.outputs.size:0),complete:row.complete!==false&&Number.isFinite(row.outputs.size)&&row.outputs.complete!==false};
+export function projectStorageRows(rows){
+  rows=rows.map(row=>({row,total:projectTotal(row)})).sort((a,b)=>(Number.isFinite(b.total.size)?b.total.size:-1)-(Number.isFinite(a.total.size)?a.total.size:-1));
+  const largest=Math.max(1,...rows.map(({total})=>Number.isFinite(total.size)?total.size:0));
+  return rows.map(({row,total})=>{
+    const outputs=Number.isFinite(row.outputs?.size)&&row.outputs.size>0,split=outputs?` · 文件 ${directoryBytes(row)} · 输出 ${directoryBytes(row.outputs)}`:'';
+    return `<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目${split}</div></div><div class="dr-hide-m">${Number.isFinite(total.size)?`<span class="jr-prog${outputs?' dr-split':''}"><b data-fill="${row.size/largest*100}"></b>${outputs?`<b class="dr-out" data-fill="${row.outputs.size/largest*100}"></b>`:''}</span>`:'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`;
+  }).join('');
+}
 // Bar widths go through CSSOM: the portal CSP blocks inline style attributes.
 const fills=root=>requestAnimationFrame(()=>{for(const bar of root.querySelectorAll('[data-fill]'))bar.style.width=bar.dataset.fill+'%';});
+// The cover slides off only after fills() has set the widths.
+const reveal=node=>requestAnimationFrame(()=>requestAnimationFrame(()=>node.classList.add('on')));
 const sheetHead=(eyebrow,title)=>`<div class="pr-sheet-head"><div><div class="page-eyebrow">${eyebrow}</div><div class="pr-sheet-title">${title}</div></div><button type="button" class="jr-x" data-sheet-close aria-label="关闭">✕</button></div>`;
 
 export function datasetsUI(store,toast){
@@ -59,8 +91,7 @@ export function datasetsUI(store,toast){
           {const place=find('[data-storage-projects]'),result=snapshot.projects;
             if(result.error)place.innerHTML='<p class="storage-empty">项目未知，请刷新重试。</p>';
             else{
-              const rows=(result.projects||[]).slice().sort((a,b)=>(Number.isFinite(b.size)?b.size:-1)-(Number.isFinite(a.size)?a.size:-1)),largest=Math.max(1,...rows.map(row=>Number.isFinite(row.size)?row.size:0));
-              place.innerHTML=rows.map(row=>`<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目</div></div><div class="dr-hide-m">${Number.isFinite(row.size)?`<span class="jr-prog"><b data-fill="${row.size/largest*100}"></b></span>`:'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${directoryBytes(row)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`).join('')||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
+              place.innerHTML=projectStorageRows(result.projects||[])||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
               if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');fills(place);
             }
           }
@@ -71,16 +102,21 @@ export function datasetsUI(store,toast){
               if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');
             }
           }
+          {const result=snapshot.quota.error?{}:snapshot.quota,volume=kind=>result.volumes?.find(row=>row.kind===kind),shared=volume('shared'),place=find('[data-storage-mix]');
+            place.classList.remove('on');place.innerHTML=storageMixHTML(shared||volume('workspace'),snapshot,{datasets:!!shared});fills(place);reveal(place);
+          }
           controls();
         }
-        node.dataset.checkedAt=snapshot.checkedAt||'';
-        find('[data-storage-caption]').textContent=snapshot.refreshing?'更新中':statisticsTime(snapshot.checkedAt);
+        // Sizes come from the node's hourly sample when it reports one, not from the portal's read time.
+        const measuredAt=snapshot.projects&&'areasCheckedAt' in snapshot.projects?snapshot.projects.areasCheckedAt:snapshot.checkedAt;
+        node.dataset.checkedAt=measuredAt||'';
+        find('[data-storage-caption]').textContent=snapshot.refreshing?'更新中':statisticsTime(measuredAt);
         if(!snapshot.refreshing)break;
         first=false;await new Promise(resolve=>setTimeout(resolve,1000));
       }while(current());
     }catch(error){if(current()){
       meter.querySelector('[data-volume="workspace"]').innerHTML=gaugeDiskHTML(diskLabel({kind:'workspace'}));meter.querySelector('[data-volume="datasets"]').hidden=false;meter.querySelector('[data-volume="datasets"]').innerHTML=gaugeDiskHTML(diskLabel({kind:'datasets'}));find('[data-ds-where]').textContent=' · /datasets';
-      for(const list of ['projects','datasets'])find(`[data-storage-${list}]`).innerHTML='<p class="storage-empty">未知，请刷新重试。</p>';
+      for(const list of ['projects','datasets'])find(`[data-storage-${list}]`).innerHTML='<p class="storage-empty">未知，请刷新重试。</p>';find('[data-storage-mix]').innerHTML='';
       node.dataset.checkedAt='';find('[data-storage-caption]').textContent='统计时间未知';toast(error.message);
     }}finally{if(current()){node.dataset.loading='false';find('[data-storage-refresh]').disabled=false;controls();}}
   }
@@ -98,9 +134,10 @@ export function datasetsUI(store,toast){
     cloud?.reset();
     section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML(diskLabel({kind:'workspace'}),null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML(diskLabel({kind:'datasets'}),null,{loading:true})}</div></button>`).join('')}</div>
       <div class="dr-cards">${machines.map(row=>`<article class="dr-machine" data-storage-machine="${esc(row.id)}" hidden>
+        <section class="dr-mix" data-storage-mix aria-label="空间构成"></section>
         <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
         <div class="dr-rows" data-storage-datasets data-dataset-list></div>
-        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','盘容量包含同盘的其他内容。项目大小统计项目目录，不分摊共享容器镜像；读不到的部分标为至少，完全读不到显示未知。删除可能影响正在运行的任务。')}</div>
+        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','项目大小是项目文件加上它在这台服务器上的任务输出。容器环境（镜像和装进容器的依赖）按服务器合计，见上方空间构成。读不全的标至少，读不到的显示未知。删除可能影响正在运行的任务。')}</div>
         <div class="dr-rows" data-storage-projects></div>
       </article>`).join('')}</div>
       <section class="dr-browse" data-dataset-files hidden><div class="dr-toolbar"><h2 class="mono" data-dataset-current></h2><span class="dr-flex"></span><button type="button" class="jr-link" id="dataset-file-up" hidden>← 上一级</button><button type="button" class="jr-link" data-browse-close>收起</button></div><div class="dr-files" data-dataset-file-list></div><button type="button" class="jr-btn ghost" id="dataset-file-more" hidden>下一页</button></section>
