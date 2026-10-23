@@ -36,7 +36,7 @@ export function storageMixHTML(disk,snapshot,{datasets=false}={}){
   const measured=Object.values(parts).filter(Boolean),sum=measured.reduce((total,row)=>total+(row.size||0),0);
   parts.other=measured.every(row=>Number.isFinite(row.size))?{size:Math.max(0,disk.usedBytes-sum),complete:measured.every(row=>row.complete),upper:true}:area(null);
   const rows=MIX.filter(([key])=>parts[key]),value=row=>!Number.isFinite(row.size)?'未知':(row.complete?'':row.upper?'至多 ':'至少 ')+bytes(row.size);
-  return `<div class="dr-mix-head"><strong>空间构成</strong><span>${esc(diskLabel(disk))}</span><span class="dr-flex"></span><span class="num">已用 ${bytes(disk.usedBytes)} / ${bytes(disk.totalBytes)}</span>${copyHelp('空间构成','已用空间按用途拆开，合计等于已用。项目文件、数据集随列表统计，其余各项由服务器每小时统计一次。其他是盘上不归平台管理的文件，以及日志、正在上传的文件等。读不全的标至少或至多，读不到的标未知。')}</div>
+  return `<div class="dr-mix-head"><strong>空间构成</strong><span>${esc(diskLabel(disk))}</span><span class="dr-flex"></span><span class="num">已用 ${bytes(disk.usedBytes)} / ${bytes(disk.totalBytes)}</span>${copyHelp('空间构成','已用空间按用途拆开，合计等于已用。数据集随列表统计，其余各项由服务器每小时统计一次。其他是盘上不归平台管理的文件，以及日志、正在上传的文件等。读不全的标至少或至多，读不到的标未知。')}</div>
     <div class="dr-mix-bar" role="img" aria-label="${esc(rows.map(([key,label])=>label+' '+value(parts[key])).join('，'))}">${rows.filter(([key])=>parts[key].size>0).map(([key,label])=>`<i data-k="${key}" data-fill="${Math.min(100,parts[key].size/disk.totalBytes*100)}" title="${esc(label+' '+value(parts[key]))}"></i>`).join('')}</div>
     <ul class="dr-mix-legend">${rows.map(([key,label])=>`<li data-k="${key}"${Number.isFinite(parts[key].size)?'':' class="unk"'}><b></b>${label}<span class="num">${value(parts[key])}</span></li>`).join('')}</ul>`;
 }
@@ -107,8 +107,10 @@ export function datasetsUI(store,toast){
           }
           controls();
         }
-        node.dataset.checkedAt=snapshot.checkedAt||'';
-        find('[data-storage-caption]').textContent=snapshot.refreshing?'更新中':statisticsTime(snapshot.checkedAt);
+        // Sizes come from the node's hourly sample when it reports one, not from the portal's read time.
+        const measuredAt=snapshot.projects&&'areasCheckedAt' in snapshot.projects?snapshot.projects.areasCheckedAt:snapshot.checkedAt;
+        node.dataset.checkedAt=measuredAt||'';
+        find('[data-storage-caption]').textContent=snapshot.refreshing?'更新中':statisticsTime(measuredAt);
         if(!snapshot.refreshing)break;
         first=false;await new Promise(resolve=>setTimeout(resolve,1000));
       }while(current());
