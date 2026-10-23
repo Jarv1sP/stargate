@@ -216,6 +216,23 @@ class StorageUsage(unittest.TestCase):
         result=ops.process('projects.list',{'includeUsage':True})
         self.assertEqual(result['areasCheckedAt'],new['checkedAt']);self.assertEqual(result['projects'][0]['size'],new['projects'][0]['size'])
 
+    def test_workspaces_state_outputs_and_sample_use_independently_configured_roots(self):
+        old_root=Path(self.config['root'])
+        self.config.update(workspacesRoot=str(self.base/'projects'),root=str(self.base/'node-state'/'records'))
+        for name in ('root','workspacesRoot'):Path(self.config[name]).mkdir(parents=True,mode=0o700)
+        ops=self.ops();ops.store.create('alice','demo');key=str(uuid.uuid4())
+        jobs=ops.store.root/'jobs';jobs.mkdir();(jobs/(key+'.json')).write_text(json.dumps({'ownerId':'alice','project':'demo'}))
+        output=ops.store.root/'outputs'/key;output.mkdir(parents=True);(output/'result').write_bytes(b'outputs')
+        export=ops.store.path/'.copy-exports';export.mkdir();(export/'archive').write_bytes(b'tmp')
+        self.refresh(ops)
+        with patch('os.scandir',side_effect=AssertionError('cache query scanned the configured roots')):
+            result=ops.process('projects.list',{'includeUsage':True})
+        self.assertEqual(result['areas']['outputs'],{'size':7,'complete':True})
+        self.assertEqual(result['areas']['temporary'],{'size':3,'complete':True})
+        self.assertEqual(result['projects'][0]['outputs'],{'size':7,'complete':True,'count':1})
+        self.assertTrue((ops.store.root/'samples'/'storage-areas.json').is_file())
+        self.assertFalse((old_root/'samples'/'storage-areas.json').exists())
+
     def test_partial_du_output_and_readable_users_survive_other_user_errors(self):
         ops=self.ops()
         for owner in ('alice','bob','carol'):(ops.store.path/'.oci'/owner/'graph').mkdir(parents=True)

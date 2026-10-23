@@ -86,6 +86,29 @@ class CopyCollect(unittest.TestCase):
         self.assertNotIn('sourceCompletePending',t.target.s.read_json(t.target.path(t.key)))
         self.assertEqual(t.source.s.read_json(t.source.path(t.key,'.source.json'))['state'],'COMPLETE')
 
+    def test_successful_receiver_leftovers_are_removed_without_changing_the_copied_project(self):
+        t=self.transport(interrupt=False);self.start(t)
+        with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(t.target.worker(t.key),0)
+        row=t.target.s.read_json(t.target.path(t.key));self.assertEqual(row['state'],'SUCCEEDED')
+        code=t.target_store.dev_paths('alice','demo')['code']/'train.py';original=code.read_bytes()
+        folder=t.transfers.module('project-copy').ProjectCopy(t.target).target(row)
+        received=folder/'received';received.mkdir(mode=0o700);(received/'leftover.tar').write_bytes(b'leftover bytes')
+        with patch.object(t.transfers,'PeerClient',t.peer):result=t.target.collect()
+        self.assertEqual(result[0]['state'],'SUCCEEDED',result);self.assertFalse(folder.exists())
+        self.assertEqual(t.target.s.read_json(t.target.path(t.key))['state'],'SUCCEEDED');self.assertEqual(code.read_bytes(),original)
+
+    def test_stale_running_receiver_without_a_worker_expires_and_removes_both_ends(self):
+        t=self.transport();self.start(t)
+        with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(t.target.worker(t.key),1)
+        file=t.target.path(t.key);row=t.target.s.read_json(file);self.assertGreater(row['bytes'],0)
+        row['state']='RUNNING';t.target.s.atomic_json(file,row);self.age(file);self.age(t.source.path(t.key,'.source.json'))
+        folder=Path(t.target.config['workspacesRoot'])/'.copies'/t.key;self.assertTrue(folder.exists())
+        with patch.object(t.transfers,'PeerClient',t.peer):result=t.target.collect()
+        self.assertEqual(result[0]['state'],'FAILED');self.assertFalse(folder.exists())
+        self.assertEqual(t.target.s.read_json(file)['error'],'复制已过期，请重新发起复制')
+        source=t.source.s.read_json(t.source.path(t.key,'.source.json'))
+        self.assertEqual(source['state'],'FAILED');self.assertFalse(Path(source['root']).parent.exists())
+
     def test_paused_receiver_keeps_offsets_until_it_is_unread_for_24_hours(self):
         t=self.transport();self.start(t)
         with patch.object(t.transfers,'PeerClient',t.peer):self.assertEqual(t.target.worker(t.key),1)
