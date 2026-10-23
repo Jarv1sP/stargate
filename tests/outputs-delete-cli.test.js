@@ -7,9 +7,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const job='11111111-1111-4111-8111-111111111111';
-async function fixture(t,{incomplete=false,blocked=false}={}){
- const folder=await mkdtemp(join(tmpdir(),'outputs-delete-cli-')),session=join(folder,'session'),calls=[];
- const server=createServer(async(req,res)=>{try{let raw='';for await(const chunk of req)raw+=chunk;const {operation,args}=JSON.parse(raw);if(operation==='community.announcements.pending'){assert.deepEqual(args,{});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({result:{posts:[]}}));return;}calls.push({operation,args});res.setHeader('Content-Type','application/json');
+async function fixture(t,{incomplete=false,blocked=false,role='member'}={}){
+ const folder=await mkdtemp(join(tmpdir(),'outputs-delete-cli-')),session=join(folder,'session'),calls=[],allCalls=[];
+ const server=createServer(async(req,res)=>{try{let raw='';for await(const chunk of req)raw+=chunk;const {operation,args}=JSON.parse(raw);allCalls.push({operation,args});if(operation==='community.announcements.pending'){assert.deepEqual(args,{});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({result:{posts:[]}}));return;}calls.push({operation,args});res.setHeader('Content-Type','application/json');
  if(operation==='state')return res.end(JSON.stringify({state:{demo:false,gpuqConnected:true,machines:[],users:[],jobs:[]}}));
  assert.equal(operation,'outputs.delete');
  const result={state:'TRASHED',retainUntil:1800000000,protocol:'outputs-delete-v1',jobId:job,...args,files:2,bytes:123,freedBytes:4096,sharedBytes:0};
@@ -17,10 +17,10 @@ async function fixture(t,{incomplete=false,blocked=false}={}){
  res.end(JSON.stringify({result}));
  }catch(error){res.statusCode=400;res.end(JSON.stringify({error:error.message}));}});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const url='http://127.0.0.1:'+server.address().port;
- await writeFile(session,JSON.stringify({url,token:'test-only',principal:{userId:'demo-user-3',username:'fixture',role:'member'}}),{mode:0o600});
+ await writeFile(session,JSON.stringify({url,token:'test-only',principal:{userId:'demo-user-3',username:'fixture',role}}),{mode:0o600});
  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await rm(folder,{recursive:true,force:true});});
  const run=args=>new Promise((resolve,reject)=>{const child=spawn(process.execPath,[process.env.OUTPUTS_DELETE_TEST_CLI||fileURLToPath(new URL('../cli.mjs',import.meta.url)),'--url',url,'--session-file',session,...args],{stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));});
- return {run,calls};
+ return {run,calls,allCalls};
 }
 test('files rm uses original job and relative path, with no selected project or machine',async t=>{
  const f=await fixture(t),result=await f.run(['files','rm','checkpoints/model.pt','--job',job,'--dry-run','--json']);assert.equal(result.code,0,result.stderr);
@@ -44,4 +44,25 @@ test('failed output deletion reports the error and original key with no replay o
 test('blocked dry-run exits nonzero, prints the reason and never deletes',async t=>{
  const f=await fixture(t,{blocked:true}),result=await f.run(['outputs','delete','--job',job,'--dry-run']);
  assert.equal(result.code,1);assert.match(result.stderr,/INCOMPLETE/);assert.doesNotMatch(result.stdout,/已删除|将删除/);assert.equal(f.calls.filter(row=>row.operation==='outputs.delete').length,1);assert.equal(f.calls.at(-1).args.dryRun,true);
+});
+test('CLI dry-run stops unsupported commands locally and leaves training arguments unchanged',async t=>{
+ const f=await fixture(t,{role:'admin'});
+ for(const args of [
+  ['project','delete','fixture','--machine','node-1'],
+  ['project','trash','purge',job,'--kind','project','--machine','node-1'],
+  ['project','trash','empty','--machine','node-1'],
+  ['data','delete','fixture','--machine','node-1'],
+  ['cancel',job],
+  ['run','--machine','node-1','--project','fixture','-g','1','--','/bin/true']
+ ]){
+  const index=args.indexOf('--'),command=index<0?[...args,'--dry-run','--json']:[...args.slice(0,index),'--dry-run','--json',...args.slice(index)];
+  const result=await f.run(command);
+  assert.equal(result.code,1,result.stdout);
+  assert.deepEqual(f.allCalls,[],args.join(' ')+' reached the API despite --dry-run');
+  assert.match(JSON.parse(result.stderr).error,/--dry-run.*files rm.*outputs delete/);
+ }
+ // After -- the flag belongs to the training program, not to gpuctl.
+ await f.run(['run','--machine','node-1','--project','fixture','--','python','train.py','--dry-run']);
+ const submits=f.calls.filter(row=>row.operation==='jobs.submit');
+ assert.equal(submits.length,1);assert.deepEqual(submits[0].args.argv,['python','train.py','--dry-run']);
 });

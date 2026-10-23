@@ -69,7 +69,7 @@ gpuctl logs JOB / watch JOB / diagnostics JOB / cancel JOB
 gpuctl logs JOB --output ./job.log （完整日志，断线后原命令续传）
 gpuctl priority JOB P0|P1|P2|P3|P4 （P4 最优先，P0 最低） / completion JOB / reconcile-resources JOB
 gpuctl note TEXT --job JOB / notes / notify JOB on|off|status
-gpuctl files rm PATH --job JOB [--recursive] / outputs delete --job JOB
+gpuctl files rm PATH --job JOB [--recursive] [--dry-run] / outputs delete --job JOB [--dry-run]
 
 gpuctl data list / files DATASET [PATH]
 gpuctl data upload LOCAL_DIR --name DATASET [--key UUID]
@@ -217,6 +217,7 @@ async function main() {
   if(options.sync&&positionals[0]!=='run'||options['sync-dir']!==undefined&&!options.sync)fail9('--sync 仅用于 run；--sync-dir 配合 run --sync。');
   const transferCopy=positionals[0]==='transfer'&&positionals[1]==='copy';
   const outputDelete=positionals[0]==='files'&&positionals[1]==='rm'||positionals[0]==='outputs'&&positionals[1]==='delete';
+  if(options['dry-run']&&!outputDelete)fail9('--dry-run 仅用于 files rm 和 outputs delete；此命令不支持预览。');
   if(outputDelete&&(!options.job||positionals.length!==(positionals[0]==='files'?3:2)))fail9('Usage: files rm PATH --job JOB [--recursive] | outputs delete --job JOB');
   if(outputDelete){if(positionals[0]==='files')dataPath(positionals[2]);if(options.project!==undefined)fail9('输出使用 --job 定位，请勿同时指定 --project。');}
   if(options.limit!==undefined&&(!Number.isSafeInteger(Number(options.limit))||Number(options.limit)<1||Number(options.limit)>1000))fail9('--limit 使用 1–1000 的整数。');
