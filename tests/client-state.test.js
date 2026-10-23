@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
@@ -39,18 +39,20 @@ test('push-status and upload-status finish a per-file scan that crosses one minu
  const local=await mkdtemp(join(dir,'files-')),clock=join(dir,'clock'),preload=join(dir,'clock.mjs');
  await writeFile(join(local,'a.txt'),'a');await writeFile(join(local,'b.txt'),'b');
  await writeFile(preload,"import {readFileSync} from 'node:fs';globalThis.performance.now=()=>Number(readFileSync("+JSON.stringify(clock)+",'utf8'));\n");
- const operations=[];
+ const operations=[],keys=[];
  const server=createServer(async(req,res)=>{
   let raw='';for await(const part of req)raw+=part;const body=JSON.parse(raw);operations.push(body.operation);
-  if(body.operation==='data.upload.status')await writeFile(clock,'70000');
+  if(body.operation==='data.upload.status'){keys.push(body.args.key);await writeFile(clock,'70000');}
   res.setHeader('content-type','application/json');
   res.end(JSON.stringify({result:body.operation==='community.announcements.pending'?{posts:[]}:{state:'COMPLETE',offset:1,totalSize:1}}));
  });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  t.after(()=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));});
  const url='http://127.0.0.1:'+server.address().port,session=join(dir,'session.json');
  await writeFile(session,JSON.stringify({url,token:'fixture-token',principal:{userId:'fixture'},machine:'gpu-0',projectsByMachine:{'gpu-0':'fixture'}}));
+ const originalKeys={'a.txt':'22222222-2222-4222-8222-222222222222','b.txt':'33333333-3333-4333-8333-333333333333'};
+ await mkdir(session+'.uploads');await writeFile(join(session+'.uploads','11111111-1111-4111-8111-111111111111.json'),JSON.stringify(originalKeys));
  for(const command of ['push-status','upload-status']){
-  operations.length=0;await writeFile(clock,'0');
+  operations.length=0;keys.length=0;await writeFile(clock,'0');
   const argv=[command,...(command==='upload-status'?['gpu-0']:[]),local,'.','--key','11111111-1111-4111-8111-111111111111'];
   const result=await new Promise((resolve,reject)=>{
    const child=spawn(process.execPath,['--import',preload,fileURLToPath(new URL('../cli.mjs',import.meta.url)),...argv,'--url',url,'--session-file',session,'--json'],{stdio:['ignore','pipe','pipe']});
@@ -59,5 +61,6 @@ test('push-status and upload-status finish a per-file scan that crosses one minu
   });
   assert.equal(result.code,0,result.err+result.out);assert.equal(JSON.parse(result.out).data.files.length,2);
   assert.deepEqual(operations,['community.announcements.pending','data.upload.status','data.upload.status']);
+  assert.deepEqual(keys,Object.values(originalKeys));
  }
 });

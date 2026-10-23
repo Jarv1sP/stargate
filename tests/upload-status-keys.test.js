@@ -53,7 +53,15 @@ test('an actual directory upload still saves child keys for later read-only stat
  await uploadLocalTree(f.call,{...f.options,inspectOnly:true});
  assert.deepEqual(f.requests.map(row=>row.key),writes.map(row=>row.key));
 });
-test('CLI push-status with a missing directory journal does not ask about invented upload IDs',async t=>{
+test('status requires an original parent key while new uploads can still generate one',async t=>{
+ const f=await fixture(t);
+ await assert.rejects(uploadLocalTree(f.call,{...f.options,key:undefined,inspectOnly:true}),/--key.*UUID/);
+ assert.deepEqual(f.requests,[]);await assert.rejects(stat(f.stateDirectory),{code:'ENOENT'});
+ const result=await uploadLocalTree(f.call,{...f.options,key:undefined,via:'relay',uploadFile:async(_call,args)=>({key:args.key,state:'COMPLETE',offset:7,totalSize:7})});
+ assert.equal(result.state,'COMPLETE');assert.match(result.key,/^[a-f0-9-]{36}$/);
+ assert.equal(JSON.parse(await readFile(join(f.stateDirectory,result.key+'.json'),'utf8'))['fixture.txt'],result.files[0].key);
+});
+test('CLI push-status requires the original key and does not invent directory upload IDs',async t=>{
  const f=await fixture(t),calls=[],server=createServer(async(req,res)=>{
   try{
    let raw='';for await(const chunk of req)raw+=chunk;const {operation,args}=JSON.parse(raw);calls.push(operation);
@@ -68,10 +76,13 @@ test('CLI push-status with a missing directory journal does not ask about invent
  const url='http://127.0.0.1:'+server.address().port,session=join(f.root,'session.json');
  await writeFile(session,JSON.stringify({url,token:'loopback-only',principal:{userId:'fixture',username:'fixture',role:'member'}}));
  const cli=process.env.UPLOAD_STATUS_TEST_CLI||fileURLToPath(new URL('../cli.mjs',import.meta.url));
- const result=await new Promise((resolve,reject)=>{
-  const process_=spawn(process.execPath,[cli,'--url',url,'--session-file',session,'push-status',f.source,'.','--key',parent,'--machine','fixture-node','--project','fixture','--json'],{stdio:['ignore','pipe','pipe']});
+ const run=withKey=>new Promise((resolve,reject)=>{
+  const process_=spawn(process.execPath,[cli,'--url',url,'--session-file',session,'push-status',f.source,'.',...(withKey?['--key',parent]:[]),'--machine','fixture-node','--project','fixture','--json'],{stdio:['ignore','pipe','pipe']});
   let stdout='',stderr='';process_.stdout.on('data',chunk=>stdout+=chunk);process_.stderr.on('data',chunk=>stderr+=chunk);process_.on('error',reject);process_.on('close',code=>resolve({code,stdout,stderr}));
  });
+ const missing=await run(false);assert.equal(missing.code,1);assert.match(missing.stderr,/--key.*UUID/);
+ assert.equal(calls.includes('data.upload.status'),false);calls.length=0;
+ const result=await run(true);
  assert.equal(result.code,0,result.stderr);
  assert.equal(calls.includes('data.upload.status'),false);assert.ok(calls.every(op=>['state','community.announcements.pending'].includes(op)));
  const value=JSON.parse(result.stdout).data;assert.equal(value.key,parent);assert.equal(value.files[0].state,'UNKNOWN');assert.equal(value.files[0].key,null);

@@ -51,8 +51,9 @@ export async function uploadLocalFile(call,{machine,context,path,local,key=rando
     return {...result,machine,path,bytes:size};
   }finally{await file.close();await transport?.close();}
 }
-export async function uploadLocalTree(call,{machine,context,local,remote='.',key=randomUUID(),stateDirectory,transferId,via,probe,inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
-  if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key))throw Error('上传编号必须是完整 UUID。');
+export async function uploadLocalTree(call,{machine,context,local,remote='.',key,stateDirectory,transferId,via,probe,inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
+  if(key===undefined&&!inspectOnly)key=randomUUID();
+  if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key||''))throw Error(inspectOnly?'查询原上传请提供 --key UUID。':'上传编号必须是完整 UUID。');
   const keyFile=stateDirectory?join(stateDirectory,key+'.json'):null;let keys={};
   if(keyFile)try{keys=JSON.parse(await readFile(keyFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
   const save=async()=>{if(!keyFile)return;await mkdir(dirname(keyFile),{recursive:true,mode:0o700});const temporary=keyFile+'.'+randomUUID()+'.new';await writeFile(temporary,JSON.stringify(keys),{mode:0o600});await rename(temporary,keyFile);};
