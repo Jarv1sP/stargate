@@ -1,6 +1,8 @@
-"""Disk-area accounting for the existing low-priority project usage scan."""
+"""Hourly disk accounting; project requests only read the atomic sample."""
 import importlib.util,os,stat,subprocess
+from datetime import datetime,timezone
 from pathlib import Path
+AREAS=('outputs','environments','trash','temporary')
 
 
 def module(name):
@@ -9,16 +11,41 @@ def module(name):
 
 
 def total(rows):
-    rows=list(rows);complete=all(row['complete'] for row in rows)
-    return {'size':sum(row['size'] for row in rows) if complete else None,'complete':complete}
+    rows=list(rows);sizes=[row['size'] for row in rows if row['size'] is not None]
+    return {'size':sum(sizes) if sizes or not rows else None,'complete':all(row['complete'] for row in rows)}
 
 
 def measured(data,path):
     try:path.lstat()
     except FileNotFoundError:return {'size':0,'complete':True}
     except OSError:return {'size':None,'complete':False}
-    row=data.size(path,partial=True)
-    return row if row['complete'] else {'size':None,'complete':False}
+    return data.size(path,partial=True)
+
+
+def cached(ops,result):
+    try:
+        saved=module('project-store').read_json(ops.store.root/'samples'/'storage-areas.json')
+        areas={name:dict(saved['areas'][name]) for name in AREAS};checked=saved['checkedAt']
+        projects={(row['ownerId'],row['project']):row for row in saved['projects']}
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError):
+        areas={name:{'size':None,'complete':False} for name in AREAS};checked=None;projects={}
+    for row in result['projects']:
+        sample=projects.get((row.get('ownerId') or row.get('userId'),row['project']),{})
+        row.update(size=sample.get('size'),complete=sample.get('complete',False),
+                   outputs=sample.get('outputs',{'size':None,'complete':False,'count':None}))
+    return {**result,'areas':areas,'areasCheckedAt':checked}
+
+
+def refresh(ops):
+    result=ops.store.list(include_usage=True);s=module('project-store');data=s.data()
+    for row in result['projects']:
+        row.update(data.size(ops.store.path/(row.get('ownerId') or row['userId'])/row['project'],partial=True))
+    result=scan(ops,result)
+    saved={'checkedAt':datetime.now(timezone.utc).isoformat(),'areas':result['areas'],
+           'projects':[{key:row.get(key) for key in ('ownerId','project','size','complete','outputs')} for row in result['projects']]}
+    folder=s.private_dir(ops.store.root/'samples',create=True)
+    s.atomic_json(folder/'storage-areas.json',saved)
+    return saved
 
 
 def scan(ops,result):
@@ -49,7 +76,11 @@ def scan(ops,result):
     except OSError:all_outputs.append({'size':None,'complete':False});records_complete=False
     for project in result['projects']:
         rows=by_project.get((project.get('ownerId') or project.get('userId'),project['project']),[])
-        project['outputs']={**(total(rows) if records_complete else {'size':None,'complete':False}),'count':len(rows) if records_complete else None}
+        usage=total(rows)
+        if not records_complete:
+            usage['complete']=False
+            if not rows:usage['size']=None
+        project['outputs']={**usage,'count':len(rows) if records_complete or rows else None}
     environments=[]
     try:
         for owner in (store.path/'.oci').iterdir():
@@ -57,8 +88,7 @@ def scan(ops,result):
                 if owner.is_symlink() or not owner.is_dir():continue
                 try:(owner/'graph').stat()
                 except FileNotFoundError:continue
-                size=module('personal-oci').storage_size(ops.config,owner)
-                environments.append({'size':size,'complete':True})
+                environments.append(module('personal-oci').storage_size(ops.config,owner))
             except (OSError,ValueError,IndexError,subprocess.TimeoutExpired):environments.append({'size':None,'complete':False})
     except FileNotFoundError:pass
     except OSError:environments.append({'size':None,'complete':False})

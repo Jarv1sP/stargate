@@ -28,8 +28,9 @@ def storage_size(config,folder):
     # Counting existing storage must not initialize/reset an owner's runtime.
     result=subprocess.run(engine_command(config,folder,'unshare','/usr/bin/du','-sb','--one-file-system',str(folder)),
                           env=engine_environment(folder),capture_output=True,text=True,timeout=3600)
-    if result.returncode:raise ValueError('容器存储用量暂时读不到。')
-    return int(result.stdout.split()[0])
+    try:size=int(result.stdout.split()[0])
+    except (ValueError,IndexError):size=None
+    return {'size':size,'complete':result.returncode==0 and size is not None}
 
 def translate_control(arguments, sources=None):
     """Translate only the trusted training-control module's narrow bwrap DSL."""

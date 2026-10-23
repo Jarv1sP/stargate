@@ -200,7 +200,6 @@ class ProjectStore:
                     complete=False
                     if not include_usage:continue
                     row={'project':folder.name,'ownerId':owner.name}
-                if include_usage:row.update(data().size(folder,partial=True))
                 result.append(row)
         return {'projects':result,'complete':complete} if include_usage else result
 

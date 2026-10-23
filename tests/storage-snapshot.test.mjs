@@ -86,14 +86,16 @@ test('cache survives Portal restart without node reads and preserves partial and
 });
 
 test('project presentation and persisted storage snapshots pass through outputs and all area readings',async t=>{
- const f=await fixture(t),outputs={size:17,complete:true,count:2};
+ const f=await fixture(t),outputs={size:17,complete:false,count:2},areasCheckedAt='2026-10-20T00:00:00.000Z';
  const areas={outputs:{size:23,complete:true},environments:{size:null,complete:false},trash:{size:5,complete:true},temporary:{size:7,complete:true}};
- f.read(async(_host,operation)=>operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:true,outputs}],areas,complete:true}:operation==='projects.quota'?{volumes:[]}:{datasets:[]});
+ f.read(async(_host,operation)=>operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:true,outputs}],areas,areasCheckedAt,complete:true}:operation==='projects.quota'?{volumes:[]}:{datasets:[]});
  await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
  const before=(await f.snapshot(machine)).machines[0].projects;
  assert.deepEqual(before.areas,areas);assert.deepEqual(before.projects[0].outputs,outputs);
+ assert.equal(before.areasCheckedAt,areasCheckedAt);
  const direct=(await f.service.invoke(f.token(),'projects.list',{machine,includeUsage:true})).result;
  assert.deepEqual(direct.areas,areas);assert.deepEqual(direct.projects[0].outputs,outputs);
+ assert.equal(direct.areasCheckedAt,areasCheckedAt);
  await f.reopen();assert.deepEqual((await f.snapshot(machine)).machines[0].projects,before);
 });
 

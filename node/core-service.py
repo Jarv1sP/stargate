@@ -27,7 +27,7 @@ def main(argv):
     node=load('stargate_personal_http_node','node-executor.py')
     node.platform_root_check()
     if argv[3]=='--storage-collect':
-        return load('stargate_trash_gc','project-purge.py').Trash(node.CONFIG).collect()
+        return node.storage_collect()
     if argv[3]=='--transfer-peer-daemon':
         peer=load('stargate_transfer_peer','transfer-peer.py')
         return peer.serve(node,node.transfers())
