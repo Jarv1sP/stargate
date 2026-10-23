@@ -27,6 +27,34 @@ def thread_environment(image_env, defaults):
     return environment
 
 
+def run_cdi_hook(lock, command):
+    fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    try:
+        fcntl.flock(fd,fcntl.LOCK_EX)
+        return subprocess.call(command)
+    finally:os.close(fd)
+
+
+@contextlib.contextmanager
+def cdi_hooks(request, engine, folder):
+    source=request.get('cdiSpec')
+    if source is None:
+        yield engine;return
+    spec=json.loads(Path(source).read_text())
+    lock=Path(request['workspaceLock']).with_suffix('.cdi.lock')
+    for edits in [spec.get('containerEdits',{}),*[device.get('containerEdits',{}) for device in spec.get('devices',[])]]:
+        for hook in edits.get('hooks',[]):
+            if hook.get('path')=='/usr/bin/nvidia-cdi-hook':
+                command=[hook['path'],*hook.get('args',[])[1:]]
+                hook['path']=sys.executable
+                hook['args']=[sys.executable,'-I','-B',str(Path(__file__).resolve()),'--cdi-hook',str(lock),*command]
+    # NVIDIA hooks update the shared rootfs (including ldconfig's cache~ file).
+    # Serialize each hook, not the training or its shared workspace lease.
+    with tempfile.TemporaryDirectory(prefix='cdi-',dir=folder) as directory:
+        (Path(directory)/'nvidia.json').write_text(json.dumps(spec))
+        yield [value for value in engine if not value.startswith('--cdi-spec-dir=')]+['--cdi-spec-dir='+directory]
+
+
 @contextlib.contextmanager
 def output_mount(flags, folder):
     index=next((i for i,value in enumerate(flags) if value.endswith(':/outputs:rw')),None)
@@ -111,7 +139,7 @@ def execute_locked(request):
         for key,value in thread_environment(rows[0].get('Config',{}).get('Env',[]) or [],request.get('threadDefaults',{})).items():
             environment+=['--env',key+'='+value]
         flags=[value for value in request['flags'] if value!='--pull=never']
-        with output_mount(flags,graph.parent/'tmp') as flags:
+        with cdi_hooks(request,prefix,graph.parent/'tmp') as prefix,output_mount(flags,graph.parent/'tmp') as flags:
             command=[*prefix,'run','--rm','--name',request['execution'],
                 *environment,*flags,'--rootfs','--entrypoint',request['argv'][0],str(root),*request['argv'][1:]]
             if request.get('terminalSocket'):
@@ -141,5 +169,7 @@ def main(path):
 
 
 if __name__=='__main__':
+    if len(sys.argv)>=4 and sys.argv[1]=='--cdi-hook':
+        raise SystemExit(run_cdi_hook(sys.argv[2],sys.argv[3:]))
     if len(sys.argv)!=2:raise SystemExit('Expected a trusted workspace execution request')
     raise SystemExit(main(sys.argv[1]))
