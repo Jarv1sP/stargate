@@ -7,14 +7,14 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const job='11111111-1111-4111-8111-111111111111';
-async function fixture(t,{incomplete=false,blocked=false,role='member'}={}){
+async function fixture(t,{incomplete=false,blocked=false,role='member',previewSize=123}={}){
  const folder=await mkdtemp(join(tmpdir(),'outputs-delete-cli-')),session=join(folder,'session'),calls=[],allCalls=[];
  const server=createServer(async(req,res)=>{try{let raw='';for await(const chunk of req)raw+=chunk;const {operation,args}=JSON.parse(raw);allCalls.push({operation,args});if(operation==='community.announcements.pending'){assert.deepEqual(args,{});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({result:{posts:[]}}));return;}calls.push({operation,args});res.setHeader('Content-Type','application/json');
  if(operation==='state')return res.end(JSON.stringify({state:{demo:false,gpuqConnected:true,machines:[],users:[],jobs:[]}}));
  assert.equal(operation,'outputs.delete');
  const result={state:'TRASHED',retainUntil:1800000000,protocol:'outputs-delete-v1',jobId:job,...args,files:2,bytes:123,freedBytes:4096,sharedBytes:0};
  if(incomplete||blocked){res.statusCode=409;return res.end(JSON.stringify({code:'OUTPUTS_DELETE_INCOMPLETE',error:'未全部删除：已删除 2 个文件，剩余数量未确认。INCOMPLETE',receipt:{...result,state:blocked?'BLOCKED':'INCOMPLETE',complete:false,remainingFiles:null,remainingBytes:null,remaining:['checkpoints/readonly.bin'],remainingTruncated:false,blocked:[{path:'checkpoints',reason:'permission denied'}]}}));}
- res.end(JSON.stringify({result}));
+ res.end(JSON.stringify({result:args.dryRun?{path:args.path,size:previewSize,dryRun:true,state:'PREVIEW'}:result}));
  }catch(error){res.statusCode=400;res.end(JSON.stringify({error:error.message}));}});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const url='http://127.0.0.1:'+server.address().port;
  await writeFile(session,JSON.stringify({url,token:'test-only',principal:{userId:'demo-user-3',username:'fixture',role}}),{mode:0o600});
@@ -24,12 +24,12 @@ async function fixture(t,{incomplete=false,blocked=false,role='member'}={}){
 }
 test('files rm uses original job and relative path, with no selected project or machine',async t=>{
  const f=await fixture(t),result=await f.run(['files','rm','checkpoints/model.pt','--job',job,'--dry-run','--json']);assert.equal(result.code,0,result.stderr);
- const request=f.calls.at(-1);assert.equal(request.operation,'outputs.delete');assert.deepEqual({...request.args,key:undefined},{jobId:job,path:'checkpoints/model.pt',recursive:false,dryRun:true,key:undefined});assert.ok(request.args.key);assert.equal(JSON.parse(result.stdout).data.bytes,123);
+ const request=f.calls.at(-1);assert.equal(request.operation,'outputs.delete');assert.deepEqual({...request.args,key:undefined},{jobId:job,path:'checkpoints/model.pt',recursive:false,dryRun:true,key:undefined});assert.ok(request.args.key);assert.equal(JSON.parse(result.stdout).data.size,123);
 });
 test('outputs delete and recursive file removal send one mutation and print released bytes',async t=>{
  const f=await fixture(t),all=await f.run(['outputs','delete','--job',job]);assert.equal(all.code,0,all.stderr);assert.match(all.stdout,/已删除，7 天内可在项目回收站恢复/);
  assert.deepEqual({...f.calls.at(-1).args,key:undefined},{jobId:job,path:'.',recursive:true,dryRun:false,key:undefined});
- const one=await f.run(['files','rm','checkpoints','--recursive','--job',job,'--dry-run']);assert.equal(one.code,0,one.stderr);assert.match(one.stdout,/将删除 2 个文件 · 123 B/);
+ const one=await f.run(['files','rm','checkpoints','--recursive','--job',job,'--dry-run']);assert.equal(one.code,0,one.stderr);assert.match(one.stdout,/将删除 123 B/);assert.doesNotMatch(one.stdout,/undefined/);
  assert.equal(f.calls.filter(row=>row.operation==='outputs.delete').length,2);
 });
 test('CLI rejects missing job, traversal and arbitrary deletion context before API calls',async t=>{
@@ -65,4 +65,11 @@ test('CLI dry-run stops unsupported commands locally and leaves training argumen
  await f.run(['run','--machine','node-1','--project','fixture','--','python','train.py','--dry-run']);
  const submits=f.calls.filter(row=>row.operation==='jobs.submit');
  assert.equal(submits.length,1);assert.deepEqual(submits[0].args.argv,['python','train.py','--dry-run']);
+});
+test('output preview shows actual size, including zero, and keeps unknown size explicit',async t=>{
+ for(const [previewSize,expected] of [[0,/将删除 0 B/],[null,/将删除 大小未知/]]){
+  const f=await fixture(t,{previewSize}),result=await f.run(['outputs','delete','--job',job,'--dry-run']);
+  assert.equal(result.code,0,result.stderr);assert.match(result.stdout,expected);assert.match(result.stdout,/未删除/);
+  assert.doesNotMatch(result.stdout,/undefined|已删除/);assert.equal(f.calls.at(-1).args.dryRun,true);
+ }
 });
