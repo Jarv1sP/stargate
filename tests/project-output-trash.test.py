@@ -97,25 +97,26 @@ class ProjectOutputTrash(unittest.TestCase):
     def test_orphan_preview_lists_sizes_then_execute_is_idempotent_and_restorable(self):
         jid,path=self.job(project='deleted');active,active_path=self.job('RUNNING',project='deleted')
         no_project,no_project_path=self.job(project=None);same_slug,same_slug_path=self.job(owner='bob')
+        terminal_output=self.root/'outputs'/self.key();terminal_output.mkdir(mode=0o700)
+        (terminal_output/'result.txt').write_bytes(b'terminal output without a jobs record')
         key=self.key();preview=self.purge.orphan_outputs(self.ops,key)
         self.assertTrue(preview['complete']);self.assertEqual([item['jobId'] for item in preview['items']],[jid])
         self.assertGreaterEqual(preview['items'][0]['size'],6);self.assertTrue(path.exists())
         for _ in range(2):self.purge.trash_orphan_outputs(self.config,preview,{'userId':'operator'})
         self.assertFalse(path.exists());self.assertTrue(all(p.exists() for p in (active_path,no_project_path,same_slug_path)))
+        self.assertEqual((terminal_output/'result.txt').read_bytes(),b'terminal output without a jobs record')
         self.trash.restore({'key':preview['items'][0]['key']});self.assertEqual((path/'result.txt').read_bytes(),b'result')
 
     def test_incomplete_job_or_project_lists_never_move_any_orphans(self):
         jid,path=self.job(project='deleted');broken_job=self.jobs/(self.key()+'.json')
         broken_project=self.ops.store.path/'alice/other/project.json';original=broken_project.read_bytes()
-        missing=self.root/'outputs'/self.key()
-        for broken in ('job','missing-job','project','owner-directory','jobs-directory','outputs-directory','scheduler'):
+        for broken in ('job','project','owner-directory','jobs-directory','scheduler'):
             with self.subTest(broken=broken):
                 if broken=='job':broken_job.write_text('{')
-                if broken=='missing-job':missing.mkdir(mode=0o700)
                 if broken=='project':broken_project.write_text('{')
                 real_iter=Path.iterdir
                 def iterdir(folder):
-                    unreadable={'owner-directory':self.ops.store.path/'alice','jobs-directory':self.jobs,'outputs-directory':self.root/'outputs'}
+                    unreadable={'owner-directory':self.ops.store.path/'alice','jobs-directory':self.jobs}
                     if folder==unreadable.get(broken):raise PermissionError('unreadable')
                     return real_iter(folder)
                 with patch.object(Path,'iterdir',iterdir),patch.object(self.purge.sqlite3,'connect',side_effect=sqlite3.OperationalError('unavailable')) if broken=='scheduler' else contextlib.nullcontext():
@@ -124,7 +125,6 @@ class ProjectOutputTrash(unittest.TestCase):
                 result=self.purge.trash_orphan_outputs(self.config,preview,{'userId':'operator'})
                 self.assertEqual(result['state'],'SKIPPED');self.assertTrue(path.exists());self.assertEqual(self.trash.listing()['items'],[])
                 broken_job.unlink(missing_ok=True);broken_project.write_bytes(original)
-                if missing.exists():missing.rmdir()
 
     def test_local_command_previews_before_execute_and_returns_nonzero_for_partial_lists(self):
         code=self.base/'code';code.mkdir(mode=0o700)

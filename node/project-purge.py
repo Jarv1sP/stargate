@@ -12,12 +12,8 @@ def finished_outputs(config):
     """Read local job ownership and scheduler state; unknown outputs stay put."""
     s=module('project-store');root=s.data().root(config,'root');rows=[];complete=True
     try:files=list((root/'jobs').iterdir())
-    except FileNotFoundError:files=[]
+    except FileNotFoundError:return [],not (root/'outputs').exists()
     except OSError:return [],False
-    try:outputs={p.name for p in (root/'outputs').iterdir() if s.JOB_ID.fullmatch(p.name)}
-    except FileNotFoundError:outputs=set()
-    except OSError:return [],False
-    complete=not outputs.difference(file.stem for file in files if file.suffix=='.json' and s.JOB_ID.fullmatch(file.stem))
     for file in files:
         if file.suffix!='.json' or not s.JOB_ID.fullmatch(file.stem):continue
         try:
@@ -25,7 +21,10 @@ def finished_outputs(config):
             owner=job.get('ownerId') or job.get('userId');project=job.get('project')
             if not project:continue
             s.data().name(owner);s.data().name(project)
-            if file.stem in outputs:rows.append({'jobId':file.stem,'ownerId':owner,'project':project,'path':str(root/'outputs'/file.stem)})
+            path=root/'outputs'/file.stem
+            try:path.lstat()
+            except FileNotFoundError:continue
+            rows.append({'jobId':file.stem,'ownerId':owner,'project':project,'path':str(path)})
         except (OSError,ValueError,AttributeError,TypeError,RecursionError):complete=False
     if not rows:return [],complete
     try:

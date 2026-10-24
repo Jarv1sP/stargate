@@ -44,6 +44,6 @@ python3 node/node-executor.py --trash-orphan-outputs --key UUID --actor ACTOR
 python3 node/node-executor.py --trash-orphan-outputs --key UUID --actor ACTOR --execute
 ```
 
-默认只列出任务编号、ownerId、项目、路径和大小；`--execute` 也先输出本次清单，再用现有 Trash 移动并返回结果。只选择本机调度器已结束、job 记录有项目且该 owner 下项目已不存在的输出；无项目、排队、运行中和状态未知的输出不动。任务记录或项目列表有任何读取不完整（含输出存在但对应 job 记录缺失）时，返回 `SKIPPED`、非零退出码，整次不移动。大小不全以 `complete:false` 标明，完全读不到时为 null。
+默认只列出任务编号、ownerId、项目、路径和大小；`--execute` 也先输出本次清单，再用现有 Trash 移动并返回结果。只选择本机调度器已结束、job 记录有项目且该 owner 下项目已不存在的输出；无项目、排队、运行中、状态未知及无 job 记录的输出（例如开发终端输出）不动。任务记录或项目列表有任何读取不完整时，返回 `SKIPPED`、非零退出码，整次不移动。大小不全以 `complete:false` 标明，完全读不到时为 null。
 
 清单是执行时的当前结果，不保存摘要或放行凭据；两次命令之间有变化时以执行清单为准。原操作 key 派生输出条目的 key，重试不重复入站；按返回的条目 key 用现有项目回收站恢复，7 天后由既有 storage-collect 清理，管理员可提前清空。安装器不会自动执行本命令。
