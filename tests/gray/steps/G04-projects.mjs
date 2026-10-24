@@ -1,9 +1,13 @@
 import {readFile} from 'node:fs/promises';
 import {project,call,download,upload,trashRestore} from '../lib/exec.mjs';
-export default {features:["新建项目（可填一个 Git 仓库地址，创建时自动克隆进 /workspace）、列出、切换、删除（进 7 天回收站，可恢复）", "上传/下载文件到工作区（不带版本，断点续传）", "显示名、分组、归档/取消归档、查看项目磁盘配额", "服务器之间传输、电脑上传下载、校园网直连；列表、状态、取消、续传"],id:'G04',title:'项目、Git 克隆、文件续传与回收站（FEATURES 三）',level:'fast',async run(ctx){
+export default {features:["新建项目（可填一个 Git 仓库地址，创建时自动克隆进 /workspace）、列出、切换、删除（项目和本机属于该项目的已结束任务输出一起进 7 天回收站，恢复项目时一同恢复；排队、运行中和状态未知的任务输出保留）；可在创建时或之后标为「共用」，仅改变归属显示，创建人、路径与团队权限不变", "上传/下载文件到工作区（不带版本，断点续传）", "显示名、分组、归档/取消归档、查看项目磁盘配额", "服务器之间传输、电脑上传下载、校园网直连；列表、状态、取消、续传"],id:'G04',title:'项目、Git 克隆、文件续传与回收站（FEATURES 三）',level:'fast',async run(ctx){
   const {name,member}=await project(ctx),base={machine:ctx.machine,project:name};
+  ctx.check('新项目默认非共用',(await call(ctx,member,'projects.status',base)).shared===false);
+  ctx.check('项目设为共用',(await call(ctx,member,'projects.shared.set',{...base,shared:true})).shared===true);
   const listing=await call(ctx,member,'projects.list',{machine:ctx.machine});
   ctx.check('项目列出可切换',listing.projects.some(p=>p.project===name));
+  ctx.check('项目列表带共用标记',listing.projects.find(p=>p.project===name)?.shared===true);
+  ctx.check('取消共用',(await call(ctx,member,'projects.shared.set',{...base,shared:false})).shared===false);
   const files=await call(ctx,member,'files.list',{...base,area:'code',path:''});
   ctx.check('克隆得到 train.py',files.entries.some(f=>f.name==='train.py'));
   const source=await readFile(new URL('../fixtures/train.py',import.meta.url));
@@ -22,6 +26,8 @@ export default {features:["新建项目（可填一个 Git 仓库地址，创建
   ctx.check('中断后原 key 保留偏移',status.state==='UPLOADING'&&status.offset===128*1024);
   await upload(ctx,member,{project:name,area:'code',path:'resume.bin',content,key:interrupted.key});
   ctx.check('续传后下载字节一致',(await download(ctx,member,{project:name,area:'code',path:'resume.bin'})).equals(content));
+  await call(ctx,member,'projects.shared.set',{...base,shared:true});
   await trashRestore(ctx,member,{key:ctx.key(),remove:'projects.retire',args:base,kind:'project'});
+  ctx.check('删除恢复后默认非共用',(await call(ctx,member,'projects.status',base)).shared===false);
   ctx.check('项目恢复后内容保留',(await download(ctx,member,{project:name,area:'code',path:'resume.bin'})).equals(content));
 }};

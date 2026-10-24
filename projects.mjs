@@ -1,5 +1,5 @@
 import {UUID,selectFields} from './portal-request-validation.mjs';
-import {projectCatalogCall} from './project-catalog.mjs';
+import {projectCatalogCall,setProjectShared} from './project-catalog.mjs';
 export {UUID};
 export const PROJECT=/^[a-z][a-z0-9_-]{0,47}$/;
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
@@ -17,7 +17,7 @@ export async function projectCall(service,principal,user,operation,args,authoriz
     'projects.retire','projects.retire.status','projects.retire.list','projects.retire.restore','projects.retire.purge','projects.retire.empty']);
   if(!names.has(operation))return undefined;
   authorize(args.machine);
-  args=selectFields(args,['machine','ownerId','project','key','kind',...(operation==='projects.create'?['repo']:operation==='projects.status'?['diagnoseNetwork']:operation==='projects.list'?['includeUsage']:[])]);
+  args=selectFields(args,['machine','ownerId','project','key','kind',...(operation==='projects.create'?['repo','shared']:operation==='projects.status'?['diagnoseNetwork']:operation==='projects.list'?['includeUsage']:[])]);
   const collection=['projects.list','projects.quota','projects.retire.list','projects.retire.empty'].includes(operation);
   const trash=operation.startsWith('projects.retire.');
   if(!collection&&!trash)projectReference(args,{optional:false});
@@ -26,8 +26,10 @@ export async function projectCall(service,principal,user,operation,args,authoriz
   if(['projects.retire.purge','projects.retire.empty'].includes(operation)&&principal.role!=='admin')fail('立即清空仅管理员可用。',403);
   if(args.repo!==undefined&&(typeof args.repo!=='string'||Buffer.byteLength(args.repo)>4096||/[\x00-\x1f\x7f]/.test(args.repo)))fail('仓库地址格式或长度无效。');
   if(args.repo){try{const url=new URL(args.repo);if(url.password||['http:','https:'].includes(url.protocol)&&url.username)fail('仓库地址不要带密码或令牌，请在容器终端里配置 Git 凭据。');}catch(error){if(error.status)throw error;}}
-  const {machine,...request}=args;
+  const {machine,shared,...request}=args;
   const result=await service.bridge(machine,operation,{...request,...(!collection||operation==='projects.quota'||args.ownerId!==undefined?{ownerId}:{}),userId:principal.userId,actor:{userId:principal.userId,isAdmin:principal.role==='admin'}});
+  if(operation==='projects.create'&&shared!==undefined)setProjectShared(service,ownerId,machine,args.project,shared);
+  if(operation==='projects.retire'&&result.state==='TRASHED')service.db.prepare('DELETE FROM project_shared_v2 WHERE owner_id=? AND machine=? AND project=?').run(ownerId,machine,args.project);
   if(!['projects.list','projects.quota','projects.status','projects.retire.list','projects.retire.status'].includes(operation))
     service.audit(principal.username,operation,machine,JSON.stringify({project:args.project,key:args.key,kind:args.kind,ownerId}));
   if(operation==='projects.list')return {...result,projects:result.projects?.map(row=>{
