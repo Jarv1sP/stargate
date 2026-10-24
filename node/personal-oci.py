@@ -24,13 +24,23 @@ def engine_environment(folder):
             'CONTAINERS_REGISTRIES_CONF':str(folder/'registries.conf'),
             'CONTAINERS_CONF':str(folder/'containers.conf')}
 
-def storage_size(config,folder):
+def storage_size(config,folder,path=None):
     # Counting existing storage must not initialize/reset an owner's runtime.
-    result=subprocess.run(engine_command(config,folder,'unshare','/usr/bin/du','-sb','--one-file-system',str(folder)),
+    target=folder if path is None else module('local-data').require_data_path(config,path)
+    result=subprocess.run(engine_command(config,folder,'unshare','/usr/bin/du','-sb','--one-file-system',str(target)),
                           env=engine_environment(folder),capture_output=True,text=True,timeout=3600)
     try:size=int(result.stdout.split()[0])
     except (ValueError,IndexError):size=None
     return {'size':size,'complete':result.returncode==0 and size is not None}
+
+def storage_containers(config,folder):
+    def read(*args):
+        result=subprocess.run(engine_command(config,folder,*args),env=engine_environment(folder),
+                              capture_output=True,text=True,timeout=30)
+        if result.returncode:raise ValueError('容器用量列表暂时读不到。')
+        return result.stdout
+    ids=read('ps','--all','--quiet','--no-trunc').split()
+    return json.loads(read('container','inspect',*ids)) if ids else []
 
 def translate_control(arguments, sources=None):
     """Translate only the trusted training-control module's narrow bwrap DSL."""

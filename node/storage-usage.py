@@ -32,24 +32,66 @@ def cached(ops,result):
     for row in result['projects']:
         sample=projects.get((row.get('ownerId') or row.get('userId'),row['project']),{})
         row.update(size=sample.get('size'),complete=sample.get('complete',False),
-                   outputs=sample.get('outputs',{'size':None,'complete':False,'count':None}))
+                   outputs=sample.get('outputs',{'size':None,'complete':False,'count':None}),environment=sample.get('environment'))
     return {**result,'areas':areas,'areasCheckedAt':checked}
 
 
 def refresh(ops):
-    result=ops.store.list(include_usage=True);s=module('project-store');data=s.data()
-    for row in result['projects']:
-        row.update(data.size(ops.store.path/(row.get('ownerId') or row['userId'])/row['project'],partial=True))
-    result=scan(ops,result)
+    result=scan(ops,ops.store.list(include_usage=True));s=module('project-store')
     saved={'checkedAt':datetime.now(timezone.utc).isoformat(),'areas':result['areas'],
-           'projects':[{key:row.get(key) for key in ('ownerId','project','size','complete','outputs')} for row in result['projects']]}
+           'projects':[{key:row.get(key) for key in ('ownerId','project','size','complete','outputs','environment')} for row in result['projects']]}
     folder=s.private_dir(ops.store.root/'samples',create=True)
     s.atomic_json(folder/'storage-areas.json',saved)
     return saved
 
 
+def project_usage(ops,projects):
+    s=module('project-store');data=s.data();oci=module('personal-oci');owners={}
+    unknown={'size':None,'complete':False}
+    for row in projects:owners.setdefault(row.get('ownerId') or row.get('userId'),[]).append(row)
+    for owner,rows in owners.items():
+        folder=ops.store.path/'.oci'/owner
+        try:engine=not folder.is_symlink() and (folder/'graph').is_dir()
+        except OSError:engine=None
+        layers={row['project']:[] for row in rows};aliases={};incomplete=set();seen=set()
+        for row in rows:
+            path=ops.store.path/owner/row['project'];size=None
+            if engine:
+                try:size=oci.storage_size(ops.config,folder,path)
+                except (OSError,ValueError,subprocess.TimeoutExpired):pass
+            row.update(size if size is not None and size['size'] is not None else data.size(path,partial=True))
+            row['environment']={'size':0,'complete':True} if engine is False else dict(unknown)
+            if engine:
+                try:
+                    container=s.read_json(path/'oci.json').get('container')
+                    if container:aliases[container]=row['project']
+                except FileNotFoundError:pass
+                except (OSError,ValueError,AttributeError,RecursionError):incomplete.add(row['project'])
+        if not engine:continue
+        inventory_complete=True
+        try:
+            containers=oci.storage_containers(ops.config,folder)
+            for container in containers:
+                label=(container.get('Config') or {}).get('Labels') or {}
+                project=label.get('io.gpuq.project') or aliases.get((container.get('Name') or '').lstrip('/')) or aliases.get(container.get('Id'))
+                upper=((container.get('GraphDriver') or {}).get('Data') or {}).get('UpperDir')
+                if project not in layers or not upper or upper in seen:continue
+                seen.add(upper)
+                try:value=oci.storage_size(ops.config,folder,upper)
+                except (OSError,ValueError,subprocess.TimeoutExpired):value=dict(unknown)
+                layers[project].append(value)
+        except (OSError,ValueError,TypeError,AttributeError,RecursionError,subprocess.TimeoutExpired):inventory_complete=False
+        for row in rows:
+            value=total(layers[row['project']])
+            if not inventory_complete or row['project'] in incomplete:
+                value['complete']=False
+                if not layers[row['project']]:value['size']=None
+            row['environment']=value
+
+
 def scan(ops,result):
     store=ops.store;s=module('project-store');data=s.data();root=store.root
+    project_usage(ops,result['projects'])
     outputs={};records_complete=True
     try:
         for file in (root/'jobs').iterdir():
