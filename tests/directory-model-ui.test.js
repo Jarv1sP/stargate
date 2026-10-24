@@ -108,3 +108,12 @@ test('base images show as the last row after the projects',()=>{
  assert.deepEqual(baseImages({projects:{complete:true,projects,areas:{}}}),{size:null,complete:false});
  assert.equal(baseImages({projects:{error:'x'}}),null);
 });
+
+test('a shared project shows as 共用 instead of its creator',async()=>{
+ const {projectSelectHTML,projectOwnerText}=await import('../dist/project-management-ui.js');
+ const own={project:'mine',ownerName:'甲',machine:'amax-5090'},team={project:'team',ownerName:'乙',shared:true,machine:'amax-5090'};
+ assert.equal(projectOwnerText(own),'甲');assert.equal(projectOwnerText(team),'共用');
+ const options=projectSelectHTML([own,team]);assert.match(options,/mine · 甲/);assert.match(options,/team · 共用/);assert.doesNotMatch(options,/乙/);
+ const rows=projectStorageRows([{...own,size:1,complete:true},{...team,size:2,complete:true}]);
+ assert.match(rows,/甲 的项目/);assert.match(rows,/<div class="dr-s">共用<\/div>/);assert.doesNotMatch(rows,/乙/);
+});
