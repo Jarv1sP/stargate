@@ -26,8 +26,9 @@ export function gaugeDiskHTML(label,row,{loading=false}={}){
 const MIX=[['files','项目文件'],['outputs','任务输出'],['environments','容器环境'],['datasets','数据集'],['trash','回收站'],['temporary','传输暂存'],['other','其他']];
 const partOf=(rows,complete=true)=>{const known=rows.filter(row=>Number.isFinite(row?.size));return {size:rows.length&&!known.length?null:known.reduce((sum,row)=>sum+row.size,0),complete:complete&&rows.every(row=>Number.isFinite(row?.size)&&row.complete!==false)};};
 const area=row=>Number.isFinite(row?.size)?{size:row.size,complete:row.complete!==false}:{size:null,complete:false};
-export function storageMixHTML(disk,snapshot,{datasets=false}={}){
-  if(!(Number.isFinite(disk?.usedBytes)&&Number.isFinite(disk?.totalBytes)&&disk.totalBytes>0))return '';
+const amount=row=>!Number.isFinite(row?.size)?'未知':(row.complete!==false?'':row.upper?'至多 ':'至少 ')+bytes(row.size);
+function storageParts(disk,snapshot,{datasets=false}={}){
+  if(!(Number.isFinite(disk?.usedBytes)&&Number.isFinite(disk?.totalBytes)&&disk.totalBytes>0))return null;
   const projects=snapshot?.projects||{},areas=projects.areas||{},parts={
     files:projects.error?area(null):partOf(projects.projects||[],projects.complete!==false),
     outputs:area(areas.outputs),environments:area(areas.environments),
@@ -35,21 +36,58 @@ export function storageMixHTML(disk,snapshot,{datasets=false}={}){
     trash:area(areas.trash),temporary:area(areas.temporary)};
   const measured=Object.values(parts).filter(Boolean),sum=measured.reduce((total,row)=>total+(row.size||0),0);
   parts.other=measured.every(row=>Number.isFinite(row.size))?{size:Math.max(0,disk.usedBytes-sum),complete:measured.every(row=>row.complete),upper:true}:area(null);
-  const rows=MIX.filter(([key])=>parts[key]),value=row=>!Number.isFinite(row.size)?'未知':(row.complete?'':row.upper?'至多 ':'至少 ')+bytes(row.size);
-  return `<div class="dr-mix-head"><strong>空间构成</strong><span>${esc(diskLabel(disk))}</span><span class="dr-flex"></span><span class="num">已用 ${bytes(disk.usedBytes)} / ${bytes(disk.totalBytes)}</span>${copyHelp('空间构成','已用空间按用途拆开，合计等于已用。数据集随列表统计，其余各项由服务器每小时统计一次。其他是盘上不归平台管理的文件，以及日志、正在上传的文件等。读不全的标至少或至多，读不到的标未知。')}</div>
-    <div class="dr-mix-bar" role="img" aria-label="${esc(rows.map(([key,label])=>label+' '+value(parts[key])).join('，'))}">${rows.filter(([key])=>parts[key].size>0).map(([key,label])=>`<i data-k="${key}" data-fill="${Math.min(100,parts[key].size/disk.totalBytes*100)}" title="${esc(label+' '+value(parts[key]))}"></i>`).join('')}</div>
-    <ul class="dr-mix-legend">${rows.map(([key,label])=>`<li data-k="${key}"${Number.isFinite(parts[key].size)?'':' class="unk"'}><b></b>${label}<span class="num">${value(parts[key])}</span></li>`).join('')}</ul>`;
+  return parts;
 }
-// A project's footprint is its files plus its own job outputs; nodes that
-// don't report outputs yet show files alone.
-const projectTotal=row=>!Number.isFinite(row.size)?{size:null,complete:false}:!row.outputs?{size:row.size,complete:row.complete!==false}:{size:row.size+(Number.isFinite(row.outputs.size)?row.outputs.size:0),complete:row.complete!==false&&Number.isFinite(row.outputs.size)&&row.outputs.complete!==false};
-export function projectStorageRows(rows){
+export function storageMixHTML(disk,snapshot,options){
+  const parts=storageParts(disk,snapshot,options);if(!parts)return '';
+  const rows=MIX.filter(([key])=>parts[key]);
+  return `<div class="dr-mix-head"><strong>空间构成</strong><span>${esc(diskLabel(disk))}</span><span class="dr-flex"></span><span class="num">已用 ${bytes(disk.usedBytes)} / ${bytes(disk.totalBytes)}</span>${copyHelp('空间构成','已用空间按用途拆开，合计等于已用。数据集随列表统计，其余各项由服务器每小时统计一次。其他是盘上不归平台管理的文件，以及日志、正在上传的文件等。读不全的标至少或至多，读不到的标未知。')}</div>
+    <div class="dr-mix-bar" role="img" aria-label="${esc(rows.map(([key,label])=>label+' '+amount(parts[key])).join('，'))}">${rows.filter(([key])=>parts[key].size>0).map(([key,label])=>`<i data-k="${key}" data-fill="${Math.min(100,parts[key].size/disk.totalBytes*100)}" title="${esc(label+' '+amount(parts[key]))}"></i>`).join('')}</div>
+    <ul class="dr-mix-legend">${rows.map(([key,label])=>`<li data-k="${key}"${Number.isFinite(parts[key].size)?'':' class="unk"'}><b></b>${label}<span class="num">${amount(parts[key])}</span></li>`).join('')}</ul>`;
+}
+// A project's footprint is its files, its job outputs and its own container
+// layers. A part the node doesn't report yet is left out; one it reports as
+// unknown makes the total a lower bound.
+const PROJECT=[['files','文件'],['outputs','输出'],['environments','环境']];
+const projectParts=row=>({files:{size:row.size,complete:row.complete!==false},
+  ...('outputs' in row?{outputs:row.outputs||area(null)}:{}),...('environment' in row?{environments:row.environment||area(null)}:{})});
+const projectTotal=row=>{
+  if(!Number.isFinite(row.size))return {size:null,complete:false};
+  const parts=Object.values(projectParts(row));
+  return {size:parts.reduce((sum,part)=>sum+(Number.isFinite(part.size)?part.size:0),0),complete:parts.every(part=>Number.isFinite(part.size)&&part.complete!==false)};
+};
+// The rest of the disk, so that projects plus these rows add up to the used
+// space. A part not yet split per project is shown whole.
+const REST=[['environments','共用镜像和其他容器','各成员的基础镜像，以及对不上项目的容器','容器环境','镜像和装进容器的依赖，服务器还没按项目拆分'],
+  ['outputs','其他任务输出','已删除或没有项目的任务留下的输出','任务输出','服务器还没按项目拆分'],
+  ['datasets','数据集','见上方数据集列表'],['trash','回收站','删除的文件保留 7 天，到期自动清空'],
+  ['temporary','传输暂存','正在复制或上传的临时文件'],['other','其他','不归平台管理的文件，例如旧平台留下的目录和日志']];
+export function storageRest(disk,snapshot,options){
+  const parts=storageParts(disk,snapshot,options);if(!parts||snapshot?.projects?.error)return null;
+  const rows=snapshot.projects.projects||[],field={outputs:'outputs',environments:'environment'};
+  const rest=REST.filter(([key])=>parts[key]).map(([key,label,note,whole,wholeNote])=>{
+    const total=parts[key];if(!field[key])return {key,label,note,part:total};
+    const own=rows.filter(row=>field[key] in row).map(row=>row[field[key]]||area(null));
+    if(!own.length)return {key,label:whole,note:wholeNote,part:total};
+    if(!Number.isFinite(total.size))return {key,label,note,part:total};
+    // Parts counted short in project rows leave this remainder as an upper bound.
+    const short=own.some(part=>!Number.isFinite(part.size)||part.complete===false);
+    return {key,label,note,part:{size:Math.max(0,total.size-own.reduce((sum,part)=>sum+(Number.isFinite(part.size)?part.size:0),0)),complete:total.complete&&!short,upper:total.complete&&short}};
+  });
+  return {rest:rest.filter(({part})=>part.size!==0),complete:Number.isFinite(parts.other.size),used:disk.usedBytes};
+}
+const bar=(parts,largest)=>{const shown=parts.filter(([,part])=>part.size>0);return `<span class="jr-prog${shown.length>1?' dr-split':''}">${shown.map(([key,part])=>`<b data-k="${key}" data-fill="${part.size/largest*100}"></b>`).join('')}</span>`;};
+export function projectStorageRows(rows,ledger=null){
   rows=rows.map(row=>({row,total:projectTotal(row)})).sort((a,b)=>(Number.isFinite(b.total.size)?b.total.size:-1)-(Number.isFinite(a.total.size)?a.total.size:-1));
-  const largest=Math.max(1,...rows.map(({total})=>Number.isFinite(total.size)?total.size:0));
-  return rows.map(({row,total})=>{
-    const outputs=Number.isFinite(row.outputs?.size)&&row.outputs.size>0,split=outputs?` · 文件 ${directoryBytes(row)} · 输出 ${directoryBytes(row.outputs)}`:'';
-    return `<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目${split}</div></div><div class="dr-hide-m">${Number.isFinite(total.size)?`<span class="jr-prog${outputs?' dr-split':''}"><b data-fill="${row.size/largest*100}"></b>${outputs?`<b class="dr-out" data-fill="${row.outputs.size/largest*100}"></b>`:''}</span>`:'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`;
+  const largest=Math.max(1,...rows.map(({total})=>Number.isFinite(total.size)?total.size:0),...(ledger?.rest||[]).map(({part})=>Number.isFinite(part.size)?part.size:0));
+  const html=rows.map(({row,total})=>{
+    const parts=PROJECT.map(([key,label])=>[key,projectParts(row)[key],label]).filter(([,part])=>part);
+    const split=parts.filter(([,part])=>part.size!==0).length>1?parts.filter(([,part])=>part.size!==0).map(([,part,label])=>` · ${label} ${directoryBytes(part)}`).join(''):'';
+    return `<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目${split}</div></div><div class="dr-hide-m">${Number.isFinite(total.size)?bar(parts,largest):'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`;
   }).join('');
+  if(!ledger)return html;
+  return html+(ledger.rest.length?`<div class="dr-rest-head">不属于单个项目</div>`:'')+ledger.rest.map(({key,label,note,part})=>`<div class="dr-row dr-ct dr-rest"><div class="dr-main"><div class="dr-t">${label}</div><div class="dr-s">${note}</div></div><div class="dr-hide-m">${Number.isFinite(part.size)?bar([[key,part]],largest):'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${amount(part)}</div><div class="dr-acts dr-acts-on">${key==='trash'?'<button type="button" class="jr-link" data-rest-trash>打开</button>':''}</div></div>`).join('')
+    +`<div class="dr-total"><span>合计</span><span class="num">${ledger.complete?`${bytes(ledger.used)} · 等于已用空间`:'未知'}</span></div>`;
 }
 // Bar widths go through CSSOM: the portal CSP blocks inline style attributes.
 const fills=root=>requestAnimationFrame(()=>{for(const bar of root.querySelectorAll('[data-fill]'))bar.style.width=bar.dataset.fill+'%';});
@@ -68,7 +106,7 @@ export function datasetsUI(store,toast){
   for(const action of actions)action.addEventListener('click',event=>{const button=event.currentTarget;if(!q('[name=dataset-machine]'))return;
     if(button.id==='dr-upload-open'){q('[data-upload-to]').textContent=short(machine());openSheet(q('#dataset-upload'));}
     if(button.id==='dr-import-open')openSheet(q('#dr-import-sheet'));});
-  const controls=()=>{for(const button of section.querySelectorAll('[data-dataset-open],[data-dataset-download],[data-dataset-delete],[data-storage-trash],[data-storage-project],#dataset-upload-form button[type=submit],[data-file-path],#dataset-file-up,#dataset-file-more'))button.disabled=busy||!store.principal||!machine();cloud?.controls();trash?.update();};
+  const controls=()=>{for(const button of section.querySelectorAll('[data-dataset-open],[data-dataset-download],[data-dataset-delete],[data-storage-trash],[data-rest-trash],[data-storage-project],#dataset-upload-form button[type=submit],[data-file-path],#dataset-file-up,#dataset-file-more'))button.disabled=busy||!store.principal||!machine();cloud?.controls();trash?.update();};
   function showMachine(){const id=machine();for(const node of section.querySelectorAll('[data-gauge]'))node.setAttribute('aria-pressed',String(node.dataset.gauge===id));for(const node of section.querySelectorAll('[data-storage-machine]'))node.hidden=node.dataset.storageMachine!==id;}
   async function run(action){if(busy)return;const token=operationTurn;busy=true;controls();try{await action(()=>token===operationTurn);}catch(error){if(token===operationTurn){status(error.message);toast(error.message);}}finally{if(token===operationTurn){busy=false;controls();}}}
   async function loadCard(id,refresh=false){
@@ -88,10 +126,11 @@ export function datasetsUI(store,toast){
           find('[data-ds-where]').textContent=' · '+diskMediaLabel((shared||volume('datasets'))?.media)+' /datasets';
         }
         if(first||!snapshot.refreshing){
+          const quota=snapshot.quota.error?{}:snapshot.quota,volume=kind=>quota.volumes?.find(row=>row.kind===kind),shared=volume('shared'),disk=shared||volume('workspace');
           {const place=find('[data-storage-projects]'),result=snapshot.projects;
             if(result.error)place.innerHTML='<p class="storage-empty">项目未知，请刷新重试。</p>';
             else{
-              place.innerHTML=projectStorageRows(result.projects||[])||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
+              place.innerHTML=projectStorageRows(result.projects||[],storageRest(disk,snapshot,{datasets:!!shared}))||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
               if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');fills(place);
             }
           }
@@ -102,8 +141,8 @@ export function datasetsUI(store,toast){
               if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');
             }
           }
-          {const result=snapshot.quota.error?{}:snapshot.quota,volume=kind=>result.volumes?.find(row=>row.kind===kind),shared=volume('shared'),place=find('[data-storage-mix]');
-            place.classList.remove('on');place.innerHTML=storageMixHTML(shared||volume('workspace'),snapshot,{datasets:!!shared});fills(place);reveal(place);
+          {const place=find('[data-storage-mix]');
+            place.classList.remove('on');place.innerHTML=storageMixHTML(disk,snapshot,{datasets:!!shared});fills(place);reveal(place);
           }
           controls();
         }
@@ -137,7 +176,7 @@ export function datasetsUI(store,toast){
         <section class="dr-mix" data-storage-mix aria-label="空间构成"></section>
         <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
         <div class="dr-rows" data-storage-datasets data-dataset-list></div>
-        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','项目大小是项目文件加上它在这台服务器上的任务输出。容器环境（镜像和装进容器的依赖）按服务器合计，见上方空间构成。读不全的标至少，读不到的显示未知。删除可能影响正在运行的任务。')}</div>
+        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','项目大小是项目文件、它在这台服务器上的任务输出和它自己的容器环境（装进容器的依赖）之和。列表最后是不属于单个项目的部分，全部加起来等于这块盘的已用空间。读不全的标至少或至多，读不到的显示未知。删除可能影响正在运行的任务。')}</div>
         <div class="dr-rows" data-storage-projects></div>
       </article>`).join('')}</div>
       <section class="dr-browse" data-dataset-files hidden><div class="dr-toolbar"><h2 class="mono" data-dataset-current></h2><span class="dr-flex"></span><button type="button" class="jr-link" id="dataset-file-up" hidden>← 上一级</button><button type="button" class="jr-link" data-browse-close>收起</button></div><div class="dr-files" data-dataset-file-list></div><button type="button" class="jr-btn ghost" id="dataset-file-more" hidden>下一页</button></section>
@@ -169,7 +208,7 @@ export function datasetsUI(store,toast){
       if(b.hasAttribute('data-browse-close')){selected='';q('[data-dataset-files]').hidden=true;return;}
       const target=b.closest('[data-storage-machine]')?.dataset.storageMachine;
       if(b.hasAttribute('data-storage-refresh'))return void loadCard(target,true);
-      if(b.hasAttribute('data-storage-trash')){openSheet(q('#dr-trash-sheet'));trash.element.open=true;return;}
+      if(b.hasAttribute('data-storage-trash')||b.hasAttribute('data-rest-trash')){openSheet(q('#dr-trash-sheet'));trash.element.open=true;return;}
       if(b.dataset.storageProject)return document.dispatchEvent(new CustomEvent('gpuq-open-project',{detail:{userId:store.principal.userId,authGeneration:store.authGeneration,machine:target,project:b.dataset.storageProject,ownerId:b.dataset.ownerId}}));
       if(b.dataset.datasetOpen)return openDataset(b.dataset.datasetOpen);
       if(b.dataset.datasetDownload)return void run(()=>downloadBrowserPath((...args)=>store.call(...args),{machine:machine(),area:'dataset',dataset:b.dataset.datasetDownload},'.',{directory:true,onRoute:status,onProgress:row=>status(row.path+' · '+row.offset+' / '+row.size)}));
