@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {projectStatusText,trainingTarget,projectDiskQuotaHTML} from '../dist/execution-ui.js';
-import {datasetRows,directoryBytes,gaugeDiskHTML,storageMixHTML,projectStorageRows,storageRest} from '../dist/datasets-ui.js';
+import {datasetRows,directoryBytes,gaugeDiskHTML,storageMixHTML,projectStorageRows,sharedEnvironment} from '../dist/datasets-ui.js';
 import {trashReference,trashLabel} from '../dist/trash-ui.js';
 import {uploadPersonalFile} from '../dist/personal-upload.js';
 import {resourceServerView,resourceCards} from '../dist/resources-ui.js';
@@ -90,23 +90,19 @@ test('project rows count job outputs and sort by the combined footprint',()=>{
  assert.match(projectStorageRows([{project:'p',size:G,complete:true,outputs:{size:null,complete:false}}]),/至少 /);
 });
 
-test('project list with the rest of the disk adds up to used space',()=>{
- const G=1024**3,disk={kind:'workspace',media:'ssd',usedBytes:1400*G,totalBytes:3500*G,availableBytes:2100*G};
- const areas={outputs:{size:699*G,complete:true},environments:{size:213*G,complete:true},trash:{size:36*G,complete:true},temporary:{size:0,complete:true}};
+test('shared base images show as one row among the projects',()=>{
+ const G=1024**3,areas={outputs:{size:699*G,complete:true},environments:{size:213*G,complete:true}};
  const projects=[{project:'chga',ownerName:'乙',size:378*G,complete:true,outputs:{size:689*G,complete:true},environment:{size:129*G,complete:true}},
   {project:'small',ownerName:'甲',size:69*G,complete:true,outputs:{size:4*G,complete:true},environment:{size:40*G,complete:true}}];
- const snapshot={projects:{complete:true,projects,areas}},ledger=storageRest(disk,snapshot);
- const part=key=>ledger.rest.find(row=>row.key===key)?.part;
- assert.equal(part('environments').size,44*G);assert.equal(part('outputs').size,6*G);assert.equal(part('trash').size,36*G);assert.equal(part('temporary'),undefined);
- const listed=1196*G+113*G+ledger.rest.reduce((sum,row)=>sum+row.part.size,0);assert.equal(listed,disk.usedBytes);
- const html=projectStorageRows(projects,ledger);
- assert.doesNotMatch(html,/环境 129 GiB/);assert.match(html,/1\.2 TiB/);
- assert.match(html,/不属于单个项目/);assert.match(html,/共用镜像和其他容器/);assert.match(html,/data-rest-trash/);assert.match(html,/合计<\/span><span class="num">1\.4 TiB · 等于已用空间/);
- // A node that doesn't split environments per project yet shows the whole part once.
- const old=storageRest(disk,{projects:{complete:true,projects:projects.map(({environment,...row})=>row),areas}});
- assert.equal(old.rest.find(row=>row.key==='environments').label,'容器环境');assert.equal(old.rest.find(row=>row.key==='environments').part.size,213*G);
- // A project environment the node couldn't read leaves the remainder as an upper bound, never zero.
- const short=storageRest(disk,{projects:{complete:true,projects:[{...projects[0],environment:null},projects[1]],areas}});
- assert.match(projectStorageRows([{...projects[0],environment:null}],short),/至少 1\.0 TiB/);assert.equal(short.rest.find(row=>row.key==='environments').part.upper,true);
- assert.equal(storageRest(disk,{projects:{error:'x'}}),null);
+ const shared=sharedEnvironment({projects:{complete:true,projects,areas}});assert.deepEqual(shared,{size:44*G,complete:true,upper:false});
+ const html=projectStorageRows(projects,shared);
+ assert.match(html,/<div class="dr-t">共用<\/div>/);assert.ok(html.indexOf('chga')<html.indexOf('small')&&html.indexOf('small')<html.indexOf('共用'));
+ assert.doesNotMatch(html,/不属于单个项目|合计|回收站|data-rest-trash/);
+ // A node that doesn't split environments per project yet has no shared row.
+ assert.equal(sharedEnvironment({projects:{complete:true,projects:projects.map(({environment,...row})=>row),areas}}),null);
+ // A project environment the node couldn't read leaves the shared part as an upper bound, never zero.
+ const short=sharedEnvironment({projects:{complete:true,projects:[{...projects[0],environment:null},projects[1]],areas}});
+ assert.equal(short.upper,true);assert.match(projectStorageRows([{...projects[0],environment:null}],short),/至少 1\.0 TiB[\s\S]*至多 173 GiB/);
+ assert.deepEqual(sharedEnvironment({projects:{complete:true,projects,areas:{}}}),{size:null,complete:false});
+ assert.equal(sharedEnvironment({projects:{error:'x'}}),null);
 });
