@@ -51,24 +51,19 @@
 .sb .dr-mix-legend .num{margin-left:2px}
 .sb .dr-mix-legend b{width:8px;height:8px;border-radius:2px;flex:none}
 .sb .dr-mix-legend li.unk b{background:repeating-linear-gradient(135deg,var(--hatch) 0 2px,transparent 2px 4px)}
-.sb .dr-mix i[data-k=files],.sb .dr-mix li[data-k=files] b,.sb .dr-rows b[data-k=files]{background:#F2F2EF}
-.sb .dr-mix i[data-k=outputs],.sb .dr-mix li[data-k=outputs] b,.sb .dr-rows b[data-k=outputs]{background:rgba(242,242,239,.6)}
-.sb .dr-mix i[data-k=environments],.sb .dr-mix li[data-k=environments] b,.sb .dr-rows b[data-k=environments]{background:rgba(242,242,239,.4)}
-.sb .dr-mix i[data-k=datasets],.sb .dr-mix li[data-k=datasets] b,.sb .dr-rows b[data-k=datasets]{background:rgba(242,242,239,.27)}
-.sb .dr-mix i[data-k=trash],.sb .dr-mix li[data-k=trash] b,.sb .dr-rows b[data-k=trash]{background:rgba(242,242,239,.18)}
-.sb .dr-mix i[data-k=temporary],.sb .dr-mix li[data-k=temporary] b,.sb .dr-rows b[data-k=temporary]{background:rgba(242,242,239,.12)}
-.sb .dr-mix i[data-k=other],.sb .dr-mix li[data-k=other] b,.sb .dr-rows b[data-k=other]{background:rgba(242,242,239,.07);box-shadow:inset 0 0 0 1px var(--line-3)}
+.sb .dr-mix i[data-k=files],.sb .dr-mix li[data-k=files] b{background:#F2F2EF}
+.sb .dr-mix i[data-k=outputs],.sb .dr-mix li[data-k=outputs] b{background:rgba(242,242,239,.6)}
+.sb .dr-mix i[data-k=environments],.sb .dr-mix li[data-k=environments] b{background:rgba(242,242,239,.4)}
+.sb .dr-mix i[data-k=datasets],.sb .dr-mix li[data-k=datasets] b{background:rgba(242,242,239,.27)}
+.sb .dr-mix i[data-k=trash],.sb .dr-mix li[data-k=trash] b{background:rgba(242,242,239,.18)}
+.sb .dr-mix i[data-k=temporary],.sb .dr-mix li[data-k=temporary] b{background:rgba(242,242,239,.12)}
+.sb .dr-mix i[data-k=other],.sb .dr-mix li[data-k=other] b{background:rgba(242,242,239,.07);box-shadow:inset 0 0 0 1px var(--line-3)}
 .sb .dr-mix:has(.dr-mix-legend li:not(.unk):hover) .dr-mix-legend li:not(:hover){opacity:.45}
 .sb .dr-mix:has(li[data-k=files]:hover) i:not([data-k=files]),.sb .dr-mix:has(li[data-k=outputs]:hover) i:not([data-k=outputs]),
 .sb .dr-mix:has(li[data-k=environments]:hover) i:not([data-k=environments]),.sb .dr-mix:has(li[data-k=datasets]:hover) i:not([data-k=datasets]),
 .sb .dr-mix:has(li[data-k=trash]:hover) i:not([data-k=trash]),.sb .dr-mix:has(li[data-k=temporary]:hover) i:not([data-k=temporary]),
 .sb .dr-mix:has(li[data-k=other]:hover) i:not([data-k=other]){opacity:.18}
-.sb .dr-rest .jr-prog b::after{display:none}
-.sb .dr-rest .dr-acts{min-width:26px}
-.sb .dr-rest .dr-t{color:var(--ink-2)}
-.sb .dr-rest-head{padding:22px 8px 8px;font-size:12px;color:var(--ink-4);border-bottom:1px solid var(--line-2)}
-.sb .dr-total{display:flex;justify-content:space-between;gap:12px;padding:14px 8px;font-size:13px;color:var(--ink-2);border-bottom:1px solid var(--line-2)}
-.sb .dr-total .num{font-variant-numeric:tabular-nums}
+.sb .dr-shared .dr-acts{visibility:hidden}
 .sb .dr-unknown-bar{display:block;height:3px;border-radius:2px;background:repeating-linear-gradient(135deg,var(--hatch) 0 2px,transparent 2px 6px)}
 .sb .dr-rows .storage-empty{color:var(--ink-3);font-size:13px;padding:22px 4px;margin:0}
 .sb .dr-browse{margin-top:28px;border:1px solid var(--line-2);border-radius:14px;padding:4px 18px 14px;animation:jr-rise .45s var(--jr-out) both}
