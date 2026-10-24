@@ -402,6 +402,16 @@ if __name__=='__main__':
             if action=='--transfer-peer-daemon':module('transfer-peer').serve(sys.modules[__name__],transfers());raise SystemExit(0)
             if action=='--direct-upload-daemon':module('direct-upload').serve(sys.modules[__name__]);raise SystemExit(0)
             if action=='--storage-collect':print(json.dumps(storage_collect()));raise SystemExit(0)
+            if action=='--trash-orphan-outputs':
+                import argparse
+                parser=argparse.ArgumentParser(description='列出已删除项目的终态任务输出；--execute 才移入7天回收站。')
+                parser.add_argument('--key',required=True);parser.add_argument('--actor',required=True);parser.add_argument('--execute',action='store_true')
+                options=parser.parse_args(sys.argv[2:]);low_priority_scan()
+                purge=module('project-purge');result=purge.orphan_outputs(projects(),options.key)
+                print(json.dumps(result,ensure_ascii=False),flush=True)
+                if options.execute and result['complete']:
+                    print(json.dumps(purge.trash_orphan_outputs(CONFIG,result,{'userId':options.actor}),ensure_ascii=False))
+                raise SystemExit(0 if result['complete'] else 1)
             if action=='--data-import-worker':raise SystemExit(data_imports().worker(sys.argv[2]))
             if action=='--cloud-files-worker':raise SystemExit(cloud_files().worker(sys.argv[2]))
         reader=BoundedRPCInput(sys.stdin.fileno());first=reader.line(1600000,time.monotonic()+27)

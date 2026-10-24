@@ -86,8 +86,7 @@ class ProjectOperations:
         if operation=='projects.retire.purge':return trash.purge(args)
         if operation=='projects.retire.empty':return {'items':[trash.purge({**args,'key':r['key']}) for r in trash.listing()['items']]}
         if operation in ('projects.retire','projects.delete'):
-            path,_=self.store._project(user,slug)
-            return trash.delete(path,args['key'],'project',args.get('actor',{'userId':args['userId']}),project=slug,userId=user)
+            return trash.delete_project(self.store,user,slug,args['key'],args.get('actor',{'userId':args['userId']}))
         if operation in ('files.list','files.get','files.stat'):
             root=self.store.dev_paths(user,slug)['code']
             return module('dataset-files').process(self.config,operation,args,root=root)

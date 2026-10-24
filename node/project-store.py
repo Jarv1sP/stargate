@@ -195,7 +195,7 @@ class ProjectStore:
                     if folder.name.startswith('.') or folder.is_symlink() or not folder.is_dir():continue
                     row=self.status(owner.name,folder.name)
                 except FileNotFoundError:complete=False;continue
-                except ValueError:continue
+                except (ValueError,TypeError,RecursionError):complete=False;continue
                 except OSError:
                     complete=False
                     if not include_usage:continue
