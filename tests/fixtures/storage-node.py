@@ -27,6 +27,8 @@ try:
             return SimpleNamespace(f_blocks=total,f_frsize=1,f_bfree=available,f_bavail=available,f_fsid=1 if workspace else 2)
         try:
             with patch('os.open',opened),patch('os.statvfs',capacity),patch.object(data,'disk_media',side_effect=lambda path:'hdd' if machine=='gpu-2' or str(path)==case.config['datasetsRoot'] else 'ssd'):
+                # Model the node's hourly sample before Portal reads its cache.
+                if operation=='projects.list' and args.get('includeUsage') is True:f.module('storage-usage').refresh(ops)
                 if operation=='datasets.list':result=case.files.datasets(case.config)
                 elif operation in ('files.list','files.get','files.stat'):result=case.files.process(case.config,operation,args)
                 elif operation=='projects.status':result=ops.store.status(args.get('ownerId',args.get('userId')),args['project'])

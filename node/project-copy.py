@@ -137,6 +137,10 @@ class ProjectCopy:
     @contextlib.contextmanager
     def idle(self,row,engine):
         project=self.d.name(row['target']['project'])
+        def running(selector):
+            args=('ps','--quiet','--filter',selector)
+            # Refresh stale running records only when the cheap query finds one.
+            return engine.run(*args,'--sync') if engine.run(*args) else ''
         fd=os.open(engine.folder/('use-'+project+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
         try:
             while self.j.status({'id':row['id']})['state']!='CANCELED':
@@ -145,8 +149,8 @@ class ProjectCopy:
                 else:
                     # Include executions started before this node update, and
                     # workspace commands that previously had no project label.
-                    busy=engine.run('ps','--quiet','--filter','label=io.gpuq.project='+project)
-                    if not busy:busy=engine.run('ps','--quiet','--filter','volume='+str(self.destination(row)/'code'))
+                    busy=running('label=io.gpuq.project='+project)
+                    if not busy:busy=running('volume='+str(self.destination(row)/'code'))
                     if not busy:yield True;return
                     fcntl.flock(fd,fcntl.LOCK_UN)
                 if row['target'].get('jobId'):break

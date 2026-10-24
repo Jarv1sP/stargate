@@ -331,4 +331,47 @@ class Runtime(unittest.TestCase):
         self.assertEqual(requests[0]['commandTimeout'],.05)
 
 
+class CopyIdle(unittest.TestCase):
+    setUp=c.f.DirectoryContract.setUp
+
+    def fixture(self,run):
+        state=['RUNNING'];jobs=SimpleNamespace(s=c.f.module('project-store'),d=self.data,status=lambda args:{'state':state[0]})
+        module=c.f.module('project-copy');copy=module.ProjectCopy(jobs)
+        copy.destination=lambda row:Path(self.config['workspacesRoot'])/'alice'/'demo'
+        engine=SimpleNamespace(folder=Path(self.config['root']),run=run)
+        return module,copy,engine,{'id':'copy','target':{'project':'demo'}},state
+
+    def test_ghost_label_and_volume_containers_do_not_keep_a_project_busy(self):
+        for selector in ('label=io.gpuq.project=demo','volume='):
+            with self.subTest(selector=selector):
+                calls=[]
+                def ps(*args):
+                    calls.append(args)
+                    return 'ghost-container' if '--sync' not in args and any(value.startswith(selector) for value in args) else ''
+                module,copy,engine,row,state=self.fixture(ps)
+                with patch.object(module.time,'sleep',side_effect=AssertionError('ghost container blocked the copy')):
+                    with copy.idle(row,engine) as ready:self.assertTrue(ready)
+                synced=[args for args in calls if '--sync' in args]
+                self.assertEqual(len(synced),1);self.assertTrue(any(value.startswith(selector) for value in synced[0]))
+                self.assertTrue(any(value.startswith('volume=') for args in calls for value in args))
+
+    def test_empty_ps_keeps_the_fast_path_without_sync(self):
+        calls=[]
+        def ps(*args):calls.append(args);return ''
+        module,copy,engine,row,state=self.fixture(ps)
+        with copy.idle(row,engine) as ready:self.assertTrue(ready)
+        self.assertEqual(len(calls),2);self.assertFalse(any('--sync' in args for args in calls))
+
+    def test_synced_running_container_still_waits_until_cancel(self):
+        calls=[]
+        def ps(*args):calls.append(args);return 'running-container'
+        module,copy,engine,row,state=self.fixture(ps)
+        def cancel(delay):state[0]='CANCELED'
+        with patch.object(module.time,'sleep',side_effect=cancel) as sleep:
+            with copy.idle(row,engine) as ready:self.assertFalse(ready)
+        sleep.assert_called_once_with(.2)
+        self.assertEqual(len(calls),2);self.assertIn('--sync',calls[-1])
+        self.assertFalse(any(value.startswith('volume=') for args in calls for value in args))
+
+
 if __name__=='__main__':unittest.main()
