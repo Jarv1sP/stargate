@@ -7,19 +7,30 @@ function name(value){if(typeof value!=='string'||/[\p{Cc}\p{Cf}]/u.test(value))f
 function instance(value){if(!value||typeof value!=='object'||Array.isArray(value)||!MACHINES.some(m=>m.id===value.machine)||typeof value.project!=='string'||!PROJECT.test(value.project))fail('项目实例须指定服务器和内部项目 ID。');return {machine:value.machine,project:value.project};}
 export function installProjectCatalog(service){
   service.db.exec(`CREATE TABLE IF NOT EXISTS project_labels_v2(owner_id TEXT NOT NULL,machine TEXT NOT NULL,project TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(owner_id,machine,project));
+    CREATE TABLE IF NOT EXISTS project_shared_v2(owner_id TEXT NOT NULL,machine TEXT NOT NULL,project TEXT NOT NULL,shared INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(owner_id,machine,project));
     CREATE TABLE IF NOT EXISTS project_groups_v2(owner_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,primary_machine TEXT,primary_project TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(owner_id,id));
     CREATE TABLE IF NOT EXISTS project_group_members_v2(owner_id TEXT NOT NULL,machine TEXT NOT NULL,project TEXT NOT NULL,group_id TEXT NOT NULL,PRIMARY KEY(owner_id,machine,project));`);
   service.projectPresentation=(owner,machine,row)=>{
     const label=service.db.prepare('SELECT name,revision FROM project_labels_v2 WHERE owner_id=? AND machine=? AND project=?').get(owner,machine,row.project);
+    const shared=service.db.prepare('SELECT shared FROM project_shared_v2 WHERE owner_id=? AND machine=? AND project=?').get(owner,machine,row.project);
     const group=service.db.prepare('SELECT g.id,g.name,g.revision,g.primary_machine,g.primary_project FROM project_group_members_v2 m JOIN project_groups_v2 g ON g.owner_id=m.owner_id AND g.id=m.group_id WHERE m.owner_id=? AND m.machine=? AND m.project=?').get(owner,machine,row.project);
-    return {...row,displayName:label?.name||row.project,displayNameRevision:label?.revision||0,
+    return {...row,shared:shared?.shared===1,displayName:label?.name||row.project,displayNameRevision:label?.revision||0,
       logicalProjectId:group?.id??null,logicalProjectName:group?.name??null,
       ...(group?{logicalProjectRevision:group.revision,primaryInstance:group.primary_machine?{machine:group.primary_machine,project:group.primary_project}:null}:{})};
   };
 }
+export function setProjectShared(service,owner,machine,project,shared){
+  service.db.prepare('INSERT INTO project_shared_v2(owner_id,machine,project,shared,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(owner_id,machine,project) DO UPDATE SET shared=excluded.shared,updated_at=excluded.updated_at').run(owner,machine,project,shared===true?1:0,new Date().toISOString());
+}
 export async function projectCatalogCall(service,principal,user,operation,args,authorize){
-  if(!['projects.label.get','projects.label.set','projects.group.get','projects.group.set','projects.catalog'].includes(operation))return undefined;
+  if(!['projects.label.get','projects.label.set','projects.shared.set','projects.group.get','projects.group.set','projects.catalog'].includes(operation))return undefined;
   const check=()=>{if(service.closing)fail('服务正在关闭，请稍后查询。',503);};
+  if(operation==='projects.shared.set'){
+    args=selectFields(args,['machine','ownerId','project','shared']);const ref=instance(args);authorize(ref.machine);check();
+    setProjectShared(service,user.id,ref.machine,ref.project,args.shared);
+    service.audit(principal.username,operation,ref.machine,JSON.stringify({project:ref.project,ownerId:user.id,shared:args.shared===true}));
+    return service.projectPresentation(user.id,ref.machine,{...ref,ownerId:user.id,ownerName:user.name??null});
+  }
   if(operation==='projects.catalog'){
     args=selectFields(args,['includeArchived','ownerId']);if(args.includeArchived!==undefined&&typeof args.includeArchived!=='boolean')fail('includeArchived 须为布尔值。');
     const rows=[],errors=[];

@@ -37,8 +37,9 @@ gpuctl login [USERNAME] / register USERNAME / logout
 gpuctl state / use MACHINE_ID / jobs / queue
 gpuctl jobs --key UUID --json （按原提交 key 查询，包括已结束任务）
 
-gpuctl project create NAME [--repo GIT_URL]
+gpuctl project create NAME [--repo GIT_URL] [--shared]
 gpuctl project list / use NAME / status / quota
+gpuctl project share NAME [--off]（共用 / 取消共用，仅改变归属显示）
 gpuctl project copy NAME --from SOURCE --to TARGET [--name NEW_NAME] [--key UUID] [--detach]
 gpuctl project label NAME --display-name TEXT
 gpuctl project catalog / group UUID --display-name TEXT --members SERVER/PROJECT,...
@@ -126,7 +127,7 @@ function fail9(message) {
   throw Error(message);
 }
 var CLI_OPTIONS = new Map([
-  ...['overwrite','json','password-stdin','credentials-stdin','help','full','detach','takeover','general','checkpointable','auto-expand','dry-run','share','hami','recursive','interactive','pin','sync'].map(key=>[key,'flag']),
+  ...['overwrite','json','password-stdin','credentials-stdin','help','full','detach','takeover','general','checkpointable','auto-expand','dry-run','share','shared','off','hami','recursive','interactive','pin','sync'].map(key=>[key,'flag']),
   ...['url','session-file','total','cards','role','name','description','display-name','min-vram','key','project','job','priority','timeout','reconnect','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','gpu','vram-mib','sm-percent','reason','revision','cursor','limit','members','primary','owner','via','memory-limit-gib','repo','dataset','kind','status','title','body','body-file','announcement-type','layout','background','text-color','accent','file-id','password-code','source-url','sync-dir','candidates','output'].map(key=>[key,'value']),
   ['machine','machines'], ['after','after']
 ]);
@@ -465,13 +466,14 @@ async function main() {
         if(options['display-name']===undefined)result=(await call('projects.group.get',{id})).result;
         else{const ref=value=>{const parts=value.split('/');if(parts.length!==2)fail9('组成员使用 SERVER/PROJECT。');return {machine:machineName(parts[0]),project:projectSlug(parts[1]),...(targetOwnerId?{ownerId:targetOwnerId}:{})};};result=(await call('projects.group.set',{id,displayName:options['display-name'],members:options.members==='none'?[]:String(options.members||'').split(',').filter(Boolean).map(ref),...(options.primary?{primary:ref(options.primary)}:{})})).result;}
       }else if(['list','quota'].includes(action))result=(await call('projects.'+action,{machine,...(targetOwnerId?{ownerId:targetOwnerId}:{}),...(action==='quota'&&options.project?{project:projectSlug(options.project)}:{})})).result;
-      else if(['create','use','status','label','archive','unarchive','delete','retire'].includes(action)){
+      else if(['create','use','status','label','share','archive','unarchive','delete','retire'].includes(action)){
         const project=projectSlug(positionals[2]||options.project||selectedProject(machine)),args={machine,project,...(targetOwnerId?{ownerId:targetOwnerId}:{})};
         if(action==='label')result=(await call('projects.label.'+(options['display-name']===undefined?'get':'set'),{...args,...(options['display-name']===undefined?{}:{displayName:options['display-name']})})).result;
+        else if(action==='share')result=(await call('projects.shared.set',{...args,shared:options.off!==true})).result;
         else if(action==='delete'||action==='retire'){args.key=options.key||randomUUID7();process.stderr.write('删除编号：'+args.key+'；重试沿用 --key '+args.key+'\n');result=(await call('projects.retire',args)).result;}
-        else result=(await call('projects.'+(action==='use'?'status':action),{...args,...(action==='status'?{diagnoseNetwork:true}:{}),...(action==='create'?{...(options.repo?{repo:options.repo}:{})}:{})})).result;
+        else result=(await call('projects.'+(action==='use'?'status':action),{...args,...(action==='status'?{diagnoseNetwork:true}:{}),...(action==='create'?{...(options.repo?{repo:options.repo}:{}),...(options.shared?{shared:true}:{})}:{})})).result;
         if(action==='create'||action==='use'){session.projectsByMachine={...session.projectsByMachine,[machine]:project};await saveSession();result={...result,machine,selectedProject:project};}
-      }else fail9('Usage: project create|list|use|status|copy|label|group|catalog|archive|unarchive|delete|quota|trash');
+      }else fail9('Usage: project create|list|use|status|copy|label|share|group|catalog|archive|unarchive|delete|quota|trash');
     } else if (command === "terminal" && ["status", "close"].includes(positionals[1])) {
       const allowed = ["machines", "url", "session-file", "json", "project"];
       if (positionals.length !== 3 || training.length || Object.keys(options).some((k) => !allowed.includes(k))) fail9("Usage: terminal status|close SESSION [--machine SERVER] [--project NAME]");
@@ -757,6 +759,10 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
   if (command === "use") {
     console.log(`当前服务器：${result.selected}
 ${result.project ? "当前项目：" + result.project : "未选择项目；可用 gpuctl project create NAME 或 project use NAME"}`);
+    return;
+  }
+  if (command === "project" && positionals[1] === "list") {
+    console.log(JSON.stringify({...result,projects:result.projects?.map(row=>row.shared?{...row,ownerName:'共用'}:row)},null,2));
     return;
   }
   if (command === "project" && positionals[1] === "quota") {

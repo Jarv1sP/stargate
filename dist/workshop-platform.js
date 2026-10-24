@@ -1,6 +1,6 @@
 // The workshop reuses existing Portal operations; no credentials enter the frame.
 export const PLATFORM_READS=new Set(['projects.list','projects.status','projects.quota','projects.catalog','projects.retire.list','datasets.list','storage.snapshot','files.list','jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics','community.notes.list']);
-export const PLATFORM_WRITES=new Set(['projects.create','projects.retire','projects.retire.restore','projects.label.set','projects.group.set','projects.archive','projects.unarchive','jobs.submit','jobs.priority','tasks.display.set','datasets.delete','outputs.delete','community.notes.create']);
+export const PLATFORM_WRITES=new Set(['projects.create','projects.retire','projects.retire.restore','projects.label.set','projects.shared.set','projects.group.set','projects.archive','projects.unarchive','jobs.submit','jobs.priority','tasks.display.set','datasets.delete','outputs.delete','community.notes.create']);
 const jobFields=['id','nodeJobId','source','name','description','state','machine','cards','project','ownerId','userId','username','submitter','argv','createdAt','startedAt','finishedAt','exitCode','reason','updatedAt','latestAttempt','progress','priority','schedulerPriority','assignedIndices','after','queueReason','error','failure','cancelRequested','interactive','notifications'];
 export function platformSnapshot(store,resources){
  const member=store.users?.find(user=>user.id===store.principal?.userId);
