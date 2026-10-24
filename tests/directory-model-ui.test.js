@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {projectStatusText,trainingTarget,projectDiskQuotaHTML} from '../dist/execution-ui.js';
-import {datasetRows,directoryBytes,gaugeDiskHTML,storageMixHTML,projectStorageRows,sharedEnvironment} from '../dist/datasets-ui.js';
+import {datasetRows,directoryBytes,gaugeDiskHTML,storageMixHTML,projectStorageRows,baseImages} from '../dist/datasets-ui.js';
 import {trashReference,trashLabel} from '../dist/trash-ui.js';
 import {uploadPersonalFile} from '../dist/personal-upload.js';
 import {resourceServerView,resourceCards} from '../dist/resources-ui.js';
@@ -90,19 +90,21 @@ test('project rows count job outputs and sort by the combined footprint',()=>{
  assert.match(projectStorageRows([{project:'p',size:G,complete:true,outputs:{size:null,complete:false}}]),/至少 /);
 });
 
-test('shared base images show as one row among the projects',()=>{
+test('base images show as the last row after the projects',()=>{
  const G=1024**3,areas={outputs:{size:699*G,complete:true},environments:{size:213*G,complete:true}};
  const projects=[{project:'chga',ownerName:'乙',size:378*G,complete:true,outputs:{size:689*G,complete:true},environment:{size:129*G,complete:true}},
   {project:'small',ownerName:'甲',size:69*G,complete:true,outputs:{size:4*G,complete:true},environment:{size:40*G,complete:true}}];
- const shared=sharedEnvironment({projects:{complete:true,projects,areas}});assert.deepEqual(shared,{size:44*G,complete:true,upper:false});
+ const shared=baseImages({projects:{complete:true,projects,areas}});assert.deepEqual(shared,{size:44*G,complete:true,upper:false});
  const html=projectStorageRows(projects,shared);
- assert.match(html,/<div class="dr-t">共用<\/div>/);assert.ok(html.indexOf('chga')<html.indexOf('small')&&html.indexOf('small')<html.indexOf('共用'));
+ assert.match(html,/<div class="dr-t">基础镜像<\/div>/);assert.ok(html.indexOf('chga')<html.indexOf('small')&&html.indexOf('small')<html.indexOf('基础镜像'));
+ // Larger than a project, still last.
+ assert.ok(projectStorageRows([projects[1]],{size:500*G,complete:true}).indexOf('small')<projectStorageRows([projects[1]],{size:500*G,complete:true}).indexOf('基础镜像'));
  assert.doesNotMatch(html,/不属于单个项目|合计|回收站|data-rest-trash/);
- // A node that doesn't split environments per project yet has no shared row.
- assert.equal(sharedEnvironment({projects:{complete:true,projects:projects.map(({environment,...row})=>row),areas}}),null);
- // A project environment the node couldn't read leaves the shared part as an upper bound, never zero.
- const short=sharedEnvironment({projects:{complete:true,projects:[{...projects[0],environment:null},projects[1]],areas}});
+ // A node that doesn't split environments per project yet has no base image row.
+ assert.equal(baseImages({projects:{complete:true,projects:projects.map(({environment,...row})=>row),areas}}),null);
+ // A project environment the node couldn't read leaves base images as an upper bound, never zero.
+ const short=baseImages({projects:{complete:true,projects:[{...projects[0],environment:null},projects[1]],areas}});
  assert.equal(short.upper,true);assert.match(projectStorageRows([{...projects[0],environment:null}],short),/至少 1\.0 TiB[\s\S]*至多 173 GiB/);
- assert.deepEqual(sharedEnvironment({projects:{complete:true,projects,areas:{}}}),{size:null,complete:false});
- assert.equal(sharedEnvironment({projects:{error:'x'}}),null);
+ assert.deepEqual(baseImages({projects:{complete:true,projects,areas:{}}}),{size:null,complete:false});
+ assert.equal(baseImages({projects:{error:'x'}}),null);
 });
