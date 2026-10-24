@@ -55,10 +55,10 @@ const projectTotal=row=>{
   const parts=Object.values(projectParts(row));
   return {size:parts.reduce((sum,part)=>sum+(Number.isFinite(part.size)?part.size:0),0),complete:parts.every(part=>Number.isFinite(part.size)&&part.complete!==false)};
 };
-// Member base images every project uses, plus containers no project claims:
-// the container environment left after each project's own layers. Shown only
-// once the node splits environments per project.
-export function sharedEnvironment(snapshot){
+// Members' base images, plus containers no project claims: the container
+// environment left after each project's own layers. Shown only once the node
+// splits environments per project.
+export function baseImages(snapshot){
   const projects=snapshot?.projects;if(!projects||projects.error)return null;
   const own=(projects.projects||[]).filter(row=>'environment' in row).map(row=>row.environment||area(null));
   if(!own.length)return null;
@@ -69,13 +69,14 @@ export function sharedEnvironment(snapshot){
 }
 const bar=(part,largest)=>`<span class="jr-prog">${part.size>0?`<b data-fill="${part.size/largest*100}"></b>`:''}</span>`;
 const sizeCell=(total,largest)=>`<div class="dr-hide-m">${Number.isFinite(total.size)?bar(total,largest):'<span class="dr-unknown-bar"></span>'}</div>`;
-export function projectStorageRows(rows,shared=null){
-  rows=rows.map(row=>({row,total:projectTotal(row)}));if(shared&&shared.size!==0)rows.push({total:shared});
-  rows.sort((a,b)=>(Number.isFinite(b.total.size)?b.total.size:-1)-(Number.isFinite(a.total.size)?a.total.size:-1));
+export function projectStorageRows(rows,images=null){
+  rows=rows.map(row=>({row,total:projectTotal(row)})).sort((a,b)=>(Number.isFinite(b.total.size)?b.total.size:-1)-(Number.isFinite(a.total.size)?a.total.size:-1));
+  // Base images are platform plumbing, not a project: always the last row.
+  if(images&&images.size!==0)rows.push({total:images});
   const largest=Math.max(1,...rows.map(({total})=>Number.isFinite(total.size)?total.size:0));
   return rows.map(({row,total})=>row
     ?`<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目</div></div>${sizeCell(total,largest)}<div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`
-    :`<div class="dr-row dr-ct dr-shared"><div class="dr-main"><div class="dr-t">共用</div><div class="dr-s">各项目共用的基础镜像</div></div>${sizeCell(total,largest)}<div class="dr-s">${amount(total)}</div><div class="dr-acts dr-acts-on" aria-hidden="true"><span class="jr-link">打开</span></div></div>`).join('');
+    :`<div class="dr-row dr-ct dr-base"><div class="dr-main"><div class="dr-t">基础镜像</div><div class="dr-s">新建容器用的系统镜像，每位成员一份</div></div>${sizeCell(total,largest)}<div class="dr-s">${amount(total)}</div><div class="dr-acts dr-acts-on" aria-hidden="true"><span class="jr-link">打开</span></div></div>`).join('');
 }
 // Bar widths go through CSSOM: the portal CSP blocks inline style attributes.
 const fills=root=>requestAnimationFrame(()=>{for(const bar of root.querySelectorAll('[data-fill]'))bar.style.width=bar.dataset.fill+'%';});
@@ -118,7 +119,7 @@ export function datasetsUI(store,toast){
           {const place=find('[data-storage-projects]'),result=snapshot.projects;
             if(result.error)place.innerHTML='<p class="storage-empty">项目未知，请刷新重试。</p>';
             else{
-              place.innerHTML=projectStorageRows(result.projects||[],sharedEnvironment(snapshot))||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
+              place.innerHTML=projectStorageRows(result.projects||[],baseImages(snapshot))||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
               if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');fills(place);
             }
           }
@@ -164,7 +165,7 @@ export function datasetsUI(store,toast){
         <section class="dr-mix" data-storage-mix aria-label="空间构成"></section>
         <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
         <div class="dr-rows" data-storage-datasets data-dataset-list></div>
-        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','每个项目显示一个总大小：项目文件、它在这台服务器上的任务输出和它自己的容器环境（装进容器的依赖）加在一起。“共用”是各项目共用的基础镜像。读不全的标至少或至多，读不到的显示未知。删除可能影响正在运行的任务。')}</div>
+        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','每个项目显示一个总大小：项目文件、它在这台服务器上的任务输出和它自己的容器环境（装进容器的依赖）加在一起。“基础镜像”是新建容器用的系统镜像，每位成员一份。读不全的标至少或至多，读不到的显示未知。删除可能影响正在运行的任务。')}</div>
         <div class="dr-rows" data-storage-projects></div>
       </article>`).join('')}</div>
       <section class="dr-browse" data-dataset-files hidden><div class="dr-toolbar"><h2 class="mono" data-dataset-current></h2><span class="dr-flex"></span><button type="button" class="jr-link" id="dataset-file-up" hidden>← 上一级</button><button type="button" class="jr-link" data-browse-close>收起</button></div><div class="dr-files" data-dataset-file-list></div><button type="button" class="jr-btn ghost" id="dataset-file-more" hidden>下一页</button></section>
