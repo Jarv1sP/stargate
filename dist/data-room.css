@@ -63,9 +63,6 @@
 .sb .dr-mix:has(li[data-k=environments]:hover) i:not([data-k=environments]),.sb .dr-mix:has(li[data-k=datasets]:hover) i:not([data-k=datasets]),
 .sb .dr-mix:has(li[data-k=trash]:hover) i:not([data-k=trash]),.sb .dr-mix:has(li[data-k=temporary]:hover) i:not([data-k=temporary]),
 .sb .dr-mix:has(li[data-k=other]:hover) i:not([data-k=other]){opacity:.18}
-.sb .dr-split{display:flex;gap:1px;background:var(--bg-3)}
-.sb .dr-split b{flex:none;border-radius:0;transition:none}
-.sb .dr-split b::after{display:none}
 .sb .dr-rest .jr-prog b::after{display:none}
 .sb .dr-rest .dr-acts{min-width:26px}
 .sb .dr-rest .dr-t{color:var(--ink-2)}

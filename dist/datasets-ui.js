@@ -45,10 +45,9 @@ export function storageMixHTML(disk,snapshot,options){
     <div class="dr-mix-bar" role="img" aria-label="${esc(rows.map(([key,label])=>label+' '+amount(parts[key])).join('，'))}">${rows.filter(([key])=>parts[key].size>0).map(([key,label])=>`<i data-k="${key}" data-fill="${Math.min(100,parts[key].size/disk.totalBytes*100)}" title="${esc(label+' '+amount(parts[key]))}"></i>`).join('')}</div>
     <ul class="dr-mix-legend">${rows.map(([key,label])=>`<li data-k="${key}"${Number.isFinite(parts[key].size)?'':' class="unk"'}><b></b>${label}<span class="num">${amount(parts[key])}</span></li>`).join('')}</ul>`;
 }
-// A project's footprint is its files, its job outputs and its own container
-// layers. A part the node doesn't report yet is left out; one it reports as
-// unknown makes the total a lower bound.
-const PROJECT=[['files','文件'],['outputs','输出'],['environments','环境']];
+// A project container's size is its files, its job outputs and its own
+// container layers, shown as one number. A part the node doesn't report yet is
+// left out; one it reports as unknown makes the total a lower bound.
 const projectParts=row=>({files:{size:row.size,complete:row.complete!==false},
   ...('outputs' in row?{outputs:row.outputs||area(null)}:{}),...('environment' in row?{environments:row.environment||area(null)}:{})});
 const projectTotal=row=>{
@@ -76,17 +75,15 @@ export function storageRest(disk,snapshot,options){
   });
   return {rest:rest.filter(({part})=>part.size!==0),complete:Number.isFinite(parts.other.size),used:disk.usedBytes};
 }
-const bar=(parts,largest)=>{const shown=parts.filter(([,part])=>part.size>0);return `<span class="jr-prog${shown.length>1?' dr-split':''}">${shown.map(([key,part])=>`<b data-k="${key}" data-fill="${part.size/largest*100}"></b>`).join('')}</span>`;};
+const bar=(part,largest,key)=>`<span class="jr-prog">${part.size>0?`<b${key?` data-k="${key}"`:''} data-fill="${part.size/largest*100}"></b>`:''}</span>`;
 export function projectStorageRows(rows,ledger=null){
   rows=rows.map(row=>({row,total:projectTotal(row)})).sort((a,b)=>(Number.isFinite(b.total.size)?b.total.size:-1)-(Number.isFinite(a.total.size)?a.total.size:-1));
   const largest=Math.max(1,...rows.map(({total})=>Number.isFinite(total.size)?total.size:0),...(ledger?.rest||[]).map(({part})=>Number.isFinite(part.size)?part.size:0));
   const html=rows.map(({row,total})=>{
-    const parts=PROJECT.map(([key,label])=>[key,projectParts(row)[key],label]).filter(([,part])=>part);
-    const split=parts.filter(([,part])=>part.size!==0).length>1?parts.filter(([,part])=>part.size!==0).map(([,part,label])=>` · ${label} ${directoryBytes(part)}`).join(''):'';
-    return `<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目${split}</div></div><div class="dr-hide-m">${Number.isFinite(total.size)?bar(parts,largest):'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`;
+    return `<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(row.ownerName||row.ownerId||'未知')} 的项目</div></div><div class="dr-hide-m">${Number.isFinite(total.size)?bar(total,largest):'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`;
   }).join('');
   if(!ledger)return html;
-  return html+(ledger.rest.length?`<div class="dr-rest-head">不属于单个项目</div>`:'')+ledger.rest.map(({key,label,note,part})=>`<div class="dr-row dr-ct dr-rest"><div class="dr-main"><div class="dr-t">${label}</div><div class="dr-s">${note}</div></div><div class="dr-hide-m">${Number.isFinite(part.size)?bar([[key,part]],largest):'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${amount(part)}</div><div class="dr-acts dr-acts-on">${key==='trash'?'<button type="button" class="jr-link" data-rest-trash>打开</button>':''}</div></div>`).join('')
+  return html+(ledger.rest.length?`<div class="dr-rest-head">不属于单个项目</div>`:'')+ledger.rest.map(({key,label,note,part})=>`<div class="dr-row dr-ct dr-rest"><div class="dr-main"><div class="dr-t">${label}</div><div class="dr-s">${note}</div></div><div class="dr-hide-m">${Number.isFinite(part.size)?bar(part,largest,key):'<span class="dr-unknown-bar"></span>'}</div><div class="dr-s">${amount(part)}</div><div class="dr-acts dr-acts-on">${key==='trash'?'<button type="button" class="jr-link" data-rest-trash>打开</button>':''}</div></div>`).join('')
     +`<div class="dr-total"><span>合计</span><span class="num">${ledger.complete?`${bytes(ledger.used)} · 等于已用空间`:'未知'}</span></div>`;
 }
 // Bar widths go through CSSOM: the portal CSP blocks inline style attributes.
@@ -176,7 +173,7 @@ export function datasetsUI(store,toast){
         <section class="dr-mix" data-storage-mix aria-label="空间构成"></section>
         <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
         <div class="dr-rows" data-storage-datasets data-dataset-list></div>
-        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','项目大小是项目文件、它在这台服务器上的任务输出和它自己的容器环境（装进容器的依赖）之和。列表最后是不属于单个项目的部分，全部加起来等于这块盘的已用空间。读不全的标至少或至多，读不到的显示未知。删除可能影响正在运行的任务。')}</div>
+        <div class="dr-toolbar dr-gap"><h2>项目容器 · /workspace</h2><span class="dr-flex"></span><span class="jr-hint">按大小排序 · 后台定时统计</span>${copyHelp('容量与目录大小','每个项目显示一个总大小：项目文件、它在这台服务器上的任务输出和它自己的容器环境（装进容器的依赖）加在一起。列表最后是不属于单个项目的部分，全部加起来等于这块盘的已用空间。读不全的标至少或至多，读不到的显示未知。删除可能影响正在运行的任务。')}</div>
         <div class="dr-rows" data-storage-projects></div>
       </article>`).join('')}</div>
       <section class="dr-browse" data-dataset-files hidden><div class="dr-toolbar"><h2 class="mono" data-dataset-current></h2><span class="dr-flex"></span><button type="button" class="jr-link" id="dataset-file-up" hidden>← 上一级</button><button type="button" class="jr-link" data-browse-close>收起</button></div><div class="dr-files" data-dataset-file-list></div><button type="button" class="jr-btn ghost" id="dataset-file-more" hidden>下一页</button></section>

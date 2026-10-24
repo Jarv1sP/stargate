@@ -84,8 +84,9 @@ test('space mix adds up to used space and never derives "other" from an unknown 
 test('project rows count job outputs and sort by the combined footprint',()=>{
  const G=1024**3,html=projectStorageRows([{project:'small',ownerName:'甲',size:10*G,complete:true,outputs:{size:0,complete:true,count:0}},
   {project:'chga',ownerName:'乙',size:374*G,complete:true,outputs:{size:688*G,complete:true,count:1617}},{project:'old',size:5*G,complete:true}]);
- assert.ok(html.indexOf('chga')<html.indexOf('small'));assert.match(html,/文件 374 GiB · 输出 688 GiB/);assert.match(html,/1,062 GiB|1062 GiB|1\.0 TiB/);
- assert.match(html,/dr-split/);assert.doesNotMatch(html.slice(html.indexOf('small')),/data-k="outputs"/);
+ assert.ok(html.indexOf('chga')<html.indexOf('small'));assert.match(html,/1,062 GiB|1062 GiB|1\.0 TiB/);
+ // One total per project container, no per-part breakdown.
+ assert.doesNotMatch(html,/文件 |输出 |dr-split/);assert.equal((html.slice(0,html.indexOf('small')).match(/data-fill/g)||[]).length,1);
  assert.match(projectStorageRows([{project:'p',size:G,complete:true,outputs:{size:null,complete:false}}]),/至少 /);
 });
 
@@ -99,13 +100,13 @@ test('project list with the rest of the disk adds up to used space',()=>{
  assert.equal(part('environments').size,44*G);assert.equal(part('outputs').size,6*G);assert.equal(part('trash').size,36*G);assert.equal(part('temporary'),undefined);
  const listed=1196*G+113*G+ledger.rest.reduce((sum,row)=>sum+row.part.size,0);assert.equal(listed,disk.usedBytes);
  const html=projectStorageRows(projects,ledger);
- assert.match(html,/文件 378 GiB · 输出 689 GiB · 环境 129 GiB/);assert.match(html,/1\.2 TiB/);
+ assert.doesNotMatch(html,/环境 129 GiB/);assert.match(html,/1\.2 TiB/);
  assert.match(html,/不属于单个项目/);assert.match(html,/共用镜像和其他容器/);assert.match(html,/data-rest-trash/);assert.match(html,/合计<\/span><span class="num">1\.4 TiB · 等于已用空间/);
  // A node that doesn't split environments per project yet shows the whole part once.
  const old=storageRest(disk,{projects:{complete:true,projects:projects.map(({environment,...row})=>row),areas}});
  assert.equal(old.rest.find(row=>row.key==='environments').label,'容器环境');assert.equal(old.rest.find(row=>row.key==='environments').part.size,213*G);
  // A project environment the node couldn't read leaves the remainder as an upper bound, never zero.
  const short=storageRest(disk,{projects:{complete:true,projects:[{...projects[0],environment:null},projects[1]],areas}});
- assert.match(projectStorageRows([{...projects[0],environment:null}],short),/环境 未知/);assert.equal(short.rest.find(row=>row.key==='environments').part.upper,true);
+ assert.match(projectStorageRows([{...projects[0],environment:null}],short),/至少 1\.0 TiB/);assert.equal(short.rest.find(row=>row.key==='environments').part.upper,true);
  assert.equal(storageRest(disk,{projects:{error:'x'}}),null);
 });
