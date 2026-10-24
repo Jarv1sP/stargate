@@ -21,6 +21,8 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 现有 `7IM` 的每小时 `--storage-collect` 服务以 nice19/idle I/O 清理暂存并统计存储，原子保存数据盘 `samples/storage-areas.json`（含 `checkedAt`）。项目用量请求只读缓存并返回 `areasCheckedAt`，缺失或损坏时保留项目列表、用量显示未知；部分可读保留大小下限。该服务与容器服务使用安装器配置的同一账户，复用已有 Podman 用户命名空间，不新增服务。
 升级后先手动触发一次配置中的 storage-collect 服务，生成首份采样；无需等到下一个小时。该步骤由节点安装者执行。
 
+项目采样另带 `environment:{size,complete}`，按同一 owner 内的 `io.gpuq.project` 标签归属，无标签时匹配项目 `oci.json` 的容器名；只计各容器自身的 UpperDir，rootfs 型任务容器跳过，共用镜像与未归属层保留在既有 `areas.environments`。项目文件和可写层均在已有 owner 的 Podman 用户命名空间计量，不初始化运行时；缓存未含 environment 时返回 null，部分读取保留大小下限。
+
 ## 安装
 
 调用者负责 SSH/传输；节点本机用 Python 3.10 以管理员权限运行 `python3 deploy/node/install.py <单机包目录或tar包> --config <本机私有JSON>`。

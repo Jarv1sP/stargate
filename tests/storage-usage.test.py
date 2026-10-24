@@ -14,6 +14,22 @@ class StorageUsage(unittest.TestCase):
 
     def refresh(self,ops):return f.module('storage-usage').refresh(ops)
 
+    def fake_podman(self,ops,containers,sizes,owner='alice'):
+        folder=ops.store.path/'.oci'/owner;(folder/'graph').mkdir(parents=True,exist_ok=True);calls=[]
+        for row in containers:
+            upper=((row.get('GraphDriver') or {}).get('Data') or {}).get('UpperDir')
+            if upper and self.base in Path(upper).parents:Path(upper).mkdir(parents=True,exist_ok=True)
+        def run(argv,**kwargs):
+            calls.append((argv,kwargs))
+            if 'ps' in argv:return subprocess.CompletedProcess(argv,0,' '.join('fixture-'+str(i) for i in range(len(containers))),'')
+            if 'inspect' in argv:return subprocess.CompletedProcess(argv,0,json.dumps(containers),'')
+            self.assertIn('unshare',argv);self.assertEqual(argv[-4:-1],['/usr/bin/du','-sb','--one-file-system'])
+            value=sizes.get(Path(argv[-1]),1000)
+            if isinstance(value,Exception):raise value
+            code,raw=value if isinstance(value,tuple) else (0,str(value)+'\t'+argv[-1])
+            return subprocess.CompletedProcess(argv,code,raw,'')
+        return run,calls
+
     def deny(self,name):
         original=os.open
         def opened(path,*args,**kwargs):
@@ -126,7 +142,7 @@ class StorageUsage(unittest.TestCase):
         with self.deny('unreadable'):
             self.refresh(ops);result=ops.process('projects.list',{'userId':'alice','includeUsage':True})
         rows={row['project']:row for row in result['projects']}
-        self.assertEqual(rows['unreadable'],{'project':'unreadable','ownerId':'alice','size':None,'complete':False,'outputs':{'size':0,'complete':True,'count':0}})
+        self.assertEqual(rows['unreadable'],{'project':'unreadable','ownerId':'alice','size':None,'complete':False,'outputs':{'size':0,'complete':True,'count':0},'environment':{'size':0,'complete':True}})
         self.assertFalse(result['complete']);self.assertGreaterEqual(rows['healthy']['size'],3)
 
     def test_scan_accounts_for_project_outputs_orphans_environments_trash_and_copy_staging(self):
@@ -138,6 +154,8 @@ class StorageUsage(unittest.TestCase):
         engines=[]
         for owner in ('alice','bob'):(ops.store.path/'.oci'/owner/'graph').mkdir(parents=True)
         def unshare(argv,**kwargs):
+            if 'ps' in argv:return subprocess.CompletedProcess(argv,0,'','')
+            if Path(argv[-1]).name=='demo':return subprocess.CompletedProcess(argv,0,'100 project','')
             owner=Path(argv[-1]).name;engines.append((owner,argv,kwargs))
             return subprocess.CompletedProcess(argv,0,str({'alice':11,'bob':13}[owner])+'\tgraph','')
         for base in (root,ops.store.path):
@@ -201,6 +219,7 @@ class StorageUsage(unittest.TestCase):
             self.assertEqual(result['projects'][0]['project'],'demo');self.assertTrue(result['complete'])
             self.assertIsNone(result['projects'][0]['size']);self.assertFalse(result['projects'][0]['complete'])
             self.assertEqual(result['projects'][0]['outputs'],{'size':None,'complete':False,'count':None})
+            self.assertIsNone(result['projects'][0]['environment'])
             self.assertEqual(result['areas'],{name:{'size':None,'complete':False} for name in ('outputs','environments','trash','temporary')})
             self.assertIsNone(result['areasCheckedAt'])
 
@@ -242,6 +261,78 @@ class StorageUsage(unittest.TestCase):
             return subprocess.CompletedProcess(argv,0 if owner=='alice' else 1,'7 graph' if owner=='alice' else '11 graph','unreadable child')
         with patch('subprocess.run',du):self.refresh(ops)
         self.assertEqual(ops.process('projects.list',{'includeUsage':True})['areas']['environments'],{'size':18,'complete':False})
+
+    def test_project_environments_use_labels_then_container_names_and_skip_rootfs(self):
+        ops=self.ops();ops.store.create('alice','demo');ops.store.create('alice','other')
+        folder=ops.store.path/'.oci'/'alice';graph=folder/'graph'
+        (ops.store.path/'alice'/'other'/'oci.json').write_text(json.dumps({'container':'dev-other'}))
+        containers=[{'Name':'recovered','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':str(graph/'one')}}},
+                    {'Name':'dev-other','Config':{},'GraphDriver':{'Data':{'UpperDir':str(graph/'two')}}},
+                    {'Name':'live','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{}}},
+                    {'Name':'unowned','Config':{},'GraphDriver':{'Data':{'UpperDir':str(graph/'unowned')}}},
+                    {'Name':'dev-other','Config':{'Labels':{'io.gpuq.project':'missing'}},'GraphDriver':{'Data':{'UpperDir':str(graph/'unknown-label')}}}]
+        run,calls=self.fake_podman(ops,containers,{graph/'one':11,graph/'two':13})
+        with patch.object(ops,'oci',side_effect=AssertionError('sampling initialized the runtime')),patch('subprocess.run',run):self.refresh(ops)
+        with patch('subprocess.run',side_effect=AssertionError('cached query launched a command')):
+            result=ops.process('projects.list',{'includeUsage':True})
+        self.assertEqual({row['project']:row['environment'] for row in result['projects']},{'demo':{'size':11,'complete':True},'other':{'size':13,'complete':True}})
+        self.assertEqual(result['areas']['environments'],{'size':1000,'complete':True})
+        self.assertFalse(any(argv[-1] in (str(graph/'unowned'),str(graph/'unknown-label')) for argv,_ in calls))
+        self.assertEqual(sum('inspect' in argv for argv,_ in calls),1)
+
+    def test_project_environment_keeps_known_and_partial_bytes_when_an_upper_dir_fails(self):
+        ops=self.ops();ops.store.create('alice','demo');graph=ops.store.path/'.oci'/'alice'/'graph'
+        containers=[{'Name':name,'Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':str(graph/name)}}} for name in ('good','partial','failed')]
+        run,calls=self.fake_podman(ops,containers,{graph/'good':7,graph/'partial':(1,'11 partial'),graph/'failed':PermissionError('unreadable')})
+        with patch('subprocess.run',run):self.refresh(ops)
+        self.assertEqual(ops.process('projects.list',{'includeUsage':True})['projects'][0]['environment'],{'size':18,'complete':False})
+
+    def test_project_files_are_measured_in_the_owner_namespace(self):
+        ops=self.ops();ops.store.create('alice','demo');path=ops.store.path/'alice'/'demo'
+        (path/'code'/'hidden').mkdir();(path/'code'/'hidden'/'data').write_bytes(b'subuid data')
+        run,calls=self.fake_podman(ops,[],{path:1234})
+        with self.deny('hidden'):
+            self.assertFalse(self.data.size(path,partial=True)['complete'])
+            with patch('subprocess.run',run):self.refresh(ops)
+        row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
+        self.assertEqual((row['size'],row['complete']),(1234,True))
+        argv,kwargs=next((argv,kwargs) for argv,kwargs in calls if argv[-1]==str(path))
+        self.assertIn('--root='+str(ops.store.path/'.oci'/'alice'/'graph'),argv)
+        self.assertEqual(kwargs['env']['HOME'],str(ops.store.path/'.oci'/'alice'/'home'))
+
+    def test_same_project_name_uses_each_owners_container_storage(self):
+        ops=self.ops();engines={}
+        for owner,size in (('alice',7),('bob',11)):
+            ops.store.create(owner,'demo');upper=ops.store.path/'.oci'/owner/'graph'/'upper'
+            run,_=self.fake_podman(ops,[{'Name':'dev','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':str(upper)}}}],{upper:size},owner)
+            engines['--root='+str(upper.parent)]=run
+        def run(argv,**kwargs):return engines[next(value for value in argv if value.startswith('--root='))](argv,**kwargs)
+        with patch('subprocess.run',run):self.refresh(ops)
+        rows=ops.process('projects.list',{'includeUsage':True})['projects']
+        self.assertEqual({row['ownerId']:row['environment'] for row in rows},{'alice':{'size':7,'complete':True},'bob':{'size':11,'complete':True}})
+
+    def test_environment_measurement_keeps_the_data_disk_boundary(self):
+        ops=self.ops();ops.store.create('alice','demo')
+        run,calls=self.fake_podman(ops,[{'Name':'dev','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':'/etc'}}}],{})
+        with patch('subprocess.run',run):self.refresh(ops)
+        self.assertEqual(ops.process('projects.list',{'includeUsage':True})['projects'][0]['environment'],{'size':None,'complete':False})
+        self.assertFalse(any(argv[-1]=='/etc' for argv,_ in calls))
+
+    def test_readonly_sampling_does_not_publish_a_cache(self):
+        ops=self.ops();ops.store.create('alice','demo')
+        with patch('os.replace',side_effect=AssertionError('read-only sample wrote a file')):
+            result=f.module('storage-usage').scan(ops,ops.store.list(include_usage=True))
+        self.assertEqual(result['projects'][0]['environment'],{'size':0,'complete':True})
+        self.assertFalse((ops.store.root/'samples'/'storage-areas.json').exists())
+
+    def test_older_sample_without_environment_returns_null_and_keeps_the_other_fields(self):
+        ops=self.ops();ops.store.create('alice','demo');saved=self.refresh(ops)
+        saved['projects'][0].pop('environment')
+        file=ops.store.root/'samples'/'storage-areas.json';file.write_text(json.dumps(saved))
+        with patch('os.scandir',side_effect=AssertionError('old cache triggered a scan')),patch('subprocess.run',side_effect=AssertionError('old cache launched a command')):
+            result=ops.process('projects.list',{'includeUsage':True})
+        self.assertIsNone(result['projects'][0]['environment']);self.assertEqual(result['projects'][0]['size'],saved['projects'][0]['size'])
+        self.assertEqual(result['areas'],saved['areas']);self.assertEqual(result['areasCheckedAt'],saved['checkedAt'])
 
     def test_readable_output_siblings_survive_an_unreadable_output_and_bad_job_record(self):
         ops=self.ops();ops.store.create('alice','demo');jobs=ops.store.root/'jobs';jobs.mkdir()
