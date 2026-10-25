@@ -194,15 +194,19 @@ class TransferJobs:
             try:active=self.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value',
                                   'gpuq-transfer-'+row['id']+'.service*'],timeout=observation_timeout).strip() if observation_timeout>0 else None
             except (ValueError,OSError,subprocess.TimeoutExpired):active=None
-            with self.lock(row['id']):
-                row=self.s.read_json(file)
-                # start/resume writes PENDING before systemd-run creates the unit.
-                if needs_observation(row) and row.get('startedAt')==started:
-                    if active in ('','inactive','failed'):
+            if active in ('','inactive','failed'):
+                with self.lock(row['id']):
+                    row=self.s.read_json(file)
+                    # start/resume writes PENDING before systemd-run creates the unit.
+                    if needs_observation(row) and row.get('startedAt')==started:
                         row.update(state='PAUSED',phase='接收进程已停止',error='接收进程已停止，已传文件和偏移保留；请用 transfer resume 按原编号续传。')
                         self.s.atomic_json(file,row)
-                    elif active not in ('active','activating','deactivating','reloading'):
-                        return self.view({**row,'state':'UNKNOWN','error':'暂时查不到接收进程，请按原编号稍后查询。'})
+            else:
+                # Progress records are atomic; readers need no write lock while
+                # the live receiver fsyncs a large file or upload-key record.
+                row=self.s.read_json(file)
+                if needs_observation(row) and row.get('startedAt')==started and active not in ('active','activating','deactivating','reloading'):
+                    return self.view({**row,'state':'UNKNOWN','error':'暂时查不到接收进程，请按原编号稍后查询。'})
         if row.get('sourceCompletePending'):self.complete_copy(row)
         return self.view(row)
 
