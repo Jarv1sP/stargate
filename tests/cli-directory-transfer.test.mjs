@@ -5,7 +5,12 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {parseCLIOptions} from '../cli.mjs';
-import {uploadLocalFile,uploadLocalTree} from '../client-transfers.mjs';
+import {uploadLocalFile,uploadLocalTree,transferText} from '../client-transfers.mjs';
+
+test('transfer status explains the current phase and stopped receiver recovery',()=>{
+ const text=transferText({id:'copy',kind:'copy',state:'PAUSED',bytes:123,phase:'接收进程已停止',error:'请用 transfer resume 按原编号续传。'});
+ assert.match(text,/123 \/ \? bytes/);assert.match(text,/接收进程已停止/);assert.match(text,/transfer resume/);
+});
 
 test('CLI accepts repository and directory targets and reports unsupported options',()=>{
  assert.equal(parseCLIOptions(['project','create','vision','--repo','https://example.test/repo.git']).options.repo,'https://example.test/repo.git');

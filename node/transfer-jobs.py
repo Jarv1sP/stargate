@@ -172,13 +172,47 @@ class TransferJobs:
             return module('dataset-files').process(self.config,'files.get',request,root=row['root'])
         raise ValueError('此传输读取操作不存在。')
 
-    def view(self,row):return {k:row.get(k) for k in ('id','key','state','bytes','totalBytes','error','source','target','createdAt','installed')}
+    def view(self,row):return {k:row.get(k) for k in ('id','key','state','bytes','totalBytes','error','source','target','createdAt','installed','phase','startedAt','lastProgressAt')}
 
-    def status(self,args):
-        try:row=self.s.read_json(self.path(args.get('id',args.get('key'))))
+    def phase(self,key,text,**fields):
+        with self.lock(key):
+            row=self.s.read_json(self.path(key))
+            if row['state'] in ('CANCELED','SUCCEEDED'):return
+            if row.get('phase')==text and not fields:return
+            row.update(phase=text,**fields);self.s.atomic_json(self.path(key),row)
+
+    def status(self,args,*,observe=False,observation_timeout=5):
+        file=self.path(args.get('id',args.get('key')))
+        try:row=self.s.read_json(file)
         except FileNotFoundError:return {'state':'ABSENT'}
+        def needs_observation(value):
+            return value['state']=='RUNNING' or value['state']=='PENDING' and time.time()-file.stat().st_mtime>30
+        # Observe only at the API boundary, not in the worker's per-file polls.
+        if observe and needs_observation(row):
+            started=row.get('startedAt')
+            # systemctl may be slow; never hold the receiver's write lock here.
+            try:active=self.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value',
+                                  'gpuq-transfer-'+row['id']+'.service*'],timeout=observation_timeout).strip() if observation_timeout>0 else None
+            except (ValueError,OSError,subprocess.TimeoutExpired):active=None
+            with self.lock(row['id']):
+                row=self.s.read_json(file)
+                # start/resume writes PENDING before systemd-run creates the unit.
+                if needs_observation(row) and row.get('startedAt')==started:
+                    if active in ('','inactive','failed'):
+                        row.update(state='PAUSED',phase='接收进程已停止',error='接收进程已停止，已传文件和偏移保留；请用 transfer resume 按原编号续传。')
+                        self.s.atomic_json(file,row)
+                    elif active not in ('active','activating','deactivating','reloading'):
+                        return self.view({**row,'state':'UNKNOWN','error':'暂时查不到接收进程，请按原编号稍后查询。'})
         if row.get('sourceCompletePending'):self.complete_copy(row)
         return self.view(row)
+
+    def listing(self):
+        rows=[];deadline=time.monotonic()+5
+        for file in self.folder.glob('*.json'):
+            if file.name.endswith('.source.json'):continue
+            row=self.s.read_json(file)
+            rows.append(self.status({'id':row['id']},observe=True,observation_timeout=max(0,deadline-time.monotonic())) if row['state'] in ('PENDING','RUNNING') else self.view(row))
+        return {'transfers':rows}
 
     def launch(self,key):
         return self.e.run(['/usr/bin/systemd-run','--user','--collect','--unit=gpuq-transfer-'+key,
@@ -271,6 +305,7 @@ class TransferJobs:
 
     def worker(self,key):
         row=self.s.read_json(self.path(key))
+        self.phase(key,'等待目标项目的其他复制完成' if row['target'].get('environment') else '等待源目录',startedAt=time.time())
         if row['target'].get('environment') is True:
             with contextlib.ExitStack() as stack:
                 try:available=stack.enter_context(module('project-copy').ProjectCopy(self).serialized(row))
@@ -319,6 +354,7 @@ class TransferJobs:
         peer=None
         try:
             peer=self.peer_client(row)
+            self.phase(key,'等待源项目导出' if row['target'].get('environment') else '读取源目录')
             target=row['target'];copy=module('project-copy').ProjectCopy(self) if target.get('environment') is True else None
             if row['state']=='CANCELED':return 0
             if copy:
@@ -330,12 +366,12 @@ class TransferJobs:
                     copy.cleanup({**row,'createdProject':row.get('createdProject',created)})
                     self.complete_copy(row,peer)
                     row=self.s.read_json(self.path(key))
-                    with self.lock(key):row.update(state='SUCCEEDED',installed=True);self.s.atomic_json(self.path(key),row)
+                    with self.lock(key):row.update(state='SUCCEEDED',installed=True,phase='复制完成');self.s.atomic_json(self.path(key),row)
                     return 0
                 if row.get('runtime'):
                     self.complete_copy(row,peer)
                     row=self.s.read_json(self.path(key))
-                    with self.lock(key):row.update(state='SUCCEEDED');self.s.atomic_json(self.path(key),row)
+                    with self.lock(key):row.update(state='SUCCEEDED',phase='复制完成');self.s.atomic_json(self.path(key),row)
                     return 0
                 root=self.s.private_dir(copy.target(row)/'received',create=True)
             else:root=self.d.dataset_root(self.config,target['dataset'],create=True) if target.get('dataset') else self.root(target)
@@ -369,7 +405,7 @@ class TransferJobs:
                 self.complete_copy(row,peer)
             with self.lock(key):
                 row=self.s.read_json(self.path(key))
-                if row['state']!='CANCELED':row.update(state='SUCCEEDED',bytes=done,totalBytes=done);self.s.atomic_json(self.path(key),row)
+                if row['state']!='CANCELED':row.update(state='SUCCEEDED',phase='复制完成',bytes=done,totalBytes=done);self.s.atomic_json(self.path(key),row)
             return 0
         except Exception as error:
             with self.lock(key):
@@ -393,7 +429,7 @@ class TransferJobs:
                 row=self.s.read_json(self.path(key));target=row['target']
                 if row['state']=='CANCELED':return None
                 upload_key=row['uploadKeys'].setdefault(entry['path'],str(uuid.uuid4()))
-                row.update(state='RUNNING');self.s.atomic_json(self.path(key),row)
+                row.update(state='RUNNING',phase='传输文件');self.s.atomic_json(self.path(key),row)
             begin={'key':upload_key,'path':entry['path'],'totalSize':entry['size'],'executable':entry.get('executable',False),'dataset':target.get('dataset'),'actor':row.get('actor')}
             status=uploads.process('begin',begin);offset=status['offset'] or 0
             while offset<entry['size']:
@@ -403,7 +439,7 @@ class TransferJobs:
                     if row['state']=='CANCELED':return None
                     status=uploads.process('chunk',{'key':upload_key,'data':chunk['data'],'offset':offset})
                     if status['offset']==offset:raise ValueError('源文件未返回字节，请按原编号续传。')
-                    offset=status['offset'];row['bytes']=done+offset;self.s.atomic_json(self.path(key),row)
+                    offset=status['offset'];row.update(bytes=done+offset,lastProgressAt=time.time());self.s.atomic_json(self.path(key),row)
             with self.lock(key):
                 if self.s.read_json(self.path(key))['state']=='CANCELED':return None
                 uploads.process('finish',{'key':upload_key});done+=entry['size']
@@ -417,8 +453,8 @@ class TransferJobs:
         if action=='project.start':return self.start(args)
         if action=='prepare':return self.prepare(args)
         if action=='start':return self.start(args)
-        if action=='status':return self.status(args)
+        if action=='status':return self.status(args,observe=True)
         if action=='cancel':return self.cancel(args)
         if action=='resume':return self.resume(args)
-        if action=='list':return {'transfers':[self.view(self.s.read_json(p)) for p in self.folder.glob('*.json') if not p.name.endswith('.source.json')]}
+        if action=='list':return self.listing()
         raise ValueError('此传输操作不存在。')

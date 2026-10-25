@@ -55,6 +55,7 @@ class Runtime(unittest.TestCase):
                 self.assertTrue(running.wait(3));copy=pool.submit(transfer)
                 self.assertTrue(downloaded.wait(5))
                 self.assertFalse(finished.wait(.3))
+                self.assertEqual(t.target.process('transfers.status',{'id':t.key})['phase'],'等待目标项目的任务、终端或 Git 命令结束')
                 self.assertEqual((paths['code']/'train.py').read_text(),'old-code')
             finally:release.set()
             consumer.result(5);self.assertEqual(copy.result(8),0,t.target.status({'id':t.key}))
@@ -335,7 +336,7 @@ class CopyIdle(unittest.TestCase):
     setUp=c.f.DirectoryContract.setUp
 
     def fixture(self,run):
-        state=['RUNNING'];jobs=SimpleNamespace(s=c.f.module('project-store'),d=self.data,status=lambda args:{'state':state[0]})
+        state=['RUNNING'];jobs=SimpleNamespace(s=c.f.module('project-store'),d=self.data,status=lambda args:{'state':state[0]},phase=lambda *args:None)
         module=c.f.module('project-copy');copy=module.ProjectCopy(jobs)
         copy.destination=lambda row:Path(self.config['workspacesRoot'])/'alice'/'demo'
         engine=SimpleNamespace(folder=Path(self.config['root']),run=run)

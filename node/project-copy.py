@@ -136,6 +136,7 @@ class ProjectCopy:
 
     @contextlib.contextmanager
     def idle(self,row,engine):
+        self.j.phase(row['id'],'等待目标项目的任务、终端或 Git 命令结束')
         project=self.d.name(row['target']['project'])
         def running(selector):
             args=('ps','--quiet','--filter',selector)
@@ -161,6 +162,7 @@ class ProjectCopy:
     def incremental_page(self,row,peer,offset):
         bundle=self.target(row)/'received';index=bundle/'index.jsonl';plan=bundle/'plan.jsonl'
         if not plan.exists():
+            self.j.phase(row['id'],'等待源项目导出并读取文件清单')
             cursor=0
             with open(index.with_suffix('.tmp'),'w') as stream:
                 while cursor is not None:
@@ -173,12 +175,14 @@ class ProjectCopy:
             os.replace(index.with_suffix('.tmp'),index)
             target=row['target'];owner=target.get('ownerId') or target['userId'];engine=self.j.e.projects().oci(owner)
             paths=self.j.e.projects().store.dev_paths(owner,target['project'])
+            self.j.phase(row['id'],'比较目标项目文件')
             engine.copy_files(target['project'],'plan',paths=paths,index=str(index),plan=str(plan))
         page=self.sync().page(plan,offset)
         page['entries']=[{**entry,'path':entry['body'],'remotePath':entry['archive'],'remoteOffset':entry['offset']} for entry in page['entries'] if entry['type']=='file']
         return page
 
     def install(self,row,receive=None,receive_full=None):
+        self.j.phase(row['id'],'准备合并项目文件')
         key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
         folder=self.target(row);destination=self.destination(row);bundle=folder/'received';incremental=target.get('mode')=='incremental'
         engine=self.j.e.projects().oci(owner)
@@ -213,8 +217,10 @@ class ProjectCopy:
         changed=bool(plan.stat().st_size)
         with self.idle(row,engine) if changed and existing else contextlib.nullcontext(True) as ready:
             if ready and changed:
+                self.j.phase(key,'备份目标项目中将被覆盖的文件')
                 engine.copy_files(project,'backup',paths=paths,plan=str(plan),key=key)
                 if self.j.status({'id':key})['state']=='CANCELED':return False
+                self.j.phase(key,'合并项目文件')
                 engine.copy_files(project,'apply',paths=paths,plan=str(plan),bundle=str(bundle),incremental=incremental)
             if ready:
                 with self.j.lock(key):
@@ -236,6 +242,7 @@ class ProjectCopy:
 
     def install_runtime(self,row):
         # The original task-copy installer: keep a busy project's files untouched.
+        self.j.phase(row['id'],'准备独立任务副本并安装项目文件')
         key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
         folder=self.target(row);bundle=folder/'received';manifest=self.s.read_json(bundle/'manifest.json')
         self.s.require_workspace_space(folder,needed=2*(bundle/'image.tar').stat().st_size+manifest['rootfsBytes']+(bundle/'workspace.tar').stat().st_size)
