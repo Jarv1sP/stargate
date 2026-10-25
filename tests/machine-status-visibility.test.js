@@ -29,7 +29,7 @@ test('server grants project anonymous busy GPUs without changing the shared real
   assert.doesNotMatch(JSON.stringify(hidden),/private-|12345|J0123456789ab/);
   for(const gpu of hidden.gpus){
     const percent=gpu.memoryUsedMiB/gpu.memoryTotalMiB*100;
-    assert.ok(percent>=39.99&&percent<=60.01);assert.equal(gpu.processes.length,1);
+    assert.ok(percent>=19.99&&percent<=90.01);assert.equal(gpu.processes.length,1);
     assert.equal(gpu.processes[0].task.name,'匿名任务');assert.equal(gpu.processes[0].task.submitter.name,'匿名用户');
   }
   assert.equal(real.gpus[0].memoryUsedMiB,1024);assert.equal(real.gpus[0].processes[0].owner,'private-owner');

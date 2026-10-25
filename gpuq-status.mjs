@@ -55,7 +55,7 @@ export const canViewMachineStatus=(principal,limits,machine)=>principal?.role===
 function anonymousHost(machine){
   const checkedAt=new Date().toISOString(),memoryTotalMiB=Number.parseFloat(machine.memory)*1024;
   const gpus=Array.from({length:machine.cards},(_,index)=>{
-    const percent=randomInt(400,601)/10,memoryUsedMiB=Math.round(memoryTotalMiB*percent/100);
+    const percent=randomInt(200,901)/10,memoryUsedMiB=Math.round(memoryTotalMiB*percent/100);
     const task={id:`anonymous-${machine.id}-${index}`,source:'anonymous',name:'匿名任务',description:'',
       submitter:{name:'匿名用户',username:'匿名用户'},state:'RUNNING',assignedGpuIndices:[index],gpuCount:1};
     return {index,model:machine.model,memoryTotalMiB,memoryUsedMiB,utilization:percent,
