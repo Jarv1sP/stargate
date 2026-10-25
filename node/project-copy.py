@@ -242,6 +242,7 @@ class ProjectCopy:
 
     def install_runtime(self,row):
         # The original task-copy installer: keep a busy project's files untouched.
+        self.j.phase(row['id'],'准备独立任务副本并安装项目文件')
         key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
         folder=self.target(row);bundle=folder/'received';manifest=self.s.read_json(bundle/'manifest.json')
         self.s.require_workspace_space(folder,needed=2*(bundle/'image.tar').stat().st_size+manifest['rootfsBytes']+(bundle/'workspace.tar').stat().st_size)

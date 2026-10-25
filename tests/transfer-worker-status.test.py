@@ -1,6 +1,8 @@
 """A stopped receiver is resumable under its original key, with staged bytes intact."""
 import importlib.util,os,subprocess,time,unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('copy_fixture',Path(__file__).with_name('project-copy.test.py'))
@@ -62,6 +64,44 @@ class WorkerStatus(unittest.TestCase):
             row=t.target.s.read_json(file);row.update(state=state,phase='finished');t.target.s.atomic_json(file,row)
             t.target.phase(t.key,'合并项目文件')
             self.assertEqual(t.target.process('transfers.status',{'id':t.key})['phase'],'finished')
+
+    def test_slow_status_query_does_not_block_progress_or_pause_a_resumed_worker(self):
+        t,_=self.interrupted();querying,release,progressed=Event(),Event(),Event()
+        def slow(*args,**kwargs):
+            querying.set()
+            if not release.wait(5):raise AssertionError('query not released')
+            return 'inactive'
+        t.target.e.run=slow
+        def progress():
+            t.target.phase(t.key,'传输文件',startedAt=time.time());progressed.set()
+        with ThreadPoolExecutor(2) as pool:
+            query=pool.submit(t.target.process,'transfers.status',{'id':t.key})
+            try:
+                self.assertTrue(querying.wait(2));writer=pool.submit(progress)
+                self.assertTrue(progressed.wait(1),'status held the transfer write lock')
+            finally:release.set()
+            writer.result(3);self.assertEqual(query.result(3)['state'],'RUNNING')
+
+    def test_old_observation_does_not_pause_a_pending_resume_before_its_worker_starts(self):
+        t,_=self.interrupted()
+        def resume_during_query(*args,**kwargs):
+            file=t.target.path(t.key);row=t.target.s.read_json(file)
+            row['state']='PENDING';t.target.s.atomic_json(file,row)
+            return 'inactive'
+        t.target.e.run=resume_during_query
+        self.assertEqual(t.target.process('transfers.status',{'id':t.key})['state'],'PENDING')
+
+    def test_list_has_one_shared_observation_budget_and_keeps_unread_rows_unknown(self):
+        t,row=self.interrupted();other=self.key();row.update(id=other,key=other)
+        t.target.s.atomic_json(t.target.path(other),row)
+        clock=[0];calls=[]
+        def timeout(*args,**kwargs):
+            calls.append(kwargs['timeout']);clock[0]+=5
+            raise subprocess.TimeoutExpired(['systemctl'],kwargs['timeout'])
+        t.target.e.run=timeout
+        with patch.object(t.transfers.time,'monotonic',side_effect=lambda:clock[0]):
+            rows=t.target.process('transfers.list',{})['transfers']
+        self.assertEqual(len(calls),1);self.assertEqual({row['state'] for row in rows},{'UNKNOWN'})
 
 
 if __name__=='__main__':unittest.main()

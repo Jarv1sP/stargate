@@ -181,19 +181,23 @@ class TransferJobs:
             if row.get('phase')==text and not fields:return
             row.update(phase=text,**fields);self.s.atomic_json(self.path(key),row)
 
-    def status(self,args,*,observe=False):
+    def status(self,args,*,observe=False,observation_timeout=5):
         file=self.path(args.get('id',args.get('key')))
         try:row=self.s.read_json(file)
         except FileNotFoundError:return {'state':'ABSENT'}
+        def needs_observation(value):
+            return value['state']=='RUNNING' or value['state']=='PENDING' and time.time()-file.stat().st_mtime>30
         # Observe only at the API boundary, not in the worker's per-file polls.
-        if observe and row['state'] in ('PENDING','RUNNING'):
+        if observe and needs_observation(row):
+            started=row.get('startedAt')
+            # systemctl may be slow; never hold the receiver's write lock here.
+            try:active=self.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value',
+                                  'gpuq-transfer-'+row['id']+'.service*'],timeout=observation_timeout).strip() if observation_timeout>0 else None
+            except (ValueError,OSError,subprocess.TimeoutExpired):active=None
             with self.lock(row['id']):
                 row=self.s.read_json(file)
                 # start/resume writes PENDING before systemd-run creates the unit.
-                if row['state']=='RUNNING' or row['state']=='PENDING' and time.time()-file.stat().st_mtime>30:
-                    try:active=self.e.run(['/usr/bin/systemctl','--user','show','--property=ActiveState','--value',
-                                          'gpuq-transfer-'+row['id']+'.service*'],timeout=5).strip()
-                    except (ValueError,OSError,subprocess.TimeoutExpired):active=None
+                if needs_observation(row) and row.get('startedAt')==started:
                     if active in ('','inactive','failed'):
                         row.update(state='PAUSED',phase='接收进程已停止',error='接收进程已停止，已传文件和偏移保留；请用 transfer resume 按原编号续传。')
                         self.s.atomic_json(file,row)
@@ -203,11 +207,11 @@ class TransferJobs:
         return self.view(row)
 
     def listing(self):
-        rows=[]
+        rows=[];deadline=time.monotonic()+5
         for file in self.folder.glob('*.json'):
             if file.name.endswith('.source.json'):continue
             row=self.s.read_json(file)
-            rows.append(self.status({'id':row['id']},observe=True) if row['state'] in ('PENDING','RUNNING') else self.view(row))
+            rows.append(self.status({'id':row['id']},observe=True,observation_timeout=max(0,deadline-time.monotonic())) if row['state'] in ('PENDING','RUNNING') else self.view(row))
         return {'transfers':rows}
 
     def launch(self,key):
