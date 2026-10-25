@@ -1,4 +1,5 @@
 import {readFile,stat} from 'node:fs/promises';
+import {randomInt} from 'node:crypto';
 import {MACHINES} from './dist/model.js';
 import {taskCatalog} from './task-catalog.mjs';
 
@@ -49,10 +50,29 @@ export async function readGPUQStatus(path,now=Date.now(),previous){
     })};
 }
 
+export const canViewMachineStatus=(principal,limits,machine)=>principal?.role==='admin'||Number.isFinite(limits?.[machine])&&limits[machine]>0;
+
+function anonymousHost(machine){
+  const checkedAt=new Date().toISOString(),memoryTotalMiB=Number.parseFloat(machine.memory)*1024;
+  const gpus=Array.from({length:machine.cards},(_,index)=>{
+    const percent=randomInt(400,601)/10,memoryUsedMiB=Math.round(memoryTotalMiB*percent/100);
+    const task={id:`anonymous-${machine.id}-${index}`,source:'anonymous',name:'匿名任务',description:'',
+      submitter:{name:'匿名用户',username:'匿名用户'},state:'RUNNING',assignedGpuIndices:[index],gpuCount:1};
+    return {index,model:machine.model,memoryTotalMiB,memoryUsedMiB,utilization:percent,
+      temperatureC:null,powerDrawW:null,powerLimitW:null,processesAvailable:true,
+      processes:[{pid:null,name:'匿名任务',owner:'匿名用户',memoryUsedMiB,type:'compute',task}]};
+  });
+  // Build a separate public view; never copy fields from the real host.
+  return {id:machine.id,displayMasked:true,reachable:true,checkedAt,samplingStale:false,gpus,
+    tasks:gpus.map(gpu=>gpu.processes[0].task),disks:[],gpuq:{connected:true,observeOnly:false,health:'ok',jobs:[]}};
+}
+
 export function visibleGPUQStatus(snapshot,principal,limits,context){
-  return {...snapshot,hosts:snapshot.hosts.map(host=>{
+  return {...snapshot,hosts:MACHINES.map(machine=>{
+    if(!canViewMachineStatus(principal,limits,machine.id))return anonymousHost(machine);
+    const host=snapshot.hosts.find(host=>host.id===machine.id)||{id:machine.id,reachable:false,gpus:[],gpuq:{connected:false,jobs:[]}};
     const base=structuredClone(host),catalog=context?taskCatalog(host,context,true):null;
-    // All team members receive the same sampled GPU/data-volume facts.
+    // Members with a server grant share its sampled GPU/data-volume facts.
     // No host shell or filesystem read is dispatched for these diagnostics.
     base.gpus=host.gpus.map(gpu=>({...structuredClone(gpu),processes:(gpu.processes||[]).map(process=>{
       const task=catalog?.byNode.get(process.scheduling?.jobId);

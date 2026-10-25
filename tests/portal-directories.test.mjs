@@ -58,6 +58,7 @@ async function fixture(t){
  const service=await PortalService.open(database,bootstrap,undefined,bridge);clearInterval(service.executionTimer);
  const admin=await service.login('admin',password);
  const aliceUser=(await service.invoke(admin.token,'users.create',{username:'alice',password})).result,bobUser=(await service.invoke(admin.token,'users.create',{username:'bob',password})).result;
+ for(const user of [aliceUser,bobUser])await service.invoke(admin.token,'policy.save',{userId:user.id,total:1,limits:{[machine]:1}});
  const alice=await service.login('alice',password),bob=await service.login('bob',password);
  const call=async(op,args={},actor=bob)=>(await service.invoke(actor.token,op,{machine,...args})).result;
  const upload=async(dataset,path,bytes,key=randomUUID())=>{

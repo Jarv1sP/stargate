@@ -69,7 +69,7 @@ test('a newer collector replaces the cached task presentation',async t=>{
 });
 
 test('team members edit native-only and peer tasks',async t=>{
- const f=await fixture(t);f.job.userId='demo-user-999';f.job.spec.userId='demo-user-999';f.user.limits={};
+ const f=await fixture(t);f.job.userId='demo-user-999';f.job.spec.userId='demo-user-999';
  const value=(await f.service.invoke(f.member.token,'tasks.display.set',{...f.context,name:'团队共享',description:'可编辑',extra:'ignored',owner:'ignored',spec:{bad:true}})).result;
  assert.equal(value.name,'团队共享');assert.equal(f.calls[0].args.extra,undefined);assert.equal(f.calls[0].args.owner,undefined);
  f.service.store.jobs=[];assert.equal((await f.service.invoke(f.member.token,'tasks.display.get',f.context)).result.name,'团队共享');

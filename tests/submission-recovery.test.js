@@ -69,7 +69,7 @@ test('revocation prevents an otherwise confirmed same-key recovery from dispatch
   const f=await fixture(t),job=await f.original();f.setHandler(()=>{f.user.limits={};return absent(job);});await f.start();
   assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);assert.match(job.error,/授权已改变/);
   assert.equal(usage([job],f.user.id),0);assert.ok(f.calls.every(c=>c.op==='watch'));
-  assert.equal((await f.submit()).result.state,'FAILED');assert.ok(f.calls.every(c=>c.op==='watch'));
+  await assert.rejects(f.submit(),error=>error.status===403);assert.ok(f.calls.every(c=>c.op==='watch'));
 });
 
 test('temporary non-dispatch keeps waiting and resumes the same UUID after more than three retries',async t=>{

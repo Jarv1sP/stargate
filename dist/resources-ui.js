@@ -47,6 +47,7 @@ export function resourceTotals(views){
 }
 const QUEUE_PREVIEW=5;
 function queue(view){
+  if(view.host?.displayMasked)return '<p class="muted">任务中</p>';
   if(view.maintenance)return '<p class="muted">维护中，不接新任务。</p>';
   const rows=queuedTasks(view);
   if(rows===null)return '<p class="muted hatch">队列读数未知</p>';
@@ -63,8 +64,9 @@ function queue(view){
 export function resourceServerView(machine,{limits={},snapshot,admin=false,production=false,maintenance}={}){
   const quota=known(limits[machine.id])?limits[machine.id]:0;
   const hosts=(snapshot?.hosts||[]).filter(host=>host.id===machine.id),host=hosts.length===1?hosts[0]:null;
-  const observed=production===true&&host?.reachable===true&&(snapshot?.stale===false||host.samplingStale===true);
-  const fresh=observed&&snapshot?.stale===false&&host.samplingStale!==true;
+  const masked=host?.displayMasked===true;
+  const observed=production===true&&host?.reachable===true&&(masked||snapshot?.stale===false||host.samplingStale===true);
+  const fresh=observed&&(masked||snapshot?.stale===false&&host.samplingStale!==true);
   const count=Number.isSafeInteger(machine.cards)&&machine.cards>0&&machine.cards<=64?machine.cards:0;
   const raw=Array.isArray(host?.gpus)?host.gpus:[];
   const validInventory=count>0&&raw.every(gpu=>gpu&&Number.isSafeInteger(gpu.index)&&gpu.index>=0&&gpu.index<count)&&new Set(raw.map(gpu=>gpu.index)).size===raw.length;
@@ -72,7 +74,7 @@ export function resourceServerView(machine,{limits={},snapshot,admin=false,produ
   const complete=validInventory&&gpus.length===count;
   const processesComplete=fresh&&complete&&gpus.every(gpu=>gpu.processesAvailable===true&&Array.isArray(gpu.processes));
   const busy=processesComplete?gpus.filter(gpu=>gpu.processes.length>0).length:null;
-  const status=!production?'暂无采集':observed&&!fresh?'上次采样 · '+clock(host.checkedAt):snapshot?.stale===true?'采集已过期':!fresh?'无法采集':host.gpuq?.observeOnly===true?'仅观察':host.gpuq?.health==='degraded'?'监控在线 · 调度异常':'监控在线';
+  const status=masked?'任务中':!production?'暂无采集':observed&&!fresh?'上次采样 · '+clock(host.checkedAt):snapshot?.stale===true?'采集已过期':!fresh?'无法采集':host.gpuq?.observeOnly===true?'仅观察':host.gpuq?.health==='degraded'?'监控在线 · 调度异常':'监控在线';
   return {machine,quota,host,observed,fresh,count,gpus,complete,validInventory,processesComplete,busy,status,checkedAt:host?.checkedAt||snapshot?.checkedAt,maintenance:maintenanceFor(maintenance,machine.id)};
 }
 function gpuLevel(gpu){return gpu&&known(gpu.memoryUsedMiB)&&known(gpu.memoryTotalMiB)&&gpu.memoryTotalMiB>0&&gpu.memoryUsedMiB<=gpu.memoryTotalMiB?gpu.memoryUsedMiB/gpu.memoryTotalMiB*100:null;}

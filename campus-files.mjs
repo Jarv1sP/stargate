@@ -7,6 +7,12 @@ import {validateProjectFile,UUID} from './projects.mjs';
 export const FILE_PROTOCOL='campus-file';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const denied=(message,status=403)=>{throw Object.assign(Error(message),{status,code:'CAMPUS_FILE_REQUIRED'});};
+function assertOutputVisible(service,principal,args){
+  if(args.area!=='output'&&!args.runId)return;
+  service.assertMachineStatusVisible(principal,args.machine);
+  const job=service.store.jobs.find(job=>job.id===args.runId);
+  if(job)service.assertMachineStatusVisible(principal,job.machine);
+}
 function rememberTicket(service,ticket,entry){
   const now=Date.now()/1000;
   service.db.prepare('DELETE FROM file_authorizations WHERE expires_at<=?').run(now);
@@ -30,7 +36,8 @@ export function installFileCampus(service){
     if(!data||typeof data.ticket!=='string'||data.ticket.length>4096)denied('文件授权无效。');
     const entry=service.fileTickets.get(hash(data.ticket));
     if(!entry||entry.expiresAt<=Date.now()/1000||service.closing)denied('校园文件授权已失效，请核对原操作。');
-    service.loginSessions.principalFromHash(entry.sessionHash);
+    const principal=service.loginSessions.principalFromHash(entry.sessionHash);
+    assertOutputVisible(service,principal,entry.args);
     if(service.maintenanceFor(entry.args.machine))denied('服务器正在维护，请稍后继续原操作。',503);
     return {allowed:true,protocol:FILE_PROTOCOL};
   };
@@ -54,6 +61,7 @@ export async function fileTicket(service,token,args){
   if(args.maxChunkBytes!==undefined&&(!Number.isSafeInteger(args.maxChunkBytes)||args.maxChunkBytes<1||args.maxChunkBytes>16*1048576))denied('校园文件分块边界无效。',400);
   if(!user.enabled)denied('请重新登录。');
   if(!MACHINES.some(machine=>machine.id===args.machine))denied('请选择列表中的服务器。',400);
+  assertOutputVisible(service,principal,args);
   const context=validateProjectFile(args);
   if(!['put','get'].includes(args.action)||typeof args.path!=='string'||Buffer.byteLength(args.path)>4096
     ||args.path.split('/').some(part=>!part||part==='.'||part==='..'||Buffer.byteLength(part)>255)||/[\\\x00-\x1f\x7f]/.test(args.path))denied('请使用数据集或工作区内的相对文件路径。',400);
@@ -76,6 +84,7 @@ export async function fileTicket(service,token,args){
     throw error;
   }
   const current=service.principal(token);
+  assertOutputVisible(service,current,args);
   if(service.maintenanceFor(args.machine))denied('服务器正在维护，请稍后继续原操作。',503);
   if(result?.available!==true)return {result:{...result,state:'UNKNOWN',message:'节点暂未返回文件入口，请按原编号重试。'},principal:current};
   if(!Number.isSafeInteger(result.chunkBytes)||result.chunkBytes<1||result.chunkBytes>(args.maxChunkBytes??1048576)

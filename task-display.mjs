@@ -42,6 +42,7 @@ export async function taskDisplayCall(service,token,operation,args){
     const current=service.principal(token);
     if(service.closing)fail('服务正在关闭，请稍后查询。',503);
     if(!MACHINES.some(m=>m.id===args.machine))fail('请选择列表中的服务器。');
+    service.assertMachineStatusVisible(current,args.machine);
     if(setting)service.assertMaintenanceAllowed?.(operation,args,current);
   };
   check();

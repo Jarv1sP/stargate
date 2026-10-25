@@ -3,11 +3,13 @@ import {open} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {isAbsolute} from 'node:path';
 import {JOB_TERMINAL,jobFeedbackText} from './dist/job-progress.js';
+import {canViewMachineStatus} from './gpuq-status.mjs';
 
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const CAPACITY=10000,MAX_KEYS=128,RETENTION=7*86400;
 const ownerId=value=>typeof value==='string'&&/^(builtin-admin|demo-user-[0-9]+)$/.test(value);
 const eventHash=JSON.stringify;
+const visibleTo=(user,job)=>!job.machine||canViewMachineStatus(user,user.limits,job.machine);
 
 async function privateFile(path,limit){
   if(typeof path!=='string'||!isAbsolute(path))throw Error('Notification files require absolute paths');
@@ -90,6 +92,7 @@ function installNotificationStore(service,config,{clock,timer}){
     const user=service.store.get(principal.userId),job=service.store.jobs.find(j=>j.id===args.jobId);
     if(!user.enabled)fail('请重新登录。',403);
     if(!job)fail('任务不存在。',404);
+    if(!visibleTo(user,job))fail('没有这台服务器的查看权限，请联系管理员授权。',403);
     if(!Object.hasOwn(args,'enabled'))return service.jobNotificationState(job,user.id);
     if(args.enabled&&(!config?.chatByUserId?.[user.id]||JOB_TERMINAL.has(job.state)))fail('请先由管理员配置你的 Telegram 收件人；只能开启待完成任务通知。',409);
     db.exec('BEGIN IMMEDIATE');
@@ -106,7 +109,7 @@ function installNotificationStore(service,config,{clock,timer}){
     db.prepare('DELETE FROM job_notification_outbox_v2 WHERE created_at<?').run(now-RETENTION);
     for(const sub of db.prepare('SELECT * FROM job_notification_subscriptions_v2').all()){
       const job=service.store.jobs.find(j=>j.id===sub.job_id),user=service.store.users.find(u=>u.id===sub.user_id);
-      if(!job||!user?.enabled||!config?.chatByUserId?.[sub.user_id]||!sub.enabled){
+      if(!job||!user?.enabled||!visibleTo(user,job)||!config?.chatByUserId?.[sub.user_id]||!sub.enabled){
         db.prepare("DELETE FROM job_notification_outbox_v2 WHERE job_id=? AND state IN ('QUEUED','SENDING')").run(sub.job_id);
         if(!job||!user)db.prepare('DELETE FROM job_notification_subscriptions_v2 WHERE job_id=?').run(sub.job_id);
         continue;
@@ -147,7 +150,7 @@ function installNotificationStore(service,config,{clock,timer}){
           if(candidate){
             const user=service.store.users.find(u=>u.id===candidate.user_id),job=service.store.jobs.find(j=>j.id===candidate.job_id);
             const subscription=db.prepare('SELECT enabled,generation FROM job_notification_subscriptions_v2 WHERE job_id=? AND user_id=?').get(candidate.job_id,candidate.user_id);
-            if(!user?.enabled||!job||subscription?.enabled!==1||subscription.generation!==candidate.generation||!config.chatByUserId[candidate.user_id]){
+            if(!user?.enabled||!job||!visibleTo(user,job)||subscription?.enabled!==1||subscription.generation!==candidate.generation||!config.chatByUserId[candidate.user_id]){
               db.prepare('DELETE FROM job_notification_outbox_v2 WHERE id=?').run(candidate.id);return {discarded:true};
             }
             if(candidate.attempts>=10){
@@ -159,6 +162,10 @@ function installNotificationStore(service,config,{clock,timer}){
         });
         if(!row)break;
         if(row.discarded)continue;
+        const user=service.store.users.find(user=>user.id===row.user_id),job=service.store.jobs.find(job=>job.id===row.job_id);
+        if(!user?.enabled||!job||!visibleTo(user,job)){
+          await service.enqueue(()=>db.prepare('DELETE FROM job_notification_outbox_v2 WHERE id=?').run(row.id));continue;
+        }
         let error;
         try{await config.send(config.chatByUserId[row.user_id],row.payload);}catch(value){error=value;}
         if(service.closing)return;

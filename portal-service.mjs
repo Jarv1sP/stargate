@@ -4,7 +4,7 @@ import {mkdir,readFile,writeFile,chmod} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {DemoService,credential} from './dist/service.js';
-import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
+import {readGPUQStatus,visibleGPUQStatus,canViewMachineStatus} from './gpuq-status.mjs';
 import {installExecution,executionCall,publicJob,usage,priorityCapable,priorityRankCapable,TERMINAL,pendingJobReason} from './execution.mjs';
 import {MACHINES,validUsername} from './dist/model.js';
 import {installCommunity,communityCall,maintainTaskNotes,announcementState,chatMentions,chatImageFile} from './community.mjs';
@@ -215,9 +215,10 @@ export class PortalService extends DemoService{
     if(args.jobId!==undefined){
       const job=this.store.jobs.find(row=>row.id===args.jobId);
       if(!job)throw Object.assign(Error('任务不存在。'),{status:404});
+      this.assertMachineStatusVisible(current,job.machine);
       state.jobs=[{id:job.id,machine:job.machine,project:job.project??job.spec?.project,ownerId:job.ownerId??job.userId,userId:job.userId}];
     }else if(args.jobKey!==undefined){
-      state.jobs=this.store.jobs.filter(job=>job.key===args.jobKey).map(job=>({
+      state.jobs=this.store.jobs.filter(job=>job.key===args.jobKey&&(!job.machine||canViewMachineStatus(current,this.store.get(current.userId).limits,job.machine))).map(job=>({
         ...publicJob(this.taskDisplayJob(job),this.store.users),...stateCommand(job.spec.argv)
       }));
     }
@@ -230,7 +231,12 @@ export class PortalService extends DemoService{
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭，请稍后查询。'),{status:503});
       const current=this.principal(token);
-
+      if(operation==='terminal.status')this.assertMachineStatusVisible(current,request.machine);
+      if(request.area==='output'||request.runId){
+        this.assertMachineStatusVisible(current,request.machine);
+        const job=this.store.jobs.find(job=>job.id===request.runId);
+        if(job)this.assertMachineStatusVisible(current,job.machine);
+      }
       this.assertMaintenanceAllowed?.(operation,request,current);
     };
     try{
@@ -255,6 +261,8 @@ export class PortalService extends DemoService{
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
       const current=this.principal(token);
+      const job=this.store.jobs.find(job=>job.id===request.jobId);
+      if(job)this.assertMachineStatusVisible(current,job.machine);
       this.assertMaintenanceAllowed?.(operation,request,current);
       return current;
     };
@@ -269,6 +277,7 @@ export class PortalService extends DemoService{
     const {username,role,userId}=this.principal(token);
     if(!MACHINES.some(machine=>machine.id===args.machine))
       throw Object.assign(Error('请选择列表中的服务器。'),{status:400});
+    this.assertMachineStatusVisible({username,role,userId},args.machine);
     return {username,role,userId};
   }
   async terminalExchange(token,args){
@@ -344,7 +353,10 @@ export class PortalService extends DemoService{
     if(operation==='state')return this.readState(token,args);
     if(operation==='storage.snapshot'||operation==='storage.refresh'){
       const principal=this.principal(token);
-      return {result:operation==='storage.snapshot'?this.storageSnapshot(args.machine):this.requestStorageRefresh(args.machine),principal};
+      if(args.machine)this.assertMachineStatusVisible(principal,args.machine);
+      const result=operation==='storage.snapshot'?this.storageSnapshot(args.machine):this.requestStorageRefresh(args.machine);
+      result.machines=result.machines.filter(row=>canViewMachineStatus(principal,this.store.get(principal.userId).limits,row.machine));
+      return {result,principal};
     }
     if(['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation))return this.jobRead(token,operation,args,options);
     if(operation==='terminal.exchange')return this.terminalExchange(token,args);
@@ -373,7 +385,15 @@ export class PortalService extends DemoService{
       const principal=this.principal(token);return Promise.resolve({result:this.configureJobNotification(principal,args),principal});
     }
     if(operation.startsWith('jobs.')||operation.startsWith('projects.')||operation.startsWith('files.')||operation.startsWith('terminal.')||operation.startsWith('data.upload.')||operation==='datasets.delete'||operation==='outputs.delete'){
-      const run=async()=>{const principal=this.principal(token),result=await executionCall(this,principal,operation,args);this.principal(token);
+      const run=async()=>{
+        const check=()=>{
+          const principal=this.principal(token);
+          if(operation==='terminal.open')this.assertMachineStatusVisible(principal,args.machine);
+          const job=args.jobId?this.store.jobs.find(job=>job.id===args.jobId):operation==='jobs.submit'&&args.key?this.store.jobs.find(job=>job.key===args.key):null;
+          if(job)this.assertMachineStatusVisible(principal,job.machine);
+          return principal;
+        };
+        const principal=check(),result=await executionCall(this,principal,operation,args);check();
         if(operation==='projects.create'||operation==='data.upload.finish'&&args.dataset&&result.state==='COMPLETE'||
           ['datasets.delete','projects.retire'].includes(operation)&&result.state==='TRASHED'||operation==='projects.retire.restore'&&result.state==='RESTORED')this.scheduleStorageRefresh(args.machine);
         return {result,...(operation==='jobs.submit'&&options.omitResponseState!==true?{state:this.state(principal)}:{}),principal};};
@@ -423,6 +443,10 @@ export class PortalService extends DemoService{
       })]);
     }finally{clearTimeout(timer);}
   }
+  assertMachineStatusVisible(principal,machine){
+    if(machine&&!canViewMachineStatus(principal,this.store.get(principal.userId).limits,machine))
+      throw Object.assign(Error('没有这台服务器的查看权限，请联系管理员授权。'),{status:403});
+  }
   stateSummary(principal){
     // Construct only preflight metadata. Calling state() then deleting jobs
     // would still clone and decorate the complete job/process history.
@@ -431,7 +455,7 @@ export class PortalService extends DemoService{
     const checked=Date.parse(this.gpuq?.checkedAt),age=Date.now()-checked;
     const fresh=this.gpuq?.stale===false&&Number.isFinite(age)&&age>=-30000&&age<=180000;
     return {summaryVersion:1,machines:structuredClone(machines),users,demo:false,mode:'persistent',
-      gpuqConnected:fresh&&this.gpuq.hosts.some(host=>host.gpuq.connected),jobsSimulated:false,
+      gpuqConnected:fresh&&this.gpuq.hosts.some(host=>canViewMachineStatus(principal,this.store.get(principal.userId).limits,host.id)&&host.gpuq.connected),jobsSimulated:false,
       executionEnabled:this.executionEnabled===true,taskMetadata:{version:1},
       operationalMaintenance:this.operationalMaintenance?.(principal),
 };
@@ -441,9 +465,10 @@ export class PortalService extends DemoService{
     const cached=this.gpuq||{checkedAt:null,stale:true,hosts:[]},age=Date.now()-Date.parse(cached.checkedAt);
     const stale=cached.stale!==false||!Number.isFinite(age)||age>180000||age< -30000;
     const snapshot=this.taskDisplaySnapshot({...cached,stale,hosts:stale?cached.hosts.map(host=>({...host,samplingStale:true})):cached.hosts});
-    const visible=this.store.jobs.map(j=>this.taskDisplayJob(j)),jobsTotal=visible.length;
+    const limits=this.store.get(principal.userId).limits;
+    const visible=this.store.jobs.filter(job=>!job.machine||canViewMachineStatus(principal,limits,job.machine)).map(j=>this.taskDisplayJob(j)),jobsTotal=visible.length;
     const gpuq=visibleGPUQStatus(snapshot,principal,this.store.get(principal.userId).limits,{jobs:this.store.jobs.map(j=>this.taskDisplayJob(j)),users:this.store.users});
-    const capabilities=Object.fromEntries(gpuq.hosts.map(h=>[h.id,!gpuq.stale&&priorityCapable(h)===true]));
+    const capabilities=Object.fromEntries(gpuq.hosts.map(h=>[h.id,h.displayMasked!==true&&!gpuq.stale&&priorityCapable(h)===true]));
     const full=job=>({...publicJob(job,this.store.users),...stateCommand(job.spec.argv),queueReason:pendingJobReason(this,job),notifications:this.jobNotificationState(job,principal.userId),
       canSetPriority:job.state==='PENDING'&&!job.cancelRequested});
     const selected=new Map(visible.filter(job=>!TERMINAL.has(job.state)).map(job=>[job,full(job)]));
@@ -462,7 +487,7 @@ export class PortalService extends DemoService{
     // Clone only the bounded public projection, not every durable job/spec.
     return structuredClone({...state,jobs,jobsTotal,jobsReturned:jobs.length,jobsTruncated:jobs.length<jobsTotal,jobsCompacted:true,
       taskMetadata:{version:1},operationalMaintenance:this.operationalMaintenance?.(principal),
-      demo:false,mode:'persistent',gpuqConnected:gpuq.hosts.some(h=>h.gpuq.connected),jobsSimulated:false,executionEnabled:this.executionEnabled===true,
+      demo:false,mode:'persistent',gpuqConnected:gpuq.hosts.some(h=>h.displayMasked!==true&&h.gpuq.connected),jobsSimulated:false,executionEnabled:this.executionEnabled===true,
       execution:{priorityCapabilities:capabilities},gpuq,transfers:{version:1},frontendWorkshop:{version:1},announcements:announcementState(this,principal),chatMentions:chatMentions(this,principal),
       ...(principal.role==='admin'?{invitations:this.invitations()}:{})});
   }
