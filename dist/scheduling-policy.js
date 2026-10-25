@@ -7,6 +7,7 @@ export function schedulingPolicy(value,admin=false){
     throw Error('自定义调度参数无效。');
   }
   const policy={...DEFAULTS,...Object.fromEntries([...FIELDS].filter(key=>Object.hasOwn(value,key)).map(key=>[key,value[key]]))};
+  if(!Object.hasOwn(value,'restartPolicy'))policy.restartPolicy=policy.yieldPolicy==='never'?'never':'on-preempt';
   const {rank,yieldPolicy,restartPolicy,checkpointable}=policy;
   if(Object.hasOwn(value,'mode')){
     const modes={queue:'queue','preempt1':'preempt-save','preempt2':'preempt-now','preempt-save':'preempt-save','preempt-now':'preempt-now'};
@@ -19,8 +20,8 @@ export function schedulingPolicy(value,admin=false){
     throw Error('让位或恢复策略无效。');
   }
   if(yieldPolicy==='save'&&!checkpointable)throw Error('保存让位需要明确确认训练已接入 epoch checkpoint 适配器。');
-  if(restartPolicy==='on-preempt'&&(yieldPolicy!=='save'||!checkpointable)){
-    throw Error('自动恢复需要保存让位和 checkpoint 适配器；立即让位不自动从头重跑。');
+  if(restartPolicy==='on-preempt'&&yieldPolicy==='never'){
+    throw Error('不让位的任务无需设置被抢占后重排。');
   }
   return policy;
 }

@@ -88,7 +88,16 @@ try{
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-work.png'),fullPage:true});
   await page.locator('[data-pt=settings]').click();await page.locator('#project-network-check').click();await page.locator('#project-network-result').filter({hasText:'https'}).waitFor();await page.screenshot({path:join(shots,role+'-'+width+'-settings.png'),animations:'disabled',fullPage:true});await page.locator('[data-pt=files]').click();await page.screenshot({path:join(shots,role+'-'+width+'-files.png'),animations:'disabled'});
   await page.locator('[data-nav=jobs]').click();await page.locator('.jr-empty').waitFor();await page.screenshot({path:join(shots,role+'-'+width+'-jobs-empty.png'),animations:'disabled'});
-  await page.locator('[data-empty-new]').click();await page.locator('.jr-sheet.on [type=submit]').click();await page.locator('.jr-sheet.on').waitFor({state:'detached'});
+  await page.locator('[data-empty-new]').click();
+  await page.locator('.jr-sheet.on [name=priority]').selectOption('idle');
+  assert.match(await page.locator('.jr-sheet.on [data-yield-note]').innerText(),/自动重排.*从头运行/);
+  assert.equal(await page.locator('.jr-sheet.on [data-yield-note]').isVisible(),true);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
+  await page.screenshot({path:join(shots,role+'-'+width+'-idle-requeue.png'),animations:'disabled'});
+  await page.locator('.jr-sheet.on [name=priority]').selectOption('normal');
+  assert.equal(await page.locator('.jr-sheet.on [data-yield-note]').isVisible(),false);
+  assert.equal(await page.locator('[name=restart-policy]').inputValue(),'on-preempt');
+  await page.locator('.jr-sheet.on [type=submit]').click();await page.locator('.jr-sheet.on').waitFor({state:'detached'});
   const submitted=calls.find(row=>row.op==='jobs.submit').args;assert.deepEqual(submitted.argv,['/bin/bash','-c','python train.py --data /datasets --output /outputs']);assert.equal(submitted.cards,1);assert.ok(submitted.project&&submitted.machine===machine&&submitted.key);
   await page.locator('[data-scope=all]').click();await page.locator('.jr-row[data-job="'+jobId+'"]').click();await page.locator('.jr-drawer.on [data-log]').filter({hasText:'fixture log'}).waitFor();
   if(process.env.AISPACE_THEME==='1')await (await import('./aispace-layout-checks.mjs')).checkLayout({page,shots,role,width,job:state.jobs[0]});

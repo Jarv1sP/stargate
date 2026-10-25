@@ -20,14 +20,14 @@ const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}
 export function trainingUnavailable(snapshot,hosts=[]){
   return snapshot?.stale===false&&hosts.length>0&&hosts.every(host=>host.reachable===false||host.gpuq?.connected===false||host.gpuq?.observeOnly===true||host.gpuq?.health==='degraded');
 }
-const priorities={normal:{label:'普通',description:'默认排队，不会因新任务自动中断。'},idle:{label:'最低 · 可中断',description:'只适合可丢弃或自行保存进度的任务；让位时结束进程，已写入的输出保留。'},high:{label:'高',description:'优先排队，可让最低任务让位；不自动中断普通任务。'}};
+const priorities={normal:{label:'普通',description:'默认排队，不会因新任务自动中断。'},idle:{label:'最低 · 可中断',description:'让位后自动重排并从头运行，可能覆盖同名输出；交互终端只结束、不自动重开。'},high:{label:'高',description:'优先排队，可让最低任务让位；不自动中断普通任务。'}};
 export function priorityLabel(value){return priorities[value]?.label||(Number.isInteger(value)&&value>=0&&value<=4?`P${value}（原队列）`:'未标注');}
 export function priorityOptions(selected='normal'){return ['normal','idle','high'].map(value=>`<option value="${value}" ${value===selected?'selected':''}>${priorities[value].label}</option>`).join('');}
 export function trainingPriority(value){if(!Object.hasOwn(priorities,value))throw Error('请选择任务优先级。');return value;}
 export function priorityDescription(value){return priorities[value]?.description||'优先级尚未确认。';}
 const rankLabels=['P0 最低','P1 低','P2 普通','P3 较高','P4 最高'];
 export function priorityRankLabel(job){return job.priority!=null&&Number.isInteger(job.schedulerPriority)&&job.schedulerPriority>=0&&job.schedulerPriority<=4?rankLabels[job.schedulerPriority]:priorityLabel(job.priority);}
-export function schedulingContractLabel(policy){if(!policy)return '让位/恢复策略未确认';return `${({never:'不让位',now:'允许立即让位',save:'保存后让位'})[policy.yield_policy]||'让位方式未知'} · ${policy.restart_policy==='on-preempt'?'被抢占后重新排队':policy.restart_policy==='never'?'被抢占后不重排':'重启方式未知'}`;}
+export function schedulingContractLabel(policy){if(!policy)return '让位/恢复策略未确认';return `${({never:'不让位',now:'允许立即让位',save:'保存后让位'})[policy.yield_policy]||'让位方式未知'} · ${policy.restart_policy==='on-preempt'?(policy.yield_policy==='save'?'自动重排，从 checkpoint 恢复':'自动重排，从头运行'):policy.restart_policy==='never'?'被抢占后不重排':'重启方式未知'}`;}
 export function sampleTime(value){
   return formatTimestamp(value);
 }
@@ -296,7 +296,7 @@ export function executionUI(store,refresh,toast){
     const args=['gpuctl run',...(automatic?['--machine auto']:[quote(machine||'SERVER')]),'-g',get('cards'),'--min-vram',get('memory'),'--name',quote(get('name'))];
     if(automatic&&get('training-candidates').trim())args.push('--candidates',quote(get('training-candidates').trim().split(/[\s,，]+/).join(',')));
     if(project)args.push('--project',quote(project));if(get('task-description').trim())args.push('--description',quote(get('task-description')));
-    if(query('[name=custom-policy]').checked){args.push('--rank',get('queue-rank'),'--yield',get('yield-policy'),'--restart-policy',get('restart-policy'));if(query('[name=checkpointable]').checked)args.push('--checkpointable');if(get('request-mode'))args.push('--mode',get('request-mode'));}else if(priorityAvailable())args.push('--priority',get('priority'));
+    if(query('[name=custom-policy]').checked){args.push('--rank',get('queue-rank'),'--yield',get('yield-policy'),'--restart-policy',get('yield-policy')==='never'?'never':get('restart-policy'));if(query('[name=checkpointable]').checked)args.push('--checkpointable');if(get('request-mode'))args.push('--mode',get('request-mode'));}else if(priorityAvailable())args.push('--priority',get('priority'));
     if(query('[name=elastic]').checked){args.push('--min-cards',get('min-cards'),'--global-batch',get('global-batch'),'--micro-batch',get('micro-batch'));if(query('[name=auto-expand]').checked)args.push('--auto-expand');}
     if(get('gpu-placement')!=='any'){args.push('--gpu',quote(get('gpu-indices')));if(get('gpu-placement')==='shared')args.push('--share','--vram-mib',get('vram-mib'));if(query('[name=hami]').checked)args.push('--hami','--sm-percent',get('sm-percent'));}
     if(interactiveTraining())args.push('--interactive');else args.push('-- /bin/bash -c',quote(get('command')));
@@ -335,6 +335,7 @@ export function executionUI(store,refresh,toast){
     const custom=query('[name=custom-policy]'),customOn=custom.checked;
     custom.disabled=!available||locked;
     for(const name of ['queue-rank','yield-policy','restart-policy','checkpointable','request-mode'])query(`[name=${name}]`).disabled=!available||locked||!customOn;
+    query('[name=restart-policy]').disabled||=query('[name=yield-policy]').value==='never';
     query('#custom-policy-note').textContent=customAvailable()?'等级与让位独立。只抢占严格低等级且明确允许让位的任务；保存失败或超时不会强制杀掉保存任务。':'服务器尚未确认训练控制通道，不能提交自定义策略；不会自动降级。';
     const elastic=query('[name=elastic]'),elasticOn=elastic.checked;
     elastic.disabled=!available||locked;

@@ -11,6 +11,7 @@ import {watchJob} from './job-watch.mjs';
 import {progressText,jobTimingText} from './dist/job-progress.js';
 import {diskLabel} from './dist/disk-media.js';
 import {elasticAllocation,allocationLabel,gpuPlacement} from './dist/gpu-allocation.js';
+import {schedulingPolicy} from './dist/scheduling-policy.js';
 import {displayName,taskDescription} from './dist/task-metadata.js';
 import {commandPost} from './client-http.mjs';
 import {readCLIState,submitJobWithReceipt} from './client-state.mjs';
@@ -56,7 +57,9 @@ gpuctl pull-status LOCAL_DIRECTORY
 
 gpuctl ssh [--reconnect SESSION_ID] [--takeover]
 gpuctl run -g 1 [--rank P0..P4] -- python train.py --data /datasets/images --output /outputs （P4 最优先，P0 最低）
---priority normal|high|idle：默认 normal=P2，high=P4，idle=P0（可中断）；与 --rank 分开使用。
+--priority normal|high|idle：默认 normal=P2，high=P4，idle=P0（可中断，自动重排后从头跑）；与 --rank 分开使用。
+--yield now|save 默认自动重排：now 从头跑，save 需 --checkpointable 并从 checkpoint 恢复；--restart-policy never 可关闭。
+交互终端不自动重排；手动取消或普通失败不自动重跑。
 gpuctl run --sync [--sync-dir LOCAL_DIR] -g 1 -- python train.py
 --sync 先上传到当前工作区；AUTO 异机执行与 project copy 均复用目标已有容器并增量同步，没有容器才完整复制。
 gpuctl run --machine auto [--candidates SERVER,SERVER] -g 1 -- python train.py
@@ -228,21 +231,12 @@ async function main() {
   if(positionals[0]==='data'&&['put','get','upload','download'].includes(positionals[1])&&options.via!==undefined&&!['auto','direct'].includes(options.via))fail9('数据集只走校园网直连，不支持 --via relay/portal。');
   const customScheduling = ["rank", "yield", "restart-policy", "checkpointable", "mode"].some((k) => Object.hasOwn(options, k));
   if (customScheduling && (positionals[0] !== "run" || options.priority)) fail9("Custom scheduling is only valid for run and cannot mix with --priority presets");
-  const scheduling = customScheduling ? { rank: options.rank || "P2", yieldPolicy: options.yield || "never", restartPolicy: options["restart-policy"] || "never", checkpointable: options.checkpointable === true } : null;
-  if (options.mode) {
-    const modes = { queue: "queue", preempt1: "preempt-save", preempt2: "preempt-now", "preempt-save": "preempt-save", "preempt-now": "preempt-now" };
-    if (!Object.hasOwn(modes, options.mode)) fail9("Use --mode queue|preempt1|preempt2");
-    if (modes[options.mode] !== "queue") scheduling.mode = modes[options.mode];
-  }
+  const scheduling = customScheduling ? schedulingPolicy({rank:options.rank||'P2',yieldPolicy:options.yield||'never',checkpointable:options.checkpointable===true,
+    ...(options['restart-policy']!==undefined?{restartPolicy:options['restart-policy']}:{}),...(options.mode!==undefined?{mode:options.mode}:{})},true) : null;
   const elasticKeys = ["min-cards", "global-batch", "micro-batch", "auto-expand"];
   const placementKeys = ["gpu", "share", "vram-mib", "hami", "sm-percent"];
   if (placementKeys.some((k) => Object.hasOwn(options, k)) && positionals[0] !== "run") fail9("Placement options are only valid for run");
   if (elasticKeys.some((k) => Object.hasOwn(options, k)) && positionals[0] !== "run") fail9("Elastic GPU options are only valid for run");
-  if (scheduling) {
-    if (!/^P[0-4]$/.test(scheduling.rank) || !["never", "now", "save"].includes(scheduling.yieldPolicy) || !["never", "on-preempt"].includes(scheduling.restartPolicy)) fail9("Use --rank P0..P4, --yield never|now|save, --restart-policy never|on-preempt");
-    if (scheduling.yieldPolicy === "save" && !scheduling.checkpointable) fail9("--yield save requires --checkpointable and an epoch checkpoint adapter");
-    if (scheduling.restartPolicy === "on-preempt" && (scheduling.yieldPolicy !== "save" || !scheduling.checkpointable)) fail9("Automatic resume requires --yield save --checkpointable");
-  }
   const memoryLimitGiB = options["memory-limit-gib"] === void 0 ? void 0 : Number(options["memory-limit-gib"]);
   if (memoryLimitGiB !== void 0 && (positionals[0] !== "run" || !Number.isSafeInteger(memoryLimitGiB) || memoryLimitGiB < 1 || memoryLimitGiB > 1048576)) fail9("--memory-limit-gib 仅用于 run，须为正整数 GiB");
   const projectSlug = (value) => {

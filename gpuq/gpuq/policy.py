@@ -13,21 +13,21 @@ def priority_class_contract(value: Any) -> dict[str, Any]:
     return {
         "priority": {"idle": 0, "normal": 2, "high": 4}[value],
         "yield_policy": "now" if value == "idle" else "never",
-        "restart_policy": "never",
+        "restart_policy": "on-preempt" if value == "idle" else "never",
         "dispatch_mode": "queue",
     }
 
 
 def is_idle_victim(
-    priority: int, yield_policy: str, restart_policy: str, preempt_idle_only: bool = False
+    priority: int, yield_policy: str, preempt_idle_only: bool = False
 ) -> bool:
     """Do not enroll historical P0/now jobs into the new opt-in policy."""
-    return preempt_idle_only is True and priority == 0 and yield_policy == "now" and restart_policy == "never"
+    return preempt_idle_only is True and priority == 0 and yield_policy == "now"
 
 
 def victim_in_scope(requester: dict[str, Any], victim: dict[str, Any]) -> bool:
     if requester.get('preempt_idle_only') and not is_idle_victim(
-        victim['priority'], victim.get('yield_policy','legacy'), victim['restart_policy'], victim.get('preempt_idle_only',False)
+        victim['priority'], victim.get('yield_policy','legacy'), victim.get('preempt_idle_only',False)
     ):
         return False
     return not requester.get('preempt_opt_in_only') or victim.get('yield_policy','legacy') in {'now','save'}
@@ -176,7 +176,7 @@ def select_victims(
         if preempt_opt_in_only and candidate.yield_policy not in {'now','save'}:
             continue
         if preempt_idle_only and not is_idle_victim(
-            candidate.priority, candidate.yield_policy, candidate.restart_policy, candidate.preempt_idle_only
+            candidate.priority, candidate.yield_policy, candidate.preempt_idle_only
         ):
             continue
         if candidate.priority >= requester_priority or candidate.gpu_count <= 0:
