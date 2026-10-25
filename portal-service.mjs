@@ -232,6 +232,10 @@ export class PortalService extends DemoService{
       if(this.closing)throw Object.assign(Error('服务正在关闭，请稍后查询。'),{status:503});
       const current=this.principal(token);
       if(operation==='terminal.status')this.assertMachineStatusVisible(current,request.machine);
+      if(request.area==='output'){
+        const job=this.store.jobs.find(job=>job.id===request.runId);
+        if(job)this.assertMachineStatusVisible(current,job.machine);
+      }
       this.assertMaintenanceAllowed?.(operation,request,current);
     };
     try{
@@ -380,8 +384,15 @@ export class PortalService extends DemoService{
       const principal=this.principal(token);return Promise.resolve({result:this.configureJobNotification(principal,args),principal});
     }
     if(operation.startsWith('jobs.')||operation.startsWith('projects.')||operation.startsWith('files.')||operation.startsWith('terminal.')||operation.startsWith('data.upload.')||operation==='datasets.delete'||operation==='outputs.delete'){
-      const run=async()=>{const principal=this.principal(token),result=await executionCall(this,principal,operation,args);this.principal(token);
-        if(operation==='terminal.open')this.assertMachineStatusVisible(this.principal(token),args.machine);
+      const run=async()=>{
+        const check=()=>{
+          const principal=this.principal(token);
+          if(operation==='terminal.open')this.assertMachineStatusVisible(principal,args.machine);
+          const job=args.jobId?this.store.jobs.find(job=>job.id===args.jobId):operation==='jobs.submit'&&args.key?this.store.jobs.find(job=>job.key===args.key):null;
+          if(job)this.assertMachineStatusVisible(principal,job.machine);
+          return principal;
+        };
+        const principal=check(),result=await executionCall(this,principal,operation,args);check();
         if(operation==='projects.create'||operation==='data.upload.finish'&&args.dataset&&result.state==='COMPLETE'||
           ['datasets.delete','projects.retire'].includes(operation)&&result.state==='TRASHED'||operation==='projects.retire.restore'&&result.state==='RESTORED')this.scheduleStorageRefresh(args.machine);
         return {result,...(operation==='jobs.submit'&&options.omitResponseState!==true?{state:this.state(principal)}:{}),principal};};

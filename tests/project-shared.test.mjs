@@ -30,6 +30,7 @@ async function fixture(t){
  await open();
  const admin=await service.login('admin',password),owners=[];
  for(const username of ['alice','bob'])owners.push((await service.invoke(admin.token,'users.create',{username,password})).result);
+ for(const owner of owners)await service.invoke(admin.token,'policy.save',{userId:owner.id,total:2,limits:{[machine]:1,[otherMachine]:1}});
  const token=owner=>service.issueSession({userId:owner.id,username:owner.username,role:'member'});
  const call=async(operation,args={},owner=owners[1])=>(await service.invoke(token(owner),operation,{machine,project:'vision',...args})).result;
  t.after(async()=>{await service.storageWork;service.close();await rm(root,{recursive:true,force:true});});

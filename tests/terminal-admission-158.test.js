@@ -33,7 +33,7 @@ test('#158 pre-creation refusal crosses node result, Portal HTTP and official cl
  assert.equal(calls.length,1);assert.equal(calls[0].args.userId,user.id);
  mode='missing';const status=await apiPost(base,'call',{operation:'terminal.status',args:{machine:'gpu-1',id:request.key,hostAdmin:false}},{token,fetchImpl:requestFetch});
  assert.equal(status.result.state,'NOT_FOUND');assert.equal(status.result.id,request.key);assert.equal(calls.length,2);
- await apiPost(base,'call',{operation:'terminal.status',args:{machine:'gpu-2',id:request.key,hostAdmin:false}},{token,fetchImpl:requestFetch});
- assert.equal(calls.length,3,'Team members can inspect every configured server');
+ await assert.rejects(apiPost(base,'call',{operation:'terminal.status',args:{machine:'gpu-2',id:request.key,hostAdmin:false}},{token,fetchImpl:requestFetch}),error=>error.status===403);
+ assert.equal(calls.length,2,'A server without a grant is not contacted');
 
 });

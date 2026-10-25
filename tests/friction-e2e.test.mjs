@@ -208,6 +208,7 @@ test('repository project, terminal git, dataset resume, training bytes, output d
  const output=join(f.dir,'result.json'),pulled=await f.cli(['pull','result.json',output,'--machine',machine,'--project',project,'--job',submitted.id,'--via','portal']);assert.equal(pulled.code,0,pulled.err);
  assert.deepEqual(JSON.parse(await readFile(output,'utf8')),{bytes:bytes.length,prefix:bytes.subarray(0,16).toString()});
  const member=await f.call('users.create',{username:'chain-member',password}),login=await f.service.login(member.username,password);
+ await f.call('policy.save',{userId:member.id,total:1,limits:{[machine]:1}});
  const datasetTrash=randomUUID(),deleted=await f.call('datasets.delete',{dataset:'shared',key:datasetTrash},login.token);assert.equal(deleted.state,'TRASHED');
  assert.equal((await f.call('datasets.list')).datasets.length,0);await f.call('projects.retire.restore',{key:datasetTrash,kind:'dataset'});assert.deepEqual(Buffer.from((await f.call('files.get',{area:'dataset',dataset:'shared',path:'dataset.bin'})).data,'base64'),bytes);
  const outputTrash=randomUUID();assert.equal((await f.call('outputs.delete',{jobId:submitted.id,path:'result.json',key:outputTrash},login.token)).state,'TRASHED');await f.call('projects.retire.restore',{key:outputTrash,kind:'output'});

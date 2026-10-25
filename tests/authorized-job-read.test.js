@@ -27,8 +27,10 @@ async function fixture(t){
 }
 
 
-test('a team member can read another member job after their own submit quota is removed',async t=>{
+test('removing a server grant blocks team task reads until the server is authorized again',async t=>{
  const f=await fixture(t);f.job.userId='other';f.user.limits={};f.user.total=0;
+ for(const operation of operations)await assert.rejects(f.service.invoke(f.token,operation,{jobId:id}),error=>error.status===403);
+ assert.equal(f.calls.length,0);f.user.limits={[machine]:1};f.user.total=1;
  for(const operation of operations)assert.ok((await f.service.invoke(f.token,operation,{jobId:id,extension:'ignored'})).result);
  assert.equal(f.calls.length,operations.length);
 });

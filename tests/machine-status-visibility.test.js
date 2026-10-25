@@ -80,6 +80,8 @@ test('state and direct task queries enforce the same server visibility',async t=
     ['state',{jobId:'job-0'}],...['jobs.watch','jobs.logs','jobs.completion','jobs.diagnostics'].map(operation=>[operation,{jobId:'job-0'}]),
     ['tasks.display.get',{machine:restricted.id,nodeJobId:'J0123456789ab'}],['storage.snapshot',{machine:restricted.id}],
     ['files.direct-ticket',{machine:restricted.id,area:'output',runId:'job-0',action:'get',path:'stdout.log'}],
+    ['files.get',{area:'output',runId:'job-0',path:'stdout.log'}],['jobs.cancel',{jobId:'job-0'}],
+    ['jobs.submit',{machine:allowed.id,key:'key-0',cards:1,project:'fixture',argv:['true']}],
     ['terminal.status',{machine:restricted.id,id:'11111111-1111-4111-8111-111111111111'}]
   ])await assert.rejects(f.service.invoke(f.token,operation,args),error=>error.status===403,operation);
   assert.equal(f.calls.length,0,'denied reads never contact the node');
