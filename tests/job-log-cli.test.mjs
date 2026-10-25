@@ -66,6 +66,7 @@ test('official CLI exports and resumes a complete canceled-job log through the P
  t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
  const admin=await service.login('admin',password);await service.invoke(admin.token,'users.create',{username:'reader',password});
  const reader=await service.login('reader',password);
+ await service.invoke(admin.token,'policy.save',{userId:reader.principal.userId,total:1,limits:{[machine]:1}});
  service.store.jobs.push({id:jobId,key:jobId,userId:'alice',machine,state:'CANCELED',cards:1,
   spec:{id:jobId,userId:'alice',project:'demo',cards:1,argv:['true']}});service.save();
  const session=join(dir,'session');await writeFile(session,JSON.stringify({url:origin,token:reader.token,principal:reader.principal}),{mode:0o600});
