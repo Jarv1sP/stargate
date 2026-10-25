@@ -312,7 +312,7 @@ export async function executionCall(service,principal,operation,args,readContext
     const {machine,...request}=args;
     return bridge(machine,operation,{...request,userId:user.id,ownerId:args.ownerId??user.id,actor});
   }
-  const jobById=id=>{const job=service.store.jobs.find(j=>j.id===id);if(!job)fail('任务不存在。',404);return job;};
+  const jobById=id=>{const job=service.store.jobs.find(j=>j.id===id);if(!job)fail('任务不存在。',404);service.assertMachineStatusVisible(principal,job.machine);return job;};
   if(operation==='outputs.delete'){
     args=selectFields(args,['jobId','key','path','recursive','dryRun']);
     if(args.key!==undefined&&!UUID.test(args.key))fail('删除输出请使用原 UUID 编号。');
@@ -356,6 +356,7 @@ export async function executionCall(service,principal,operation,args,readContext
   };
   if(['terminal.open','terminal.exchange','terminal.close','terminal.detach','terminal.status'].includes(operation)){
     authorizedMachine(args.machine);
+    if(['terminal.open','terminal.exchange','terminal.status'].includes(operation))service.assertMachineStatusVisible(principal,args.machine);
     const opening=operation==='terminal.open',status=operation==='terminal.status',stoppedClose=operation==='terminal.close'&&args.writerToken===undefined,mode=args.mode||'new';
     const allowed=['machine','id','project',...(!status?['clientId','writerToken']:[]),...(opening?['key','mode','takeover','clientLabel']:operation==='terminal.exchange'?['input','offset','rows','cols']:[])];
     args=selectFields(args,[...allowed,'ownerId']);

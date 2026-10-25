@@ -18,6 +18,7 @@ async function fixture(){
   const admin=await s.login('admin',password);
   const member=(await s.invoke(admin.token,'users.create',{username:'alice',password})).result;
   const other=(await s.invoke(admin.token,'users.create',{username:'bob',password})).result;
+  await s.invoke(admin.token,'policy.save',{userId:other.id,total:1,limits:{'gpu-1':1}});
   const a=await s.login('alice',password),b=await s.login('bob',password);
   const grant=(total=2,limits={'gpu-1':2,'gpu-2':2})=>s.invoke(admin.token,'policy.save',{userId:member.id,policyVersion:s.store.get(member.id).policyVersion,total,limits});
   const submit=(more={})=>s.invoke(a.token,'jobs.submit',{machine:'gpu-1',project:'sample',cards:1,argv:['python','train.py'],key:randomUUID(),...more});
@@ -144,6 +145,7 @@ test('delete requires paused idle account, retains history and invalidates login
 });
 test('team terminal targets OCI projects and preserves the input size limit',async()=>{
  const f=await fixture();try{
+   await f.grant(1,{'gpu-4':1});
    await assert.rejects(f.s.invoke(f.a.token,'terminal.open',{machine:'gpu-4',key:randomUUID(),clientId:randomUUID()}),/选择项目/);
    await assert.rejects(f.s.invoke(f.a.token,'terminal.exchange',{machine:'gpu-4',project:'sample',id:randomUUID(),clientId:randomUUID(),writerToken:randomUUID(),input:'x'.repeat(13000)}),/输入过长/);
  }finally{await f.close();}
