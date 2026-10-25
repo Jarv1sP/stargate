@@ -444,20 +444,21 @@ P0–P4 越大越优先，团队成员都可使用。低等级不等于同意中
 | --- | --- | --- |
 | normal（默认） | P2 | 不自动让位 |
 | high | P4 | 不自动让位，可让 idle 任务让位 |
-| idle | P0 | 可立即中断，不自动重排 |
+| idle | P0 | 可立即中断，自动重排后从头运行 |
 
 `--rank` 使用显式调度策略；以上预设在首次派发时生效，已有排队或运行作业保持原策略。
 
 ```sh local
 gpuctl run --rank P1 --yield never -g 1 -- python train.py
 gpuctl run --rank P1 --yield now -g 1 -- python disposable.py
-gpuctl run --rank P1 --yield save --checkpointable --restart-policy on-preempt -g 2 -- python train.py
+gpuctl run --rank P1 --yield save --checkpointable -g 2 -- python train.py
+gpuctl run --rank P1 --yield now --restart-policy never -g 1 -- python disposable.py
 gpuctl run --rank P2 --mode preempt1 -g 1 -- python urgent.py
 gpuctl run --rank P2 --mode preempt2 -g 1 -- python urgent.py
 gpuctl priority JOB_ID P1
 ```
 
-`never` 不自动让位；`now` 可中断且不保存；`save` 保存成功后整项多卡任务让位。`on-preempt` 让已适配的 save 任务被抢占后排队恢复，手动取消或失败不自动重跑。`priority` 只改待启动任务的排序。
+`never` 不自动让位；`now` 可中断且不保存；`save` 保存成功后整项多卡任务让位。选择 `now` 或 `save` 默认 `on-preempt`：被抢占后用原任务编号、原优先级及原排位重排；`now` 从头运行，`save` 从 checkpoint 恢复。原输出保留，重复运行可能覆盖程序写入的同名文件；不希望重跑时明确加 `--restart-policy never`，网页选择「结束，不自动重排」。交互终端不自动重开，手动取消或普通失败不自动重跑。`priority` 只改待启动任务的排序。
 
 训练每轮结束调用 `gpuq.checkpoint.checkpoint_at_epoch_end`，启动读取 `resume_checkpoint_path()`；保存 model、optimizer、scheduler、进度和各 rank RNG，DDP 所有 rank 协同，保留退出码 75。`--checkpointable` 不替程序实现保存；保存失败或超时不强杀，缺恢复文件不从头冒充恢复。
 

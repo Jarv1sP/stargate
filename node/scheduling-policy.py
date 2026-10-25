@@ -35,7 +35,8 @@ def normalize_job_policy(job):
         if not isinstance(name, str) or name not in PRIORITY_PRESETS or job.get('preemptIdleOnly') is not True:
             raise ValueError('Explicit safe scheduling policy required')
         rank, yielding = PRIORITY_PRESETS[name]
-        policy.update(kind='preset', priority=rank, yield_policy=yielding, preempt_idle_only=True)
+        policy.update(kind='preset', priority=rank, yield_policy=yielding, preempt_idle_only=True,
+                      restart_policy='on-preempt' if name=='idle' and not job.get('interactive') else 'never')
     return policy
 
 

@@ -21,7 +21,7 @@ from gpuq.constants import AttemptState, JobState, STORE_SCHEMA_VERSION
 from gpuq.coordinator import Coordinator
 from gpuq import cli, cluster_node, fleet, store as store_module
 from gpuq.rpc import ApiError
-from gpuq.policy import VictimCandidate, preemption_mode, select_victims
+from gpuq.policy import VictimCandidate, preemption_mode, select_victims, priority_class_contract
 from gpuq.store import Store, StoreConflictError
 from gpuq.submission import SUBMISSION_KEYS, validate_submission
 
@@ -86,13 +86,16 @@ class YieldPolicyTests(unittest.TestCase):
         protected = [
             self.candidate('Ap2', priority=2),
             self.candidate('Asave', yield_policy='save', checkpoint_capability='epoch-v1'),
-            self.candidate('Arestart', restart_policy='on-preempt'),
             self.candidate('Alegacy', yield_policy='legacy'),
             self.candidate('Aoldidle', preempt_idle_only=False),
         ]
         self.assertEqual(self.select([*protected, idle], requester_priority=4,
                                      dispatch_mode='preempt-now', preempt_idle_only=True), (idle,))
         self.assertEqual(self.select(protected, requester_priority=4, preempt_idle_only=True), ())
+
+    def test_idle_only_request_can_preempt_a_requeueing_idle_volunteer(self):
+        idle=self.candidate(restart_policy='on-preempt')
+        self.assertEqual(self.select([idle],requester_priority=4,preempt_idle_only=True),(idle,))
 
 
 class SchedulerPriorityTests(unittest.TestCase):
@@ -191,6 +194,46 @@ class SchedulerPriorityTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]['action_type'], 'TERM_UNIT')
         self.assertEqual(actions[0]['attempt_id'], idle_attempt['id'])
+
+    def test_default_idle_requeues_same_job_at_original_rank_and_fifo_after_preemption(self):
+        policy=priority_class_contract('idle')
+        self.assertEqual(policy['restart_policy'],'on-preempt')
+        idle,attempt=self.running((0,),**policy,placement='pinned',requested_gpu_uuids=['GPU-0'],preempt_idle_only=True)
+        later=self.pinned(0,**policy,preempt_idle_only=True)
+        requester=self.pinned(0,priority=4,preempt_idle_only=True)
+        self.coordinator._schedule()
+        self.assertEqual(self.state(idle),'PREEMPTING')
+        self.assertEqual(self.state(requester),'PENDING')
+        self.store.update_attempt(attempt['id'],state=AttemptState.DRAINING,exit_code=-15)
+        self.coordinator._finalize_attempt(self.store.get_attempt(attempt['id']))
+        queued=self.store.get_job(idle['id'])
+        self.assertEqual(queued['state'],'PENDING')
+        self.assertEqual((queued['priority'],queued['sequence']),(idle['priority'],idle['sequence']))
+        self.assertEqual(self.store.get_attempt(attempt['id'])['state'],'PREEMPTED')
+        self.coordinator._schedule()
+        self.assertEqual(self.state(requester),'STARTING')
+        self.assertEqual(self.state(idle),'PENDING')
+        self.assertEqual(self.state(later),'PENDING')
+        high=self.store.list_attempts(job_id=requester['id'])[0]
+        self.store.release_leases(attempt_id=high['id'],reason='synthetic requester finished')
+        self.store.update_attempt(high['id'],state=AttemptState.EXITED_SUCCESS)
+        self.store.update_job(requester['id'],state=JobState.SUCCEEDED)
+        self.coordinator._schedule()
+        self.assertEqual(self.state(idle),'STARTING')
+        self.assertEqual(self.state(later),'PENDING')
+        resumed=self.store.list_attempts(job_id=idle['id'])[0]
+        self.assertEqual(resumed['ordinal'],2)
+        self.assertIsNone(resumed['launch_resume_checkpoint_path'])
+
+    def test_requeue_policy_does_not_retry_an_ordinary_failure_or_manual_cancel(self):
+        for canceled in (False,True):
+            with self.subTest(canceled=canceled):
+                job,attempt=self.running(**priority_class_contract('idle'),preempt_idle_only=True)
+                if canceled:self.store.update_job(job['id'],state=JobState.CANCELED)
+                self.store.update_attempt(attempt['id'],state=AttemptState.DRAINING,exit_code=1)
+                self.coordinator._finalize_attempt(self.store.get_attempt(attempt['id']))
+                self.assertEqual(self.state(job),'CANCELED' if canceled else 'FAILED')
+                self.assertEqual(len(self.store.list_attempts(job_id=job['id'])),1)
 
     def test_same_priority_idle_job_waits_without_interrupting_first(self):
         first, _ = self.running(priority=0, yield_policy='now')
@@ -338,7 +381,7 @@ class SchedulerPriorityTests(unittest.TestCase):
             self.assertEqual(result, {
                 'job_id': job['id'], 'state': 'PENDING', 'priority_class': priority_class,
                 'priority': priority, 'priority_name': f'P{priority}', 'yield_policy': policy,
-                'restart_policy': 'never', 'dispatch_mode': 'queue',
+                'restart_policy': 'on-preempt' if priority_class=='idle' else 'never', 'dispatch_mode': 'queue',
                 'preempt_idle_only': False,
             })
             self.assertEqual(self.store.get_job(job['id'])['sequence'], job['sequence'])

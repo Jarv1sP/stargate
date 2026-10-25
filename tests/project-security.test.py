@@ -139,6 +139,19 @@ class ProjectContract(unittest.TestCase):
         value={'rank':'P2','yieldPolicy':'never','restartPolicy':'never','checkpointable':False,'extra':'ignored'}
         self.assertEqual(policy.normalize_job_policy({'scheduling':value})['priority'],2)
 
+    def test_idle_preset_requeues_but_other_presets_and_stored_opt_out_do_not_change(self):
+        policy=f.module('scheduling-policy')
+        for name,expected in [('idle','on-preempt'),('normal','never'),('high','never')]:
+            with self.subTest(name=name):
+                result=policy.normalize_job_policy({'priority':name,'preemptIdleOnly':True})
+                self.assertEqual(result['restart_policy'],expected)
+                args=policy.submit_arguments(result)
+                self.assertEqual(args[args.index('--restart-policy')+1],expected)
+        old={'rank':'P0','yieldPolicy':'now','restartPolicy':'never','checkpointable':False}
+        self.assertEqual(policy.normalize_job_policy({'scheduling':old})['restart_policy'],'never')
+        terminal=policy.normalize_job_policy({'priority':'idle','preemptIdleOnly':True,'interactive':True})
+        self.assertEqual(terminal['yield_policy'],'now');self.assertEqual(terminal['restart_policy'],'never')
+
     def test_deleting_project_does_not_probe_or_cancel_active_tasks(self):
         ops=f.module('project-ops').ProjectOperations(SimpleNamespace(CONFIG=self.config,ROOT=Path(self.config['root']),run=lambda *a,**k:None))
         ops.store.create('alice','demo');row=ops.process('projects.retire',{'userId':'bob','ownerId':'alice','project':'demo','key':self.key(),'actor':{'userId':'bob'}})

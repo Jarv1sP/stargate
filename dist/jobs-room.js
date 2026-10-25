@@ -155,6 +155,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
         <div class="jr-field" data-gpu-field><label>指定 GPU（可选）</label><div class="jr-gpus" data-gpus></div></div>
         <div class="jr-grid"><div class="jr-field"><label for="jr-name">名字（可选，最多 64 个字）</label><input class="jr-input" id="jr-name" name="name" maxlength="64" placeholder="例如：消融 · 无 assignment"></div>
           <div class="jr-field"><label for="jr-priority">优先级</label><select class="jr-input" id="jr-priority" name="priority"><option value="normal">普通</option><option value="high">高</option><option value="idle">最低 · 可中断</option></select></div></div>
+        <p class="jr-hint" data-yield-note hidden>被打断后自动重排，从头运行；可能覆盖同名输出。</p>
         <p class="jr-error" data-submit-error hidden></p>
         <div class="jr-actions"><button type="button" class="jr-btn ghost" data-sheet-close>取消</button><button type="submit" class="jr-btn primary">提交</button></div>
       </form>`;
@@ -163,7 +164,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
     const drawGpus=()=>{const p=current(),machine=machines.find(m=>m.id===p?.machine),field=sheet.querySelector('[data-gpu-field]'),auto=form.where.value==='auto';field.hidden=auto||!machine;if(field.hidden)return;
       sheet.querySelector('[data-gpus]').innerHTML=Array.from({length:machine.cards},(_,i)=>`<button type="button" class="jr-gpu" data-gpu="${i}" aria-pressed="${gpus.has(i)}">${i}</button>`).join('');};
     drawGpus();
-    form.addEventListener('change',event=>{if(event.target.name==='project'){gpus.clear();sheet.querySelector('[data-sheet-project]').textContent=current()?.project||'项目';}drawGpus();});
+    form.addEventListener('change',event=>{if(event.target.name==='project'){gpus.clear();sheet.querySelector('[data-sheet-project]').textContent=current()?.project||'项目';}sheet.querySelector('[data-yield-note]').hidden=form.priority.value!=='idle';drawGpus();});
     form.addEventListener('click',event=>{
       const step=event.target.closest('[data-step]');if(step){cards=Math.max(1,Math.min(8,cards+Number(step.dataset.step)));const v=sheet.querySelector('[data-cards]');v.textContent=cards;if(!reducedMotion())v.animate([{transform:'scale(1)'},{transform:'scale(1.35)'},{transform:'scale(1)'}],{duration:350,easing:'cubic-bezier(.34,1.32,.5,1)'});}
       const gpu=event.target.closest('[data-gpu]');if(gpu){const i=Number(gpu.dataset.gpu);gpus.has(i)?gpus.delete(i):gpus.add(i);gpu.setAttribute('aria-pressed',gpus.has(i));}

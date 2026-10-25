@@ -14,7 +14,7 @@ export function elasticAllocation(value,cards,scheduling){
   if(autoExpand){
     let consent;
     try{consent=schedulingPolicy(scheduling,true);}catch(error){throw Error('自动扩卡需要有效的保存和恢复策略：'+error.message);}
-    if(!consent.checkpointable||consent.restartPolicy!=='on-preempt')throw Error('自动扩卡需要 checkpoint 适配器及保存后自动恢复策略。');
+    if(consent.yieldPolicy!=='save'||!consent.checkpointable||consent.restartPolicy!=='on-preempt')throw Error('自动扩卡需要 checkpoint 适配器及保存后自动恢复策略。');
   }
   if(autoExpand&&allowed.length<2)throw Error('自动扩卡需要至少两种合法卡数。');
   return {elastic:{minCards,globalBatch,microBatch,autoExpand},allowed};
