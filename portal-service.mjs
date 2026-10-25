@@ -232,7 +232,8 @@ export class PortalService extends DemoService{
       if(this.closing)throw Object.assign(Error('服务正在关闭，请稍后查询。'),{status:503});
       const current=this.principal(token);
       if(operation==='terminal.status')this.assertMachineStatusVisible(current,request.machine);
-      if(request.area==='output'){
+      if(request.area==='output'||request.runId){
+        this.assertMachineStatusVisible(current,request.machine);
         const job=this.store.jobs.find(job=>job.id===request.runId);
         if(job)this.assertMachineStatusVisible(current,job.machine);
       }

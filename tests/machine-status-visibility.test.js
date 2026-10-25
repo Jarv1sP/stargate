@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {visibleGPUQStatus} from '../gpuq-status.mjs';
+import {installJobNotifications} from '../job-notifications.mjs';
 import {MACHINES} from '../dist/model.js';
 import {resourceCards,resourceServerView,resourceTotals} from '../dist/resources-ui.js';
 
@@ -80,11 +82,18 @@ test('state and direct task queries enforce the same server visibility',async t=
     ['state',{jobId:'job-0'}],...['jobs.watch','jobs.logs','jobs.completion','jobs.diagnostics'].map(operation=>[operation,{jobId:'job-0'}]),
     ['tasks.display.get',{machine:restricted.id,nodeJobId:'J0123456789ab'}],['storage.snapshot',{machine:restricted.id}],
     ['files.direct-ticket',{machine:restricted.id,area:'output',runId:'job-0',action:'get',path:'stdout.log'}],
+    ['files.direct-ticket',{machine:restricted.id,area:'code',project:'fixture',runId:'job-0',action:'get',path:'stdout.log'}],
+    ['files.direct-ticket',{machine:allowed.id,area:'code',project:'fixture',runId:'job-0',action:'get',path:'stdout.log'}],
     ['files.get',{area:'output',runId:'job-0',path:'stdout.log'}],['jobs.cancel',{jobId:'job-0'}],
+    ['files.get',{machine:restricted.id,area:'code',project:'fixture',runId:'job-0',path:'stdout.log'}],
     ['jobs.submit',{machine:allowed.id,key:'key-0',cards:1,project:'fixture',argv:['true']}],
     ['terminal.status',{machine:restricted.id,id:'11111111-1111-4111-8111-111111111111'}]
   ])await assert.rejects(f.service.invoke(f.token,operation,args),error=>error.status===403,operation);
   assert.equal(f.calls.length,0,'denied reads never contact the node');
+  const hash=value=>createHash('sha256').update(value).digest('hex'),ticket='fixture-output-ticket';
+  f.service.fileTickets.set(hash(ticket),{expiresAt:Date.now()/1000+60,sessionHash:hash(f.token),
+    args:{machine:allowed.id,area:'code',runId:'job-0'}});
+  assert.throws(()=>f.service.checkFileTicket({ticket}),error=>error.status===403,'existing output tickets cannot bypass the job grant');
   f.service.db.prepare('UPDATE operational_maintenance_v2 SET data=? WHERE id=1').run(JSON.stringify({version:1,revision:1,global:null,
     machines:{[restricted.id]:{reason:'private-maintenance',since:new Date().toISOString()}}}));
   assert.deepEqual((await f.service.invoke(f.token,'maintenance.status')).result.machines,{});
@@ -103,4 +112,17 @@ test('revoking a server grant during an in-flight task read suppresses the respo
   const pending=f.service.invoke(f.token,'jobs.logs',{jobId:'job-1'});
   const rejected=assert.rejects(pending,error=>error.status===403);
   await ready;delete f.user.limits[allowed.id];release();await rejected;
+});
+
+test('hidden tasks cannot be subscribed to and revoked grants discard queued task notifications',async t=>{
+  const f=await fixture(t),sent=[];
+  clearInterval(f.service.notificationTimer);
+  installJobNotifications(f.service,{chatByUserId:{[f.user.id]:'fixture-chat'},send:async(...args)=>sent.push(args)},{timer:false});
+  await assert.rejects(f.service.invoke(f.token,'notifications.job',{jobId:'job-0',enabled:true}),error=>error.status===403);
+  await f.service.invoke(f.token,'notifications.job',{jobId:'job-1',enabled:true});
+  f.service.store.jobs[1].state='SUCCEEDED';f.service.captureJobNotifications();
+  assert.equal(f.service.db.prepare('SELECT count(*) n FROM job_notification_outbox_v2').get().n,1);
+  delete f.user.limits[allowed.id];await f.service.flushJobNotifications();
+  assert.deepEqual(sent,[]);
+  assert.equal(f.service.db.prepare("SELECT count(*) n FROM job_notification_outbox_v2 WHERE state='QUEUED'").get().n,0);
 });
