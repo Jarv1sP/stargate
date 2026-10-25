@@ -76,7 +76,7 @@ await writeFile(path,JSON.stringify({checkedAt:host.checkedAt,hosts:[host]}));
 const jobs=host.tasks.filter(j=>j.state==='RUNNING').map(j=>({
   id:'portal-'+j.id,nodeJobId:j.id,machine:host.id,state:j.state,
   name:j.name,userId:j.owner,username:j.owner,cards:1}));
-const value=visibleGPUQStatus(await readGPUQStatus(path),{role:'member'},{},{jobs});
+const value=visibleGPUQStatus(await readGPUQStatus(path),{role:'member'},{[host.id]:1},{jobs});
 console.log(JSON.stringify(value.hosts.find(h=>h.id===host.id)));
 '''
         visible = json.loads(subprocess.check_output(['node', '--input-type=module', '-e', script, str(path)], cwd=ROOT, text=True))
