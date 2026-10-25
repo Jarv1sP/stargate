@@ -103,5 +103,18 @@ class WorkerStatus(unittest.TestCase):
             rows=t.target.process('transfers.list',{})['transfers']
         self.assertEqual(len(calls),1);self.assertEqual({row['state'] for row in rows},{'UNKNOWN'})
 
+    def test_active_and_unknown_status_do_not_wait_for_a_receiver_holding_its_write_lock(self):
+        t,_=self.interrupted()
+        for state in ('RUNNING','UNKNOWN'):
+            with self.subTest(state=state):
+                def observe(*args,**kwargs):
+                    if state=='UNKNOWN':raise OSError('systemd unavailable')
+                    return 'active'
+                t.target.e.run=observe
+                with ThreadPoolExecutor(1) as pool:
+                    with t.target.lock(t.key):
+                        query=pool.submit(t.target.process,'transfers.status',{'id':t.key})
+                        self.assertEqual(query.result(1)['state'],state)
+
 
 if __name__=='__main__':unittest.main()
