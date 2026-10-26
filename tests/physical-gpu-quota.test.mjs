@@ -14,12 +14,12 @@ const [machine,other]=MACHINES.map(row=>row.id),userId='fixture-member';
 const running=(id,indices,extra={})=>({id,userId,machine,state:'RUNNING',cards:indices.length,assignedIndices:indices,...extra});
 const share=index=>({gpuIndices:[index],shared:true,vramMiB:256});
 
-test('quota counts distinct physical cards by machine, ignoring queued jobs and other members',()=>{
+test('quota counts distinct physical cards including node queues, excluding portal waits and other members',()=>{
  const jobs=[running('a',[0]),running('b',[0]),running('c',[1],{state:'STARTING'}),running('elsewhere',[0],{machine:other}),running('peer',[2],{userId:'peer'}),
-  ...['PENDING','QUEUED','SUCCEEDED','FAILED','CANCELED'].map(state=>running(state,[7],{state})),
+  ...['PENDING','QUEUED','SUCCEEDED','FAILED','CANCELED'].map(state=>running(state,[7],{state,nodeJobId:'J'+state,dispatchPending:false})),
   running('not-dispatched',[],{state:'SUBMITTING',dispatchPending:true,cards:8})];
- assert.equal(usage(jobs,userId,machine),2);assert.equal(usage(jobs,userId),3);
- const client=new DemoClient();client.data={jobs:jobs.map(row=>publicJob({...row,spec:{argv:['true']}}))};assert.equal(client.usage(userId,machine),2);assert.equal(client.usage(userId),3);
+ assert.equal(usage(jobs,userId,machine),3);assert.equal(usage(jobs,userId),4);
+ const client=new DemoClient();client.data={jobs:jobs.map(row=>publicJob({...row,spec:{argv:['true']}}))};assert.equal(client.usage(userId,machine),3);assert.equal(client.usage(userId),4);
 });
 
 test('elastic work reserves its maximum and unresolved starts remain counted until their allocations arrive',()=>{
@@ -32,7 +32,7 @@ test('in-flight fixed placements reuse their exact cards while unspecified start
  const jobs=[running('already-running',[0]),...Array.from({length:3},(_,n)=>running('sending-'+n,[],{cards:1,state:'SUBMITTING',dispatchPending:false,placement:share(0)}))];
  assert.equal(usage(jobs,userId,machine),1);
  jobs.push(running('unspecified',[],{cards:1,state:'SUBMITTING',dispatchPending:false}));assert.equal(usage(jobs,userId,machine),2);
- jobs.push(running('starting-without-report',[],{cards:1,state:'STARTING',placement:share(0)}));assert.equal(usage(jobs,userId,machine),3);
+ jobs.push(running('starting-without-report',[],{cards:1,state:'STARTING',placement:share(0)}));assert.equal(usage(jobs,userId,machine),2);
 });
 
 test('dispatch projection reuses explicitly shared cards and counts unspecified cards as additional demand',()=>{
@@ -43,19 +43,21 @@ test('dispatch projection reuses explicitly shared cards and counts unspecified 
  assert.equal(usage(jobs,userId,machine,{...candidate,cards:2,placement:undefined}),3);
 });
 
-test('the quota ledger deduplicates shared allocations and lists queued requests with zero occupied cards',()=>{
- const jobs=[running('a',[0]),running('b',[0]),running('queued',[],{state:'PENDING',cards:2})],client=new DemoClient();
+test('the quota ledger groups node queues with occupied cards and portal waits with zero cards',()=>{
+ const jobs=[running('a',[0]),running('b',[0]),running('node-queued',[],{state:'PENDING',cards:1,nodeJobId:'Jqueued',placement:share(0)}),running('portal-wait',[],{state:'SUBMITTING',dispatchPending:true,cards:2})],client=new DemoClient();
  client.data={jobs,users:[{id:userId,name:'Fixture',enabled:true,role:'member',total:2,limits:{[machine]:2}}]};client.principal={userId,role:'member'};
  const html=quotaLedgerHTML(client);
- assert.match(html,/1 \/ 2/);assert.match(html,/排队（不占额度）<\/span><strong>0/);assert.match(html,/申请 2 张/);assert.doesNotMatch(html,/排队也计入|排队占用/);
+ assert.match(html,/1 \/ 2/);assert.match(html,/占用额度<\/span><strong>1/);assert.match(html,/等待额度（不占额度）<\/span><strong>0/);
+ assert.match(html,/已派发，等待显卡/);assert.match(html,/申请 2 张/);
 });
 
-async function fixture(t){
- const root=await mkdtemp(join(tmpdir(),'physical-quota-')),bootstrap=join(root,'bootstrap'),database=join(root,'db'),calls=[],states=new Map();
+async function fixture(t,{defaultState='RUNNING'}={}){
+ const root=await mkdtemp(join(tmpdir(),'physical-quota-')),bootstrap=join(root,'bootstrap'),database=join(root,'db'),calls=[],states=new Map(),allocations=new Map();
  const password='Physical-Quota-Local-Fixture!';await writeFile(bootstrap,JSON.stringify({username:'admin',password}));
  const service=await PortalService.open(database,bootstrap,undefined,async(host,operation,args)=>{
   calls.push({host,operation,args:structuredClone(args)});
-  return {state:states.get(args.job.id)||'RUNNING',nodeJobId:'J'+args.job.id.replaceAll('-','').slice(0,12),assignedIndices:args.job.placement?.gpuIndices??[0]};
+  const state=states.get(args.job.id)||defaultState;
+  return {state,nodeJobId:'J'+args.job.id.replaceAll('-','').slice(0,12),assignedIndices:['PENDING','QUEUED'].includes(state)?[]:allocations.get(args.job.id)??args.job.placement?.gpuIndices??[0]};
  });
  clearInterval(service.executionTimer);const admin=await service.login('admin',password);
  const member=(await service.invoke(admin.token,'users.create',{username:'member',password})).result;
@@ -64,8 +66,41 @@ async function fixture(t){
  const settle=async()=>{await new Promise(resolve=>setImmediate(resolve));await service.reconcile();await service.tail;};
  t.after(async()=>{await settle();service.close();await rm(root,{recursive:true,force:true});});
  const submit=async(args={},token=actor.token)=>(await service.invoke(token,'jobs.submit',{machine,project:'demo',cards:1,key:randomUUID(),argv:['true'],...args})).result;
- return {service,admin,member,actor,calls,states,settle,submit};
+ return {service,admin,member,actor,calls,states,allocations,settle,submit};
 }
+
+test('quota two admits ten submissions but dispatches only two node-queued jobs at a time',async t=>{
+ const f=await fixture(t,{defaultState:'PENDING'});f.service.reconciling=true;
+ const requests=Array.from({length:10},()=>({key:randomUUID()}));
+ const submitted=await Promise.all(requests.map(request=>f.submit(request)));
+ assert.equal(submitted.length,10);f.service.reconciling=false;await f.settle();
+ const rows=()=>f.service.store.jobs.filter(job=>job.userId===f.member.id);
+ const dispatched=()=>rows().filter(job=>job.nodeJobId&&!['SUCCEEDED','FAILED','CANCELED'].includes(job.state));
+ assert.equal(dispatched().length,2);assert.equal(usage(rows(),f.member.id),2);
+ assert.equal(rows().filter(job=>job.state==='SUBMITTING'&&job.dispatchPending===true).length,8);
+ assert.ok(rows().filter(job=>job.dispatchPending===true).every(job=>job.queueReason==='已占用 2/2 张卡'));
+ for(let wave=0;wave<5;wave++){
+  const active=dispatched();assert.equal(active.length,2);
+  for(const [index,job] of active.entries()){f.states.set(job.id,'RUNNING');f.allocations.set(job.id,[index]);}
+  await f.settle();assert.equal(dispatched().length,2);assert.equal(usage(rows(),f.member.id),2);
+  for(const job of active)f.states.set(job.id,'SUCCEEDED');
+  await f.settle();await f.settle();
+ }
+ assert.equal(rows().filter(job=>job.state==='SUCCEEDED').length,10);assert.equal(usage(rows(),f.member.id),0);
+ assert.equal(new Set(f.calls.filter(call=>call.operation==='sync').map(call=>call.args.job.id)).size,10);
+ for(const [index,job] of submitted.entries())assert.equal(rows().find(row=>row.id===job.id).key,requests[index].key);
+});
+
+test('node-queued fixed shared jobs reuse one card before assignments are reported',async t=>{
+ const f=await fixture(t,{defaultState:'PENDING'});
+ await f.service.invoke(f.admin.token,'policy.save',{userId:f.member.id,total:1,limits:{[machine]:1}});
+ for(let n=0;n<4;n++){const job=await f.submit({placement:share(0)});await f.settle();assert.ok(f.service.store.jobs.find(row=>row.id===job.id).nodeJobId);}
+ assert.equal(usage(f.service.store.jobs,f.member.id),1);
+ const waiting=await f.submit({placement:share(1)});await f.settle();
+ const row=f.service.store.jobs.find(job=>job.id===waiting.id);
+ assert.equal(row.dispatchPending,true);assert.equal(row.queueReason,'已占用 1/1 张卡');
+ assert.equal(f.calls.some(call=>call.args.job.id===waiting.id),false);
+});
 
 test('unlimited same-card shared submissions run; a new card waits and resumes under its original key',async t=>{
  const f=await fixture(t),shared=[];

@@ -1,18 +1,19 @@
 // One allocation contract shared by browser, CLI and submission service.
 import {schedulingPolicy} from './scheduling-policy.js';
 export function occupiesGpu(job){
+  if(job.state==='SUBMITTING'&&job.dispatchPending===true)return false;
   return ['STARTING','RUNNING','PREEMPTING','CANCELING','UNKNOWN'].includes(job.state)||
+    ['PENDING','QUEUED'].includes(job.state)&&!!job.nodeJobId&&job.dispatchPending!==true||
     job.state==='SUBMITTING'&&job.dispatchPending!==true||job.latestAttempt?.state==='DRAINING'&&job.latestAttempt.finishedAt==null;
 }
-// Use reported allocations for running work. An unresolved start still holds
-// its requested capacity; jobs waiting in either queue hold no cards.
+// Dispatched work holds quota even while queued on the node. Only jobs still
+// waiting in the portal are free; use reported cards, fixed cards, then capacity.
 export function gpuCardUsage(jobs,userId,machine,candidate){
   const cards=new Set();let unknown=0;
   const add=(host,indices)=>{for(const index of indices)cards.add(host+':'+index);};
   for(const job of jobs){
     if(job.userId!==userId||machine&&job.machine!==machine||candidate?.id&&job.id===candidate.id||!occupiesGpu(job))continue;
-    const sending=job.state==='SUBMITTING'&&job.dispatchPending!==true;
-    const indices=job.assignedIndices?.length?job.assignedIndices:sending?(job.placement??job.spec?.placement)?.gpuIndices:null;
+    const indices=job.assignedIndices?.length?job.assignedIndices:(job.placement??job.spec?.placement)?.gpuIndices;
     if(indices?.length){
       add(job.machine,indices);
       if(job.elastic??job.spec?.elastic)unknown+=Math.max(0,job.cards-indices.length);

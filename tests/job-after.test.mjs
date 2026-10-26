@@ -67,12 +67,26 @@ test('a parent rejected before receiving a node ID cancels its child and release
   assert.deepEqual(shown.after,[{id:parent.id,name:'train'}]);assert.match(shown.reason,/依赖作业 train.*未运行/);
 });
 
-test('dependency chains, branches and joins can all queue without reserving personal cards',async t=>{
-  const f=await fixture(t),a=await f.submit({cards:8}),b=await f.submit({cards:8,after:[a.id]}),c=await f.submit({cards:8,after:[b.id]});
+test('dependency chains, branches and joins wait in the portal until dispatched predecessors release quota',async t=>{
+  const f=await fixture(t);f.service.reconciling=true;
+  const a=await f.submit({cards:8}),b=await f.submit({cards:8,after:[a.id]}),c=await f.submit({cards:8,after:[b.id]});
   const left=await f.submit({cards:4,after:[a.id]}),right=await f.submit({cards:4,after:[a.id]}),joined=await f.submit({cards:8,after:[left.id,right.id]});
-  await f.submit({machine:'gpu-2'});await f.settle();
-  assert.equal(f.service.store.jobs.length,7);assert.equal(f.service.store.jobs.every(job=>job.state==='PENDING'),true);
-  assert.equal(usage(f.service.store.jobs,f.member.id),0);assert.equal(usage(f.service.store.jobs,f.member.id,'gpu-1'),0);
+  const unrelated=await f.submit({machine:'gpu-2'});f.service.reconciling=false;
+  const row=job=>f.service.store.jobs.find(item=>item.id===job.id);
+  for(let wave=0;wave<7;wave++){
+    await f.service.reconcile();await f.settle();await f.service.reconcile();await f.settle();
+    const active=f.service.store.jobs.filter(job=>job.state==='PENDING');
+    if(!active.length)break;
+    assert.ok(usage(f.service.store.jobs,f.member.id)<=8);
+    for(const job of active){
+      assert.ok((job.after||[]).every(parent=>row(parent).state==='SUCCEEDED'));
+      f.states.set(job.id,'SUCCEEDED');
+    }
+    if(active.some(job=>job.id===a.id)){assert.equal(row(b).dispatchPending,true);assert.equal(row(b).queueReason,'已占用 8/8 张卡');}
+    await f.service.reconcile();await f.settle();
+  }
+  assert.equal(f.service.store.jobs.length,7);assert.equal(f.service.store.jobs.every(job=>job.state==='SUCCEEDED'),true);
+  assert.equal(usage(f.service.store.jobs,f.member.id),0);
   assert.deepEqual(f.calls.find(call=>call.args.job.id===joined.id).args.job.after,[left,right].map(job=>f.service.store.jobs.find(row=>row.id===job.id).nodeJobId));
   assert.deepEqual(c.after,[{id:b.id,name:'train'}]);
 });

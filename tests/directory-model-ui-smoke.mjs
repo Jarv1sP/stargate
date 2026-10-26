@@ -179,9 +179,22 @@ try{
    await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin.png'),fullPage:true});
    for(const room of ['members','cloud']){await page.evaluate(room=>{location.hash='#admin/'+room;},room);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-admin-'+room+'.png'),fullPage:true});}
   }
+  const ownJob={machine,userId:owner,ownerId:owner,username:'alice',project:'vision',cards:1,createdAt:'2026-10-14T11:00:00.000Z',argv:['true'],placement:{gpuIndices:[0],shared:true,vramMiB:256}};
+  state.jobs.push({...ownJob,id:'33333333-3333-4333-8333-333333333333',name:'同卡共享',state:'RUNNING',assignedIndices:[0]},
+   {...ownJob,id:'44444444-4444-4444-8444-444444444444',nodeJobId:'J444444444444',name:'节点排队',state:'PENDING',assignedIndices:[]},
+   {...ownJob,id:'55555555-5555-4555-8555-555555555555',name:'平台等待',state:'SUBMITTING',dispatchPending:true,cards:4,placement:undefined,assignedIndices:[]});
+  await refreshVisible(page);
   await page.locator('#account-menu-toggle').click();assert.equal(await page.locator('[data-shell-action=admin]').isVisible(),role==='admin');
   await page.screenshot({path:join(shots,role+'-'+width+'-account.png'),fullPage:true,animations:'disabled'});
   await page.locator('[data-shell-action=quota]').click();await page.locator('#quota-ledger').waitFor();
+  const occupied=page.locator('#quota-ledger .wb-ledger-groups>details').filter({has:page.locator('summary>span',{hasText:/^占用额度$/})});
+  const waiting=page.locator('#quota-ledger .wb-ledger-groups>details').filter({hasText:'等待额度（不占额度）'});
+  assert.match(await occupied.locator('summary>strong').innerText(),/^1 张$/);assert.match(await waiting.locator('summary>strong').innerText(),/^0 张$/);
+  await occupied.locator('summary').click();await waiting.locator('summary').click();
+  assert.equal(await occupied.getByText('已派发，等待显卡',{exact:true}).isVisible(),true);
+  assert.equal(await waiting.getByText('平台等待',{exact:true}).isVisible(),true);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'quota ledger fits '+width);
+  await page.screenshot({path:join(shots,role+'-'+width+'-quota.png'),fullPage:true,animations:'disabled'});
   assert.deepEqual(await page.locator('#room-nav [data-nav]').evaluateAll(nodes=>nodes.map(n=>n.dataset.nav)),['resources','work','jobs','datasets','community','workshop']);assert.equal(await page.locator('[data-shell-action=control]').count(),1);assert.equal(await page.locator('#control-strip,#mobile-control,#shell-context').count(),0);
   const touch=await page.locator('#room-nav a,#account-menu-toggle,.command-trigger').evaluateAll(nodes=>nodes.map(node=>{const r=node.getBoundingClientRect();return r.width>=44&&r.height>=44;}));assert.ok(touch.every(Boolean));
   await page.locator('.command-trigger').click();await page.locator('#control-command').fill('火星');await page.locator('.egg-mars').waitFor();

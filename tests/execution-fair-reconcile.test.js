@@ -44,7 +44,7 @@ async function fixture(t){
   const admin=await service.login('admin',password);
   const submit=async(machine=MACHINES[0].id)=>(await service.invoke(admin.token,'jobs.submit',{machine,project:'sample',cards:1,argv:['true'],key:randomUUID()})).result;
   const job=id=>service.store.jobs.find(j=>j.id===id);
-  const old=async(machine=MACHINES[0].id)=>{const result=await submit(machine);Object.assign(job(result.id),{state:'PENDING',dispatchPending:false});service.save();return result;};
+  const old=async(machine=MACHINES[0].id)=>{const result=await submit(machine);Object.assign(job(result.id),{state:'PENDING',dispatchPending:false,nodeJobId:'J'+result.id});service.save();return result;};
   const block=id=>{const response=deferred();blocks.set(id,response);return response;};
   const start=()=>{service.reconciling=false;const work=service.reconcile();works.push(work);return work;};
   t.after(async()=>{
@@ -61,7 +61,7 @@ for(const sameMachine of [false,true])test(`a late first dispatch bypasses a blo
   assert.equal(f.calls.filter(c=>c.args.job.id===fresh.id&&c.operation==='sync').length,1,'first sync occurs before the held old reply');
   assert.equal(f.job(fresh.id).state,'PENDING');assert.equal(f.job(fresh.id).dispatchPending,false);
   assert.ok(f.service.reconciling);assert.ok(f.active.has(old.id));
-  assert.equal(usage(f.service.store.jobs,'builtin-admin'),0);held.resolve();await work;
+  assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);held.resolve();await work;
 });
 
 test('urgent and observation lanes are bounded and both advance without duplicate job operations',{timeout:3000},async t=>{
@@ -92,13 +92,13 @@ test('a cancel arriving during sync waits for that job only and retains quota un
   const work=f.start();await tick();
   await f.service.invoke(f.admin.token,'jobs.cancel',{jobId:fresh.id});await tick();
   assert.equal(f.calls.filter(c=>c.operation==='cancel').length,0,'no concurrent cancel/sync for one job');
-  assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);syncGate.resolve();await tick();await tick();
+  assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);syncGate.resolve();await tick();await tick();
   const cancel=f.calls.find(c=>c.operation==='cancel');assert.equal(cancel.args.job.id,fresh.id);
   assert.equal(f.job(old.id).cancelRequested,false);assert.ok(f.active.has(old.id),'another slow host remains independent');
-  cancelGate.resolve();await tick();assert.equal(f.job(fresh.id).state,'UNKNOWN');assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
+  cancelGate.resolve();await tick();assert.equal(f.job(fresh.id).state,'UNKNOWN');assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);
   oldGate.resolve();await work;
   f.setBridge(async(_machine,operation,args)=>({state:operation==='cancel'?'CANCELED':'PENDING',nodeJobId:'J'+args.job.id}));
-  await f.service.reconcile();assert.equal(f.job(fresh.id).state,'CANCELED');assert.equal(usage(f.service.store.jobs,'builtin-admin'),0);
+  await f.service.reconcile();assert.equal(f.job(fresh.id).state,'CANCELED');assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
 });
 
 test('a pending foreground job rechecks current authority after its lane becomes available',{timeout:3000},async t=>{
@@ -107,7 +107,7 @@ test('a pending foreground job rechecks current authority after its lane becomes
   await f.service.enqueue(()=>{f.service.accounts.db.prepare("UPDATE accounts SET enabled=0 WHERE id='builtin-admin'").run();f.service.refreshAccounts();f.service.save();});
   held.resolve();await work;
   assert.equal(f.calls.length,1);assert.equal(f.job(second.id).state,'FAILED');assert.match(f.job(second.id).error,/授权已改变/);
-  assert.equal(f.job(second.id).notSubmitted,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),0);
+  assert.equal(f.job(second.id).notSubmitted,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
 });
 
 test('lost first reply is not re-observed or replayed in the active pass',{timeout:3000},async t=>{
@@ -118,7 +118,7 @@ test('lost first reply is not re-observed or replayed in the active pass',{timeo
   assert.equal(f.calls.filter(c=>c.args.job.id===fresh.id).length,1);assert.equal(f.job(fresh.id).dispatchPending,false);
   assert.equal(f.job(fresh.id).state,'SUBMITTING');assert.equal(f.job(fresh.id).error,'正在确认节点状态（自动重查中）');
   assert.equal(f.job(fresh.id).submissionReconciliation.state,'CHECKING');
-  assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);held.resolve();await work;
+  assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);held.resolve();await work;
 });
 
 
@@ -147,7 +147,7 @@ test('canceling a queued first dispatch sends only its original cancel and never
   const attempts=f.calls.filter(call=>call.args.job.id===second.id);
   assert.equal(attempts.length,1);assert.equal(attempts[0].operation,'cancel');
   assert.equal(f.job(second.id).state,'CANCELED');assert.equal(f.job(second.id).dispatchPending,true);
-  assert.equal(f.job(first.id).cancelRequested,false);assert.equal(usage(f.service.store.jobs,'builtin-admin'),0);
+  assert.equal(f.job(first.id).cancelRequested,false);assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
 });
 
 test('a selection error rejects the pass without leaving reconciliation locked or starting work',{timeout:3000},async t=>{
