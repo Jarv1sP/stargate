@@ -70,6 +70,7 @@ export async function transferCall(service,principal,operation,input,check=()=>{
   const write=(async()=>{
     if(!fresh){
       const status=await call(row.machine,'transfers.status',{id});
+      if(action==='resume'&&['RUNNING','PENDING'].includes(status.state))return finish(await call(row.machine,'transfers.resume',{id}));
       if(terminal.has(status.state)||!['ABSENT','FAILED','PAUSED'].includes(status.state))return finish(status);
       if(['FAILED','PAUSED'].includes(status.state)){
         if(row.reference.environment)await call(row.from,'transfers.project.prepare',{id,source:{...row.reference,userId:principal.userId},targetMachine:row.machine,mode:row.mode});

@@ -274,8 +274,11 @@ class DirectoryContract(unittest.TestCase):
         key=self.key();jobs.start({'key':key,'sourceMachine':'source','ticket':ticket,'source':{'dataset':'shared'},'target':{'dataset':'copy'}})
         with patch.object(transfers,'PeerClient',LocalPeer):
             self.assertEqual(jobs.worker(key),1);self.assertEqual(jobs.status({'key':key})['state'],'PAUSED')
-            first=jobs.s.read_json(jobs.path(key))['uploadKeys'];jobs.resume({'key':key});self.assertEqual(jobs.worker(key),0)
-            self.assertEqual(first,jobs.s.read_json(jobs.path(key))['uploadKeys'])
+            upload_key=jobs.file_key(key,'train/data.bin',jobs.file_keys(key))
+            uploads=module('data-uploads').Uploads(self.config,'alice')
+            self.assertEqual(jobs.s.read_json(uploads.record(upload_key))['offset'],1024**2)
+            jobs.resume({'key':key});self.assertEqual(jobs.worker(key),0)
+            self.assertEqual(jobs.s.read_json(uploads.record(upload_key))['state'],'COMPLETE')
         self.assertEqual((Path(self.config['datasetsRoot'])/'copy/train/data.bin').read_bytes(),raw)
         self.assertTrue((Path(self.config['datasetsRoot'])/'copy/empty').is_dir())
         self.assertEqual(jobs.status({'key':key})['state'],'SUCCEEDED')

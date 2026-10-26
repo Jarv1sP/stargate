@@ -477,8 +477,8 @@ class ProjectCopy(unittest.TestCase):
             self.assertEqual(t.target.cancel({'id':t.key})['state'],'CANCELED')
             self.assertFalse(folder.exists());self.assertTrue(t.target.s.read_json(t.target.path(t.key))['sourceCompletePending'])
             self.assertEqual(t.target.status({'id':t.key})['state'],'CANCELED')
-            self.assertEqual(t.target.resume({'id':t.key})['state'],'PENDING')
-            self.assertFalse(t.target.s.read_json(t.target.path(t.key)).get('sourceCompletePending'))
+            self.assertEqual(t.target.resume({'id':t.key})['state'],'CANCELED')
+            self.assertTrue(t.target.s.read_json(t.target.path(t.key)).get('sourceCompletePending'))
             self.assertTrue((Path(t.source.config['workspacesRoot'])/'.copy-exports'/t.key).exists())
             self.assertEqual(t.target.cancel({'id':t.key})['state'],'CANCELED')
             offline[0]=False
