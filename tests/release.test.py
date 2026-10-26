@@ -141,8 +141,10 @@ class ReleaseTests(unittest.TestCase):
         (run/'release.json').write_text(json.dumps(dict(nodesChanged=True,portalChanged=False)))
         with patch.object(deploy,'DockerBackend') as backend,patch.object(deploy,'ResourceGuard'), \
              patch.object(deploy,'install_nodes') as install:
+            backend.return_value.prune.return_value={'containersRemoved':0,'imageTagsRemoved':0}
             deploy.main(run,'a'*40)
-        install.assert_called_once();backend.assert_not_called()
+        install.assert_called_once();backend.return_value.preflight.assert_not_called()
+        backend.return_value.prune.assert_called_once()
         self.assertEqual((self.root/'deployed-sha').read_text().strip(),'a'*40)
         self.assertEqual(json.loads((run/'result.json').read_text())['portalChanged'],False)
 
@@ -301,6 +303,67 @@ class ReleaseTests(unittest.TestCase):
         backend.cleanup_staged();backend.command.assert_not_called()
         backend.running.return_value=False;backend.inspect.return_value={'Name':'/amax-console'}
         backend.cleanup_staged();backend.command.assert_not_called()
+
+    def test_success_retention_keeps_two_previous_and_all_in_use_images(self):
+        backend=self.drain_backend();backend.manifest.update(tag='stargate:auto-incoming',rollback='stargate:previous')
+        def container(identity,name,image,finished,running=False):
+            return dict(Id=identity,Name='/'+name,Image=image,State=dict(Running=running,FinishedAt=finished))
+        containers=[container('live','amax-console','live-image','',True),
+            container('first','amax-console-previous-first','first-image','2026-10-26'),
+            container('second','amax-console-previous-second','second-image','2026-10-25'),
+            container('old','amax-console-previous-old','old-image','2026-10-24'),
+            container('rejected','amax-console-rejected-old','rejected-image','2026-10-23'),
+            container('busy','amax-console-previous-busy','busy-image','',True),
+            container('foreign','another-service','foreign-image','2026-10-20')]
+        images=[dict(Repository=repo,Tag=tag,ID=identity)for repo,tag,identity in[
+            ('stargate','auto-live','live-image'),('stargate','auto-first','first-image'),
+            ('stargate','auto-second','second-image'),('stargate','auto-old','old-image'),
+            ('stargate','auto-rejected','rejected-image'),('stargate','auto-busy','busy-image'),
+            ('stargate','auto-foreign','foreign-image'),('stargate','auto-incoming','incoming-image'),
+            ('stargate','previous','rollback-image'),('stargate','auto-rollback','rollback-image'),
+            ('portal','identity','identity-image'),('caddy','latest','caddy-image')]]
+        calls=[]
+        def command(argv,**kwargs):
+            calls.append(argv)
+            if argv[:2]==['docker','ps']:return b'container-ids\n'
+            if argv[:2]==['docker','inspect']:return json.dumps(containers).encode()
+            if argv[:3]==['docker','image','ls']:return ('\n'.join(map(json.dumps,images))).encode()
+            return b''
+        backend.command=command
+        (self.root/'image.tar.gz').write_bytes(b'loaded image')
+        (self.root/'nodes').mkdir();(self.root/'nodes/package').write_bytes(b'installed')
+        (self.root/'release').mkdir();(self.root/'release/hold_proxy.py').write_text('active relay')
+        (self.root/'portal-image.override.json').write_text('{}')
+        self.assertEqual(backend.prune(),dict(containersRemoved=2,imageTagsRemoved=2))
+        self.assertEqual([c for c in calls if c[:2]==['docker','rm']],
+                         [['docker','rm','old'],['docker','rm','rejected']])
+        self.assertEqual([c for c in calls if c[:3]==['docker','image','rm']],
+                         [['docker','image','rm','stargate:auto-old'],['docker','image','rm','stargate:auto-rejected']])
+        self.assertIn(['docker','builder','prune','-af'],calls)
+        self.assertFalse((self.root/'image.tar.gz').exists());self.assertFalse((self.root/'nodes').exists())
+        self.assertTrue((self.root/'release/hold_proxy.py').exists())
+        self.assertTrue((self.root/'portal-image.override.json').exists())
+
+    def test_failed_deployment_does_not_prune_rollback_resources(self):
+        run=self.root/'runs'/'candidate';run.mkdir(parents=True)
+        (run/'release.json').write_text(json.dumps(dict(nodesChanged=False,portalChanged=True)))
+        with patch.object(deploy,'DockerBackend')as backend,patch.object(deploy,'ResourceGuard'), \
+             patch.object(deploy,'switch',side_effect=RuntimeError('unhealthy')):
+            backend.return_value.drain_result=None
+            with self.assertRaisesRegex(RuntimeError,'unhealthy'):deploy.main(run,'a'*40)
+        backend.return_value.prune.assert_not_called()
+        self.assertFalse((self.root/'deployed-sha').exists())
+        self.assertEqual(json.loads((run/'result.json').read_text())['status'],'FAILED')
+
+    def test_cleanup_failure_reports_warning_without_failing_live_release(self):
+        run=self.root/'runs'/'candidate';run.mkdir(parents=True)
+        (run/'release.json').write_text(json.dumps(dict(nodesChanged=False,portalChanged=False)))
+        with patch.object(deploy,'DockerBackend')as backend,patch.object(deploy,'ResourceGuard'):
+            backend.return_value.prune.side_effect=RuntimeError('cleanup failed')
+            deploy.main(run,'a'*40)
+        result=json.loads((run/'result.json').read_text())
+        self.assertEqual(result['status'],'DEPLOYED')
+        self.assertEqual(result['cleanup'],{'error':'RuntimeError'})
 
     def node_run(self):
         run=self.root/'runs'/'candidate';run.mkdir(parents=True)

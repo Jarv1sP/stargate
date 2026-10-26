@@ -3,6 +3,7 @@ import copy
 import http.client
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -136,6 +137,30 @@ class DockerBackend:
     def cleanup_staged(self):
         if self.new and not self.running(self.new) and self.inspect(self.new)['Name']!='/amax-console':
             self.command(['docker','rm',self.new])
+
+    def prune(self):
+        ids=self.command(['docker','ps','-aq']).decode().split()
+        containers=json.loads(self.command(['docker','inspect',*ids])) if ids else []
+        previous=sorted((c for c in containers if c['Name'].startswith('/amax-console-previous-')
+                         and not c['State']['Running']),key=lambda c:c['State']['FinishedAt'],reverse=True)
+        removed={c['Id'] for c in previous[2:]}
+        removed.update(c['Id'] for c in containers if c['Name'].startswith('/amax-console-rejected-')
+                       and not c['State']['Running'])
+        for identity in sorted(removed):self.command(['docker','rm',identity])
+        keep={c['Image'] for c in containers if c['Id'] not in removed}
+        images=[json.loads(line) for line in self.command(
+            ['docker','image','ls','--no-trunc','--format','{{json .}}']).decode().splitlines()]
+        keep.update(i['ID'] for i in images if i['Repository']+':'+i['Tag']
+                    in (self.manifest['tag'],self.manifest['rollback']))
+        tags=[i['Repository']+':'+i['Tag'] for i in images if i['Repository']=='stargate'
+              and i['Tag'].startswith('auto-') and i['ID'] not in keep]
+        for tag in tags:self.command(['docker','image','rm',tag],timeout=120)
+        self.command(['docker','builder','prune','-af'],timeout=120)
+        # docker load and node installation have finished. Keep the small
+        # Compose inputs, logs and relay code, not another copy of each image.
+        (self.root/'image.tar.gz').unlink(missing_ok=True)
+        if (self.root/'nodes').exists():shutil.rmtree(self.root/'nodes')
+        return {'containersRemoved':len(removed),'imageTagsRemoved':len(tags)}
 
     def hold_command(self, hold, item):
         with socket.socket(socket.AF_UNIX) as conn:

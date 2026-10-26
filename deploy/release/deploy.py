@@ -96,7 +96,7 @@ def main(run, revision):
     resources=ResourceGuard(resource_log)
     backend=None
     scope=json.loads((run/'release.json').read_text())
-    started=time.monotonic();status='FAILED'
+    started=time.monotonic();status='FAILED';cleanup=None
     try:
         if scope['portalChanged']:
             backend=DockerBackend(run,resources)
@@ -109,6 +109,11 @@ def main(run, revision):
             finally:resources.close()
         temporary=root/'deployed-sha.tmp';temporary.write_text(revision+'\n');temporary.replace(root/'deployed-sha')
         status='DEPLOYED'
+        try:
+            cleanup=(backend or DockerBackend(run,resources)).prune()
+        except Exception as error:
+            cleanup={'error':type(error).__name__}
+            print('Release is live; cleanup stopped: '+type(error).__name__,flush=True)
         return identity
     finally:
         readings=[]
@@ -117,7 +122,7 @@ def main(run, revision):
             if path.exists():readings.extend(json.loads(line)['available'] for line in path.read_text().splitlines())
         result={'status':status,'revision':revision,'seconds':round(time.monotonic()-started,3),
                 'minimumAvailableBytes':min(readings) if readings else None,'drain':backend.drain_result if backend else None,
-                'portalChanged':scope['portalChanged'],'nodesChanged':scope['nodesChanged']}
+                'portalChanged':scope['portalChanged'],'nodesChanged':scope['nodesChanged'],'cleanup':cleanup}
         (run/'result.json').write_text(json.dumps(result)+'\n')
         print(json.dumps(result),flush=True)
 
