@@ -14,6 +14,17 @@ def runtime_folder(config,key):
 class ProjectCopy:
     def __init__(self,jobs):self.j,self.s,self.d=jobs,jobs.s,jobs.d
 
+    @staticmethod
+    def preparing(row):
+        folder=Path(row['root']);total=0;found=False
+        try:
+            for name in ('image.tar',) if row.get('fullImage') and row.get('mode')=='incremental' else ('rootfs.tar','workspace.tar','image.tar'):
+                try:total+=(folder/name).lstat().st_size;found=True
+                except FileNotFoundError:pass
+            phase='源端整理文件清单' if (folder/'index.jsonl').exists() and not row.get('fullImage') else '源端准备临时归档'
+        except OSError:return '源端准备导出（暂时读不到归档大小）'
+        return phase+(f'（已生成 {total:,} 字节）' if found else '')
+
     def mode(self,args):
         ref=args['target'];store=self.j.e.projects().store
         folder=store.owner_path(ref.get('ownerId') or ref['userId'],create=True)/self.d.name(ref['project'])
@@ -135,6 +146,17 @@ class ProjectCopy:
         finally:os.close(fd)
 
     @contextlib.contextmanager
+    def restartable(self,row):
+        target=row['target'];owner=target.get('ownerId') or target['userId']
+        engine=self.j.e.projects().oci(owner)
+        fd=os.open(engine.folder/('use-'+self.d.name(target['project'])+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        try:
+            try:fcntl.flock(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
+            except BlockingIOError:yield False
+            else:yield True
+        finally:os.close(fd)
+
+    @contextlib.contextmanager
     def idle(self,row,engine):
         self.j.phase(row['id'],'等待目标项目的任务、终端或 Git 命令结束')
         project=self.d.name(row['target']['project'])
@@ -168,7 +190,8 @@ class ProjectCopy:
                 while cursor is not None:
                     if self.j.status({'id':row['id']})['state']=='CANCELED':return {'entries':[],'nextOffset':None}
                     page=peer.call('list',offset=cursor)
-                    if page.get('state')=='PREPARING':time.sleep(1);continue
+                    if page.get('state')=='PREPARING':
+                        self.j.phase(row['id'],page.get('phase') or '等待源项目导出并读取文件清单');time.sleep(1);continue
                     if page.get('state')=='FAILED':raise ValueError(page['error'])
                     for entry in page['entries']:stream.write(json.dumps(entry)+'\n')
                     cursor=page['nextOffset']
@@ -263,12 +286,13 @@ class ProjectCopy:
             self.s.atomic_json(folder/'project.json',{'project':project,'ownerId':owner,'userId':owner,'environmentMode':'oci',
                               'copyKey':key,'name':project,'archived':False,'group':'','repo':None,'createdAt':row['createdAt']})
             current.update(runtime=True);self.s.atomic_json(self.j.path(key),current)
-        shutil.rmtree(bundle)
+        self.j.cleanup_uploads(row,[bundle]);shutil.rmtree(bundle)
         return True
 
     def cleanup(self,row):
         key=row['id'];target=row['target'];owner=target.get('ownerId') or target['userId'];project=target['project']
         destination=self.destination(row);folder=runtime_folder(self.j.config,key)
+        self.j.cleanup_uploads(row,[folder/'received',*([destination/'received'] if row.get('createdProject') else [])])
         backup=destination/'code'/'.copy-backups'/(key+'.tar')
         if backup.exists():self.sync().module('project-purge').Trash(self.j.config).delete(backup,row.get('backupKey',key),'output',row.get('actor'))
         engine=self.j.e.projects().oci(owner);engine.state_folder=destination;head=engine.load(project)

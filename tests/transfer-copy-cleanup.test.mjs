@@ -57,3 +57,20 @@ test('paused or uncertain target preserves its source for original-key resume',a
  for(const state of ['PAUSED','UNKNOWN']){f.state(state);assert.equal((await f.call('status')).state,state);}
  assert.equal(f.calls.some(row=>row.operation==='transfers.project.complete'),false);
 });
+
+test('explicit active resume reaches the original receiver without preparing new source bytes; duplicate create stays observational',async t=>{
+ const f=fixture(t);await f.create();const before=f.calls.length;
+ await f.create();assert.deepEqual(f.calls.slice(before).map(row=>row.operation),['transfers.status']);
+ for(const state of ['RUNNING','PENDING']){
+  f.state(state);const start=f.calls.length;await f.call('resume');
+  assert.deepEqual(f.calls.slice(start).map(row=>[row.host,row.operation]),[[f.machine,'transfers.status'],[f.machine,'transfers.resume']]);
+ }
+});
+
+test('unknown or canceled original copy is not forcibly resumed',async t=>{
+ const f=fixture(t);await f.create();
+ for(const state of ['UNKNOWN','CANCELED']){
+  f.state(state);const start=f.calls.length;assert.equal((await f.call('resume')).state,state);
+  assert.equal(f.calls.slice(start).some(row=>row.operation==='transfers.resume'),false);
+ }
+});
