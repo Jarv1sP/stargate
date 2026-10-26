@@ -274,6 +274,7 @@ class Coordinator:
         self._dependency_waiting: set[str] = set()
         self._gpu_samples_available = False
         self._statuses: dict[str, Any] = {}
+        self._process_owners: dict[int, str | None] = {}
         self._external: dict[str, set[int]] = {}
         self._idle_counts: dict[str, int] = {}
         self._release_counts: dict[str, int] = {}
@@ -354,6 +355,8 @@ class Coordinator:
         statuses: dict[str, Any],
         leases: list[dict[str, Any]],
         reservations: list[dict[str, Any]],
+        *,
+        process_owners: dict[int, str | None] | None = None,
     ) -> tuple[
         dict[str, set[int]],
         dict[str, set[int]],
@@ -363,6 +366,8 @@ class Coordinator:
         managed: dict[str, set[int]] = {}
         external: dict[str, set[int]] = {}
         pid_attempt: dict[int, str | None] = {}
+        if process_owners is not None:
+            process_owners.clear()
         for device in devices:
             for pid in device.compute_pids:
                 if pid not in pid_attempt:
@@ -376,6 +381,8 @@ class Coordinator:
                             if attempt_id is not None:
                                 break
                             group = group.rpartition("/")[0]
+                        if process_owners is not None:
+                            process_owners[pid] = attempt_id
                     pid_attempt[pid] = attempt_id
                 attempt_id = pid_attempt[pid]
                 if attempt_id is None:
@@ -988,6 +995,7 @@ class Coordinator:
                 statuses, status_problems = self._collect_statuses(attempts)
                 self._snapshot = devices
                 self._statuses = statuses
+                self._process_owners.clear()
                 if status_problems:
                     self._invalidate_observation_history()
                     self._set_health("degraded", "; ".join(status_problems))
@@ -996,7 +1004,8 @@ class Coordinator:
                     attempts, leases, reservations, devices, statuses
                 )
                 managed, external, collisions = self._classify_processes(
-                    devices, statuses, leases, reservations
+                    devices, statuses, leases, reservations,
+                    process_owners=self._process_owners,
                 )
                 if collisions:
                     recovered = self._recover_cleanup_ready_external_collisions(
@@ -1012,7 +1021,8 @@ class Coordinator:
                             attempts, leases, reservations, devices, statuses
                         )
                         managed, external, collisions = self._classify_processes(
-                            devices, statuses, leases, reservations
+                            devices, statuses, leases, reservations,
+                            process_owners=self._process_owners,
                         )
                 self._external = external
                 self._update_quarantines(collisions, devices)
@@ -3643,12 +3653,7 @@ class Coordinator:
         exclude_attempt_id: str | None = None,
         fresh: bool = False,
     ) -> list[GpuDevice]:
-        """Admit a user-chosen GPU using conservative actual+reserved memory.
-
-        External occupancy is intentional here. Reservations account for
-        sharing jobs that have not allocated memory yet; counting actual
-        allocations as well is deliberately conservative, not a hard limit.
-        """
+        """Admit using each shared holder's larger reserved/actual allocation."""
         if not job.get("share_gpu") or len(job["requested_gpu_uuids"]) != 1:
             return []
         gpu_uuid = job["requested_gpu_uuids"][0]
@@ -3661,6 +3666,7 @@ class Coordinator:
             return []
         leases = self.store.list_leases()
         statuses = self._statuses
+        process_owners = self._process_owners
         if fresh:
             attempts = self.store.list_attempts(
                 states=ACTIVE_ATTEMPT_STATES, limit=10000
@@ -3669,12 +3675,14 @@ class Coordinator:
             if problems:
                 return []
             self._audit_gpu_fences(attempts, leases, reservations, snapshot, statuses)
+            process_owners = {}
             _, _, collisions = self._classify_processes(
-                snapshot, statuses, leases, reservations
+                snapshot, statuses, leases, reservations,
+                process_owners=process_owners,
             )
             if any(c.gpu_uuid == gpu_uuid for c in collisions):
                 return []
-        reserved_mb = 0
+        shared = []
         for lease in leases:
             if (
                 lease["gpu_uuid"] != gpu_uuid
@@ -3706,11 +3714,35 @@ class Coordinator:
             ):
                 return []
             if holder_job.get("share_gpu"):
-                reserved_mb += int(holder_job["vram_mb"])
+                shared.append((lease, holder_job))
         usable_mb = device.memory_total_mib - self.config.max_idle_memory_mb
-        if device.memory_used_mib + reserved_mb + int(job["vram_mb"]) > usable_mb:
+        if self._shared_memory_used(device, shared, process_owners) + int(job["vram_mb"]) > usable_mb:
             return []
         return [device]
+
+    def _shared_memory_used(
+        self,
+        device: GpuDevice,
+        shared: list[tuple[dict[str, Any], dict[str, Any]]],
+        process_owners: dict[int, str | None],
+    ) -> int:
+        """Keep other usage actual; count each known shared job only once."""
+        attributed = committed = 0
+        # An unreadable PID cgroup could belong to any holder on this GPU.
+        owners_known = all(pid in process_owners for pid in device.compute_pids)
+        for lease, job in shared:
+            reserved = int(job["vram_mb"])
+            memory = [device.compute_memory_mib.get(pid) for pid in device.compute_pids
+                      if process_owners.get(pid) == lease["attempt_id"]]
+            if owners_known and all(value is not None for value in memory):
+                actual = sum(memory)
+                attributed += actual
+                committed += max(reserved, actual)
+            else:
+                # Unknown ownership/memory: actual stays in the physical total
+                # and the full reservation remains added, as before.
+                committed += reserved
+        return max(0, device.memory_used_mib - attributed) + committed
 
     def _free_devices(self) -> list[GpuDevice]:
         leased = {item["gpu_uuid"] for item in self.store.list_leases()}
@@ -4708,12 +4740,12 @@ class Coordinator:
         result = []
         for device in self._snapshot:
             holders = [lease for lease in leases if lease["gpu_uuid"] == device.uuid]
-            shared = [
-                self.store.get_job(lease["job_id"])
-                for lease in holders
-                if self.store.get_job(lease["job_id"]).get("share_gpu")
-            ]
-            budget = sum(int(job["vram_mb"]) for job in shared)
+            shared = []
+            for lease in holders:
+                job = self.store.get_job(lease["job_id"])
+                if job.get("share_gpu"):
+                    shared.append((lease, job))
+            budget = sum(int(job["vram_mb"]) for _, job in shared)
             result.append(
                 {
                     "index": device.index,
@@ -4725,8 +4757,7 @@ class Coordinator:
                         0,
                         device.memory_total_mib
                         - self.config.max_idle_memory_mb
-                        - device.memory_used_mib
-                        - budget,
+                        - self._shared_memory_used(device, shared, self._process_owners),
                     ),
                 }
             )

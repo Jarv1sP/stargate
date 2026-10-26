@@ -21,7 +21,7 @@ import math
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
 
@@ -149,6 +149,7 @@ class GpuDevice:
     memory_free_mib: int
     utilization_percent: int
     compute_pids: tuple[int, ...]
+    compute_memory_mib: dict[int, int | None] = field(default_factory=dict)
 
     # Compatibility aliases retain explicit MiB storage while keeping callers
     # that use the shorter names readable.
@@ -171,7 +172,7 @@ class NvidiaSmiProvider:
     GPU_QUERY = (
         "index,uuid,memory.total,memory.used,memory.free,utilization.gpu"
     )
-    COMPUTE_QUERY = "gpu_uuid,pid"
+    COMPUTE_QUERY = "gpu_uuid,pid,used_gpu_memory"
 
     def __init__(
         self,
@@ -236,6 +237,7 @@ class NvidiaSmiProvider:
                 memory_free_mib=free,
                 utilization_percent=utilization,
                 compute_pids=tuple(sorted(pids[uuid])),
+                compute_memory_mib=pids[uuid],
             )
             for index, uuid, total, used, free, utilization in rows
         ]
@@ -298,9 +300,9 @@ class NvidiaSmiProvider:
         text: str,
         *,
         known_uuids: set[str],
-    ) -> dict[str, set[int]]:
-        result: dict[str, set[int]] = {
-            uuid: set() for uuid in known_uuids
+    ) -> dict[str, dict[int, int | None]]:
+        result: dict[str, dict[int, int | None]] = {
+            uuid: {} for uuid in known_uuids
         }
         for row_number, row in enumerate(
             _csv_rows(
@@ -310,10 +312,10 @@ class NvidiaSmiProvider:
             ),
             start=1,
         ):
-            if len(row) != 2:
+            if len(row) < 2:
                 raise BackendProtocolError(
                     "compute-process query row "
-                    f"{row_number} has {len(row)} fields, expected 2"
+                    f"{row_number} is missing the GPU UUID or PID"
                 )
             uuid = row[0].strip()
             if uuid not in result:
@@ -327,7 +329,9 @@ class NvidiaSmiProvider:
                 raise BackendProtocolError(
                     f"compute-process row {row_number} has an invalid PID"
                 )
-            result[uuid].add(pid)
+            try:memory = _parse_nonnegative_int(row[2], "process memory")
+            except (BackendProtocolError, IndexError):memory = None
+            result[uuid][pid] = memory
         return result
 
 
