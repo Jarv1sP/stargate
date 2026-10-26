@@ -163,7 +163,18 @@ class ProjectCopy:
         def running(selector):
             args=('ps','--quiet','--filter',selector)
             # Refresh stale running records only when the cheap query finds one.
-            return engine.run(*args,'--sync') if engine.run(*args) else ''
+            containers=engine.run(*args,'--sync').split() if engine.run(*args) else []
+            if not containers:return False
+            try:pids=[int(value) for value in engine.run('container','inspect','--format','{{.State.Pid}}',*containers).split()]
+            except (ValueError,OSError):return True
+            if len(pids)!=len(containers):return True
+            for pid in pids:
+                if pid<=0:return True
+                try:os.kill(pid,0)
+                except ProcessLookupError:continue
+                except PermissionError:pass
+                return True
+            return False
         fd=os.open(engine.folder/('use-'+project+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
         try:
             while self.j.status({'id':row['id']})['state']!='CANCELED':

@@ -363,16 +363,40 @@ class CopyIdle(unittest.TestCase):
         with copy.idle(row,engine) as ready:self.assertTrue(ready)
         self.assertEqual(len(calls),2);self.assertFalse(any('--sync' in args for args in calls))
 
+    def test_synced_ghost_pid_does_not_keep_a_project_busy(self):
+        child=subprocess.Popen([sys.executable,'-c','pass']);child.wait()
+        for selector in ('label=io.gpuq.project=demo','volume='):
+            with self.subTest(selector=selector):
+                def ps(*args):
+                    if args[0]=='container':return str(child.pid)
+                    return 'ghost-container' if any(value.startswith(selector) for value in args) else ''
+                module,copy,engine,row,state=self.fixture(ps)
+                with patch.object(module.time,'sleep',side_effect=AssertionError('exited process blocked the copy')):
+                    with copy.idle(row,engine) as ready:self.assertTrue(ready)
+
     def test_synced_running_container_still_waits_until_cancel(self):
         calls=[]
-        def ps(*args):calls.append(args);return 'running-container'
+        def ps(*args):
+            calls.append(args);return str(os.getpid()) if args[0]=='container' else 'running-container'
         module,copy,engine,row,state=self.fixture(ps)
         def cancel(delay):state[0]='CANCELED'
         with patch.object(module.time,'sleep',side_effect=cancel) as sleep:
             with copy.idle(row,engine) as ready:self.assertFalse(ready)
         sleep.assert_called_once_with(.2)
-        self.assertEqual(len(calls),2);self.assertIn('--sync',calls[-1])
+        self.assertEqual(len(calls),3);self.assertIn('--sync',calls[1])
         self.assertFalse(any(value.startswith('volume=') for args in calls for value in args))
+
+    def test_unavailable_container_pid_keeps_waiting(self):
+        for value in ('0','',ValueError('inspect unavailable'),str(os.getpid())):
+            with self.subTest(value=value):
+                def ps(*args):
+                    if args[0]!='container':return 'running-container'
+                    if isinstance(value,Exception):raise value
+                    return value
+                module,copy,engine,row,state=self.fixture(ps)
+                def cancel(delay):state[0]='CANCELED'
+                with patch.object(module.time,'sleep',side_effect=cancel),patch.object(module.os,'kill',side_effect=PermissionError):
+                    with copy.idle(row,engine) as ready:self.assertFalse(ready)
 
 
 if __name__=='__main__':unittest.main()
