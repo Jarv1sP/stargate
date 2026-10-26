@@ -1,5 +1,5 @@
 """File-level project merge. Metadata selects bytes; target-only paths survive."""
-import importlib.util,json,os,shutil,stat,tarfile,uuid
+import importlib.util,io,json,os,shutil,stat,tarfile,uuid
 from decimal import Decimal
 from pathlib import Path
 
@@ -178,6 +178,11 @@ def remove_at(fd,name):
 
 
 def apply(request,rootfs):
+    with module('copy-batches').CopyBatches(request['bundle']) as batches:
+        return apply_files(request,rootfs,batches)
+
+
+def apply_files(request,rootfs,batches):
     paths=roots(request,rootfs);rows=list(entries(request['plan']));bundle=Path(request['bundle'])
     module('project-store').require_workspace_space(paths['code'],needed=sum(row['size'] for row in rows if row['type']=='file'))
     # Parent type changes precede their children; directory metadata is set last.
@@ -197,7 +202,8 @@ def apply(request,rootfs):
                 out=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
                 try:
                     source=bundle/(row['body'] if request.get('incremental') else row['archive'])
-                    with open(source,'rb') as stream,os.fdopen(os.dup(out),'wb') as target:
+                    raw=batches.body(row['body']) if request.get('incremental') else None
+                    with (io.BytesIO(raw) if raw is not None else open(source,'rb')) as stream,os.fdopen(os.dup(out),'wb') as target:
                         stream.seek(0 if request.get('incremental') else row['offset']);left=row['size']
                         while left:
                             raw=stream.read(min(left,1024**2))

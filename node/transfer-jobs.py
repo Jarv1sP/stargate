@@ -475,30 +475,65 @@ class TransferJobs:
 
     def receive(self,key,root,peer,entries,done,uploads,*,file_keys=None):
         if file_keys is None:file_keys=self.file_keys(key)
-        for entry in entries:
-            if entry['type']=='directory':
-                with self.d.parent(root,entry['path']+'/.directory',create=True):pass
-                continue
-            with self.lock(key):
-                row=self.s.read_json(self.path(key));target=row['target']
-                if row['state']=='CANCELED':return None
-                upload_key=self.file_key(key,entry['path'],file_keys)
-                if row['state']!='RUNNING' or row.get('phase')!='传输文件':
-                    row.update(state='RUNNING',phase='传输文件');self.s.atomic_json(self.path(key),row)
-            begin={'key':upload_key,'path':entry['path'],'totalSize':entry['size'],'executable':entry.get('executable',False),'dataset':target.get('dataset'),'actor':row.get('actor')}
-            status=uploads.process('begin',begin);offset=status['offset'] or 0
-            if status['state']=='COMPLETE':done+=entry['size'];continue
-            while offset<entry['size']:
-                chunk=peer.call('file',path=entry.get('remotePath',entry['path']),offset=entry.get('remoteOffset',0)+offset,length=min(1024**2,entry['size']-offset))
+        with contextlib.ExitStack() as stack:
+            batches=None;entries=iter(entries);pending=None
+            def eligible(entry):
+                return entry['type']=='file' and entry['size']<=64*1024 and 'remoteOffset' in entry and 'remotePath' in entry and not uploads.record(self.file_key(key,entry['path'],file_keys)).exists()
+            while True:
+                entry=pending if pending is not None else next(entries,None);pending=None;group=None
+                if entry is None:break
+                if entry['type']=='directory':
+                    with self.d.parent(root,entry['path']+'/.directory',create=True):pass
+                    continue
                 with self.lock(key):
-                    row=self.s.read_json(self.path(key))
+                    row=self.s.read_json(self.path(key));target=row['target']
                     if row['state']=='CANCELED':return None
-                    status=uploads.process('chunk',{'key':upload_key,'data':chunk['data'],'offset':offset})
-                    if status['offset']==offset:raise ValueError('源文件未返回字节，请按原编号续传。')
-                    offset=status['offset'];row.update(bytes=done+offset,lastProgressAt=time.time());self.s.atomic_json(self.path(key),row)
+                    upload_key=self.file_key(key,entry['path'],file_keys)
+                    if row['state']!='RUNNING' or row.get('phase')!='传输文件':
+                        row.update(state='RUNNING',phase='传输文件');self.s.atomic_json(self.path(key),row)
+                    if target.get('environment') is True and target.get('mode')=='incremental' and eligible(entry):
+                        if batches is None:
+                            self.s.require_workspace_space(root,needed=3*1024**2)
+                            batches=stack.enter_context(module('copy-batches').CopyBatches(root,write=True))
+                        if batches.size(entry['path'])==entry['size']:done+=entry['size'];continue
+                        group=[entry];start=entry['remoteOffset'];end=start+entry['size']
+                        while len(group)<200:
+                            following=next(entries,None)
+                            if following is None:break
+                            pending=following
+                            if not eligible(following) or batches.size(following['path']) is not None:break
+                            # Adjacent tar members include padding and PAX headers.
+                            if following['remotePath']!=entry['remotePath'] or not end<=following['remoteOffset']<=end+4096 or following['remoteOffset']+following['size']-start>1024**2:break
+                            group.append(following);pending=None;end=following['remoteOffset']+following['size']
+                if group is not None:
+                    size=sum(item['size'] for item in group);length=end-start if size else 0
+                    raw=base64.b64decode(peer.call('file',path=entry['remotePath'],offset=start,length=length)['data'],validate=True) if length else b''
+                    if len(raw)!=length:raise ConnectionError('源文件字节尚未收齐，请沿原编号续传。')
+                    with self.lock(key):
+                        row=self.s.read_json(self.path(key))
+                        if row['state']=='CANCELED':return None
+                        self.s.require_workspace_space(root,needed=2*len(raw)+65536)
+                        batches.put(group,raw,start);done+=size
+                        row.update(bytes=done,lastProgressAt=time.time());self.s.atomic_json(self.path(key),row)
+                    continue
+                begin={'key':upload_key,'path':entry['path'],'totalSize':entry['size'],'executable':entry.get('executable',False),'dataset':target.get('dataset'),'actor':row.get('actor')}
+                status=uploads.process('begin',begin);offset=status['offset'] or 0
+                if status['state']=='COMPLETE':done+=entry['size'];continue
+                while offset<entry['size']:
+                    chunk=peer.call('file',path=entry.get('remotePath',entry['path']),offset=entry.get('remoteOffset',0)+offset,length=min(1024**2,entry['size']-offset))
+                    with self.lock(key):
+                        row=self.s.read_json(self.path(key))
+                        if row['state']=='CANCELED':return None
+                        status=uploads.process('chunk',{'key':upload_key,'data':chunk['data'],'offset':offset})
+                        if status['offset']==offset:raise ValueError('源文件未返回字节，请按原编号续传。')
+                        offset=status['offset'];row.update(bytes=done+offset,lastProgressAt=time.time());self.s.atomic_json(self.path(key),row)
+                with self.lock(key):
+                    if self.s.read_json(self.path(key))['state']=='CANCELED':return None
+                    uploads.process('finish',{'key':upload_key});done+=entry['size']
             with self.lock(key):
-                if self.s.read_json(self.path(key))['state']=='CANCELED':return None
-                uploads.process('finish',{'key':upload_key});done+=entry['size']
+                row=self.s.read_json(self.path(key))
+                if row['state']=='CANCELED':return None
+                if done>row.get('bytes',0):row.update(bytes=done);self.s.atomic_json(self.path(key),row)
         return done
 
     def process(self,operation,args):

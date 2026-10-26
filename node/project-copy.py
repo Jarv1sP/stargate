@@ -234,9 +234,10 @@ class ProjectCopy:
         # covers only local backup/apply; unchanged projects need no exclusion.
         engine.copy_files(project,'plan',paths=paths,index=str(bundle/'index.jsonl'),plan=str(plan))
         if incremental and receive is not None:
-            entries=({**entry,'path':entry['body'],'remotePath':entry['archive'],'remoteOffset':entry['offset']}
-                     for entry in self.sync().entries(plan) if entry['type']=='file' and not (bundle/entry['body']).exists())
-            if receive(entries) is None:return False
+            with self.sync().module('copy-batches').CopyBatches(bundle) as batches:
+                entries=({**entry,'path':entry['body'],'remotePath':entry['archive'],'remoteOffset':entry['offset']}
+                         for entry in self.sync().entries(plan) if entry['type']=='file' and not (bundle/entry['body']).exists() and batches.size(entry['body'])!=entry['size'])
+                if receive(entries) is None:return False
         changed=bool(plan.stat().st_size)
         with self.idle(row,engine) if changed and existing else contextlib.nullcontext(True) as ready:
             if ready and changed:
