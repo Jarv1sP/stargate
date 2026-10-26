@@ -52,5 +52,11 @@ class PeerReconnect(unittest.TestCase):
         with self.assertRaises(ConnectionError):self.client.call('list',offset=0)
         self.assertEqual(self.jobs.calls,[])
 
+    def test_small_tls_responses_do_not_wait_for_tcp_packet_coalescing(self):
+        self.start();self.client.call('list',offset=0)
+        self.assertTrue(self.open)
+        for connection in self.open:
+            self.assertEqual(connection.getsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY),1)
+
 
 if __name__=='__main__':unittest.main()
