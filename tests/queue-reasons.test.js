@@ -71,7 +71,7 @@ test('derived priority is GPU fullness, maintenance, then personal quota; legacy
   assert.match(f.reason(),/^显卡已满/);
   f.host.gpuq.jobs=[];assert.equal(f.reason(),'机器维护中');
   delete f.job.dataPreparation;assert.equal(f.reason(),'机器维护中');
-  f.service.maintenanceFor=()=>null;assert.equal(f.reason(),'配额已满（本人在该机已用 4/4 张）');
+  f.service.maintenanceFor=()=>null;assert.equal(f.reason(),'已占用 4/4 张卡');
 });
 
 test('preparation and exact selected/global maintenance are displayed without another machine leaking into it',()=>{
@@ -87,7 +87,7 @@ test('quota respects admin exemption, excludes the job itself and does not expos
   f.service.store.jobs.push({...target(),id:'other-owner',userId:'secret-member',state:'RUNNING',cards:8});
   assert.equal(f.reason(),'等待调度器分配，原因未上报');
   f.service.store.jobs.push({...target(),id:'own-running',state:'RUNNING',cards:1});
-  assert.equal(f.reason(),'配额已满（本人在该机已用 1/1 张）');
+  assert.equal(f.reason(),'已占用 1/1 张卡');
   f.user.role='admin';assert.equal(f.reason(),'等待调度器分配，原因未上报');
 });
 

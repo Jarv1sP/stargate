@@ -67,46 +67,12 @@ test('a parent rejected before receiving a node ID cancels its child and release
   assert.deepEqual(shown.after,[{id:parent.id,name:'train'}]);assert.match(shown.reason,/依赖作业 train.*未运行/);
 });
 
-test('one sequential chain shares quota, parallel children and unrelated work reserve separately',async t=>{
-  const f=await fixture(t),a=await f.submit({cards:8}),b=await f.submit({cards:8,after:[a.id]}),c=await f.submit({cards:8,after:[b.id]});await f.settle();
-  assert.equal(usage(f.service.store.jobs,f.member.id),8);
-  assert.equal(usage(f.service.store.jobs,f.member.id,'gpu-1'),8);
-  await assert.rejects(f.submit({cards:8,after:[a.id]}),/总额度/);
-  await assert.rejects(f.submit({machine:'gpu-2'}),/总额度/);
-  for(const id of [a.id,b.id])f.service.store.jobs.find(row=>row.id===id).state='SUCCEEDED';
-  assert.equal(usage(f.service.store.jobs,f.member.id),8);
-  f.service.store.jobs.find(row=>row.id===c.id).state='CANCELED';
-  assert.equal(usage(f.service.store.jobs,f.member.id),0);
-});
-
-test('a full-width parent can release its reservation to two half-width branches',async t=>{
-  const f=await fixture(t),parent=await f.submit({cards:8});
-  const left=await f.submit({cards:4,after:[parent.id]}),right=await f.submit({cards:4,after:[parent.id]});await f.settle();
-  assert.equal(usage(f.service.store.jobs,f.member.id),8);
-  await assert.rejects(f.submit({after:[parent.id]}),/总额度/);
-  const joined=await f.submit({cards:8,after:[left.id,right.id]});await f.settle();
-  assert.equal(usage(f.service.store.jobs,f.member.id),8);
-  for(const id of [parent.id,left.id,right.id])f.service.store.jobs.find(row=>row.id===id).state='SUCCEEDED';
-  assert.equal(usage(f.service.store.jobs,f.member.id),8);
-  f.service.store.jobs.find(row=>row.id===joined.id).state='SUCCEEDED';assert.equal(usage(f.service.store.jobs,f.member.id),0);
-});
-
-test('quota equals the largest possible concurrent set, including joins and completed ancestors',()=>{
-  for(let links=0;links<64;links++)for(let finished=-1;finished<4;finished++){
-    let bit=0;
-    const rows=[4,1,3,2].map((cards,index)=>({id:String(index),userId:'member',machine:'gpu-1',cards,state:index===finished?'SUCCEEDED':'PENDING',after:[]}));
-    const ancestors=rows.map(()=>new Set());
-    for(let child=0;child<4;child++)for(let parent=0;parent<child;parent++,bit++)if(links&(1<<bit)){
-      rows[child].after.push({id:String(parent)});ancestors[child].add(parent);
-      for(const id of ancestors[parent])ancestors[child].add(id);
-    }
-    if(finished>=0)for(const parent of ancestors[finished])rows[parent].state='SUCCEEDED';
-    let expected=0;
-    for(let subset=0;subset<16;subset++){
-      const picked=rows.map((_,index)=>index).filter(index=>subset&(1<<index));
-      if(picked.some(index=>rows[index].state==='SUCCEEDED')||picked.some(a=>picked.some(b=>ancestors[a].has(b))))continue;
-      expected=Math.max(expected,picked.reduce((sum,index)=>sum+rows[index].cards,0));
-    }
-    assert.equal(usage(rows,'member'),expected,`DAG ${links}, finished ${finished}`);
-  }
+test('dependency chains, branches and joins can all queue without reserving personal cards',async t=>{
+  const f=await fixture(t),a=await f.submit({cards:8}),b=await f.submit({cards:8,after:[a.id]}),c=await f.submit({cards:8,after:[b.id]});
+  const left=await f.submit({cards:4,after:[a.id]}),right=await f.submit({cards:4,after:[a.id]}),joined=await f.submit({cards:8,after:[left.id,right.id]});
+  await f.submit({machine:'gpu-2'});await f.settle();
+  assert.equal(f.service.store.jobs.length,7);assert.equal(f.service.store.jobs.every(job=>job.state==='PENDING'),true);
+  assert.equal(usage(f.service.store.jobs,f.member.id),0);assert.equal(usage(f.service.store.jobs,f.member.id,'gpu-1'),0);
+  assert.deepEqual(f.calls.find(call=>call.args.job.id===joined.id).args.job.after,[left,right].map(job=>f.service.store.jobs.find(row=>row.id===job.id).nodeJobId));
+  assert.deepEqual(c.after,[{id:b.id,name:'train'}]);
 });

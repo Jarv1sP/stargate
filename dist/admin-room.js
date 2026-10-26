@@ -33,7 +33,7 @@ export function adminRoomUI(store,{machines,refresh}){
             <td class="adm-sub mono">${admin?'全部':limits.length?limits.map(([m,n])=>`${esc(short(m))} ${n}`).join(' · '):'未授权'}</td>
             <td class="mono adm-sub">${store.usage(u.id)} 张</td>
             <td class="adm-acts">${admin?'':`${pending(u)?'<button type="button" class="jr-btn primary" data-adm-full>批准全部额度</button>':''}<button type="button" class="jr-link" data-adm-edit>编辑</button>`}</td></tr>`;}).join('')||'<tr><td colspan="6" class="adm-sub">暂无待审批成员。</td></tr>'}</tbody></table></div>
-        <p class="jr-hint">额度按卡数算，排队也占额度。管理员不受个人额度限制。</p>`;
+        <p class="jr-hint">同卡共享算一张，排队不占额度；管理员不限。</p>`;
     }
     function editLimits(user){
       const draft=store.get(user.id);

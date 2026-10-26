@@ -44,8 +44,14 @@ export async function firstDispatch(service,job,{usage,RANKS,fail}){
     const user=service.store.get(current.userId),capacity=MACHINES.find(m=>m.id===current.machine)?.cards||0;
     if(!user.enabled||current.cards>capacity||!personalCardQuotaExempt(user)&&(!user.limits[current.machine]||current.cards>user.limits[current.machine]||current.cards>user.total))
       fail('首次派发前账号或机器授权已改变；未启动训练。',403,'SUBMISSION_AUTH_REVOKED');
-    if(!personalCardQuotaExempt(user)&&(usage(service.store.jobs,user.id)>user.total||usage(service.store.jobs,user.id,current.machine)>user.limits[current.machine]))
-      throw Error('首次派发等待个人可用卡数额度；未启动训练，请等待已有任务释放或取消多余任务。');
+    if(!personalCardQuotaExempt(user)){
+      const local=usage(service.store.jobs,user.id,current.machine,current),total=usage(service.store.jobs,user.id,undefined,current);
+      if(local>user.limits[current.machine]||total>user.total){
+        current.queueReason=local>user.limits[current.machine]?`已占用 ${usage(service.store.jobs,user.id,current.machine)}/${user.limits[current.machine]} 张卡`:`已占用 ${usage(service.store.jobs,user.id)}/${user.total} 张卡`;
+        current.error=null;service.save();return null;
+      }
+    }
+    current.queueReason=null;
     current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();delete current.dispatchFinishedAt;
     try{service.save();}catch(error){current.dispatchPending=true;throw error;}
     // Begin the attempt in the same serialized turn as admission, but return a
@@ -107,10 +113,6 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
   const prioritySupported=true;
   if(service.maintenanceFor?.(request.machine))rejectSubmission('机器维护状态已改变；未提交训练。',409);
   const job=createSubmittedJob(request,user,prioritySupported),{id}=job;
-  if(!personalCardQuotaExempt(user,request)){
-    if(usage([...service.store.jobs,job],user.id)>user.total)rejectSubmission('超出跨机器用卡总额度。',409);
-    if(usage([...service.store.jobs,job],user.id,request.machine)>user.limits[request.machine])rejectSubmission('超出所选机器的用卡额度。',409);
-  }
   service.db.exec('BEGIN IMMEDIATE');
   try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
   catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==id);throw e;}

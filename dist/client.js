@@ -1,3 +1,4 @@
+import {gpuCardUsage} from './gpu-allocation.js';
 const readOperation=operation=>operation==='state'||operation==='storage.snapshot'||/\.(?:get|list|status|plan|capabilities|overview|catalog|quota|info|logs|watch|completion|diagnostics|routes)$/.test(operation);
 export class DemoClient{
   constructor(){this.authGeneration=0;this.authPending=0;this.authTail=Promise.resolve();this.inflight=new Set();this.authListeners=new Set();this.sessionToken=null;this.requestTimeoutMs=45000;}
@@ -81,7 +82,7 @@ export class DemoClient{
   get users(){return this.data?.users||[];}
   get jobs(){return this.data?.jobs||[];}
   get(id){const user=this.users.find(u=>u.id===id);if(!user)throw Error('找不到用户。');return structuredClone(user);}
-  usage(id,machine){return this.jobs.filter(j=>j.userId===id&&!['SUCCEEDED','FAILED','CANCELED'].includes(j.state)&&(!machine||j.machine===machine)).reduce((n,j)=>n+j.cards,0);}
+  usage(id,machine){return gpuCardUsage(this.jobs,id,machine);}
   setRole(id,role){return this.call('users.role',{userId:id,role});}
   reset(id,password){return this.call('users.reset',{userId:id,password});}
   save(id,policy){return this.call('policy.save',{...policy,userId:id});}

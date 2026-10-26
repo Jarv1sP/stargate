@@ -38,7 +38,7 @@ export async function selectMachine(service,user,request,usage){
       !j.cancelRequested&&!queue.some(native=>native.id===j.nodeJobId));
     const pendingCards=notObserved.reduce((sum,j)=>sum+(j.cards||0),0);
     const quotaReady=personalCardQuotaExempt(user,request)||
-      usage(service.store.jobs,user.id)+request.cards<=user.total&&usage(service.store.jobs,user.id,m.id)+request.cards<=user.limits[m.id];
+      usage(service.store.jobs,user.id,undefined,{...request,machine:m.id})<=user.total&&usage(service.store.jobs,user.id,m.id,{...request,machine:m.id})<=user.limits[m.id];
     const freeEnough=freeCards-pendingCards>=minimum;
     return {machine:m.id,waiting:waiting+notObserved.length,quotaReady,freeEnough};
   });

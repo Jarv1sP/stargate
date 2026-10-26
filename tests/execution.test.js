@@ -82,14 +82,18 @@ test('only a lost priority response marks an active adjustment unknown',async()=
   assert.equal(job.state,'RUNNING');assert.equal(job.priorityMutable,false);assert.match(job.error,/调整结果未知/);
  }finally{await f.close();}
 });
-test('atomic concurrent reservations and idempotency do not exceed global or per-host quota',async()=>{
+test('concurrent submissions keep their original keys and wait for physical-card quota at dispatch',async()=>{
  const f=await fixture();try{
    await f.grant(2,{'gpu-1':1,'gpu-2':2});
    const key=randomUUID();const both=await Promise.all([f.submit({key}),f.submit({key})]);assert.equal(both[0].result.id,both[1].result.id);assert.equal(f.s.store.jobs.length,1);
    assert.equal((await f.submit({key,argv:['python','different.py']})).result.id,both[0].result.id);assert.deepEqual(f.s.store.jobs[0].spec.argv,['python','train.py']);
-   await assert.rejects(f.submit(),/所选机器的用卡额度/);
-   const requests=await Promise.allSettled([f.submit({machine:'gpu-2'}),f.submit({machine:'gpu-2'})]);assert.equal(requests.filter(r=>r.status==='fulfilled').length,1);assert.equal(usage(f.s.store.jobs,f.member.id),2);
-   await assert.rejects(f.grant(1,{'gpu-1':1}),/当前预留/);
+   await f.settle();const local=(await f.submit()).result;
+   const requests=await Promise.all([f.submit({machine:'gpu-2'}),f.submit({machine:'gpu-2'})]);await f.settle();
+   assert.equal(requests.length,2);assert.equal(usage(f.s.store.jobs,f.member.id),2);
+   const localRow=f.s.store.jobs.find(job=>job.id===local.id);assert.equal(localRow.dispatchPending,true);assert.equal(localRow.queueReason,'已占用 1/1 张卡');
+   const waiting=requests.map(reply=>f.s.store.jobs.find(job=>job.id===reply.result.id)).filter(job=>job.dispatchPending);
+   assert.equal(waiting.length,1);assert.equal(waiting[0].queueReason,'已占用 2/2 张卡');
+   await assert.rejects(f.grant(1,{'gpu-1':1}),/当前占用/);
  }finally{await f.close();}
 });
 test('logged-in team members share task state, logs and controls while submit identity stays the actor',async()=>{
