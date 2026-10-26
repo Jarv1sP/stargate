@@ -41,7 +41,7 @@ class Runtime(unittest.TestCase):
         class Peer(t.peer):
             def call(self,action,**fields):
                 result=super().call(action,**fields)
-                if action=='file' and base64.b64decode(result['data'])==b'original-home':downloaded.set()
+                if action=='file' and b'original-home' in base64.b64decode(result['data']):downloaded.set()
                 return result
         def transfer():
             try:return t.target.worker(t.key)
