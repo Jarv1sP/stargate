@@ -7,13 +7,15 @@ import {chromium} from 'playwright';
 const origin='https://usable-servers.test',root=resolve(import.meta.dirname,'../dist'),temporary=await mkdtemp(join(tmpdir(),'usable-servers-ui-'));
 const shots=process.env.UI_SCREENSHOTS||temporary;await mkdir(shots,{recursive:true});
 const machines=[{id:'node-5090',cards:8,model:'Fixture 5090',memory:'32 GB'},{id:'node-4090-8',cards:8,model:'Fixture 4090',memory:'24 GB'},{id:'node-4090-6',cards:6,model:'Fixture 4090',memory:'24 GB'},{id:'node-3090',cards:8,model:'Fixture 3090',memory:'24 GB'}];
-const scenarios={two:{role:'member',limits:{'node-5090':4,'node-4090-8':2,'node-4090-6':0},usable:['node-5090','node-4090-8']},none:{role:'member',limits:{},usable:[]},admin:{role:'admin',limits:{},usable:machines.map(row=>row.id)}};
+const scenarios={two:{role:'member',limits:{'node-5090':4,'node-4090-8':2,'node-4090-6':0},usable:['node-5090','node-4090-8']},one:{role:'member',limits:{'node-5090':4},usable:['node-5090']},none:{role:'member',limits:{},usable:[]},admin:{role:'admin',limits:{},usable:machines.map(row=>row.id)}};
 const checkedAt='2026-10-28T10:00:00.000Z',noServer='你还没有开通任何服务器，请联系管理员审批额度。';
 // The portal sends anonymous readings for servers outside the grants.
 const host=(machine,masked)=>({id:machine.id,reachable:true,checkedAt,samplingStale:false,...(masked?{displayMasked:true}:{}),gpuq:{connected:true,health:'ok',jobs:[]},tasks:[],disks:[],
  gpus:Array.from({length:machine.cards},(_,index)=>({index,model:machine.model,memoryUsedMiB:index<2||masked?16384:0,memoryTotalMiB:32768,utilization:index<2||masked?60:0,processesAvailable:true,processes:index<2||masked?[{pid:null,memoryUsedMiB:16384,task:{id:'task-'+machine.id+index,source:masked?'anonymous':'portal',name:masked?'匿名任务':'团队训练',submitter:{name:masked?'匿名用户':'成员乙'}}}]:[]}))});
 const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
 const until=async(check,label)=>{for(let i=0;i<100&&!check();i++)await new Promise(resolve=>setTimeout(resolve,100));assert.ok(check(),label);};
+const palette=async(page,command)=>{if(!await page.locator('#mission-control[open]').count())await page.keyboard.press('Control+k');await page.locator('#palette-status').filter({hasText:'Enter 打开'}).waitFor();await page.locator('#control-command').fill(command);await page.keyboard.press('Enter');};
+const focused=page=>page.evaluate(()=>document.activeElement?.name);
 const noScroll=async page=>assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'no horizontal scroll');
 try{
  for(const [name,scenario] of Object.entries(scenarios))for(const width of [1440,390,320]){
@@ -61,6 +63,7 @@ try{
    await page.waitForFunction(()=>!document.querySelector('[name=workspace-project]').disabled);
    if(!await page.locator('#pr-switch-sheet[open]').count())await page.locator('#pr-switch').click();await page.locator('#pr-switch-sheet[open]').waitFor();
    assert.deepEqual(await page.locator('[name=workspace-machine] option').evaluateAll(rows=>rows.map(row=>row.value).filter(Boolean)),scenario.usable);
+   for(const field of ['workspace-machine','machine','terminal-machine','file-machine'])assert.equal(await page.locator(`[name=${field}]`).inputValue(),scenario.usable.length===1?scenario.usable[0]:'',field);
    assert.deepEqual([...new Set(calls.filter(row=>row.op==='projects.list').map(row=>row.args.machine))].sort(),[...scenario.usable].sort());
    const usableLine=page.locator('#pr-usable');
    if(scenario.role==='admin')assert.equal(await usableLine.isVisible(),false,'admins see all servers as before');
@@ -76,18 +79,25 @@ try{
   await page.keyboard.press('Control+k');await page.locator('#control-command').waitFor();await page.locator('#palette-status').filter({hasText:'Enter 打开'}).waitFor();
   assert.deepEqual([...new Set(calls.filter(row=>row.op==='datasets.list').map(row=>row.args.machine))].sort(),[...scenario.usable].sort());
   assert.doesNotMatch(await page.locator('#control-suggestions').innerText(),/部分内容暂时读不到/);
-  if(!scenario.usable.length)for(const command of ['新建项目','打开终端']){
-   if(!await page.locator('#mission-control[open]').count()){await page.keyboard.press('Control+k');await page.locator('#control-command').waitFor();}
-   await page.evaluate(()=>{document.querySelector('#toast').textContent='';});await page.locator('#control-command').fill(command);await page.keyboard.press('Enter');await page.locator('#toast').filter({hasText:noServer}).waitFor();
+  if(!scenario.usable.length)for(const command of ['新建项目','打开终端','上传数据集']){
+   await page.evaluate(()=>{document.querySelector('#toast').textContent='';});await palette(page,command);await page.locator('#toast').filter({hasText:noServer}).waitFor();
   }
-  else await page.keyboard.press('Escape');
+  else{
+   // 新建项目 opens the switch sheet with 新建项目 expanded and the name ready to type.
+   await palette(page,'新建项目');await page.locator('#pr-switch-sheet[open] #project-create[open]').waitFor();assert.equal(await focused(page),'new-project');
+   await noScroll(page);await shot('palette-new-project',false);await page.keyboard.press('Escape');await page.locator('#pr-switch-sheet').waitFor({state:'hidden'});
+  }
   // 数据: gauges and the upload server list hold usable servers only.
   await page.locator('[data-nav=datasets]').click();
   if(scenario.usable.length){
    await page.locator('[data-gauge]').first().waitFor();assert.deepEqual(await page.locator('[data-gauge]').evaluateAll(rows=>rows.map(row=>row.dataset.gauge)),scenario.usable);
    assert.deepEqual(await page.locator('[name=dataset-machine] option').evaluateAll(rows=>rows.map(row=>row.value)),scenario.usable);
-   await page.locator('[data-storage-machine]:not([hidden]) [data-dataset-open=images]').waitFor();await page.locator('#dr-upload-open').click();await page.locator('#dataset-upload[open]').waitFor();await noScroll(page);await shot('datasets-upload',false);
-  }else{await page.locator('.dr-none').waitFor();assert.equal(await page.locator('#dr-upload-open').isVisible(),false);assert.equal(await page.locator('[name=dataset-machine] option').count(),0);await noScroll(page);await shot('datasets');}
+   await page.locator('[data-storage-machine]:not([hidden]) [data-dataset-open=images]').waitFor();await page.locator('#dr-upload-open').click();await page.locator('#dataset-upload[open]').waitFor();
+   assert.equal(await page.locator('[name=dataset-machine]').inputValue(),scenario.usable[0]);assert.equal(await page.locator('[data-upload-to]').innerText(),scenario.usable[0]);
+   await noScroll(page);await shot('datasets-upload',false);await page.keyboard.press('Escape');await page.locator('#dataset-upload').waitFor({state:'hidden'});
+   // 上传数据集 from the palette opens the same dialog.
+   await palette(page,'上传数据集');await page.locator('#dataset-upload[open]').waitFor();assert.equal(await focused(page),'upload-dataset');
+  }else{await page.locator('.dr-none').waitFor();assert.equal(await page.locator('#dr-upload-open').isVisible(),false);assert.equal(await page.locator('#dataset-upload[open]').count(),0);assert.equal(await page.locator('[name=dataset-machine] option').count(),0);await noScroll(page);await shot('datasets');}
   assert.deepEqual(unexpected,[],'no request names a server outside the grants');assert.deepEqual(errors,[]);
   await context.close();console.log(name+' '+width+' PASS');
  }

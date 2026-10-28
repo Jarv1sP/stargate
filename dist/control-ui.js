@@ -1,6 +1,7 @@
 import {hasAdminSections} from './admin-ui.js';
 import {escapeUI as esc,stateWord,endedJob,personalQuotaReadout,usableMachines,noServerText} from './workbench-ui.js';
 import {openDialogs,reducedMotion} from './motion-ui.js';
+import {openSheet} from './sheet-ui.js';
 import {skyReading} from './sky-ui.js';
 import {recentFailure,failureReadKey} from './attention-state.js';
 
@@ -42,9 +43,9 @@ export function controlUI(store,{navigate,toast,openSubmit,openJob}){
   function baseCommands(){
     const rows=[['resources','算力'],['work','项目'],['jobs','任务'],['datasets','数据'],['community','协作'],['workshop','创意工坊']].map(([id,label])=>jump(id,label,()=>navigate(id)));
     if(store.production&&store.data?.executionEnabled===true)rows.push(jump('submit','新建任务',()=>{navigate('jobs');openSubmit();},'动作'));
-    rows.push(jump('new-project','新建项目',()=>{navigate('work');if(!usableMachines(store).length)return void toast(noServerText);const panel=document.querySelector('#project-create');if(panel){panel.open=true;panel.scrollIntoView({block:'center'});panel.querySelector('input')?.focus();}},'动作'));
+    rows.push(jump('new-project','新建项目',()=>{navigate('work');if(!usableMachines(store).length)return void toast(noServerText);const sheet=document.querySelector('#pr-switch-sheet'),panel=sheet?.querySelector('#project-create');if(!panel)return;openSheet(sheet);panel.open=true;panel.querySelector('[name=new-project]').focus();},'动作'));
     rows.push(jump('terminal','打开终端',()=>{navigate('work');if(!usableMachines(store).length)return void toast(noServerText);const button=document.querySelector('#terminal-open');if(!button||button.disabled){toast('先选择一个项目，再打开终端。');document.querySelector('[name=workspace-project]')?.focus();return;}for(let parent=button.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;button.click();},'动作'));
-    rows.push(jump('upload','上传数据集',()=>{navigate('datasets');const form=document.querySelector('#dataset-upload-form');if(form){form.closest('details').open=true;form.scrollIntoView({block:'center'});form.querySelector('input')?.focus();}},'动作'));
+    rows.push(jump('upload','上传数据集',()=>{navigate('datasets');if(!usableMachines(store).length)return void toast(noServerText);document.querySelector('#dr-upload-open')?.click();document.querySelector('#dataset-upload[open] [name=upload-dataset]')?.focus();},'动作'));
     rows.push(jump('transfers','传输与导入',()=>navigate('transfers')));
     if(store.principal?.role==='admin'&&hasAdminSections())rows.push(jump('admin','管理台',()=>navigate('admin')));
     for(const job of store.jobs)rows.push(jump('job:'+job.id,job.name||job.id,()=>{navigate('jobs');openJob(job.id);},'任务 · '+stateWord(job)+' · '+(job.machine||'未知')));

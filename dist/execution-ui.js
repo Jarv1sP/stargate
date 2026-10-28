@@ -642,7 +642,10 @@ export function executionUI(store,refresh,toast){
       query('.workspace-context').append(projectManagement.element);notifyContext();
     }
     const machines=projectMachines(),next=JSON.stringify(machines);
-    if(machineIdentity!==next){machineIdentity=next;const options='<option value="">请选择服务器</option>'+machines.map(item=>`<option value="${escape(item.id)}">${escape(item.id)}</option>`).join('');for(const name of ['workspace-machine','machine','terminal-machine','file-machine'])query(`[name=${name}]`).innerHTML=options;if(!machines.some(item=>item.id===machine)){machine='';project='';projectOwner='';catalog=[];epoch++;clearFileContext();notifyContext();}syncMachineFields();}
+    if(machineIdentity!==next){machineIdentity=next;const options='<option value="">请选择服务器</option>'+machines.map(item=>`<option value="${escape(item.id)}">${escape(item.id)}</option>`).join('');for(const name of ['workspace-machine','machine','terminal-machine','file-machine'])query(`[name=${name}]`).innerHTML=options;if(!machines.some(item=>item.id===machine)){machine='';project='';projectOwner='';catalog=[];epoch++;clearFileContext();notifyContext();}
+      // A single usable server is the only choice: preselect it as if the member had picked it.
+      if(machines.length===1){focusMachine=machines[0].id;if(!machine){machine=focusMachine;catalog=directory.get(machine)?.projects||[];notifyContext();}}
+      syncMachineFields();}
     ensureDirectory();
     resultAccess.sync();renderProject();
     if(!deepLinkHandled){deepLinkHandled=true;const id=new URL(location.href).searchParams.get('job');if(id&&store.jobs.some(job=>job.id===id))diagnostics.openLogs(id,'overview');}
