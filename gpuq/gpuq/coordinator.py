@@ -2984,7 +2984,12 @@ class Coordinator:
         return True
 
     def _finalize_attempt(self, attempt: dict[str, Any]) -> None:
-        if Path(attempt["control_dir"]).with_suffix(".payload.json").exists():
+        actions = self.store.list_actions(attempt_id=attempt["id"], limit=1000)
+        # A queued unit cleanup already removes the payload record; only an
+        # attempt that never got one (a start failure) needs its own.
+        if Path(attempt["control_dir"]).with_suffix(".payload.json").exists() and not any(
+            action["action_type"] == ActionType.CLEANUP_UNIT.value for action in actions
+        ):
             self.store.enqueue_action(
                 job_id=attempt["job_id"], attempt_id=attempt["id"],
                 action_type=ActionType.CLEANUP_UNIT, payload={},
@@ -2997,7 +3002,6 @@ class Coordinator:
         ack = self._valid_ack(attempt)
         checkpoint_path = ack.get("checkpoint_path") if ack else None
         exit_code = attempt.get("exit_code")
-        actions = self.store.list_actions(attempt_id=attempt["id"], limit=1000)
         signal_delivered = any(
             action["state"] == ActionState.DONE.value
             and action["action_type"]

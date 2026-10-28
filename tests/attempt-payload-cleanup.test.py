@@ -91,6 +91,19 @@ file.write_text(json.dumps(rows))
 
     def test_container_start_failure_cleans_only_its_payload_record(self):self.finish(125,'FAILED')
 
+    def test_finalization_while_unit_cleanup_is_queued_keeps_scheduling(self):
+        # The unit cleanup already removes the payload; finalizing first must not queue a clashing one.
+        job,attempt=self.canceled(f.AttemptState.RUNNING,term=False,canceled=False)
+        payload=self.launch(attempt,0)
+        status=replace(self.systemd.status.return_value,exec_main_status=0)
+        self.backend(status)
+        self.coordinator._on_unit_exited(attempt,status)
+        self.children.clear();self.coordinator._statuses[attempt['id']]=status
+        for _ in range(self.config.release_confirmations):self.coordinator._finalize_draining_attempts()
+        self.assertEqual(self.store.get_job(job['id'])['state'],'SUCCEEDED')
+        self.coordinator._process_actions();self.assert_removed(payload)
+        self.assertEqual([action['action_type'] for action in self.store.list_actions(attempt_id=attempt['id'])].count('CLEANUP_UNIT'),1)
+
     def test_finalization_after_unit_disappears_survives_daemon_restart(self):
         job,attempt=self.canceled(f.AttemptState.DRAINING,term=False,canceled=False)
         payload=self.launch(attempt,0);self.store.update_attempt(attempt['id'],exit_code=0)
