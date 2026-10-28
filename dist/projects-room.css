@@ -8,6 +8,9 @@
 .sb .pr-srv{font-size:12px;color:var(--ink-3)}
 .sb .pr-srv:empty{display:none}
 .sb .pr-tabs{margin-top:24px}
+/* No granted server: the room keeps only the heading and who to ask. */
+.sb .pr-room.pr-none :is(.pr-switch,.pr-tabs,.pr-pane){display:none}
+.sb .pr-no-server{margin:12px 0 0;color:var(--ink-3);font-size:14px}
 .sb .pr-pane{padding-top:18px;min-width:0}
 .sb .pr-pane[data-pp=term],.sb .pr-pane[data-pp=files]{animation:jr-rise .45s var(--jr-out) both}
 
@@ -78,6 +81,8 @@
 .sb .pr-sheet-head>div{flex:1;min-width:0}
 .sb .pr-sheet-title{font-family:var(--display);font-weight:300;font-size:26px;margin-top:6px}
 .sb .pr-sheet #projects-refresh{min-height:32px;font-size:12px;border-radius:999px}
+.sb .pr-usable:not([hidden]){display:flex;flex-wrap:wrap;gap:6px 14px;margin:0;font-size:12px;color:var(--ink-3)}
+.sb .pr-usable .mono{color:#F2F2EF;overflow-wrap:anywhere}
 .sb .pr-sheet .workspace-context-grid{display:grid;gap:14px}
 .sb .pr-sheet label{display:grid;gap:8px;font-size:12px;color:var(--ink-3)}
 .sb .pr-sheet select,.sb .pr-sheet input{height:42px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line-2);padding:0 14px;color:#F2F2EF;font:inherit;font-size:14px}

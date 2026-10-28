@@ -132,6 +132,14 @@ export function personalQuotaReadout(user,usage,limit=user?.total){
   const exempt=user?.enabled===true&&(typeof user.personalCardQuotaExempt==='boolean'?user.personalCardQuotaExempt:user.role==='admin');
   return {exempt,label:exempt?'不限个人额度':'占用额度 / 上限',value:exempt?number(usage):`${number(usage)} / ${number(limit)}`,note:''};
 }
+export const noServerText='你还没有开通任何服务器，请联系管理员审批额度。';
+// A shared project shows as the team's, not its creator's.
+export const projectOwnerText=item=>item?.shared?'共用':item?.ownerName||'';
+// Same rule as the portal: admins use every server; members only the servers granted to their enabled account.
+export function usableMachines(store,machines=store.data?.machines||[]){
+  const principal=store.principal,user=store.users.find(row=>row.id===principal?.userId);
+  return principal?machines.filter(machine=>principal.role==='admin'||user?.enabled===true&&user.limits?.[machine.id]>0):[];
+}
 export function quotaLedgerHTML(store,machine=''){
   const user=store.users.find(row=>row.id===store.principal?.userId);if(!user)return '';
   const jobs=store.jobs.filter(job=>job.userId===user.id&&(!endedJob(job)||occupiesGpu(job))&&(!machine||job.machine===machine));

@@ -6,6 +6,7 @@ import {transferBytes} from './data-route.js';
 import {diskLabel,diskMediaLabel} from './disk-media.js';
 import {copyHelp} from './copy-help-ui.js';
 import {openSheet,closeSheet,confirmSheet} from './sheet-ui.js';
+import {usableMachines,projectOwnerText} from './workbench-ui.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short=id=>String(id||'').replace(/^amax-/,'');
 const bytes=n=>!Number.isFinite(n)?'未知':n>=1024**4?(n/1024**4).toFixed(1)+' TiB':n>=1024**3?(n/1024**3).toLocaleString('en-US',{maximumFractionDigits:n>=100*1024**3?0:1})+' GiB':transferBytes(n);
@@ -46,22 +47,19 @@ export function storageMixHTML(disk,snapshot,options){
     <ul class="dr-mix-legend">${rows.map(([key,label])=>`<li data-k="${key}"${Number.isFinite(parts[key].size)?'':' class="unk"'}><b></b>${label}<span class="num">${amount(parts[key])}</span></li>`).join('')}</ul>`;
 }
 // A project container's size is its files, its job outputs and its own
-// container layers, shown as one number. A part the node doesn't report yet is
-// left out; one it reports as unknown makes the total a lower bound.
-const projectParts=row=>({files:{size:row.size,complete:row.complete!==false},
-  ...('outputs' in row?{outputs:row.outputs||area(null)}:{}),...('environment' in row?{environments:row.environment||area(null)}:{})});
+// container layers, shown as one number. A part read as unknown makes the total
+// a lower bound.
+const projectParts=row=>({files:{size:row.size,complete:row.complete!==false},outputs:row.outputs||area(null),environments:row.environment||area(null)});
 const projectTotal=row=>{
   if(!Number.isFinite(row.size))return {size:null,complete:false};
   const parts=Object.values(projectParts(row));
   return {size:parts.reduce((sum,part)=>sum+(Number.isFinite(part.size)?part.size:0),0),complete:parts.every(part=>Number.isFinite(part.size)&&part.complete!==false)};
 };
-// Members' base images, plus containers no project claims: the container
-// environment left after each project's own layers. Shown only once the node
-// splits environments per project.
+// Members' base images, task copies and runtime files: the container
+// environment left after each project's own layers.
 export function baseImages(snapshot){
   const projects=snapshot?.projects;if(!projects||projects.error)return null;
-  const own=(projects.projects||[]).filter(row=>'environment' in row).map(row=>row.environment||area(null));
-  if(!own.length)return null;
+  const own=(projects.projects||[]).map(row=>row.environment||area(null));
   const total=projects.areas?.environments||area(null);if(!Number.isFinite(total.size))return area(null);
   // Project layers counted short leave this remainder as an upper bound.
   const short=own.some(part=>!Number.isFinite(part.size)||part.complete===false);
@@ -75,8 +73,8 @@ export function projectStorageRows(rows,images=null){
   if(images&&images.size!==0)rows.push({total:images});
   const largest=Math.max(1,...rows.map(({total})=>Number.isFinite(total.size)?total.size:0));
   return rows.map(({row,total})=>row
-    ?`<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${row.shared?'共用':esc(row.ownerName||row.ownerId||'未知')+' 的项目'}</div></div>${sizeCell(total,largest)}<div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`
-    :`<div class="dr-row dr-ct dr-base"><div class="dr-main"><div class="dr-t">基础镜像</div><div class="dr-s">新建容器用的系统镜像，每位成员一份</div></div>${sizeCell(total,largest)}<div class="dr-s">${amount(total)}</div><div class="dr-acts dr-acts-on" aria-hidden="true"><span class="jr-link">打开</span></div></div>`).join('');
+    ?`<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(projectOwnerText(row)||row.ownerId||'未知')}${row.shared?'':' 的项目'}</div></div>${sizeCell(total,largest)}<div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`
+    :`<div class="dr-row dr-ct dr-base"><div class="dr-main"><div class="dr-t">基础镜像</div><div class="dr-s">新建容器用的系统镜像，以及任务运行时的副本和临时文件</div></div>${sizeCell(total,largest)}<div class="dr-s">${amount(total)}</div><div class="dr-acts dr-acts-on" aria-hidden="true"><span class="jr-link">打开</span></div></div>`).join('');
 }
 // Bar widths go through CSSOM: the portal CSP blocks inline style attributes.
 const fills=root=>requestAnimationFrame(()=>{for(const bar of root.querySelectorAll('[data-fill]'))bar.style.width=bar.dataset.fill+'%';});
@@ -160,7 +158,7 @@ export function datasetsUI(store,toast){
   function openDataset(dataset){selected=dataset;void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest',behavior:'smooth'});});}
   function build(machines){
     cloud?.reset();
-    section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML(diskLabel({kind:'workspace'}),null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML(diskLabel({kind:'datasets'}),null,{loading:true})}</div></button>`).join('')}</div>
+    section.innerHTML=`${machines.length?'':'<section class="dr-none"><h2>还没有开通服务器</h2><p>请联系管理员审批额度后，再上传数据集。</p></section>'}<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML(diskLabel({kind:'workspace'}),null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML(diskLabel({kind:'datasets'}),null,{loading:true})}</div></button>`).join('')}</div>
       <div class="dr-cards">${machines.map(row=>`<article class="dr-machine" data-storage-machine="${esc(row.id)}" hidden>
         <section class="dr-mix" data-storage-mix aria-label="空间构成"></section>
         <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
@@ -217,9 +215,9 @@ export function datasetsUI(store,toast){
   }
   document.addEventListener('gpuq-open-dataset',event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||!q('[name=dataset-machine]'))return;if(busy){toast('请等待当前数据操作完成，再打开数据集。');return;}selectMachine(detail.machine);openDataset(detail.dataset);});
   return ()=>{
-    const next=JSON.stringify([store.authGeneration,store.principal?.userId]),machines=store.principal?store.data?.machines||[]:[],ids=machines.map(row=>row.id).join(',');
+    const next=JSON.stringify([store.authGeneration,store.principal?.userId]),machines=usableMachines(store),ids=machines.map(row=>row.id).join(',');
     if(next!==identity||ids!==machineIds||!q('[name=dataset-machine]')){identity=next;machineIds=ids;turn++;operationTurn++;busy=false;active=false;build(machines);showMachine();}
-    const visible=!!store.principal&&!section.hidden;for(const action of actions)action.hidden=!visible;
+    const visible=!!store.principal&&!section.hidden;for(const action of actions)action.hidden=!visible||!machines.length;
     if(visible&&!active){active=true;for(const row of machines)void loadCard(row.id);}
     if(!visible&&active){active=false;turn++;for(const node of section.querySelectorAll('[data-storage-machine]'))node.dataset.loading='false';}
     for(const node of section.querySelectorAll('[data-storage-machine][data-checked-at]'))if(node.dataset.loading!=='true')node.querySelector('[data-storage-caption]').textContent=statisticsTime(node.dataset.checkedAt);

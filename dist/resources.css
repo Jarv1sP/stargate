@@ -255,6 +255,7 @@
 .sb .resource-metric-switch>button[aria-pressed="true"]{color:var(--ink)}
 .sb .resource-metric-switch>:is(.ui-info,details){position:absolute;left:calc(100% + 8px);top:50%;transform:translateY(-50%);margin:0}
 .sb .resource-status{display:inline-flex;align-items:center;gap:8px}
+.sb .resource-closed{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;font-size:11px;color:var(--ink-2);background:var(--bg-2);white-space:nowrap}
 .sb .resource-disk-label{display:block;font-size:12px;color:var(--ink-3)}
 .sb .resource-disk-label span{display:inline;font-size:12px;color:var(--ink-3)}
 .sb .resource-disk-label span::before{content:" · "}

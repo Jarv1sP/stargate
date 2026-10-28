@@ -13,6 +13,10 @@
 .sb .dr-disk.warn .storage-warning{color:var(--queue)}
 .sb .dr-disk .storage-bar.is-unknown{background:repeating-linear-gradient(135deg,var(--hatch) 0 2px,transparent 2px 6px)}
 .sb .dr-disk.none{color:var(--ink-4)}
+/* No granted server: nothing to measure or upload yet. */
+.sb .dr-none{background:var(--bg-1);border:1px solid var(--line-2);border-radius:14px;padding:28px 24px}
+.sb .dr-none h2{font-family:var(--display);font-weight:300;font-size:26px;margin:0;color:#F2F2EF}
+.sb .dr-none p{margin:10px 0 0;color:var(--ink-3);font-size:14px}
 
 .sb .dr-toolbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:30px 0 12px}
 .sb .dr-toolbar.dr-gap{margin-top:36px}
