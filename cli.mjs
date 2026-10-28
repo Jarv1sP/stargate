@@ -58,7 +58,7 @@ gpuctl pull-status LOCAL_DIRECTORY
 gpuctl ssh [--reconnect SESSION_ID] [--takeover]
 gpuctl run -g 1 [--rank P0..P4] -- python train.py --data /datasets/images --output /outputs （P4 最优先，P0 最低）
 --priority normal|high|idle：默认 normal=P2，high=P4，idle=P0（可中断，自动重排后从头跑）；与 --rank 分开使用。
---yield now|save 默认自动重排：now 从头跑，save 需 --checkpointable 并从 checkpoint 恢复；--restart-policy never 可关闭。
+--yield now|save 普通训练默认自动重排：now 从头跑，save 需 --checkpointable 并从 checkpoint 恢复；--restart-policy never 可关闭。交互终端默认 never，不允许明确指定 on-preempt。
 交互终端不自动重排；手动取消或普通失败不自动重跑。
 gpuctl run --sync [--sync-dir LOCAL_DIR] -g 1 -- python train.py
 --sync 先上传到当前工作区；AUTO 异机执行与 project copy 均复用目标已有容器并增量同步，没有容器才完整复制。
@@ -232,7 +232,7 @@ async function main() {
   const customScheduling = ["rank", "yield", "restart-policy", "checkpointable", "mode"].some((k) => Object.hasOwn(options, k));
   if (customScheduling && (positionals[0] !== "run" || options.priority)) fail9("Custom scheduling is only valid for run and cannot mix with --priority presets");
   const scheduling = customScheduling ? schedulingPolicy({rank:options.rank||'P2',yieldPolicy:options.yield||'never',checkpointable:options.checkpointable===true,
-    ...(options['restart-policy']!==undefined?{restartPolicy:options['restart-policy']}:{}),...(options.mode!==undefined?{mode:options.mode}:{})},true) : null;
+    ...(options['restart-policy']!==undefined?{restartPolicy:options['restart-policy']}:{}),...(options.mode!==undefined?{mode:options.mode}:{})},true,options.interactive===true) : null;
   const elasticKeys = ["min-cards", "global-batch", "micro-batch", "auto-expand"];
   const placementKeys = ["gpu", "share", "vram-mib", "hami", "sm-percent"];
   if (placementKeys.some((k) => Object.hasOwn(options, k)) && positionals[0] !== "run") fail9("Placement options are only valid for run");

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -24,12 +24,31 @@ test('voluntary yielding defaults to requeue while protected jobs and explicit o
  assert.throws(()=>elasticAllocation({minCards:1,globalBatch:8,microBatch:1,autoExpand:true},2,{yieldPolicy:'now',checkpointable:true}),/保存/);
 });
 test('browser default requeue handles never, now, save and an explicit stop without inventing checkpoint support',()=>{
- const form=new FormData();for(const [key,value] of Object.entries({'custom-policy':'on','queue-rank':'P1','yield-policy':'never','restart-policy':'on-preempt'}))form.set(key,value);
+ const form=new FormData();for(const [key,value] of Object.entries({'custom-policy':'on','queue-rank':'P1','yield-policy':'never','restart-policy':''}))form.set(key,value);
  assert.equal(schedulingFromForm(form).restartPolicy,'never');
  form.set('yield-policy','now');assert.equal(schedulingFromForm(form).restartPolicy,'on-preempt');
  form.set('restart-policy','never');assert.equal(schedulingFromForm(form).restartPolicy,'never');
  form.set('yield-policy','save');form.set('restart-policy','on-preempt');assert.throws(()=>schedulingFromForm(form),/checkpoint/);
  form.set('checkpointable','on');assert.equal(schedulingFromForm(form).restartPolicy,'on-preempt');
+});
+test('interactive defaults are resolved once and passed unchanged through Portal to node',()=>{
+ const principal={userId:'fixture'},argv=['/bin/bash','--noprofile','--norc','-i'];
+ for(const yielding of ['now','save']){
+  const input={rank:'P1',yieldPolicy:yielding,checkpointable:yielding==='save'};
+  const expected=schedulingPolicy(input,true,true);assert.equal(expected.restartPolicy,'never');
+  const args={machine:MACHINES[0].id,cards:1,project:'demo',argv,key:'11111111-1111-4111-8111-111111111111',interactive:true,scheduling:input};
+  const request=normalizeJobSubmission(args,principal),job=createSubmittedJob(request,{id:'fixture',username:'fixture'},true);
+  assert.deepEqual(job.spec.scheduling,expected);
+  const script="import importlib.util,json,sys;from pathlib import Path;s=importlib.util.spec_from_file_location('policy',Path('node/scheduling-policy.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.normalize_job_policy(json.load(sys.stdin))))";
+  const child=spawnSync('python3',['-B','-c',script],{input:JSON.stringify(job.spec),encoding:'utf8'});
+  assert.equal(child.status,0,child.stderr);const native=JSON.parse(child.stdout);
+  assert.equal(native.yield_policy,yielding);assert.equal(native.restart_policy,'never');
+  assert.throws(()=>normalizeJobSubmission({...args,scheduling:{...input,restartPolicy:'on-preempt'}},principal),/交互终端不能自动重放/);
+  const form=new FormData();for(const [key,value] of Object.entries({'custom-policy':'on','queue-rank':'P1','yield-policy':yielding,'interactive':'on','restart-policy':''}))form.set(key,value);
+  if(yielding==='save')form.set('checkpointable','on');
+  assert.deepEqual(schedulingFromForm(form),expected);
+  form.set('restart-policy','on-preempt');assert.throws(()=>schedulingFromForm(form),/交互终端不能自动重放/);
+ }
 });
 test('task labels distinguish restart from checkpoint resume and explain the idle preset',()=>{
  assert.match(schedulingContractLabel({yield_policy:'now',restart_policy:'on-preempt'}),/从头/);
@@ -66,5 +85,18 @@ test('CLI voluntary yielding defaults to requeue and preserves an explicit never
   assert.equal(result.code,1);assert.match(result.stderr,/Synthetic submission captured/);
   const calls=requests.filter(call=>call.operation==='jobs.submit');assert.equal(calls.length,1);
   assert.equal(calls[0].args.scheduling.restartPolicy,restart,options.join(' '));
+ }
+ for(const yielding of ['now','save']){
+  for(const explicit of [false,true]){
+   requests.length=0;
+   const options=['--interactive','--rank','P1','--yield',yielding,...(yielding==='save'?['--checkpointable']:[]),...(explicit?['--restart-policy','on-preempt']:[])];
+   const result=await new Promise((resolve,reject)=>{
+    const child=spawn(process.execPath,[cli,'--session-file',session,'--url',url,'run',...options,'-g','1'],{stdio:['ignore','pipe','pipe']});let stderr='';child.stderr.on('data',chunk=>stderr+=chunk);child.stdout.resume();child.on('error',reject);child.on('close',code=>resolve({code,stderr}));
+   });
+   assert.equal(result.code,1);
+   const calls=requests.filter(call=>call.operation==='jobs.submit');
+   if(explicit){assert.match(result.stderr,/交互终端不能自动重放/);assert.equal(calls.length,0);}
+   else{assert.match(result.stderr,/Synthetic submission captured/);assert.equal(calls.length,1);assert.equal(calls[0].args.interactive,true);assert.equal(calls[0].args.scheduling.restartPolicy,'never');assert.deepEqual(calls[0].args.argv,['/bin/bash','--noprofile','--norc','-i']);}
+  }
  }
 });

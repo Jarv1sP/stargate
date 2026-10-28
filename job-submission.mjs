@@ -25,7 +25,7 @@ export function normalizeJobSubmission(args,principal){
   if(args.scheduling!==undefined&&args.priority!==undefined)fail('自定义调度不能与旧优先级预设混用。');
   let explicit=null;
   if(args.scheduling!==undefined){
-    try{explicit=schedulingPolicy(args.scheduling,true);}
+    try{explicit=schedulingPolicy(args.scheduling,true,args.interactive===true);}
     catch(error){fail(error.message,error.status||400);}
   }
   const priority=args.priority===undefined?'normal':args.priority;
@@ -42,7 +42,6 @@ export function normalizeJobSubmission(args,principal){
   const project={...projectReference({project:args.project??'default'},{optional:false}),ownerId:args.ownerId??principal.userId,workspace:true};
   const sourceMachine=MACHINES.some(machine=>machine.id===args.sourceMachine)?args.sourceMachine:undefined;
   if(args.interactive!==undefined&&(args.interactive!==true||!project.workspace||JSON.stringify(args.argv)!==JSON.stringify(['/bin/bash','--noprofile','--norc','-i'])))fail('GPU 交互终端需要当前项目工作区和交互 shell。');
-  if(args.interactive&&explicit?.restartPolicy==='on-preempt')fail('交互终端不能自动重放手动命令；需要自动恢复或扩卡，请直接提交训练命令。');
   if(typeof args.key!=='string'||!UUID.test(args.key))fail('需提供 UUID 提交键，重试必须复用。');
   assertArgv(args.argv);
   if(!Number.isInteger(args.cards)||args.cards<1||args.cards>Math.max(...MACHINES.map(m=>m.cards)))fail('申请卡数超出单机容量。');
