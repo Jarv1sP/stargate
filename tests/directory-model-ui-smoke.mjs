@@ -96,7 +96,18 @@ try{
   await page.screenshot({path:join(shots,role+'-'+width+'-idle-requeue.png'),animations:'disabled'});
   await page.locator('.jr-sheet.on [name=priority]').selectOption('normal');
   assert.equal(await page.locator('.jr-sheet.on [data-yield-note]').isVisible(),false);
-  assert.equal(await page.locator('[name=restart-policy]').inputValue(),'on-preempt');
+  assert.equal(await page.locator('[name=restart-policy]').inputValue(),'');
+  const interactivePolicies=await page.evaluate(async()=>{
+   const {schedulingFromForm}=await import('/scheduling-ui.js'),results=[];
+   for(const yielding of ['now','save']){
+    const form=new FormData(document.querySelector('#train-form'));
+    for(const [key,value] of Object.entries({'custom-policy':'on','queue-rank':'P1','yield-policy':yielding,'interactive':'on','restart-policy':''}))form.set(key,value);
+    if(yielding==='save')form.set('checkpointable','on');
+    const policy=schedulingFromForm(form);form.set('restart-policy','on-preempt');let error='';try{schedulingFromForm(form);}catch(value){error=value.message;}
+    results.push({yielding,restart:policy.restartPolicy,error});
+   }return results;
+  });
+  for(const value of interactivePolicies){assert.equal(value.restart,'never');assert.match(value.error,/交互终端不能自动重放/);}
   await page.locator('.jr-sheet.on [type=submit]').click();await page.locator('.jr-sheet.on').waitFor({state:'detached'});
   const submitted=calls.find(row=>row.op==='jobs.submit').args;assert.deepEqual(submitted.argv,['/bin/bash','-c','python train.py --data /datasets --output /outputs']);assert.equal(submitted.cards,1);assert.ok(submitted.project&&submitted.machine===machine&&submitted.key);
   await page.locator('[data-scope=all]').click();await page.locator('.jr-row[data-job="'+jobId+'"]').click();await page.locator('.jr-drawer.on [data-log]').filter({hasText:'fixture log'}).waitFor();

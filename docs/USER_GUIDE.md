@@ -462,7 +462,7 @@ gpuctl run --rank P2 --mode preempt2 -g 1 -- python urgent.py
 gpuctl priority JOB_ID P1
 ```
 
-`never` 不自动让位；`now` 可中断且不保存；`save` 保存成功后整项多卡任务让位。选择 `now` 或 `save` 默认 `on-preempt`：被抢占后用原任务编号、原优先级及原排位重排；`now` 从头运行，`save` 从 checkpoint 恢复。原输出保留，重复运行可能覆盖程序写入的同名文件；不希望重跑时明确加 `--restart-policy never`，网页选择「结束，不自动重排」。交互终端不自动重开，手动取消或普通失败不自动重跑。`priority` 只改待启动任务的排序。
+`never` 不自动让位；`now` 可中断且不保存；`save` 保存成功后整项多卡任务让位。普通训练选择 `now` 或 `save` 默认 `on-preempt`：被抢占后用原任务编号、原优先级及原排位重排；`now` 从头运行，`save` 从 checkpoint 恢复。原输出保留，重复运行可能覆盖程序写入的同名文件；不希望重跑时明确加 `--restart-policy never`，网页选择「结束，不自动重排」。GPU 交互终端即使选择 `--yield now` 或 `--yield save --checkpointable`，默认仍为 `--restart-policy never`；只有明确指定 `on-preempt` 时才拒绝。网页恢复选项的「默认」按同一规则处理。手动取消或普通失败不自动重跑。`priority` 只改待启动任务的排序。
 
 训练每轮结束调用 `gpuq.checkpoint.checkpoint_at_epoch_end`，启动读取 `resume_checkpoint_path()`；保存 model、optimizer、scheduler、进度和各 rank RNG，DDP 所有 rank 协同，保留退出码 75。`--checkpointable` 不替程序实现保存；保存失败或超时不强杀，缺恢复文件不从头冒充恢复。
 
