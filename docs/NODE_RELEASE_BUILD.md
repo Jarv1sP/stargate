@@ -23,6 +23,10 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 
 项目采样另带 `environment:{size,complete}`，按同一 owner 内的 `io.gpuq.project` 标签归属，无标签时匹配项目 `oci.json` 的容器名；只计各容器自身的 UpperDir，rootfs 型任务容器跳过，共用镜像与未归属层保留在既有 `areas.environments`。项目文件和可写层均在已有 owner 的 Podman 用户命名空间计量，不初始化运行时；缓存未含 environment 时返回 null，部分读取保留大小下限。
 
+任务启动前，宿主 runner 在 attempt 控制目录的同级私有文件中保存该次 payload 的确切删除命令，不放进容器可写挂载。正常结束、被杀、启动失败都由 GPUQ 现有 attempt 清理动作按原名字删除容器记录；不扫描其他容器，开发容器和项目文件保留。清理失败沿既有动作重试，单元已卸载也继续清理。
+
+复制的逐文件上传键只由原传输 UUID 和路径确定，不读取或转换旧 `uploadKeys` / `.upload-keys`。旧 FAILED 复制主动续传时会用新键重传原文件；未续传的旧终态记录保持原样。遗留小上传 JSON 和锁文件由安装者一次列清单、经总控批准后处理，不新增迁移或过期回收。
+
 ## 安装
 
 调用者负责 SSH/传输；节点本机用 Python 3.10 以管理员权限运行 `python3 deploy/node/install.py <单机包目录或tar包> --config <本机私有JSON>`。

@@ -181,35 +181,17 @@ class TransferJobs:
             if row.get('phase')==text and not fields:return
             row.update(phase=text,**fields);self.s.atomic_json(self.path(key),row)
 
-    def file_keys(self,key):
-        # Preserve in-flight random keys once; new files use their original
-        # transfer UUID and path, without growing every progress write.
-        with self.lock(key):
-            file=self.path(key,'.upload-keys')
-            try:keys=self.s.read_json(file)
-            except FileNotFoundError:keys={}
-            row=self.s.read_json(self.path(key))
-            if 'uploadKeys' in row:
-                keys.update(row.pop('uploadKeys'))
-                if keys:self.s.atomic_json(file,keys)
-                self.s.atomic_json(self.path(key),row)
-            return keys
-
-    def file_key(self,key,path,keys):return keys.get(path) or str(uuid.uuid5(uuid.UUID(key),path))
+    def file_key(self,key,path):return str(uuid.uuid5(uuid.UUID(key),path))
 
     def cleanup_uploads(self,row,roots):
-        key=row['id'];file=self.path(key,'.upload-keys');keys=dict(row.get('uploadKeys',{}))
-        try:keys.update(self.s.read_json(file))
-        except FileNotFoundError:pass
+        key=row['id']
         uploads=module('data-uploads').Uploads(self.config,row['target'].get('userId','team'))
-        for value in keys.values():uploads.record(value).unlink(missing_ok=True)
         for root in roots:
             if not root.exists():continue
             for path in root.rglob('*'):
                 if path.is_symlink() or not path.is_file():continue
-                value=path.name[len('.upload-'):] if path.name.startswith('.upload-') else self.file_key(key,path.relative_to(root).as_posix(),keys)
+                value=path.name[len('.upload-'):] if path.name.startswith('.upload-') else self.file_key(key,path.relative_to(root).as_posix())
                 uploads.record(value).unlink(missing_ok=True)
-        file.unlink(missing_ok=True)
 
     def status(self,args,*,observe=False,observation_timeout=5):
         file=self.path(args.get('id',args.get('key')))
@@ -353,7 +335,6 @@ class TransferJobs:
                 return self.status({'key':key})
 
     def worker(self,key):
-        file_keys=self.file_keys(key)
         row=self.s.read_json(self.path(key))
         self.phase(key,'等待目标项目的其他复制完成' if row['target'].get('environment') else '等待源目录',startedAt=time.time())
         if row['target'].get('environment') is True:
@@ -364,8 +345,8 @@ class TransferJobs:
                         row=self.s.read_json(self.path(key))
                         if row['state']!='CANCELED':row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(self.path(key),row)
                     self.cleanup_copy(row);return 1
-                return self.receive_worker(key,independent=not available,file_keys=file_keys)
-        return self.receive_worker(key,file_keys=file_keys)
+                return self.receive_worker(key,independent=not available)
+        return self.receive_worker(key)
 
     def collect(self):
         copy=module('project-copy').ProjectCopy(self);results=copy.collect();cutoff=time.time()-86400
@@ -399,7 +380,7 @@ class TransferJobs:
                 results.append({'id':file.stem,'kind':'copy-receive','state':'UNKNOWN','error':str(error)[:400]})
         return results
 
-    def receive_worker(self,key,independent=False,*,file_keys=None):
+    def receive_worker(self,key,independent=False):
         row=self.s.read_json(self.path(key))
         peer=None
         try:
@@ -426,7 +407,6 @@ class TransferJobs:
                 root=self.s.private_dir(copy.target(row)/'received',create=True)
             else:root=self.d.dataset_root(self.config,target['dataset'],create=True) if target.get('dataset') else self.root(target)
             uploads=module('data-uploads').Uploads(self.config,target.get('userId','team'),root=root)
-            if file_keys is None:file_keys=self.file_keys(key)
             cursor=None if independent and target.get('mode')=='incremental' else 0;done=0
             while cursor is not None:
                 page=copy.incremental_page(row,peer,cursor) if copy and target.get('mode')=='incremental' else peer.call('list',offset=cursor)
@@ -435,14 +415,14 @@ class TransferJobs:
                     self.phase(key,page.get('phase') or '等待源项目导出')
                     time.sleep(1);continue
                 if page.get('state')=='FAILED':raise ValueError(page['error'])
-                done=self.receive(key,root,peer,page['entries'],done,uploads,file_keys=file_keys)
+                done=self.receive(key,root,peer,page['entries'],done,uploads)
                 if done is None:return 0
                 cursor=page['nextOffset']
             if copy:
                 if self.status({'id':key})['state']=='CANCELED':return 0
                 def refresh(entries):
                     nonlocal done
-                    done=self.receive(key,root,peer,entries,done,uploads,file_keys=file_keys);return done
+                    done=self.receive(key,root,peer,entries,done,uploads);return done
                 def full():
                     while self.status({'id':key})['state']!='CANCELED':
                         page=peer.call('full')
@@ -473,12 +453,11 @@ class TransferJobs:
             finally:
                 if peer is not None:peer.close()
 
-    def receive(self,key,root,peer,entries,done,uploads,*,file_keys=None):
-        if file_keys is None:file_keys=self.file_keys(key)
+    def receive(self,key,root,peer,entries,done,uploads):
         with contextlib.ExitStack() as stack:
             batches=None;entries=iter(entries);pending=None
             def eligible(entry):
-                return entry['type']=='file' and entry['size']<=64*1024 and 'remoteOffset' in entry and 'remotePath' in entry and not uploads.record(self.file_key(key,entry['path'],file_keys)).exists()
+                return entry['type']=='file' and entry['size']<=64*1024 and 'remoteOffset' in entry and 'remotePath' in entry and not uploads.record(self.file_key(key,entry['path'])).exists()
             while True:
                 entry=pending if pending is not None else next(entries,None);pending=None;group=None
                 if entry is None:break
@@ -488,7 +467,7 @@ class TransferJobs:
                 with self.lock(key):
                     row=self.s.read_json(self.path(key));target=row['target']
                     if row['state']=='CANCELED':return None
-                    upload_key=self.file_key(key,entry['path'],file_keys)
+                    upload_key=self.file_key(key,entry['path'])
                     if row['state']!='RUNNING' or row.get('phase')!='传输文件':
                         row.update(state='RUNNING',phase='传输文件');self.s.atomic_json(self.path(key),row)
                     if target.get('environment') is True and target.get('mode')=='incremental' and eligible(entry):
