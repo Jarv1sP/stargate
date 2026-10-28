@@ -33,17 +33,3 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 每版使用独立的真实 pyz 路径；current 原子切换后只重启受管服务，独立任务单元、旧发布目录和数据库保留；仅新库初始化。
 健康仅看服务 active 和 GPU 可读；失败时即使新单元损坏或停止失败，也先恢复旧文件和指针，再重启原先活跃的服务。`python3 deploy/node/install.py --config <私有JSON> --rollback` 回上一版，不回滚用户数据。
 灰测的 `deploy/gray-local/node-setup.sh` 生成模拟配置并调用同一安装器；私有配置保持 0600，模拟 CDI 规范为 0644，供非 root 任务读取，不另写安装流程。
-
-## 一次性收回已删除项目的输出
-
-节点安装者在本机以现有节点服务账户、同一份私有 profile 配置运行发布目录里的 `node-executor.py`（沿用该服务的配置环境，不连接其他节点）。命令不接 RPC，也不挂定时器。
-
-```sh
-# 为这次操作生成一个 UUID，预览和执行都沿用它；ACTOR 填实际操作人的平台用户 ID。
-python3 node/node-executor.py --trash-orphan-outputs --key UUID --actor ACTOR
-python3 node/node-executor.py --trash-orphan-outputs --key UUID --actor ACTOR --execute
-```
-
-默认只列出任务编号、ownerId、项目、路径和大小；`--execute` 也先输出本次清单，再用现有 Trash 移动并返回结果。只选择本机调度器已结束、job 记录有项目且该 owner 下项目已不存在的输出；无项目、排队、运行中、状态未知及无 job 记录的输出（例如开发终端输出）不动。任务记录或项目列表有任何读取不完整时，返回 `SKIPPED`、非零退出码，整次不移动。大小不全以 `complete:false` 标明，完全读不到时为 null。
-
-清单是执行时的当前结果，不保存摘要或放行凭据；两次命令之间有变化时以执行清单为准。原操作 key 派生输出条目的 key，重试不重复入站；按返回的条目 key 用现有项目回收站恢复，7 天后由既有 storage-collect 清理，管理员可提前清空。安装器不会自动执行本命令。

@@ -1,5 +1,5 @@
 """Project deletion carries only its finished local outputs into the shared trash."""
-import contextlib,importlib.util,io,json,os,runpy,shutil,sqlite3,sys,unittest
+import importlib.util,sqlite3,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -93,52 +93,6 @@ class ProjectOutputTrash(unittest.TestCase):
                 else:self.trash.purge({'key':row['key'],'actor':{'userId':'admin','isAdmin':True}})
                 for key in (row['key'],child):
                     folder,item=self.trash.find(key);self.assertEqual(item['state'],'PURGED');self.assertFalse((folder/(key+'.data')).exists())
-
-    def test_orphan_preview_lists_sizes_then_execute_is_idempotent_and_restorable(self):
-        jid,path=self.job(project='deleted');active,active_path=self.job('RUNNING',project='deleted')
-        no_project,no_project_path=self.job(project=None);same_slug,same_slug_path=self.job(owner='bob')
-        terminal_output=self.root/'outputs'/self.key();terminal_output.mkdir(mode=0o700)
-        (terminal_output/'result.txt').write_bytes(b'terminal output without a jobs record')
-        key=self.key();preview=self.purge.orphan_outputs(self.ops,key)
-        self.assertTrue(preview['complete']);self.assertEqual([item['jobId'] for item in preview['items']],[jid])
-        self.assertGreaterEqual(preview['items'][0]['size'],6);self.assertTrue(path.exists())
-        for _ in range(2):self.purge.trash_orphan_outputs(self.config,preview,{'userId':'operator'})
-        self.assertFalse(path.exists());self.assertTrue(all(p.exists() for p in (active_path,no_project_path,same_slug_path)))
-        self.assertEqual((terminal_output/'result.txt').read_bytes(),b'terminal output without a jobs record')
-        self.trash.restore({'key':preview['items'][0]['key']});self.assertEqual((path/'result.txt').read_bytes(),b'result')
-
-    def test_incomplete_job_or_project_lists_never_move_any_orphans(self):
-        jid,path=self.job(project='deleted');broken_job=self.jobs/(self.key()+'.json')
-        broken_project=self.ops.store.path/'alice/other/project.json';original=broken_project.read_bytes()
-        for broken in ('job','project','owner-directory','jobs-directory','scheduler'):
-            with self.subTest(broken=broken):
-                if broken=='job':broken_job.write_text('{')
-                if broken=='project':broken_project.write_text('{')
-                real_iter=Path.iterdir
-                def iterdir(folder):
-                    unreadable={'owner-directory':self.ops.store.path/'alice','jobs-directory':self.jobs}
-                    if folder==unreadable.get(broken):raise PermissionError('unreadable')
-                    return real_iter(folder)
-                with patch.object(Path,'iterdir',iterdir),patch.object(self.purge.sqlite3,'connect',side_effect=sqlite3.OperationalError('unavailable')) if broken=='scheduler' else contextlib.nullcontext():
-                    preview=self.purge.orphan_outputs(self.ops,self.key())
-                self.assertFalse(preview['complete']);self.assertEqual(preview['items'],[])
-                result=self.purge.trash_orphan_outputs(self.config,preview,{'userId':'operator'})
-                self.assertEqual(result['state'],'SKIPPED');self.assertTrue(path.exists());self.assertEqual(self.trash.listing()['items'],[])
-                broken_job.unlink(missing_ok=True);broken_project.write_bytes(original)
-
-    def test_local_command_previews_before_execute_and_returns_nonzero_for_partial_lists(self):
-        code=self.base/'code';code.mkdir(mode=0o700)
-        for source in (f.ROOT/'node').glob('*.py'):shutil.copy2(source,code/source.name)
-        (code/'node-config.json').write_text(json.dumps(self.config));key=self.key();jid,path=self.job(project='deleted')
-        def command(*extra):
-            out=io.StringIO();env={k:v for k,v in os.environ.items() if k!='STARGATE_CORE_PROFILE'}
-            with patch.dict(os.environ,env,clear=True),patch.object(sys,'argv',[str(code/'node-executor.py'),'--trash-orphan-outputs','--key',key,'--actor','operator',*extra]),contextlib.redirect_stdout(out),patch('os.setpriority'),patch('subprocess.run'):
-                with self.assertRaises(SystemExit) as exited:runpy.run_path(str(code/'node-executor.py'),run_name='__main__')
-            return exited.exception.code,[json.loads(line) for line in out.getvalue().splitlines()]
-        status,rows=command();self.assertEqual(status,0);self.assertEqual(rows[0]['state'],'PREVIEW');self.assertTrue(path.exists())
-        status,rows=command('--execute');self.assertEqual(status,0);self.assertEqual([r['state'] for r in rows],['PREVIEW','TRASHED']);self.assertFalse(path.exists())
-        self.trash.restore({'key':rows[-1]['items'][0]['key']});(self.jobs/(self.key()+'.json')).write_text('{')
-        status,rows=command('--execute');self.assertEqual(status,1);self.assertEqual(rows[0]['state'],'SKIPPED');self.assertTrue(path.exists())
 
 
 if __name__=='__main__':unittest.main()

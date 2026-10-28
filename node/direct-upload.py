@@ -66,6 +66,7 @@ def create_server(node):
     direct=DirectUploads(node);config=direct.c
     class Handler(BaseHTTPRequestHandler):
         protocol_version='HTTP/1.1'
+        disable_nagle_algorithm=True
         def log_message(self,*args):pass
         def response(self,code,value,raw=False):
             body=value if raw else json.dumps(value).encode()
