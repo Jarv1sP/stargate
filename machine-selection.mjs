@@ -1,16 +1,19 @@
 import {MACHINES} from './dist/model.js';
 import {personalCardQuotaExempt} from './job-submission.mjs';
+import {availableMachines,assertMachineAccess} from './machine-access.mjs';
 
 const fail=(message,status=409)=>{throw Object.assign(Error(message),{status});};
 // Admission only: every operation here is read-only. A chosen target is stored
 // with the job before project/data workers may start. Queuing never reselects it.
 export async function selectMachine(service,user,request,usage){
   const check=()=>{if(service.closing||!service.store.get(user.id).enabled)fail('请重新登录。',403);};
+  const machines=availableMachines(user,MACHINES),allowed=request.machineSelection.candidates;
+  if(!machines.length)assertMachineAccess(user,undefined,MACHINES);
+  if(allowed?.length&&!machines.some(machine=>allowed.includes(machine.id)))assertMachineAccess(user,allowed[0],MACHINES);
   await service.refreshGPUQ();check();
   if(service.gpuq?.stale!==false)fail('服务器状态暂未读到，请保留原提交编号稍后重试。',503);
   const hosts=service.gpuq.hosts;
-  const authorized=MACHINES.filter(m=>user.limits[m.id]>0&&hosts.find(h=>h.id===m.id)?.reachable===true&&!service.maintenanceFor?.(m.id));
-  const allowed=request.machineSelection.candidates;
+  const authorized=machines.filter(m=>hosts.find(h=>h.id===m.id)?.reachable===true&&!service.maintenanceFor?.(m.id));
   const eligible=authorized.filter(m=>{
     const h=hosts.find(h=>h.id===m.id),gpus=h.gpus||[],q=h.gpuq;
     // schedulableIndices is the currently free pool, not healthy total

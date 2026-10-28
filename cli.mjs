@@ -15,6 +15,7 @@ import {schedulingPolicy} from './dist/scheduling-policy.js';
 import {displayName,taskDescription} from './dist/task-metadata.js';
 import {commandPost} from './client-http.mjs';
 import {readCLIState,submitJobWithReceipt} from './client-state.mjs';
+import {availableMachines,assertMachineAccess} from './machine-access.mjs';
 import {defaultPlatformControlTransport,finishPlatformControlTransport} from './client-windows-control.mjs';
 import {downloadResultFile} from './client-result-download.mjs';
 import {downloadJobLog} from './client-job-log-download.mjs';
@@ -64,7 +65,7 @@ gpuctl run --sync [--sync-dir LOCAL_DIR] -g 1 -- python train.py
 --sync 先上传到当前工作区；AUTO 异机执行与 project copy 均复用目标已有容器并增量同步，没有容器才完整复制。
 gpuctl run --machine auto [--candidates SERVER,SERVER] -g 1 -- python train.py
 gpuctl run --machine auto --after JOB_ID[,JOB_ID] [--after JOB_ID] -g 1 -- python refine.py
---after 等全部依赖成功后在同一台机器排队；依赖失败或取消则不运行。同一依赖链共用用卡预留，并行分支分别预留。
+--after 等全部依赖成功后在同一台机器排队；依赖失败或取消则不运行。已派发的依赖作业占额度；额度不足的后继先在平台等待，前驱结束后再派发。
 gpuctl run -g 1 --interactive / ssh --job JOB_ID
 gpuctl run --gpu 0 -g 1 --memory-limit-gib 60 -- python train.py
 工作区 /workspace，数据集 /datasets；任务输出 /outputs。
@@ -272,7 +273,7 @@ async function main() {
   let targetOwnerId;
   const call = (operation, args2 = {}, signal) => post("call", { operation, args: {...(targetOwnerId&&/^(projects\.|files\.|data\.|datasets\.|cloud\.|terminal\.|jobs\.submit$)/.test(operation)?{ownerId:targetOwnerId}:{}),...args2} }, signal);
   let command = positionals[0];
-  let result, mode = { demo: true, gpuqConnected: false };
+  let result, available=[], mode = { demo: true, gpuqConnected: false };
   if (command === "register") {
     if (positionals.length !== 2) fail9("Usage: register USERNAME");
     if (options["password-stdin"]) fail9("Use --credentials-stdin with JSON {invite,password} for registration.");
@@ -309,9 +310,14 @@ async function main() {
   } else {
     if (!session) fail9("请先登录：gpuctl login");
     const pulling=['pull','download'].includes(command);
+    const selectMachine=!session.machine&&!options.job&&(
+      !options.machines.length&&(['data','push','push-status','pull','files'].includes(command)||command==='project'&&positionals[1]!=='copy'||
+        command==='transfer'&&['upload','download'].includes(positionals[1])||
+        ['run','ssh','shell'].includes(command)&&positionals.length===1&&!(command==='run'&&options.after?.length))||
+      command==='run'&&options.sync&&(positionals[1]==='auto'||options.machines[0]==='auto'||options.after?.length));
     const state = command==='jobs'&&options.key?(await call('state',{jobKey:options.key})).state
       :pulling&&options.job?(await call('state',{view:'summary',jobId:options.job})).state
-      :ownerUsername!==undefined||options.job&&!outputDelete?(await call('state',pulling?{view:'summary'}:{})).state:outputDelete?{machines:[],users:[]}:await readCLIState(call,command);
+      :ownerUsername!==undefined||options.job&&!outputDelete?(await call('state',pulling?{view:'summary'}:{})).state:outputDelete?{machines:[],users:[]}:await readCLIState(call,command,{selectMachine});
     if(ownerUsername!==undefined){const owner=state.users?.find(user=>user.username===ownerUsername);if(!owner)fail9('没有这个用户名：'+ownerUsername);targetOwnerId=owner.id;}
     if(!(command==='community'&&['announcements','ack'].includes(positionals[1])))await showCLIAnnouncements(call,state.announcements?.pending);
     const machineName = (value) => {
@@ -320,8 +326,15 @@ async function main() {
       const short = state.machines.filter((m) => m.id.endsWith("-" + value));
       return short.length === 1 ? short[0].id : value;
     };
+    const currentUser=state.users?.find(user=>user.id===session.principal.userId);
+    available=availableMachines(currentUser,state.machines||[]).map(machine=>machine.id);
     const jobTarget=()=>options.job?state.jobs?.find(job=>job.id===options.job):null;
-    const selectedMachine = () => jobTarget()?.machine||session.machine || (state.machines?.length === 1 ? state.machines[0].id : null) || fail9("先选择一次服务器：gpuctl use MACHINE_ID");
+    const selectedMachine = () => {
+      const selected=jobTarget()?.machine||session.machine||(available.length===1?available[0]:null);
+      if(selected)return selected;
+      if(!available.length)assertMachineAccess(currentUser,undefined,state.machines||[]);
+      fail9("先选择一次服务器：gpuctl use MACHINE_ID");
+    };
     const defaultMachine = () => {
       if (options.machines.length) {
         if (options.machines.length !== 1 || options.machines[0].includes("=")) fail9("Use one --machine SERVER outside grant");
@@ -421,7 +434,7 @@ async function main() {
         result = (await call("profile.update", { name: displayName(options["display-name"]) })).result;
       } else result = state.users.find((u) => u.id === session.principal.userId);
     } else if (command === "use" && positionals.length === 2) {
-      if (!state.machines.some((m) => m.id === positionals[1])) fail9("这台机器未授权或不存在");
+      assertMachineAccess(currentUser,positionals[1],state.machines);
       session.machine = positionals[1];
       await saveSession();
       result = { selected: session.machine, project: selectedProject(session.machine) };
@@ -726,7 +739,8 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
   if(outputDelete){if(!result.dryRun&&result.state!=='TRASHED'){console.log('结果未知，请按原编号查询：'+(result.key||options.key||''));process.exitCode=2;return;}console.log(result.dryRun?`将删除 ${Number.isFinite(result.size)?result.size+' B':'大小未知'}（仅预览，未删除）`:`已删除，7 天内可在项目回收站恢复`);return;}
   if (command === "profile") {
     console.log(`姓名／显示名：${result.name}
-登录用户名：${result.username}`);
+登录用户名：${result.username}
+可用服务器：${available.join("、")||"尚未开通，请联系管理员审批额度"}`);
     return;
   }
   if (command === "task-label") {

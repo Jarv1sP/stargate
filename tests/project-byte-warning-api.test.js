@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {executionCall} from '../execution.mjs';
 import {MACHINES} from '../dist/model.js';
 const machine=MACHINES[0].id,key='11111111-1111-4111-8111-111111111111',principal={userId:'demo-user-42',role:'member'},calls=[];
-const user={id:principal.userId,enabled:true,limits:{}};
+const user={id:principal.userId,enabled:true,limits:{[machine]:1}};
 const service={store:{get:()=>user},bridge:async(machine,operation,args)=>{calls.push({machine,operation,args});return {key,state:'UPLOADING',offset:args.offset??0};}};
 test('current workspace uploads accept 4/100 GiB byte sizes without content digests or a read-quota gate',async()=>{
  for(const totalSize of [4*1024**3+1,100*1024**3+1]){

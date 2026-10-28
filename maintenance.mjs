@@ -1,6 +1,6 @@
 import {selectFields} from './portal-request-validation.mjs';
 import {MACHINES} from './dist/model.js';
-import {canViewMachineStatus} from './gpuq-status.mjs';
+import {canUseMachine} from './machine-access.mjs';
 
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 // Operational admission is independent of the retired privilege-request flow.
@@ -56,8 +56,8 @@ export function installMaintenanceState(service){
 export function installMaintenance(service){
   installMaintenanceState(service);
   service.operationalMaintenance=principal=>{
-    const value=maintenanceState(service),limits=principal?service.store.get(principal.userId).limits:{};
-    return {...value,machines:Object.fromEntries(Object.entries(value.machines).filter(([machine])=>canViewMachineStatus(principal,limits,machine)))};
+    const value=maintenanceState(service),user=principal?service.store.get(principal.userId):null;
+    return {...value,machines:Object.fromEntries(Object.entries(value.machines).filter(([machine])=>canUseMachine(user,machine)))};
   };
   service.assertMaintenanceAllowed=(operation,args={},principal)=>{
     // The bridge calls this again with its trusted actor, immediately before

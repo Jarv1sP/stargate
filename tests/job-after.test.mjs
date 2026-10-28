@@ -5,7 +5,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
-import {usage} from '../execution.mjs';
+import {pendingJobReason} from '../execution.mjs';
+
+import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
 
 async function fixture(t){
   const dir=await mkdtemp(join(tmpdir(),'job-after-')),password='Local-After-Password-2026!';
@@ -82,7 +84,7 @@ test('dependency chains, branches and joins wait in the portal until dispatched 
       assert.ok((job.after||[]).every(parent=>row(parent).state==='SUCCEEDED'));
       f.states.set(job.id,'SUCCEEDED');
     }
-    if(active.some(job=>job.id===a.id)){assert.equal(row(b).dispatchPending,true);assert.equal(row(b).queueReason,'已占用 8/8 张卡');}
+    if(active.some(job=>job.id===a.id)){assert.equal(row(b).dispatchPending,true);assert.equal(row(b).queueReason,null);assert.match(pendingJobReason(f.service,row(b)),/^等待依赖/);}
     await f.service.reconcile();await f.settle();
   }
   assert.equal(f.service.store.jobs.length,7);assert.equal(f.service.store.jobs.every(job=>job.state==='SUCCEEDED'),true);

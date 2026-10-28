@@ -9,7 +9,7 @@ function fixture(t){
  const calls=[],db=new DatabaseSync(':memory:');t.after(()=>db.close());
  const principal={userId:'alice',username:'alice',role:'member'},from=MACHINES[0].id,machine=MACHINES[1].id,id=randomUUID();
  let state='RUNNING',bytes=0,unavailable=false,startError=null;
- const service={db,store:{get:()=>({enabled:true})},audit(){},bridge:async(host,operation,args)=>{
+ const service={db,store:{get:()=>({enabled:true,role:'member',limits:{[from]:1,[machine]:1}})},audit(){},bridge:async(host,operation,args)=>{
   calls.push({host,operation,args});
   if(operation==='transfers.project.mode')return {mode:'full'};
   if(operation==='transfers.project.prepare')return {id,token:'fixture-ticket',state:'PREPARING'};

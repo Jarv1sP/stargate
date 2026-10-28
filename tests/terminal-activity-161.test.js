@@ -21,7 +21,8 @@ test('only terminal.open forwards the optional label and derives identity from t
 test('bad labels and revoked accounts cannot reach the terminal bridge',async()=>{
   const f=fixture();for(const label of ['',null,{},'x'.repeat(129),'bad\nlabel'])await assert.rejects(executionCall(f.service,f.principal,'terminal.open',{...open(),clientLabel:label}),/来源名称无效/);
   f.user.enabled=false;await assert.rejects(executionCall(f.service,f.principal,'terminal.open',open()),e=>e.status===403);
-  assert.equal(f.calls.length,0);f.user.enabled=true;f.user.limits={};await executionCall(f.service,f.principal,'terminal.open',open());assert.equal(f.calls.length,1);
+  assert.equal(f.calls.length,0);f.user.enabled=true;f.user.limits={};await assert.rejects(executionCall(f.service,f.principal,'terminal.open',open()),e=>e.status===403);
+  f.user.limits={[machine]:1};await executionCall(f.service,f.principal,'terminal.open',open());assert.equal(f.calls.length,1);
 });
 test('optional terminal labels do not add an admission gate',async()=>{
   const f=fixture(),{clientLabel,...args}=open();await executionCall(f.service,f.principal,'terminal.open',args);assert.equal(f.calls.length,1);assert.equal(f.calls[0].args.clientLabel,undefined);

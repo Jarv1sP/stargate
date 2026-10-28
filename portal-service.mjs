@@ -4,9 +4,10 @@ import {mkdir,readFile,writeFile,chmod} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {DemoService,credential} from './dist/service.js';
-import {readGPUQStatus,visibleGPUQStatus,canViewMachineStatus} from './gpuq-status.mjs';
-import {installExecution,executionCall,publicJob,usage,priorityCapable,priorityRankCapable,TERMINAL,pendingJobReason} from './execution.mjs';
+import {readGPUQStatus,visibleGPUQStatus} from './gpuq-status.mjs';
+import {installExecution,executionCall,publicJob,priorityCapable,priorityRankCapable,TERMINAL,pendingJobReason} from './execution.mjs';
 import {MACHINES,validUsername} from './dist/model.js';
+import {canUseMachine,assertMachineAccess} from './machine-access.mjs';
 import {installCommunity,communityCall,maintainTaskNotes,announcementState,chatMentions,chatImageFile} from './community.mjs';
 import {installWorkshop,workshopCall} from './workshop.mjs';
 import {installMaintenanceState,installMaintenance,maintenanceCall} from './maintenance.mjs';
@@ -218,7 +219,7 @@ export class PortalService extends DemoService{
       this.assertMachineStatusVisible(current,job.machine);
       state.jobs=[{id:job.id,machine:job.machine,project:job.project??job.spec?.project,ownerId:job.ownerId??job.userId,userId:job.userId}];
     }else if(args.jobKey!==undefined){
-      state.jobs=this.store.jobs.filter(job=>job.key===args.jobKey&&(!job.machine||canViewMachineStatus(current,this.store.get(current.userId).limits,job.machine))).map(job=>({
+      state.jobs=this.store.jobs.filter(job=>job.key===args.jobKey&&(!job.machine||canUseMachine(this.store.get(current.userId),job.machine))).map(job=>({
         ...publicJob(this.taskDisplayJob(job),this.store.users),...stateCommand(job.spec.argv)
       }));
     }
@@ -231,7 +232,7 @@ export class PortalService extends DemoService{
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭，请稍后查询。'),{status:503});
       const current=this.principal(token);
-      if(operation==='terminal.status')this.assertMachineStatusVisible(current,request.machine);
+      if(request.machine)this.assertMachineStatusVisible(current,request.machine);
       if(request.area==='output'||request.runId){
         this.assertMachineStatusVisible(current,request.machine);
         const job=this.store.jobs.find(job=>job.id===request.runId);
@@ -275,9 +276,7 @@ export class PortalService extends DemoService{
   terminalPrincipal(token,args){
     if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
     const {username,role,userId}=this.principal(token);
-    if(!MACHINES.some(machine=>machine.id===args.machine))
-      throw Object.assign(Error('请选择列表中的服务器。'),{status:400});
-    this.assertMachineStatusVisible({username,role,userId},args.machine);
+    assertMachineAccess(this.store.get(userId),args.machine,MACHINES);
     return {username,role,userId};
   }
   async terminalExchange(token,args){
@@ -318,8 +317,7 @@ export class PortalService extends DemoService{
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
       const current=this.principal(token);
-      if(args.machine&&!MACHINES.some(m=>m.id===args.machine))
-        throw Object.assign(Error('请选择列表中的服务器。'),{status:400});
+      if(args.machine)this.assertMachineStatusVisible(current,args.machine);
       return current;
     };
     check();
@@ -355,7 +353,7 @@ export class PortalService extends DemoService{
       const principal=this.principal(token);
       if(args.machine)this.assertMachineStatusVisible(principal,args.machine);
       const result=operation==='storage.snapshot'?this.storageSnapshot(args.machine):this.requestStorageRefresh(args.machine);
-      result.machines=result.machines.filter(row=>canViewMachineStatus(principal,this.store.get(principal.userId).limits,row.machine));
+      result.machines=result.machines.filter(row=>canUseMachine(this.store.get(principal.userId),row.machine));
       return {result,principal};
     }
     if(['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation))return this.jobRead(token,operation,args,options);
@@ -388,7 +386,7 @@ export class PortalService extends DemoService{
       const run=async()=>{
         const check=()=>{
           const principal=this.principal(token);
-          if(operation==='terminal.open')this.assertMachineStatusVisible(principal,args.machine);
+          if(args.machine&&args.machine!=='auto')this.assertMachineStatusVisible(principal,args.machine);
           const job=args.jobId?this.store.jobs.find(job=>job.id===args.jobId):operation==='jobs.submit'&&args.key?this.store.jobs.find(job=>job.key===args.key):null;
           if(job)this.assertMachineStatusVisible(principal,job.machine);
           return principal;
@@ -416,8 +414,6 @@ export class PortalService extends DemoService{
       if(operation==='policy.save'){
         if(principal.role!=='admin')throw Object.assign(Error('此操作需要管理员权限。'),{status:403});
         const user=this.store.users.find(u=>u.id===args.userId);if(!user)throw Error('用户不存在。');
-        // Do not silently kill running experiments when lowering a policy.
-        if(user.role!=='admin'&&(args.total<usage(this.store.jobs,user.id)||Object.entries(user.limits).some(([m])=>(args.limits?.[m]||0)<usage(this.store.jobs,user.id,m))))throw Object.assign(Error('新额度低于当前占用卡数。请等待相应任务释放显卡。'),{status:409});
       }
       const result=await super.invoke(token,operation,args);
       if(operation==='policy.save'){const u=this.store.users.find(u=>u.id===args.userId);u.policyVersion++;u.approvedBy=actor;u.approvedAt=new Date().toISOString();result.result=this.store.get(u.id);result.state=this.state(principal);}
@@ -444,8 +440,7 @@ export class PortalService extends DemoService{
     }finally{clearTimeout(timer);}
   }
   assertMachineStatusVisible(principal,machine){
-    if(machine&&!canViewMachineStatus(principal,this.store.get(principal.userId).limits,machine))
-      throw Object.assign(Error('没有这台服务器的查看权限，请联系管理员授权。'),{status:403});
+    if(machine)assertMachineAccess(this.store.get(principal.userId),machine,MACHINES);
   }
   stateSummary(principal){
     // Construct only preflight metadata. Calling state() then deleting jobs
@@ -455,7 +450,7 @@ export class PortalService extends DemoService{
     const checked=Date.parse(this.gpuq?.checkedAt),age=Date.now()-checked;
     const fresh=this.gpuq?.stale===false&&Number.isFinite(age)&&age>=-30000&&age<=180000;
     return {summaryVersion:1,machines:structuredClone(machines),users,demo:false,mode:'persistent',
-      gpuqConnected:fresh&&this.gpuq.hosts.some(host=>canViewMachineStatus(principal,this.store.get(principal.userId).limits,host.id)&&host.gpuq.connected),jobsSimulated:false,
+      gpuqConnected:fresh&&this.gpuq.hosts.some(host=>canUseMachine(this.store.get(principal.userId),host.id)&&host.gpuq.connected),jobsSimulated:false,
       executionEnabled:this.executionEnabled===true,taskMetadata:{version:1},
       operationalMaintenance:this.operationalMaintenance?.(principal),
 };
@@ -465,9 +460,9 @@ export class PortalService extends DemoService{
     const cached=this.gpuq||{checkedAt:null,stale:true,hosts:[]},age=Date.now()-Date.parse(cached.checkedAt);
     const stale=cached.stale!==false||!Number.isFinite(age)||age>180000||age< -30000;
     const snapshot=this.taskDisplaySnapshot({...cached,stale,hosts:stale?cached.hosts.map(host=>({...host,samplingStale:true})):cached.hosts});
-    const limits=this.store.get(principal.userId).limits;
-    const visible=this.store.jobs.filter(job=>!job.machine||canViewMachineStatus(principal,limits,job.machine)).map(j=>this.taskDisplayJob(j)),jobsTotal=visible.length;
-    const gpuq=visibleGPUQStatus(snapshot,principal,this.store.get(principal.userId).limits,{jobs:this.store.jobs.map(j=>this.taskDisplayJob(j)),users:this.store.users});
+    const user=this.store.get(principal.userId);
+    const visible=this.store.jobs.filter(job=>!job.machine||canUseMachine(user,job.machine)).map(j=>this.taskDisplayJob(j)),jobsTotal=visible.length;
+    const gpuq=visibleGPUQStatus(snapshot,user,{jobs:this.store.jobs.map(j=>this.taskDisplayJob(j)),users:this.store.users});
     const capabilities=Object.fromEntries(gpuq.hosts.map(h=>[h.id,h.displayMasked!==true&&!gpuq.stale&&priorityCapable(h)===true]));
     const full=job=>({...publicJob(job,this.store.users),...stateCommand(job.spec.argv),queueReason:pendingJobReason(this,job),notifications:this.jobNotificationState(job,principal.userId),
       canSetPriority:job.state==='PENDING'&&!job.cancelRequested});

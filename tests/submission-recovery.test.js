@@ -6,7 +6,8 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
-import {usage,publicJob,SUBMISSION_SAFE_WINDOW_MS} from '../execution.mjs';
+import {publicJob,SUBMISSION_SAFE_WINDOW_MS} from '../execution.mjs';
+import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
 
 const machine=MACHINES[0].id,nodeId='J0123456789ab';
 const password='Submission-Recovery-Fixture-Only-2026!';
@@ -67,7 +68,7 @@ test('absence cannot replay while a native attempt is active',async t=>{
 });
 test('revocation prevents an otherwise confirmed same-key recovery from dispatching',async t=>{
   const f=await fixture(t),job=await f.original();f.setHandler(()=>{f.user.limits={};return absent(job);});await f.start();
-  assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);assert.match(job.error,/授权已改变/);
+  assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);assert.equal(job.error,'你还没有开通任何服务器，请联系管理员审批额度。');
   assert.equal(usage([job],f.user.id),0);assert.ok(f.calls.every(c=>c.op==='watch'));
   await assert.rejects(f.submit(),error=>error.status===403);assert.ok(f.calls.every(c=>c.op==='watch'));
 });

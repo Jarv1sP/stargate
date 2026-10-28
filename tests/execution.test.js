@@ -5,8 +5,10 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
+import {pendingJobReason} from '../execution.mjs';
 import {MACHINES} from '../dist/model.js';
-import {usage} from '../execution.mjs';
+
+import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
 const password='Only-Test-Password-Long-2026';
 async function fixture(){
   const dir=await mkdtemp(join(tmpdir(),'gpuq-execution-')),database=join(dir,'db'),bootstrap=join(dir,'bootstrap'),status=join(dir,'status');
@@ -27,7 +29,7 @@ async function fixture(){
 }
 test('GPU quota and administrator controls remain separate',async()=>{
  const f=await fixture();try{
-   await assert.rejects(f.submit(),/总额度/);
+   await assert.rejects(f.submit(),error=>error.status===403&&error.message==='你还没有开通任何服务器，请联系管理员审批额度。');
    await assert.rejects(f.s.invoke(f.a.token,'policy.full',{userId:f.member.id,policyVersion:0}),e=>e.status===403);
    await f.grant();
    const r=await f.s.invoke(f.admin.token,'policy.full',{userId:f.member.id,policyVersion:1});assert.equal(r.result.total,30);assert.equal(r.result.role,'member');assert.equal(Object.keys(r.result.limits).length,4);
@@ -90,10 +92,10 @@ test('concurrent submissions keep their original keys and wait for physical-card
    await f.settle();const local=(await f.submit()).result;
    const requests=await Promise.all([f.submit({machine:'gpu-2'}),f.submit({machine:'gpu-2'})]);await f.settle();
    assert.equal(requests.length,2);assert.equal(usage(f.s.store.jobs,f.member.id),2);
-   const localRow=f.s.store.jobs.find(job=>job.id===local.id);assert.equal(localRow.dispatchPending,true);assert.equal(localRow.queueReason,'已占用 1/1 张卡');
+   const localRow=f.s.store.jobs.find(job=>job.id===local.id);assert.equal(localRow.dispatchPending,true);assert.equal(localRow.queueReason,null);assert.equal(pendingJobReason(f.s,localRow),'已占用 1/1 张卡');
    const waiting=requests.map(reply=>f.s.store.jobs.find(job=>job.id===reply.result.id)).filter(job=>job.dispatchPending);
-   assert.equal(waiting.length,1);assert.equal(waiting[0].queueReason,'已占用 2/2 张卡');
-   await assert.rejects(f.grant(1,{'gpu-1':1}),/当前占用/);
+   assert.equal(waiting.length,1);assert.equal(waiting[0].queueReason,null);assert.equal(pendingJobReason(f.s,waiting[0]),'已占用 2/2 张卡');
+   await f.grant(1,{'gpu-1':1});assert.equal(usage(f.s.store.jobs,f.member.id),2);assert.equal(f.s.store.jobs.filter(job=>job.state==='RUNNING').length,2);
  }finally{await f.close();}
 });
 test('logged-in team members share task state, logs and controls while submit identity stays the actor',async()=>{

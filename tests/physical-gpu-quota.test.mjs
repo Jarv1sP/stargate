@@ -4,7 +4,8 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {usage,publicJob} from '../execution.mjs';
+import {publicJob,pendingJobReason} from '../execution.mjs';
+import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
 import {DemoClient} from '../dist/client.js';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
@@ -78,7 +79,7 @@ test('quota two admits ten submissions but dispatches only two node-queued jobs 
  const dispatched=()=>rows().filter(job=>job.nodeJobId&&!['SUCCEEDED','FAILED','CANCELED'].includes(job.state));
  assert.equal(dispatched().length,2);assert.equal(usage(rows(),f.member.id),2);
  assert.equal(rows().filter(job=>job.state==='SUBMITTING'&&job.dispatchPending===true).length,8);
- assert.ok(rows().filter(job=>job.dispatchPending===true).every(job=>job.queueReason==='已占用 2/2 张卡'));
+ assert.ok(rows().filter(job=>job.dispatchPending===true).every(job=>pendingJobReason(f.service,job)==='已占用 2/2 张卡'));
  for(let wave=0;wave<5;wave++){
   const active=dispatched();assert.equal(active.length,2);
   for(const [index,job] of active.entries()){f.states.set(job.id,'RUNNING');f.allocations.set(job.id,[index]);}
@@ -98,7 +99,7 @@ test('node-queued fixed shared jobs reuse one card before assignments are report
  assert.equal(usage(f.service.store.jobs,f.member.id),1);
  const waiting=await f.submit({placement:share(1)});await f.settle();
  const row=f.service.store.jobs.find(job=>job.id===waiting.id);
- assert.equal(row.dispatchPending,true);assert.equal(row.queueReason,'已占用 1/1 张卡');
+ assert.equal(row.dispatchPending,true);assert.equal(pendingJobReason(f.service,row),'已占用 1/1 张卡');
  assert.equal(f.calls.some(call=>call.args.job.id===waiting.id),false);
 });
 
@@ -110,7 +111,7 @@ test('unlimited same-card shared submissions run; a new card waits and resumes u
  const key=randomUUID(),queued=await f.submit({key,placement:share(2)});await f.settle();
  const row=f.service.store.jobs.find(job=>job.id===queued.id);
  assert.equal(row.dispatchPending,true);assert.equal(f.calls.some(call=>call.args.job.id===queued.id),false);
- assert.equal(row.queueReason,'已占用 2/2 张卡');assert.equal(usage(f.service.store.jobs,f.member.id),2);
+ assert.equal(pendingJobReason(f.service,row),'已占用 2/2 张卡');assert.equal(usage(f.service.store.jobs,f.member.id),2);
  assert.equal((await f.submit({key,placement:share(2)})).id,queued.id);
  for(const job of shared.slice(0,-1))f.states.set(job.id,'SUCCEEDED');await f.service.reconcile();
  assert.equal(usage(f.service.store.jobs,f.member.id),2);assert.equal(row.dispatchPending,true);
@@ -122,7 +123,7 @@ test('unlimited same-card shared submissions run; a new card waits and resumes u
 test('cross-machine quota uses physical card pairs and a shared job on an already-used card still dispatches',async t=>{
  const f=await fixture(t);await f.submit({placement:share(0)});await f.settle();await f.submit({machine:other,placement:share(0)});await f.settle();
  const waiting=await f.submit({machine:other,placement:share(1)});await f.settle();
- assert.equal(f.service.store.jobs.find(job=>job.id===waiting.id).queueReason,'已占用 2/2 张卡');
+ assert.equal(pendingJobReason(f.service,f.service.store.jobs.find(job=>job.id===waiting.id)),'已占用 2/2 张卡');
  const shared=await f.submit({machine:other,placement:share(0)});await f.settle();
  assert.equal(f.service.store.jobs.find(job=>job.id===shared.id).state,'RUNNING');assert.equal(usage(f.service.store.jobs,f.member.id),2);
 });
@@ -131,7 +132,7 @@ test('elastic maximum keeps expansion headroom while another shared task can reu
  const f=await fixture(t);await f.submit({cards:2,elastic:{minCards:1,globalBatch:2,microBatch:1}});await f.settle();
  assert.equal(usage(f.service.store.jobs,f.member.id),2);
  const same=await f.submit({placement:share(0)});await f.settle();assert.equal(f.service.store.jobs.find(job=>job.id===same.id).state,'RUNNING');
- const waiting=await f.submit({placement:share(1)});await f.settle();assert.equal(f.service.store.jobs.find(job=>job.id===waiting.id).queueReason,'已占用 2/2 张卡');
+ const waiting=await f.submit({placement:share(1)});await f.settle();assert.equal(pendingJobReason(f.service,f.service.store.jobs.find(job=>job.id===waiting.id)),'已占用 2/2 张卡');
 });
 
 test('administrators remain exempt and single impossible requests retain their existing bounds',async t=>{
@@ -141,4 +142,17 @@ test('administrators remain exempt and single impossible requests retain their e
  t.mock.method(f.service.store,'get',function(id){const user=get.call(this,id);return id==='builtin-admin'?{...user,total:1,limits:{[machine]:1}}:user;});
  for(let index=0;index<5;index++){await f.submit({placement:share(index)},f.admin.token);await f.settle();}
  assert.equal(usage(f.service.store.jobs,'builtin-admin'),5);assert.equal(f.service.store.jobs.filter(job=>job.userId==='builtin-admin').every(job=>job.state==='RUNNING'),true);
+});
+
+test('quota decreases leave running work alone and derive waiting reasons without persisting them',async t=>{
+ const f=await fixture(t);
+ for(const index of [0,1]){await f.submit({placement:share(index)});await f.settle();}
+ const waiting=await f.submit({placement:share(2)});await f.settle();
+ await f.service.invoke(f.admin.token,'policy.save',{userId:f.member.id,total:1,limits:{[machine]:1}});
+ const jobs=f.service.store.jobs,row=jobs.find(job=>job.id===waiting.id);
+ assert.equal(jobs.filter(job=>job.state==='RUNNING').length,2);assert.equal(usage(jobs,f.member.id),2);
+ assert.equal(pendingJobReason(f.service,row),'已占用 2/1 张卡');assert.equal(row.queueReason,null);
+ const persisted=JSON.parse(f.service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data);
+ assert.equal(persisted.jobs.find(job=>job.id===waiting.id).queueReason,null);
+ assert.equal((await f.service.invoke(f.actor.token,'state')).state.jobs.find(job=>job.id===waiting.id).queueReason,'已占用 2/1 张卡');
 });
