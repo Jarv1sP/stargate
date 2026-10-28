@@ -416,6 +416,12 @@ print(json.dumps(result))
                  'workspaceLock':str(self.folder/('use-'+('copy-'+spec['projectCopy'] if spec.get('projectCopy') else self.d.name(spec['project']))+'.lock')),
                  'execution':'gpuq-live-'+uuid.uuid4().hex,'flags':flags,'argv':spec['argv'],
                  'threadDefaults':getattr(self,'thread_defaults',{})}
+        control=os.environ.get('GPUQ_CONTROL_DIR')
+        if control:
+            # Sibling of the writable container mount: only the host runner
+            # records the exact payload name for the attempt's existing cleanup.
+            self.s.atomic_json(Path(control).with_suffix('.payload.json'),
+                               {'argv':self.command('rm','--force','--ignore',request['execution']),'env':registry_env})
         if '--device' in flags:
             request['cdiSpec']=str(self.policy.get('cdiSpec','/etc/gpuq-console/cdi/gpuq-nvidia.json'))
         if spec.get('interactive'):

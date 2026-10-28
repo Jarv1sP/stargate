@@ -91,12 +91,10 @@ class Batches(unittest.TestCase):
         with f.module('copy-batches').CopyBatches(self.bundle) as saved:
             self.assertTrue(all(saved.size(row['path']) is None for row in self.entries))
 
-    def test_original_small_partial_upload_keeps_its_key_and_offset(self):
-        self.prepare();entry=self.entries[0];key=self.key()
+    def test_small_partial_upload_keeps_its_original_key_and_offset(self):
+        self.prepare();entry=self.entries[0];key=self.jobs.file_key(self.id,entry['path'])
         self.uploads.process('begin',{'key':key,'path':entry['path'],'totalSize':entry['size']})
         self.uploads.process('chunk',{'key':key,'offset':0,'data':base64.b64encode(b'\0'*5).decode()})
-        row=self.jobs.s.read_json(self.jobs.path(self.id));row['uploadKeys']={entry['path']:key}
-        self.jobs.s.atomic_json(self.jobs.path(self.id),row)
         self.assertEqual(self.receive(),20*4096)
         self.assertEqual(self.calls[0]['offset'],entry['remoteOffset']+5)
         self.assertEqual(self.uploads.process('status',{'key':key})['state'],'COMPLETE');self.verify_merge()

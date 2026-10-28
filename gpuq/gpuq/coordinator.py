@@ -8,6 +8,7 @@ import os
 import pwd
 import secrets
 import stat
+import subprocess
 import threading
 import time
 import uuid
@@ -2983,6 +2984,13 @@ class Coordinator:
         return True
 
     def _finalize_attempt(self, attempt: dict[str, Any]) -> None:
+        if Path(attempt["control_dir"]).with_suffix(".payload.json").exists():
+            self.store.enqueue_action(
+                job_id=attempt["job_id"], attempt_id=attempt["id"],
+                action_type=ActionType.CLEANUP_UNIT, payload={},
+                dedupe_key=f"cleanup:{attempt['id']}:{attempt.get('invocation_id')}",
+                available_at=self.clock(),
+            )
         job = self.store.get_job(attempt["job_id"])
         nonce = attempt.get("preempt_nonce") or ""
         requester = attempt.get("preempt_requested_by_job_id")
@@ -3626,11 +3634,27 @@ class Coordinator:
 
     def _execute_cleanup(self, action: dict[str, Any]) -> dict[str, Any]:
         attempt = self.store.get_attempt(action["attempt_id"])
+        # The host runner saved this outside the container's control mount.
+        path = Path(attempt["control_dir"]).with_suffix(".payload.json")
+        def remove_payload() -> None:
+            try:
+                with path.open() as stream:
+                    payload = json.load(stream)
+            except FileNotFoundError:
+                return
+            try:
+                subprocess.run(payload["argv"], env=payload["env"],
+                               capture_output=True, check=True, timeout=10)
+            except (subprocess.SubprocessError, KeyError) as exc:
+                raise RuntimeError("任务容器记录暂未清理，请稍后按原编号查询。") from exc
+            path.unlink(missing_ok=True)
         try:
             self.systemd.cleanup(
                 unit_name=attempt["unit_name"],
+                **({"before_unload": remove_payload} if path.exists() else {}),
             )
         except UnitNotFoundError:
+            remove_payload()
             return {"already_unloaded": True}
         return {"cleaned": True}
 

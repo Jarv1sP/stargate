@@ -568,6 +568,7 @@ class UserSystemdBackend:
         self,
         *,
         unit_name: str,
+        before_unload: Callable[[], None] | None = None,
     ) -> SystemdUnitStatus:
         """Unload a finished transient unit after its cgroup is empty.
 
@@ -592,6 +593,8 @@ class UserSystemdBackend:
                 f"systemd unit {unit} has terminal state with nonzero MainPID"
             )
         self._assert_cgroup_empty(status.control_group)
+        if before_unload is not None:
+            before_unload()
         lifecycle_command = (
             "reset-failed" if status.active_state == "failed" else "stop"
         )

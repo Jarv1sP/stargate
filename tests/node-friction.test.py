@@ -274,7 +274,7 @@ class DirectoryContract(unittest.TestCase):
         key=self.key();jobs.start({'key':key,'sourceMachine':'source','ticket':ticket,'source':{'dataset':'shared'},'target':{'dataset':'copy'}})
         with patch.object(transfers,'PeerClient',LocalPeer):
             self.assertEqual(jobs.worker(key),1);self.assertEqual(jobs.status({'key':key})['state'],'PAUSED')
-            upload_key=jobs.file_key(key,'train/data.bin',jobs.file_keys(key))
+            upload_key=jobs.file_key(key,'train/data.bin')
             uploads=module('data-uploads').Uploads(self.config,'alice')
             self.assertEqual(jobs.s.read_json(uploads.record(upload_key))['offset'],1024**2)
             jobs.resume({'key':key});self.assertEqual(jobs.worker(key),0)
