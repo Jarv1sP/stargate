@@ -1,8 +1,7 @@
 import {createTrashUI} from './trash-ui.js';
+import {projectOwnerText} from './workbench-ui.js';
 // Presentation and lifecycle controls; never alter a project's internal ID.
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-// A shared project shows as the team's, not its creator's.
-export const projectOwnerText=item=>item?.shared?'共用':item?.ownerName||'';
 export function projectSelectHTML(catalog,selected='',includeArchived=false,environmentLabel=()=> ''){
   const groups=new Map();
   for(const item of catalog){if(item.lifecycle?.state==='ARCHIVED'&&!includeArchived&&(item.selectionValue??item.project)!==selected)continue;const key=item.logicalProjectId||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);}
@@ -36,7 +35,7 @@ export function createProjectManagement({getContext,call,run,refresh,select}){
   q('[data-project-catalog]').addEventListener('click',async event=>{
     if(catalogRead||Date.now()-catalogAt<30000)return;
     const token=getContext().token,read={};catalogRead=read;event.target.disabled=true;message('正在读取跨机项目…');
-    try{const result=await call('projects.catalog',{includeArchived:true});if(!same(token))return;groups=(result.groups||[]).filter(row=>row.logical);const output=q('[data-catalog-output]');output.replaceChildren();for(const group of result.groups||[])for(const item of group.instances||[]){const button=document.createElement('button');button.className='button quiet';button.textContent=`${item.machine} · ${item.ownerName||''} · ${item.displayName||item.project}`;button.addEventListener('click',()=>select(item.machine,item.project,item.ownerId));output.append(button);}renderGroups();catalogAt=Date.now();message(result.partial?'部分服务器未响应，可稍后刷新。':'项目已更新。');}
+    try{const result=await call('projects.catalog',{includeArchived:true});if(!same(token))return;groups=(result.groups||[]).filter(row=>row.logical);const output=q('[data-catalog-output]');output.replaceChildren();for(const group of result.groups||[])for(const item of group.instances||[]){const button=document.createElement('button');button.className='button quiet';button.textContent=`${item.machine} · ${projectOwnerText(item)} · ${item.displayName||item.project}`;button.addEventListener('click',()=>select(item.machine,item.project,item.ownerId));output.append(button);}renderGroups();catalogAt=Date.now();message(result.partial?'部分服务器未响应，可稍后刷新。':'项目已更新。');}
     catch(error){if(same(token)&&error.name!=='AbortError')message(error.message);}
     finally{if(catalogRead===read){catalogRead=null;const c=getContext();q('[data-project-catalog]').disabled=!c.enabled||c.locked;}}
   });

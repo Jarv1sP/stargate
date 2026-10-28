@@ -100,8 +100,8 @@ test('base images show as the last row after the projects',()=>{
  // Larger than a project, still last.
  assert.ok(projectStorageRows([projects[1]],{size:500*G,complete:true}).indexOf('small')<projectStorageRows([projects[1]],{size:500*G,complete:true}).indexOf('基础镜像'));
  assert.doesNotMatch(html,/不属于单个项目|合计|回收站|data-rest-trash/);
- // A node that doesn't split environments per project yet has no base image row.
- assert.equal(baseImages({projects:{complete:true,projects:projects.map(({environment,...row})=>row),areas}}),null);
+ // With no projects the whole container environment is base images.
+ assert.deepEqual(baseImages({projects:{complete:true,projects:[],areas}}),{size:213*G,complete:true,upper:false});
  // A project environment the node couldn't read leaves base images as an upper bound, never zero.
  const short=baseImages({projects:{complete:true,projects:[{...projects[0],environment:null},projects[1]],areas}});
  assert.equal(short.upper,true);assert.match(projectStorageRows([{...projects[0],environment:null}],short),/至少 1\.0 TiB[\s\S]*至多 173 GiB/);
@@ -110,7 +110,7 @@ test('base images show as the last row after the projects',()=>{
 });
 
 test('a shared project shows as 共用 instead of its creator',async()=>{
- const {projectSelectHTML,projectOwnerText}=await import('../dist/project-management-ui.js');
+ const {projectSelectHTML}=await import('../dist/project-management-ui.js'),{projectOwnerText}=await import('../dist/workbench-ui.js');
  const own={project:'mine',ownerName:'甲',machine:'amax-5090'},team={project:'team',ownerName:'乙',shared:true,machine:'amax-5090'};
  assert.equal(projectOwnerText(own),'甲');assert.equal(projectOwnerText(team),'共用');
  const options=projectSelectHTML([own,team]);assert.match(options,/mine · 甲/);assert.match(options,/team · 共用/);assert.doesNotMatch(options,/乙/);

@@ -22,7 +22,7 @@ try{
   const userId='member-a',calls=[],errors=[],unexpected=[];
   const users=[{id:userId,username:'alice',name:'成员甲',role:scenario.role,enabled:true,approvedAt:checkedAt,total:Object.values(scenario.limits).reduce((sum,n)=>sum+n,0),limits:scenario.limits},{id:'member-b',username:'bob',name:'成员乙',role:'member',enabled:true,total:8,limits:Object.fromEntries(machines.map(row=>[row.id,8]))}];
   const state={machines,users,jobs:[],executionEnabled:true,execution:{},operationalMaintenance:{global:null,machines:{}},gpuq:{stale:false,checkedAt,hosts:machines.map(row=>host(row,!scenario.usable.includes(row.id)))}};
-  const projects=machine=>[{project:'vision',ownerId:'member-b',ownerName:'成员乙',displayName:'视觉基线 '+machine,environmentMode:'oci',lifecycle:{state:'ACTIVE'}}];
+  const projects=machine=>[{project:'vision',ownerId:'member-b',ownerName:'成员乙',displayName:'视觉基线 '+machine,environmentMode:'oci',lifecycle:{state:'ACTIVE'}},{project:'team',ownerId:'member-c',ownerName:'成员丙',shared:true,displayName:'团队共用 '+machine,environmentMode:'oci',lifecycle:{state:'ACTIVE'}}];
   async function rpc(op,args){
    calls.push({op,args});
    if(args.machine&&!scenario.usable.includes(args.machine))unexpected.push(op+' '+args.machine);
@@ -98,6 +98,13 @@ try{
    // 上传数据集 from the palette opens the same dialog.
    await palette(page,'上传数据集');await page.locator('#dataset-upload[open]').waitFor();assert.equal(await focused(page),'upload-dataset');
   }else{await page.locator('.dr-none').waitFor();assert.equal(await page.locator('#dr-upload-open').isVisible(),false);assert.equal(await page.locator('#dataset-upload[open]').count(),0);assert.equal(await page.locator('[name=dataset-machine] option').count(),0);await noScroll(page);await shot('datasets');}
+  // 新建任务 lists projects on usable servers; a shared one shows 共用, not its creator.
+  if(scenario.usable.length){
+   await page.keyboard.press('Escape');await page.locator('#dataset-upload').waitFor({state:'hidden'});await palette(page,'新建任务');await page.locator('.jr-sheet.on #jr-project').waitFor();
+   const options=await page.locator('#jr-project option').allInnerTexts();
+   assert.equal(options.length,scenario.usable.length*2);assert.ok(options.filter(text=>text.startsWith('team ')).every(text=>text.endsWith(' · 共用')),options.join('|'));assert.ok(options.every(text=>!text.includes('成员丙')));
+   await noScroll(page);await shot('submit',false);await page.locator('.jr-sheet [data-sheet-close]').click();await page.locator('.jr-sheet.on').waitFor({state:'detached'});
+  }
   assert.deepEqual(unexpected,[],'no request names a server outside the grants');assert.deepEqual(errors,[]);
   await context.close();console.log(name+' '+width+' PASS');
  }

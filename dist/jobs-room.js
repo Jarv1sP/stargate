@@ -1,6 +1,6 @@
 // Tasks room, built from the approved prototype: one team list, a drawer per
 // task and one sheet to submit. Every action reuses an existing portal call.
-import {escapeUI as esc,stateWord,trainingReadout,elapsedTraining,missionGPUs,endedJob,usableMachines,noServerText} from './workbench-ui.js';
+import {escapeUI as esc,stateWord,trainingReadout,elapsedTraining,missionGPUs,endedJob,usableMachines,noServerText,projectOwnerText} from './workbench-ui.js';
 import {placementFromForm} from './gpu-allocation-ui.js';
 import {downloadBrowserPath} from './file-transfer-ui.js';
 import {diagnosticsHTML,nativeObservationHTML,completionHTML} from './job-diagnostics-ui.js';
@@ -137,7 +137,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
 
   // Submission sheet: project, command, cards, where, optional GPUs and priority.
   async function projectsFor(){
-    const rows=[];await Promise.all(usableMachines(store).map(async machine=>{try{const result=await store.call('projects.list',{machine:machine.id});for(const p of result.projects||[])if(!p.archived)rows.push({machine:machine.id,project:p.project,ownerId:p.ownerId||p.userId,ownerName:p.ownerName||''});}catch{}}));
+    const rows=[];await Promise.all(usableMachines(store).map(async machine=>{try{const result=await store.call('projects.list',{machine:machine.id});for(const p of result.projects||[])if(!p.archived)rows.push({machine:machine.id,project:p.project,ownerId:p.ownerId||p.userId,ownerName:p.ownerName||'',shared:p.shared===true});}catch{}}));
     return rows.sort((a,b)=>a.project.localeCompare(b.project)||a.machine.localeCompare(b.machine));
   }
   async function openSheet(){
@@ -148,7 +148,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
     const chosen=list.find(p=>last&&p.machine===last.machine&&p.project===last.project&&p.ownerId===last.ownerId)||list[0];
     sheet.querySelector('.jr-sheet-in').innerHTML=`<div class="jr-eyebrow">新建任务</div><div class="jr-sheet-title">在 <span data-sheet-project>${esc(chosen?.project||'项目')}</span> 里训练</div>
       <form data-submit-form>
-        <div class="jr-field"><label for="jr-project">项目</label><select class="jr-input" id="jr-project" name="project">${list.map((p,i)=>`<option value="${i}" ${p===chosen?'selected':''}>${esc(p.project)} · ${esc(shortServer(p.machine))}${p.ownerId!==me&&p.ownerName?' · '+esc(p.ownerName):''}</option>`).join('')}</select></div>
+        <div class="jr-field"><label for="jr-project">项目</label><select class="jr-input" id="jr-project" name="project">${list.map((p,i)=>`<option value="${i}" ${p===chosen?'selected':''}>${esc(p.project)} · ${esc(shortServer(p.machine))}${(p.shared||p.ownerId!==me)&&projectOwnerText(p)?' · '+esc(projectOwnerText(p)):''}</option>`).join('')}</select></div>
         <div class="jr-field"><label for="jr-command">命令</label><input class="jr-input mono" id="jr-command" name="command" required value="python train.py --data /datasets --output /outputs"></div>
         <div class="jr-grid"><div class="jr-field"><label>卡数</label><div class="jr-stepper"><button type="button" data-step="-1" aria-label="减少">−</button><span data-cards>1</span><button type="button" data-step="1" aria-label="增加">+</button></div></div>
           <div class="jr-field"><label for="jr-where">放在哪</label><select class="jr-input" id="jr-where" name="where"><option value="current">项目所在的服务器</option><option value="auto">自动：选空闲最多的服务器</option></select></div></div>

@@ -6,7 +6,7 @@ import {transferBytes} from './data-route.js';
 import {diskLabel,diskMediaLabel} from './disk-media.js';
 import {copyHelp} from './copy-help-ui.js';
 import {openSheet,closeSheet,confirmSheet} from './sheet-ui.js';
-import {usableMachines} from './workbench-ui.js';
+import {usableMachines,projectOwnerText} from './workbench-ui.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short=id=>String(id||'').replace(/^amax-/,'');
 const bytes=n=>!Number.isFinite(n)?'未知':n>=1024**4?(n/1024**4).toFixed(1)+' TiB':n>=1024**3?(n/1024**3).toLocaleString('en-US',{maximumFractionDigits:n>=100*1024**3?0:1})+' GiB':transferBytes(n);
@@ -47,22 +47,19 @@ export function storageMixHTML(disk,snapshot,options){
     <ul class="dr-mix-legend">${rows.map(([key,label])=>`<li data-k="${key}"${Number.isFinite(parts[key].size)?'':' class="unk"'}><b></b>${label}<span class="num">${amount(parts[key])}</span></li>`).join('')}</ul>`;
 }
 // A project container's size is its files, its job outputs and its own
-// container layers, shown as one number. A part the node doesn't report yet is
-// left out; one it reports as unknown makes the total a lower bound.
-const projectParts=row=>({files:{size:row.size,complete:row.complete!==false},
-  ...('outputs' in row?{outputs:row.outputs||area(null)}:{}),...('environment' in row?{environments:row.environment||area(null)}:{})});
+// container layers, shown as one number. A part read as unknown makes the total
+// a lower bound.
+const projectParts=row=>({files:{size:row.size,complete:row.complete!==false},outputs:row.outputs||area(null),environments:row.environment||area(null)});
 const projectTotal=row=>{
   if(!Number.isFinite(row.size))return {size:null,complete:false};
   const parts=Object.values(projectParts(row));
   return {size:parts.reduce((sum,part)=>sum+(Number.isFinite(part.size)?part.size:0),0),complete:parts.every(part=>Number.isFinite(part.size)&&part.complete!==false)};
 };
-// Members' base images, plus containers no project claims: the container
-// environment left after each project's own layers. Shown only once the node
-// splits environments per project.
+// Members' base images, task copies and runtime files: the container
+// environment left after each project's own layers.
 export function baseImages(snapshot){
   const projects=snapshot?.projects;if(!projects||projects.error)return null;
-  const own=(projects.projects||[]).filter(row=>'environment' in row).map(row=>row.environment||area(null));
-  if(!own.length)return null;
+  const own=(projects.projects||[]).map(row=>row.environment||area(null));
   const total=projects.areas?.environments||area(null);if(!Number.isFinite(total.size))return area(null);
   // Project layers counted short leave this remainder as an upper bound.
   const short=own.some(part=>!Number.isFinite(part.size)||part.complete===false);
@@ -76,8 +73,8 @@ export function projectStorageRows(rows,images=null){
   if(images&&images.size!==0)rows.push({total:images});
   const largest=Math.max(1,...rows.map(({total})=>Number.isFinite(total.size)?total.size:0));
   return rows.map(({row,total})=>row
-    ?`<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${row.shared?'共用':esc(row.ownerName||row.ownerId||'未知')+' 的项目'}</div></div>${sizeCell(total,largest)}<div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`
-    :`<div class="dr-row dr-ct dr-base"><div class="dr-main"><div class="dr-t">基础镜像</div><div class="dr-s">新建容器用的系统镜像，每位成员一份</div></div>${sizeCell(total,largest)}<div class="dr-s">${amount(total)}</div><div class="dr-acts dr-acts-on" aria-hidden="true"><span class="jr-link">打开</span></div></div>`).join('');
+    ?`<div class="dr-row dr-ct"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(projectOwnerText(row)||row.ownerId||'未知')}${row.shared?'':' 的项目'}</div></div>${sizeCell(total,largest)}<div class="dr-s">${directoryBytes(total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`
+    :`<div class="dr-row dr-ct dr-base"><div class="dr-main"><div class="dr-t">基础镜像</div><div class="dr-s">新建容器用的系统镜像，以及任务运行时的副本和临时文件</div></div>${sizeCell(total,largest)}<div class="dr-s">${amount(total)}</div><div class="dr-acts dr-acts-on" aria-hidden="true"><span class="jr-link">打开</span></div></div>`).join('');
 }
 // Bar widths go through CSSOM: the portal CSP blocks inline style attributes.
 const fills=root=>requestAnimationFrame(()=>{for(const bar of root.querySelectorAll('[data-fill]'))bar.style.width=bar.dataset.fill+'%';});
