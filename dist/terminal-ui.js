@@ -1,6 +1,6 @@
 import {maintenanceFor} from './maintenance-state.js';
 import {copyHelp} from './copy-help-ui.js';
-import {serverIdHTML,escapeUI} from './workbench-ui.js';
+import {serverIdHTML,escapeUI,usableMachines} from './workbench-ui.js';
 
 export function terminalRequestContext(value){
   const {machine,project,ownerId}=value;
@@ -95,7 +95,7 @@ export function terminalUI(store,toast){
   function cancelRecovery(){recoveryController?.abort();recoveryController=null;}
   async function verifyRecovered(machine,project,ownerId){
     const userId=store.principal?.userId,auth=store.authGeneration,workspace=workspaceGeneration;
-    if(!userId||store.authPending||!project||!store.data?.machines?.some(node=>node.id===machine))return;
+    if(!userId||store.authPending||!project||!usableMachines(store).some(node=>node.id===machine))return;
     const records=[...sessions.values()].filter(record=>record.recovered&&record.userId===userId&&record.machine===machine&&record.project===project&&(record.ownerId||userId)===(ownerId||userId));
     if(!records.length)return;
     const controller=new AbortController();recoveryController=controller;

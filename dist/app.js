@@ -1,4 +1,4 @@
-import {discloseInfo,escapeUI as esc} from './workbench-ui.js';
+import {discloseInfo,escapeUI as esc,usableMachines} from './workbench-ui.js';
 import {DemoClient} from './client.js';
 import {executionUI} from './execution-ui.js';
 import {jobsRoom} from './jobs-room.js';
@@ -103,7 +103,7 @@ document.addEventListener('click',async event=>{
   if(b.dataset.nav){event.preventDefault();choosePage(b.dataset.nav);return;}
   if(b.dataset.close){$('#'+b.dataset.close).close();return;}
   if(b.dataset.useMachine){
-    const id=b.dataset.useMachine;if(!store.principal||!store.data?.machines?.some(machine=>machine.id===id)){toast('未获此服务器授权，请刷新核对。');return;}
+    const id=b.dataset.useMachine;if(!usableMachines(store).some(machine=>machine.id===id)){toast('未获此服务器授权，请刷新核对。');return;}
     choosePage('work');if(page!=='work')return;
     const target=$('[name=workspace-machine]');if(target){target.value=id;target.dispatchEvent(new Event('change',{bubbles:true}));}return;
   }

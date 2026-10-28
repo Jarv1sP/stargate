@@ -1,6 +1,6 @@
 // Tasks room, built from the approved prototype: one team list, a drawer per
 // task and one sheet to submit. Every action reuses an existing portal call.
-import {escapeUI as esc,stateWord,trainingReadout,elapsedTraining,missionGPUs,endedJob} from './workbench-ui.js';
+import {escapeUI as esc,stateWord,trainingReadout,elapsedTraining,missionGPUs,endedJob,usableMachines,noServerText} from './workbench-ui.js';
 import {placementFromForm} from './gpu-allocation-ui.js';
 import {downloadBrowserPath} from './file-transfer-ui.js';
 import {diagnosticsHTML,nativeObservationHTML,completionHTML} from './job-diagnostics-ui.js';
@@ -137,7 +137,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
 
   // Submission sheet: project, command, cards, where, optional GPUs and priority.
   async function projectsFor(){
-    const rows=[];await Promise.all(machines.map(async machine=>{try{const result=await store.call('projects.list',{machine:machine.id});for(const p of result.projects||[])if(!p.archived)rows.push({machine:machine.id,project:p.project,ownerId:p.ownerId||p.userId,ownerName:p.ownerName||''});}catch{}}));
+    const rows=[];await Promise.all(usableMachines(store).map(async machine=>{try{const result=await store.call('projects.list',{machine:machine.id});for(const p of result.projects||[])if(!p.archived)rows.push({machine:machine.id,project:p.project,ownerId:p.ownerId||p.userId,ownerName:p.ownerName||''});}catch{}}));
     return rows.sort((a,b)=>a.project.localeCompare(b.project)||a.machine.localeCompare(b.machine));
   }
   async function openSheet(){
@@ -172,7 +172,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
     });
     form.addEventListener('submit',async event=>{
       event.preventDefault();if(busy)return;const error=sheet.querySelector('[data-submit-error]');error.hidden=true;
-      const p=current();if(!p){error.textContent='请先在“项目”里新建一个项目。';error.hidden=false;return;}
+      const p=current();if(!p){error.textContent=usableMachines(store).length?'请先在“项目”里新建一个项目。':noServerText;error.hidden=false;return;}
       if(gpus.size&&gpus.size!==cards){error.textContent=`指定了 ${gpus.size} 张 GPU，卡数是 ${cards}，请保持一致。`;error.hidden=false;return;}
       const where=form.where.value==='auto'?{machine:'auto',machineSelection:{mode:'auto'}}:{machine:p.machine};
       let placement=null;

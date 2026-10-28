@@ -10,7 +10,7 @@ import {elasticFields,elasticFromForm,allocationSummary,placementFields,placemen
 import {taskDescription} from './task-metadata.js';
 import {installTaskLabelEditor,taskLabelEditorHTML} from './task-display-ui.js';
 import {createProjectManagement,projectSelectHTML} from './project-management-ui.js';
-import {escapeUI as escape,jobOverviewHTML,stateHTML,personalQuotaReadout,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
+import {escapeUI as escape,jobOverviewHTML,stateHTML,personalQuotaReadout,usableMachines,taskMissionUI,infoHTML,discloseInfo,projectEnvironmentLabel,createProjectActivity} from './workbench-ui.js';
 import {trainingStorageMessage,trainingSelectionHTML} from './training-storage-ui.js';
 import {revealSheet,dismissSheet,sharedObject} from './motion-ui.js';
 import {openSheet,closeSheet} from './sheet-ui.js';
@@ -61,7 +61,7 @@ export function trainingTarget(mode,machine,project,candidates,machines){
   if(mode==='current')return {machine};
   if(mode!=='auto')throw Error('请选择服务器或自动选机。');
   const ids=String(candidates||'').trim().split(/[\s,，]+/).filter(Boolean);
-  if(new Set(ids).size!==ids.length||ids.some(id=>!machines.some(m=>m.id===id)))throw Error('候选服务器需填写清单中的完整名称，不要重复。');
+  if(new Set(ids).size!==ids.length||ids.some(id=>!machines.some(m=>m.id===id)))throw Error('候选服务器需填写你可用的服务器完整名称，不要重复。');
   return {machine:'auto',machineSelection:{mode:'auto',...(ids.length?{candidates:ids.sort()}: {})}};
 }
 export function trainingReceiptMatches(job,args,userId,machines){
@@ -120,7 +120,7 @@ export function executionUI(store,refresh,toast){
   const call=(operation,args)=>store.call(operation,{...(projectOwner?{ownerId:projectOwner}:{}),...args}),query=selector=>section?.querySelector(selector)||submitDialog?.querySelector(selector)||settingsDialog?.querySelector(selector)||log?.querySelector(selector);
   const context=()=>({machine,...(project?{project,...(projectOwner?{ownerId:projectOwner}:{})}:{})}),currentProject=()=>catalog.find(item=>item.project===project&&(!projectOwner||item.ownerId===projectOwner));
   const projectReadKey=()=>JSON.stringify([store.authGeneration,actor,machine,projectOwner,project]);
-  const projectMachines=()=>store.principal?(store.data?.machines||[]):[];
+  const projectMachines=()=>usableMachines(store);
   const directoryEntries=()=>projectDirectoryEntries(directory,projectMachines());
   const executionActive=()=>store.production&&!!store.principal&&store.data?.executionEnabled===true;
   const creationMachine=()=>projectCreationMachine('oci',focusMachine,project?machine:'',directory,projectMachines());
@@ -130,8 +130,8 @@ export function executionUI(store,refresh,toast){
   const automaticTraining=()=>query('[name=training-target]')?.value==='auto';
   const interactiveTraining=()=>query('[name=interactive]').checked;
   const trainingHosts=()=>{
-    const candidates=String(query('[name=training-candidates]')?.value||'').trim().split(/[\s,，]+/).filter(Boolean),user=store.users.find(u=>u.id===actor);
-    return (store.data?.gpuq?.hosts||[]).filter(h=>automaticTraining()?user?.limits?.[h.id]>0&&(!candidates.length||candidates.includes(h.id))&&!maintenanceFor(store.data?.operationalMaintenance,h.id):h.id===machine);
+    const candidates=String(query('[name=training-candidates]')?.value||'').trim().split(/[\s,，]+/).filter(Boolean),usable=projectMachines().map(m=>m.id);
+    return (store.data?.gpuq?.hosts||[]).filter(h=>automaticTraining()?usable.includes(h.id)&&(!candidates.length||candidates.includes(h.id))&&!maintenanceFor(store.data?.operationalMaintenance,h.id):h.id===machine);
   };
   const priorityAvailable=()=>enabled();
   const customAvailable=()=>enabled();
@@ -213,10 +213,10 @@ export function executionUI(store,refresh,toast){
     const jobs=document.createElement('section');jobs.className='wb-jobs';jobs.hidden=true;jobs.setAttribute('aria-label','我的训练');
     // Approved project room: the project name and switch on top, then 终端 / 文件 / 设置.
     const room=document.createElement('div');room.className='pr-room';
-    room.innerHTML='<div class="pr-head"><div><div class="page-eyebrow">容器工作区 · /workspace</div><h2 class="pr-name" id="pr-name">选择项目</h2></div><button type="button" class="pr-switch" id="pr-switch"><span class="pr-srv mono" id="pr-srv"></span><span>切换项目</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>'
+    room.innerHTML='<div class="pr-head"><div><div class="page-eyebrow">容器工作区 · /workspace</div><h2 class="pr-name" id="pr-name">选择项目</h2></div><button type="button" class="pr-switch" id="pr-switch"><span class="pr-srv mono" id="pr-srv"></span><span>切换项目</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div><p class="pr-no-server" id="pr-no-server" hidden>请联系管理员审批额度后，再新建项目和终端。</p>'
       +'<div class="jr-tabs pr-tabs" role="tablist" aria-label="项目"><button type="button" role="tab" data-pt="term" aria-selected="true">终端</button><button type="button" role="tab" data-pt="files" aria-selected="false">文件</button><button type="button" role="tab" data-pt="settings" aria-selected="false">设置</button><span class="jr-ul" aria-hidden="true"></span></div>'
       +'<div class="pr-pane" data-pp="term"><div id="project-terminal-host"></div></div><div class="pr-pane" data-pp="files" hidden></div><div class="pr-pane" data-pp="settings" hidden></div>'
-      +'<dialog class="pr-sheet" id="pr-switch-sheet" aria-labelledby="pr-switch-title"><div class="pr-sheet-in"><div class="pr-sheet-head"><div><div class="page-eyebrow">切换项目</div><div class="pr-sheet-title" id="pr-switch-title">选择服务器和项目</div></div><button type="button" class="jr-x" id="pr-switch-close" aria-label="关闭">✕</button></div></div></dialog>';
+      +'<dialog class="pr-sheet" id="pr-switch-sheet" aria-labelledby="pr-switch-title"><div class="pr-sheet-in"><div class="pr-sheet-head"><div><div class="page-eyebrow">切换项目</div><div class="pr-sheet-title" id="pr-switch-title">选择服务器和项目</div></div><button type="button" class="jr-x" id="pr-switch-close" aria-label="关闭">✕</button></div><p class="pr-usable" id="pr-usable" hidden></p></div></dialog>';
     const pane=key=>room.querySelector(`[data-pp=${key}]`),sheet=room.querySelector('#pr-switch-sheet'),files=query('#workspace-files');
     pane('term').prepend(query('.personal-terminal'));
     // Terminal header as in the approved design: where it runs, then plain links.
@@ -289,7 +289,7 @@ export function executionUI(store,refresh,toast){
     const entry=maintenanceFor(store.data?.operationalMaintenance,machine);
     let maintenance=query('#submit-maintenance');if(!maintenance){maintenance=document.createElement('div');maintenance.id='submit-maintenance';query('#train-form .sheet-scroll').prepend(maintenance);}
     maintenance.hidden=!entry;
-    if(entry){const alternatives=(store.data?.machines||[]).filter(item=>user?.limits?.[item.id]>0&&!maintenanceFor(store.data?.operationalMaintenance,item.id));maintenance.innerHTML=`<p><span class="maintenance-pause" aria-hidden="true"></span> ${escape(store.data.operationalMaintenance.global?'全平台':machine)}维护中 · 自 ${escape(maintenanceTime(entry.since))}</p><p>${escape(entry.reason)}</p>${maintenanceInfoHTML("换机后请检查代码、环境和数据。不会自动提交。","换机说明")}${alternatives.length?`<label>改用其他服务器<select id="submit-maintenance-machine" aria-label="选择其他服务器">${alternatives.map(item=>`<option value="${escape(item.id)}">${escape(item.id)}</option>`).join('')}</select></label><button type="button" class="button" id="submit-maintenance-switch">改用其他服务器</button>`:'<p>没有其他可用服务器。</p>'}`;}
+    if(entry){const alternatives=projectMachines().filter(item=>!maintenanceFor(store.data?.operationalMaintenance,item.id));maintenance.innerHTML=`<p><span class="maintenance-pause" aria-hidden="true"></span> ${escape(store.data.operationalMaintenance.global?'全平台':machine)}维护中 · 自 ${escape(maintenanceTime(entry.since))}</p><p>${escape(entry.reason)}</p>${maintenanceInfoHTML("换机后请检查代码、环境和数据。不会自动提交。","换机说明")}${alternatives.length?`<label>改用其他服务器<select id="submit-maintenance-machine" aria-label="选择其他服务器">${alternatives.map(item=>`<option value="${escape(item.id)}">${escape(item.id)}</option>`).join('')}</select></label><button type="button" class="button" id="submit-maintenance-switch">改用其他服务器</button>`:'<p>没有其他可用服务器。</p>'}`;}
     query('#submit-summary').textContent=submitReceipt?.actor===receiptActor()&&submitReceipt.status==='rejected'?'未提交':entry?'维护中，暂停提交':unavailable?'等待调度':submitReceipt?.actor===receiptActor()&&['pending','unknown'].includes(submitReceipt.status)?(submitReceipt.status==='pending'?'正在提交':'提交结果待确认'):acceptedDraft&&submitReceipt?.job?'已提交 · '+submitReceipt.job.machine+' · '+submitReceipt.job.id.slice(0,8):automatic?'自动选机 · 排队':'提交到 '+machine;
     const prefill=query('#submit-prefill');prefill.hidden=!parsedTarget;if(parsedTarget)prefill.innerHTML=`<span>已预填 · ${escape(parsedTarget.machine)} / ${escape(parsedTarget.project||'选择项目')}</span>${infoHTML('识别只预填配置，不会提交训练。目标改变后，需明确改用当前目标。','预填说明')}<button type="button" class="button quiet" id="clear-training-prefill">改用当前目标</button>`;
     const quote=value=>"'"+String(value).replaceAll("'","'\\''")+"'",get=name=>query(`[name=${name}]`).value;
@@ -375,7 +375,9 @@ export function executionUI(store,refresh,toast){
     if(!section||!actor)return;
     const entries=directoryEntries(),selected=entries.find(item=>item.machine===machine&&item.info.project===project&&(!projectOwner||item.info.ownerId===projectOwner));
     const value=selected?projectDirectoryValue(selected,entries,machine):'';
-    const title=query('#pr-name');if(title){title.textContent=selected?(selected.info.displayName||selected.info.project):'选择项目';query('#pr-srv').textContent=selected?selected.machine.replace(/^amax-/,''):'';const where=query('#personal-terminal-title');if(where)where.textContent=selected?selected.machine.replace(/^amax-/,'')+' · '+selected.info.project:'开发终端';}
+    const usable=projectMachines(),limits=store.users.find(user=>user.id===actor)?.limits||{},list=query('#pr-usable');
+    if(list){query('.pr-room').classList.toggle('pr-none',!usable.length);query('#pr-no-server').hidden=!!usable.length;list.hidden=!usable.length||store.principal.role==='admin';list.innerHTML='<span>可用服务器</span>'+usable.map(item=>`<span><span class="mono">${escape(item.id)}</span> ${escape(limits[item.id])} 张</span>`).join('');}
+    const title=query('#pr-name');if(title){title.textContent=selected?(selected.info.displayName||selected.info.project):usable.length?'选择项目':'还没有开通服务器';query('#pr-srv').textContent=selected?selected.machine.replace(/^amax-/,''):'';const where=query('#personal-terminal-title');if(where)where.textContent=selected?selected.machine.replace(/^amax-/,'')+' · '+selected.info.project:'开发终端';}
     query('[name=workspace-project]').innerHTML=projectSelectHTML(entries.map(entry=>({...entry.info,machine:entry.machine,selectionValue:projectDirectoryValue(entry,entries,machine)})),value,projectManagement?.includeArchived(),projectEnvironmentLabel);
     query('[name=workspace-project]').value=value;
     const info=currentProject(),environment=query('#project-environment');environment.hidden=!info;environment.textContent=info?'OCI 容器':'';
@@ -481,7 +483,7 @@ export function executionUI(store,refresh,toast){
     if((button.id==='submission-retry'||button.hasAttribute('data-receipt-retry'))&&submitReceipt?.status==='unknown'&&submitReceipt.actor===receiptActor()){const args=structuredClone(submitReceipt.args);guarded(button,()=>submitRequest(args));return;}
     if((button.id==='submission-refresh'||button.hasAttribute('data-receipt-refresh'))&&submitReceipt?.actor===receiptActor()){const receipt=submitReceipt;guarded(button,async()=>{await store.refresh();if(receipt.actor!==receiptActor()||submitReceipt!==receipt)return;const job=store.jobs.find(job=>job.userId===store.principal.userId&&job.key===receipt.args.key);if(job&&trainingReceiptMatches(job,receipt.args,store.principal.userId,store.data?.machines||[])){submitReceipt={...receipt,status:'confirmed',job,error:''};acceptedDraft=true;submitKey=crypto.randomUUID();}refresh();renderReceipt();});return;}
     if(button.id==='open-submit'){if(!submissionMode())return;submitSelection.invalidate();if(submitDialog)query('#train-panel').open=true;return;}
-    if(button.id==='submit-maintenance-switch'){const target=query('#submit-maintenance-machine')?.value;if(target&&(store.data?.machines||[]).some(item=>item.id===target)&&!maintenanceFor(store.data?.operationalMaintenance,target))guarded(button,async()=>{await selectMachine(target);updatePreflight();toast('已按你的选择换机。请检查项目和训练参数后提交。');});return;}
+    if(button.id==='submit-maintenance-switch'){const target=query('#submit-maintenance-machine')?.value;if(target&&projectMachines().some(item=>item.id===target)&&!maintenanceFor(store.data?.operationalMaintenance,target))guarded(button,async()=>{await selectMachine(target);updatePreflight();toast('已按你的选择换机。请检查项目和训练参数后提交。');});return;}
     if(button.id==='close-submit'){submitSelection.invalidate();dismissSheet(submitDialog);return;}
     if(button.id==='close-submit-panel'){dismissSheet(settingsDialog,{drilldown:true});closeSettings();updatePreflight();return;}
     if(button.id==='submit-check-refresh'){document.querySelector('#refresh-state').click();if(project)loadProjectStatus();updatePreflight();return;}
@@ -545,7 +547,7 @@ export function executionUI(store,refresh,toast){
       if(customOn&&!scheduling)throw Error('请刷新状态自定义调度选项。');
       const priority=customOn?'normal':trainingPriority(form.get('priority'));
       const placement=placementFromForm(form,Number(form.get('cards')),elastic,scheduling,priority);
-      const selection=trainingTarget(form.get('training-target'),target.machine,currentProject(),form.get('training-candidates'),store.data?.machines||[]);
+      const selection=trainingTarget(form.get('training-target'),target.machine,currentProject(),form.get('training-candidates'),projectMachines());
       if(selection.machine==='auto'&&placement)throw Error('跨服务器选机请使用自动分卡；固定卡号或共享请使用当前服务器。');
       const interactive=form.get('interactive')==='on';
       await submitRequest({...selection,cards:Number(form.get('cards')),minVramGiB:Number(form.get('memory')),name:form.get('name')||'train',description:taskDescription(form.get('task-description')||''),...(scheduling?{scheduling}:priorityAvailable()?{priority}:{}),...(elastic?{elastic}:{}),...(placement?{placement}:{}),...(interactive?{interactive:true}:{}),argv:interactive?['/bin/bash','--noprofile','--norc','-i']:['/bin/bash','-c',String(form.get('command'))],key:submitKey,...(project?trainingProject({...currentProject(),machine}):{})});
@@ -639,7 +641,7 @@ export function executionUI(store,refresh,toast){
       projectManagement=createProjectManagement({getContext:()=>({owner:actor,ownerId:projectOwner,isAdmin:store.principal?.role==='admin',machine,project,info:currentProject(),token:currentToken(),enabled:enabled(),locked:operationBusy||projectBusy,maintenance:!!maintenanceFor(store.data?.operationalMaintenance,machine)}),call:projectCall,run:(button,fn)=>guarded(button,fn,true),refresh:async options=>{if(options?.retired&&options.retired.machine===machine&&options.retired.project===project){catalog=catalog.filter(x=>x.project!==project||projectOwner&&x.ownerId!==projectOwner);rememberCatalog();project='';epoch++;clearFileContext();renderProject();notifyContext();return;}if(options?.presentationOnly){renderProject();return;}if(options?.restored){const token=currentToken(),listing=projectDirectoryListing(await projectCall('projects.list',{machine}));if(token!==currentToken())return;directory.set(machine,listing);catalog=listing.projects;renderProject();return;}const token=currentToken();await readProjectStatus(context(),token);if(token===currentToken())renderProject();},select:async(server,id,ownerId)=>{await selectMachine(server);const entries=directoryEntries(),entry=entries.find(row=>row.machine===server&&row.info.project===id&&(!ownerId||row.info.ownerId===ownerId));await selectProject(entry?projectDirectoryValue(entry,entries,machine):id);}});
       query('.workspace-context').append(projectManagement.element);notifyContext();
     }
-    const machines=store.data?.machines||[],next=JSON.stringify(machines);
+    const machines=projectMachines(),next=JSON.stringify(machines);
     if(machineIdentity!==next){machineIdentity=next;const options='<option value="">请选择服务器</option>'+machines.map(item=>`<option value="${escape(item.id)}">${escape(item.id)}</option>`).join('');for(const name of ['workspace-machine','machine','terminal-machine','file-machine'])query(`[name=${name}]`).innerHTML=options;if(!machines.some(item=>item.id===machine)){machine='';project='';projectOwner='';catalog=[];epoch++;clearFileContext();notifyContext();}syncMachineFields();}
     ensureDirectory();
     resultAccess.sync();renderProject();

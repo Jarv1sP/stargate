@@ -21,7 +21,7 @@ try{
     window.calls=[];window.directory=[];window.statusState='UNKNOWN';window.openMissing=true;window.exchangeMissing=false;window.detachMissing=false;
     window.seed=()=>projectTerminalStorage(localStorage).remember(record);seed();
     document.addEventListener('gpuq-terminal-state',event=>window.directory=event.detail.sessions);
-    const store={principal:{userId:'member-a'},authGeneration:1,data:{machines:[{id:'fixture-node'}]},async call(op,args,options={}){
+    const store={principal:{userId:'member-a',role:'member'},authGeneration:1,users:[{id:'member-a',enabled:true,limits:{'fixture-node':1}}],data:{machines:[{id:'fixture-node'}]},async call(op,args,options={}){
       calls.push({op,args});let result;
       const missing={id:args.id||args.key,state:'NOT_FOUND',canCreate:true,created:false};
       if(op==='terminal.status')result={id:args.id,state:statusState,...(statusState==='NOT_FOUND'?missing:{})};

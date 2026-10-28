@@ -6,6 +6,7 @@ import {transferBytes} from './data-route.js';
 import {diskLabel,diskMediaLabel} from './disk-media.js';
 import {copyHelp} from './copy-help-ui.js';
 import {openSheet,closeSheet,confirmSheet} from './sheet-ui.js';
+import {usableMachines} from './workbench-ui.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short=id=>String(id||'').replace(/^amax-/,'');
 const bytes=n=>!Number.isFinite(n)?'未知':n>=1024**4?(n/1024**4).toFixed(1)+' TiB':n>=1024**3?(n/1024**3).toLocaleString('en-US',{maximumFractionDigits:n>=100*1024**3?0:1})+' GiB':transferBytes(n);
@@ -160,7 +161,7 @@ export function datasetsUI(store,toast){
   function openDataset(dataset){selected=dataset;void run(async()=>{await browse();q('[data-dataset-files]').scrollIntoView({block:'nearest',behavior:'smooth'});});}
   function build(machines){
     cloud?.reset();
-    section.innerHTML=`<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML(diskLabel({kind:'workspace'}),null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML(diskLabel({kind:'datasets'}),null,{loading:true})}</div></button>`).join('')}</div>
+    section.innerHTML=`${machines.length?'':'<section class="dr-none"><h2>还没有开通服务器</h2><p>请联系管理员审批额度后，再上传数据集。</p></section>'}<div class="dr-gauges">${machines.map(row=>`<button type="button" class="dr-gauge" data-gauge="${esc(row.id)}" aria-pressed="false"><div class="dr-nm">${esc(short(row.id))}</div><div data-volume="workspace">${gaugeDiskHTML(diskLabel({kind:'workspace'}),null,{loading:true})}</div><div data-volume="datasets">${gaugeDiskHTML(diskLabel({kind:'datasets'}),null,{loading:true})}</div></button>`).join('')}</div>
       <div class="dr-cards">${machines.map(row=>`<article class="dr-machine" data-storage-machine="${esc(row.id)}" hidden>
         <section class="dr-mix" data-storage-mix aria-label="空间构成"></section>
         <div class="dr-toolbar"><h2>${esc(short(row.id))} 上的数据集<span class="dr-where" data-ds-where> · /datasets</span></h2><span class="dr-flex"></span><small class="dr-caption" data-storage-caption></small><button type="button" class="jr-link" data-storage-refresh>刷新</button><a class="jr-link" href="#datasets/transfers">传输</a><button type="button" class="jr-link" data-storage-trash>回收站</button></div>
@@ -217,9 +218,9 @@ export function datasetsUI(store,toast){
   }
   document.addEventListener('gpuq-open-dataset',event=>{const detail=event.detail||{};if(detail.userId!==store.principal?.userId||!q('[name=dataset-machine]'))return;if(busy){toast('请等待当前数据操作完成，再打开数据集。');return;}selectMachine(detail.machine);openDataset(detail.dataset);});
   return ()=>{
-    const next=JSON.stringify([store.authGeneration,store.principal?.userId]),machines=store.principal?store.data?.machines||[]:[],ids=machines.map(row=>row.id).join(',');
+    const next=JSON.stringify([store.authGeneration,store.principal?.userId]),machines=usableMachines(store),ids=machines.map(row=>row.id).join(',');
     if(next!==identity||ids!==machineIds||!q('[name=dataset-machine]')){identity=next;machineIds=ids;turn++;operationTurn++;busy=false;active=false;build(machines);showMachine();}
-    const visible=!!store.principal&&!section.hidden;for(const action of actions)action.hidden=!visible;
+    const visible=!!store.principal&&!section.hidden;for(const action of actions)action.hidden=!visible||!machines.length;
     if(visible&&!active){active=true;for(const row of machines)void loadCard(row.id);}
     if(!visible&&active){active=false;turn++;for(const node of section.querySelectorAll('[data-storage-machine]'))node.dataset.loading='false';}
     for(const node of section.querySelectorAll('[data-storage-machine][data-checked-at]'))if(node.dataset.loading!=='true')node.querySelector('[data-storage-caption]').textContent=statisticsTime(node.dataset.checkedAt);
