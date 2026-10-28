@@ -3,6 +3,7 @@ import {normalizeJobSubmission,createSubmittedJob,personalCardQuotaExempt} from 
 import {selectMachine} from '../machine-selection.mjs';
 import {nativeJobRequest} from '../native-task-metadata.mjs';
 import {transferCall} from '../transfers.mjs';
+import {assertMachineAccess} from '../machine-access.mjs';
 
 export const priorityCapable=host=>host?.reachable===true&&host.gpuq?.connected===true&&Array.isArray(host.gpuq.capabilities)&&host.gpuq.capabilities.includes('priority-policy-v1')&&host.gpuq.capabilities.includes('preempt-idle-only-v1');
 export const priorityRankCapable=host=>priorityCapable(host)&&host.gpuq.capabilities.includes('priority-rank-v1');
@@ -41,17 +42,18 @@ export async function firstDispatch(service,job,{usage,RANKS,fail}){
   return service.enqueue(()=>{
     const current=service.store.jobs.find(j=>j.id===job.id);
     if(!current||service.closing||current.state!=='SUBMITTING'||current.cancelRequested||service.maintenanceFor?.(current.machine))return null;
+    current.queueReason=null;
     const user=service.store.get(current.userId),capacity=MACHINES.find(m=>m.id===current.machine)?.cards||0;
-    if(!user.enabled||current.cards>capacity||!personalCardQuotaExempt(user)&&(!user.limits[current.machine]||current.cards>user.limits[current.machine]||current.cards>user.total))
+    if(!user.enabled)fail('首次派发前账号授权已改变；未启动训练。',403,'SUBMISSION_AUTH_REVOKED');
+    assertMachineAccess(user,current.machine,MACHINES);
+    if(current.cards>capacity||!personalCardQuotaExempt(user)&&(current.cards>user.limits[current.machine]||current.cards>user.total))
       fail('首次派发前账号或机器授权已改变；未启动训练。',403,'SUBMISSION_AUTH_REVOKED');
     if(!personalCardQuotaExempt(user)){
       const local=usage(service.store.jobs,user.id,current.machine,current),total=usage(service.store.jobs,user.id,undefined,current);
       if(local>user.limits[current.machine]||total>user.total){
-        current.queueReason=local>user.limits[current.machine]?`已占用 ${usage(service.store.jobs,user.id,current.machine)}/${user.limits[current.machine]} 张卡`:`已占用 ${usage(service.store.jobs,user.id)}/${user.total} 张卡`;
         current.error=null;service.save();return null;
       }
     }
-    current.queueReason=null;
     current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();delete current.dispatchFinishedAt;
     try{service.save();}catch(error){current.dispatchPending=true;throw error;}
     // Begin the attempt in the same serialized turn as admission, but return a
@@ -70,6 +72,7 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
   const {project,explicit,minVramGiB:min}=request;
   const previous=service.store.jobs.find(j=>j.key===request.key);
   if(previous){
+    authorizedMachine(previous.machine);
     return jobView(previous);
   }
   if(request.after?.length){
@@ -81,12 +84,13 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
     request.machine=machine;request.after=dependencies.map(({id,name})=>({id,name}));
     delete request.machineSelection;delete request.sourceMachine;
   }
-  if(request.cards>user.total)rejectSubmission('任务卡数超出跨机器用卡总额度。',409);
+  if(request.sourceMachine)authorizedMachine(request.sourceMachine);
   if(request.machineSelection){
     try{Object.assign(request,await selectMachine(service,user,request,usage));}
     catch(error){error.code=error.status>=500?'TRAINING_ADMISSION_BUSY':'SUBMISSION_REJECTED';throw error;}
   }
   authorizedMachine(request.machine);
+  if(request.cards>user.total)rejectSubmission('任务卡数超出跨机器用卡总额度。',409);
   if(request.cards>MACHINES.find(machine=>machine.id===request.machine).cards)rejectSubmission('申请卡数超过所选服务器的总卡数；未提交任务。',409);
   if(request.cards>user.limits[request.machine])rejectSubmission('任务卡数超出所选机器的用卡额度；不会自动切换服务器。',409);
   await service.refreshGPUQ();

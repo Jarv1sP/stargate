@@ -11,8 +11,8 @@ import {applyJobFeedback,jobTiming,projectProgress} from './dist/job-progress.js
 import {maintainTaskNotes} from './community.mjs';
 import {projectCall,projectReference,validateProjectFile,UUID} from './projects.mjs';
 import {personalCardQuotaExempt} from './job-submission.mjs';
+import {assertMachineAccess} from './machine-access.mjs';
 import {gpuCardUsage as usage} from './dist/gpu-allocation.js';
-export {usage};
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 
 export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
@@ -239,7 +239,7 @@ export async function executionCall(service,principal,operation,args,readContext
   const user=service.store.get(principal.userId);
   if(!user.enabled)fail('请重新登录。',403);
   service.assertMaintenanceAllowed?.(operation,args,principal);
-  const authorizedMachine=machine=>{if(!MACHINES.some(m=>m.id===machine))fail('请选择列表中的服务器。');};
+  const authorizedMachine=machine=>assertMachineAccess(service.store.get(principal.userId),machine,MACHINES);
   const actor={userId:principal.userId,isAdmin:principal.role==='admin'};
   const jobView=job=>({...publicJob(job,service.store.users),queueReason:pendingJobReason(service,job)});
   const bridge=(machine,operation,payload)=>readContext?service.bridge(machine,operation,payload,readContext):service.bridge(machine,operation,payload);
@@ -279,7 +279,7 @@ export async function executionCall(service,principal,operation,args,readContext
     const {machine,...request}=args;
     return bridge(machine,operation,{...request,userId:user.id,ownerId:args.ownerId??user.id,actor});
   }
-  const jobById=id=>{const job=service.store.jobs.find(j=>j.id===id);if(!job)fail('任务不存在。',404);return job;};
+  const jobById=id=>{const job=service.store.jobs.find(j=>j.id===id);if(!job)fail('任务不存在。',404);if(job.machine)authorizedMachine(job.machine);return job;};
   if(operation==='outputs.delete'){
     args=selectFields(args,['jobId','key','path','recursive','dryRun']);
     if(args.key!==undefined&&!UUID.test(args.key))fail('删除输出请使用原 UUID 编号。');
@@ -396,7 +396,7 @@ export async function executionCall(service,principal,operation,args,readContext
     const job=jobById(args.jobId);authorizedMachine(job.machine);
     let result;
     if(job.nodeJobId||['SUBMITTING','UNKNOWN'].includes(job.state)&&job.dispatchPending!==true)
-      try{result=await observeJob(job,'watch',{job:nativeJobSpec(job)});}catch{}
+      try{result=await observeJob(job,'watch',{job:nativeJobSpec(job)});}catch(error){if([401,403].includes(error.status))throw error;}
     readContext?.check?.();
     const completion=jobCompletion(job,result);
     if(!TERMINAL.has(job.state)&&result?.nodeJobId&&(completion.completed||
@@ -414,12 +414,12 @@ export async function executionCall(service,principal,operation,args,readContext
       try{
         const result=await observeJob(job,'watch',{job:nativeJobSpec(job)});
         return {...original,nativeObservation:terminalNativeObservation(job,result)};
-      }catch{return {...original,nativeObservation:unavailableObservation()};}
+      }catch(error){if([401,403].includes(error.status))throw error;return {...original,nativeObservation:unavailableObservation()};}
     }
     authorizedMachine(job.machine);
     let result;
     try{result=await observeJob(job,'watch',{job:nativeJobSpec(job)});}
-    catch{return {...jobView(job),state:'UNKNOWN',error:'节点进度查询失败，任务状态待核对。',checkedAt:new Date().toISOString()};}
+    catch(error){if([401,403].includes(error.status))throw error;return {...jobView(job),state:'UNKNOWN',error:'节点进度查询失败，任务状态待核对。',checkedAt:new Date().toISOString()};}
     if(!result?.nodeJobId)return jobView(job);
     try{persistSchedulerResult(service,job,result);return jobView(job);}
     catch{
@@ -438,7 +438,7 @@ export async function executionCall(service,principal,operation,args,readContext
       const result=await observeJob(job,'diagnostics',{job:nativeJobSpec(job)});
       const nativeObservation=terminalNativeObservation(job,result);
       return {...result,...dependencies,portalTerminal:portalTerminalSnapshot(job),nativeObservation};
-    }catch{return {jobId:job.id,state:'UNAVAILABLE',...dependencies,portalTerminal:portalTerminalSnapshot(job),nativeObservation:unavailableObservation()};}
+    }catch(error){if([401,403].includes(error.status))throw error;return {jobId:job.id,state:'UNAVAILABLE',...dependencies,portalTerminal:portalTerminalSnapshot(job),nativeObservation:unavailableObservation()};}
   }
   if(['files.list','files.get'].includes(operation)){
     args=selectFields(args,['machine','ownerId','dataset','project','area','runId','path','offset','cursor','limit']);

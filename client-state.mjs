@@ -3,8 +3,8 @@ import {recoverOriginalWrite} from './client-http.mjs';
 // commands that actually need to choose from its directory, never as admission.
 const FULL_STATE_COMMANDS=new Set(['state','jobs','queue']);
 const DIRECTORY_COMMANDS=new Set(['use','profile','users','user','grant','policy','maintenance','task-label','files']);
-export async function readCLIState(call,command){
-  return FULL_STATE_COMMANDS.has(command)||DIRECTORY_COMMANDS.has(command)?(await call('state',FULL_STATE_COMMANDS.has(command)?{}:{view:'summary'})).state:{machines:[],users:[]};
+export async function readCLIState(call,command,{selectMachine=false}={}){
+  return FULL_STATE_COMMANDS.has(command)||DIRECTORY_COMMANDS.has(command)||selectMachine?(await call('state',FULL_STATE_COMMANDS.has(command)?{}:{view:'summary'})).state:{machines:[],users:[]};
 }
 
 // An original-key read recovers a reply, but absence cannot prove that an

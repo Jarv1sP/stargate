@@ -2,6 +2,7 @@ import {readFile,stat} from 'node:fs/promises';
 import {randomInt} from 'node:crypto';
 import {MACHINES} from './dist/model.js';
 import {taskCatalog} from './task-catalog.mjs';
+import {canUseMachine} from './machine-access.mjs';
 
 const number=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 const text=(value,limit=120)=>typeof value==='string'?value.replace(/[\x00-\x1f\x7f]/g,'').slice(0,limit):null;
@@ -50,8 +51,6 @@ export async function readGPUQStatus(path,now=Date.now(),previous){
     })};
 }
 
-export const canViewMachineStatus=(principal,limits,machine)=>principal?.role==='admin'||Number.isFinite(limits?.[machine])&&limits[machine]>0;
-
 function anonymousHost(machine){
   const checkedAt=new Date().toISOString(),memoryTotalMiB=Number.parseFloat(machine.memory)*1024;
   const gpus=Array.from({length:machine.cards},(_,index)=>{
@@ -67,9 +66,9 @@ function anonymousHost(machine){
     tasks:gpus.map(gpu=>gpu.processes[0].task),disks:[],gpuq:{connected:true,observeOnly:false,health:'ok',jobs:[]}};
 }
 
-export function visibleGPUQStatus(snapshot,principal,limits,context){
+export function visibleGPUQStatus(snapshot,user,context){
   return {...snapshot,hosts:MACHINES.map(machine=>{
-    if(!canViewMachineStatus(principal,limits,machine.id))return anonymousHost(machine);
+    if(!canUseMachine(user,machine.id))return anonymousHost(machine);
     const host=snapshot.hosts.find(host=>host.id===machine.id)||{id:machine.id,reachable:false,gpus:[],gpuq:{connected:false,jobs:[]}};
     const base=structuredClone(host),catalog=context?taskCatalog(host,context,true):null;
     // Members with a server grant share its sampled GPU/data-volume facts.

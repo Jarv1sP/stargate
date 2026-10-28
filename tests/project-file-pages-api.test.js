@@ -4,7 +4,7 @@ import {executionCall} from '../execution.mjs';
 import {MACHINES} from '../dist/model.js';
 const machine=MACHINES[0].id,runId='11111111-1111-4111-8111-111111111111',principal={userId:'demo-user-1',role:'member'};
 function fixture(){
- const user={id:principal.userId,enabled:true,limits:{}},calls=[],job={id:runId,userId:'other-member',machine,project:'test',spec:{}};
+ const user={id:principal.userId,enabled:true,limits:{[machine]:1}},calls=[],job={id:runId,userId:'other-member',machine,project:'test',spec:{}};
  const service={store:{get:()=>user,jobs:[job]},bridge:async(...args)=>{calls.push(args);return {entries:[{name:'sample',type:'file',size:1}],total:450,nextOffset:400};}};
  return {calls,call:(operation,args)=>executionCall(service,principal,operation,{machine,area:'output',runId,path:'.',...args})};
 }

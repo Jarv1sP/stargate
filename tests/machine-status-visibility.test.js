@@ -11,7 +11,7 @@ import {MACHINES} from '../dist/model.js';
 import {resourceCards,resourceServerView,resourceTotals} from '../dist/resources-ui.js';
 
 const [restricted,allowed]=MACHINES;
-const principal={userId:'viewer',username:'viewer',role:'member'};
+const principal={userId:'viewer',username:'viewer',role:'member',enabled:true};
 const snapshot=()=>({checkedAt:new Date().toISOString(),stale:false,hosts:MACHINES.map(machine=>({
   id:machine.id,reachable:true,checkedAt:new Date().toISOString(),privateHostField:'private-host-detail',
   gpus:Array.from({length:machine.cards},(_,index)=>({index,uuid:'private-gpu-uuid',model:machine.model,
@@ -23,7 +23,7 @@ const snapshot=()=>({checkedAt:new Date().toISOString(),stale:false,hosts:MACHIN
 
 test('server grants project anonymous busy GPUs without changing the shared real sample',()=>{
   const raw=snapshot(),before=structuredClone(raw),limits={[allowed.id]:1};
-  const result=visibleGPUQStatus(raw,principal,limits,{jobs:[],users:[]});
+  const result=visibleGPUQStatus(raw,{...principal,limits},{jobs:[],users:[]});
   const hidden=result.hosts.find(host=>host.id===restricted.id),real=result.hosts.find(host=>host.id===allowed.id);
   assert.equal(hidden.displayMasked,true);assert.equal(hidden.gpus.length,restricted.cards);
   assert.doesNotMatch(JSON.stringify(hidden),/private-|12345|J0123456789ab/);
@@ -36,16 +36,16 @@ test('server grants project anonymous busy GPUs without changing the shared real
   assert.deepEqual(raw,before);
   for(const viewer of [{...principal,role:'admin'},principal]){
     const grants=Object.fromEntries(MACHINES.map(machine=>[machine.id,1]));
-    const full=visibleGPUQStatus(raw,viewer,viewer.role==='admin'?{}:grants,{jobs:[],users:[]});
+    const full=visibleGPUQStatus(raw,{...viewer,limits:viewer.role==='admin'?{}:grants},{jobs:[],users:[]});
     assert.ok(full.hosts.every(host=>host.displayMasked!==true&&host.gpus[0].memoryUsedMiB===1024));
   }
-  const readings=new Set(Array.from({length:12},()=>visibleGPUQStatus(raw,principal,{}).hosts[0].gpus[0].memoryUsedMiB));
+  const readings=new Set(Array.from({length:12},()=>visibleGPUQStatus(raw,principal).hosts[0].gpus[0].memoryUsedMiB));
   assert.ok(readings.size>1,'anonymous memory changes across refreshes');
 });
 
 test('anonymous GPUs render busy even with missing or stale real observations',()=>{
   for(const raw of [snapshot(),{checkedAt:null,stale:true,hosts:[]}]){
-    const masked=visibleGPUQStatus(raw,principal,{});
+    const masked=visibleGPUQStatus(raw,principal);
     const view=resourceServerView(restricted,{production:true,snapshot:masked});
     assert.equal(view.busy,restricted.cards);assert.equal(resourceTotals([view]).free,0);
     const html=resourceCards({machines:[restricted],production:true,snapshot:masked});

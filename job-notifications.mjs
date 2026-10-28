@@ -3,13 +3,14 @@ import {open} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {isAbsolute} from 'node:path';
 import {JOB_TERMINAL,jobFeedbackText} from './dist/job-progress.js';
-import {canViewMachineStatus} from './gpuq-status.mjs';
+import {canUseMachine,assertMachineAccess} from './machine-access.mjs';
+import {MACHINES} from './dist/model.js';
 
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const CAPACITY=10000,MAX_KEYS=128,RETENTION=7*86400;
 const ownerId=value=>typeof value==='string'&&/^(builtin-admin|demo-user-[0-9]+)$/.test(value);
 const eventHash=JSON.stringify;
-const visibleTo=(user,job)=>!job.machine||canViewMachineStatus(user,user.limits,job.machine);
+const visibleTo=(user,job)=>!job.machine||canUseMachine(user,job.machine);
 
 async function privateFile(path,limit){
   if(typeof path!=='string'||!isAbsolute(path))throw Error('Notification files require absolute paths');
@@ -92,7 +93,7 @@ function installNotificationStore(service,config,{clock,timer}){
     const user=service.store.get(principal.userId),job=service.store.jobs.find(j=>j.id===args.jobId);
     if(!user.enabled)fail('请重新登录。',403);
     if(!job)fail('任务不存在。',404);
-    if(!visibleTo(user,job))fail('没有这台服务器的查看权限，请联系管理员授权。',403);
+    if(job.machine)assertMachineAccess(user,job.machine,MACHINES);
     if(!Object.hasOwn(args,'enabled'))return service.jobNotificationState(job,user.id);
     if(args.enabled&&(!config?.chatByUserId?.[user.id]||JOB_TERMINAL.has(job.state)))fail('请先由管理员配置你的 Telegram 收件人；只能开启待完成任务通知。',409);
     db.exec('BEGIN IMMEDIATE');

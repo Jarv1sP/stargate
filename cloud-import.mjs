@@ -2,6 +2,7 @@ import {UUID,selectFields} from './portal-request-validation.mjs';
 import {createCipheriv,createDecipheriv,randomBytes,randomUUID} from 'node:crypto';
 import {AliyunShare,shareReference} from './aliyun-share.mjs';
 import {MACHINES} from './dist/model.js';
+import {assertMachineAccess} from './machine-access.mjs';
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 export function importPath(path){if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))fail('保存位置请填写所选数据集或工作区内的相对文件名。');return path;}
 function directURL(value){let u;try{u=new URL(value);}catch{fail('请输入完整 HTTPS 下载链接。');}if(typeof value!=='string'||value.length>16384||u.protocol!=='https:'||u.username||u.password||u.hash||u.port&&u.port!=='443')fail('仅接受不含账号密码的 HTTPS 下载链接。');return u.href;}
@@ -30,7 +31,7 @@ export function installCloudImports(service,{provider,request}={}){
   service.cloudQR=new Map();service.cloudInspections=new Map();
 }
 function sweep(service){const now=Date.now();for(const map of [service.cloudQR,service.cloudInspections])for(const [key,v] of map)if(v.expiresAt<now)map.delete(key);}
-function authorized(service,actor,machine){const user=service.store.get(actor.userId);if(!user.enabled)fail('请重新登录。',403);if(!MACHINES.some(m=>m.id===machine))fail('请选择列表中的服务器。');if(!service.bridge)fail('节点执行桥未连接。',503);}
+function authorized(service,actor,machine){assertMachineAccess(service.store.get(actor.userId),machine,MACHINES);if(!service.bridge)fail('节点执行桥未连接。',503);}
 export async function cloudImportCall(service,actor,operation,args,assertCurrent=()=>{}){
   service.assertMaintenanceAllowed?.(operation,args,actor);
   if(operation.startsWith('cloud.files.')){

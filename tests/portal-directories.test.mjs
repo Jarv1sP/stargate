@@ -134,6 +134,7 @@ test('parent upload records share progress and cancel every original child key, 
 });
 test('directory copy performs one source authorization and starts the target with the same UUID',async t=>{
  const f=await fixture(t),target=MACHINES[1].id,key=randomUUID();let launched=0;
+ for(const user of [f.aliceUser,f.bobUser])await f.call('policy.save',{userId:user.id,total:2,limits:{[machine]:1,[target]:1}},f.admin);
  f.setHandler((host,op,args)=>{if(op==='transfers.prepare'){assert.equal(host,machine);return {id:key,token:'source-token'};}
   if(op==='transfers.start'){assert.equal(host,target);assert.equal(args.id,key);assert.deepEqual(args.ticket,{id:key,token:'source-token'});assert.equal(args.sourceMachine,machine);assert.equal(args.target.dataset,'copied');launched++;return {state:'RUNNING',id:key};}
   if(op==='transfers.status')return {id:key,state:'SUCCEEDED',bytes:4};
@@ -144,6 +145,7 @@ test('directory copy performs one source authorization and starts the target wit
 
 test('project copy keeps the environment and project owner instead of turning the target into a dataset',async t=>{
  const f=await fixture(t),target=MACHINES[1].id,key=randomUUID();let started;
+ for(const user of [f.aliceUser,f.bobUser])await f.call('policy.save',{userId:user.id,total:2,limits:{[machine]:1,[target]:1}},f.admin);
  f.setHandler((host,op,args)=>{
   if(op==='transfers.project.mode'){assert.equal(host,target);return {mode:'incremental'};}
   if(op.endsWith('prepare')){assert.equal(op,'transfers.project.prepare');assert.equal(host,machine);assert.equal(args.mode,'incremental');assert.equal(args.source.environment,true);assert.equal(args.source.ownerId,f.aliceUser.id);return {id:key,token:'source-token'};}

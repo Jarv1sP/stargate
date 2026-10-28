@@ -1,6 +1,7 @@
 import {UUID,selectFields} from './portal-request-validation.mjs';
 // Owner-scoped presentation only. No filesystem, release or run identities change.
 import {MACHINES} from './dist/model.js';
+import {availableMachines,assertMachineAccess} from './machine-access.mjs';
 const PROJECT=/^[a-z][a-z0-9_-]{0,47}$/;
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 function name(value){if(typeof value!=='string'||/[\p{Cc}\p{Cf}]/u.test(value))fail('名称不能包含控制或不可见字符。');const text=value.normalize('NFC').trim();if([...text].length<1||[...text].length>80)fail('显示名称需为 1–80 个字符。');return text;}
@@ -34,9 +35,11 @@ export async function projectCatalogCall(service,principal,user,operation,args,a
   if(operation==='projects.catalog'){
     args=selectFields(args,['includeArchived','ownerId']);if(args.includeArchived!==undefined&&typeof args.includeArchived!=='boolean')fail('includeArchived 须为布尔值。');
     const rows=[],errors=[];
-    for(const machine of MACHINES.map(m=>m.id)){
+    const actor=service.store.get(principal.userId),machines=availableMachines(actor,MACHINES);
+    if(!machines.length)assertMachineAccess(actor,undefined,MACHINES);
+    for(const {id:machine} of machines){
       check();try{
-        const result=await service.bridge(machine,'projects.list',{userId:principal.userId,...(args.ownerId?{ownerId:user.id}:{})});check();
+        authorize(machine);const result=await service.bridge(machine,'projects.list',{userId:principal.userId,...(args.ownerId?{ownerId:user.id}:{})});check();authorize(machine);
         if(!Array.isArray(result?.projects))throw Error('项目清单无效');
         for(const row of result.projects){instance({machine,project:row?.project});if(!args.includeArchived&&row.lifecycle?.state==='ARCHIVED')continue;const owner=service.store.users.find(value=>value.id===(row.ownerId??row.userId??user.id));rows.push({machine,...service.projectPresentation(owner?.id??user.id,machine,row),ownerId:owner?.id??row.ownerId??user.id,ownerName:owner?.name??null});}
       }catch(error){check();errors.push({machine,error:'此节点项目列表暂未读到，请稍后重试。'});}

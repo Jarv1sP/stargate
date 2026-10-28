@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {executionCall,schedulerResult,usage} from '../execution.mjs';
+import {executionCall,schedulerResult} from '../execution.mjs';
+import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
 import {jobCompletion} from '../job-observation.mjs';
 import {MACHINES} from '../dist/model.js';
 const machine=MACHINES[0].id,id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',nodeJobId='J0123456789ab';
 function fixture(state='FAILED'){
- const user={id:'alice',enabled:true,limits:{},total:0},job={id,key:id,userId:'other-member',machine,nodeJobId,state,cards:1,spec:{id,project:'test'},assignedIndices:[],latestAttempt:null};
+ const user={id:'alice',enabled:true,limits:{[machine]:1},total:0},job={id,key:id,userId:'other-member',machine,nodeJobId,state,cards:1,spec:{id,project:'test'},assignedIndices:[],latestAttempt:null};
  const result={nodeJobId,state:'SUCCEEDED',assignedIndices:[],latestAttempt:{id:'Afinished',ordinal:2,state:'EXITED_SUCCESS',exit_code:0,started_at:10,finished_at:15}},calls=[];
  const service={store:{get:()=>user,jobs:[job]},save(){calls.push(['save']);},audit(){},bridge:async(...args)=>{calls.push(args);return result;}};
  return {user,job,result,calls,service,principal:{userId:user.id,role:'member'}};

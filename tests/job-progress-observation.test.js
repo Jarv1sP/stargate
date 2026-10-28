@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {publicJob,schedulerResult,usage} from '../execution.mjs';
+import {publicJob,schedulerResult} from '../execution.mjs';
+import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
 import {normalizeProgress,progressText,progressPercent,remainingTime,remainingText} from '../dist/job-progress.js';
 import {trainingReadout,workbenchCards} from '../dist/workbench-ui.js';
 

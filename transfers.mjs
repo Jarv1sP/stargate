@@ -1,5 +1,6 @@
 import {UUID,selectFields} from './portal-request-validation.mjs';
 import {MACHINES} from './dist/model.js';
+import {availableMachines,canUseMachine,assertMachineAccess} from './machine-access.mjs';
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const terminal=new Set(['SUCCEEDED','CANCELED']);
 const known=machine=>MACHINES.some(row=>row.id===machine);
@@ -12,15 +13,22 @@ const load=(service,id)=>{const row=service.db.prepare('SELECT data FROM directo
 const save=(service,row)=>service.db.prepare('INSERT INTO directory_transfers VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(row.id,JSON.stringify(row));
 export async function transferCall(service,principal,operation,input,check=()=>{}){
   check();if(!service.store.get(principal.userId).enabled)fail('请重新登录。',403);
-  service.assertMaintenanceAllowed?.(operation,input,principal);
   const actor={userId:principal.userId,isAdmin:principal.role==='admin'},userId=principal.userId;
-  const call=async(machine,op,args)=>{check();const value=await service.bridge(machine,op,{...args,userId,actor});check();return value;};
+  const authorize=machine=>assertMachineAccess(service.store.get(userId),machine,MACHINES);
+  const call=async(machine,op,args)=>{check();authorize(machine);const value=await service.bridge(machine,op,{...args,userId,actor});check();authorize(machine);return value;};
   const action=operation.slice('transfers.'.length);
   if(action==='list'){
-    const args=selectFields(input,['machine']);if(args.machine!==undefined&&!known(args.machine))fail('请选择列表中的服务器。');
-    const machines=args.machine?[args.machine]:MACHINES.map(row=>row.id),results=await Promise.allSettled(machines.map(machine=>call(machine,'transfers.list',{})));
-    const parents=service.db.prepare('SELECT data FROM directory_transfers ORDER BY rowid DESC LIMIT 1000').all().map(value=>JSON.parse(value.data)).filter(row=>row.kind!=='copy'&&machines.includes(row.machine));
-    const remote=results.flatMap((result,index)=>result.status==='fulfilled'&&Array.isArray(result.value?.transfers)?result.value.transfers.map(row=>({...row,machine:machines[index]})):[]);
+    const args=selectFields(input,['machine']);if(args.machine!==undefined)authorize(args.machine);
+    const machines=args.machine?[args.machine]:availableMachines(service.store.get(userId),MACHINES).map(row=>row.id);
+    if(!machines.length)authorize(undefined);
+    const results=await Promise.allSettled(machines.map(machine=>call(machine,'transfers.list',{})));
+    if(args.machine!==undefined)authorize(args.machine);
+    const user=service.store.get(userId),visible=row=>canUseMachine(user,row.machine)&&canUseMachine(user,row.from);
+    const allServers=MACHINES.every(machine=>canUseMachine(user,machine.id));
+    const parents=service.db.prepare('SELECT data FROM directory_transfers ORDER BY rowid DESC LIMIT 1000').all().map(value=>JSON.parse(value.data)).filter(row=>row.kind!=='copy'&&machines.includes(row.machine)&&visible(row));
+    const remote=results.flatMap((result,index)=>result.status==='fulfilled'&&Array.isArray(result.value?.transfers)?result.value.transfers.filter(row=>{
+      const original=load(service,row.id);return original?visible(original):allServers;
+    }).map(row=>({...row,machine:machines[index]})):[]);
     const unavailable=results.every(result=>result.status==='rejected'||!Array.isArray(result.value?.transfers));
     return {state:unavailable?'UNKNOWN':'AVAILABLE',transfers:unavailable&&!parents.length?null:[...parents,...remote.filter(row=>!parents.some(parent=>parent.id===row.id))],
       partial:results.some(result=>result.status==='rejected'||!Array.isArray(result.value?.transfers)),
@@ -30,8 +38,11 @@ export async function transferCall(service,principal,operation,input,check=()=>{
   const args=selectFields(input,action==='create'?['key','kind','machine','from','reference','name','timeoutSec']:['id','machine','action','path','offset','bytes','complete']);
   const id=action==='create'?args.key:args.id;if(!UUID.test(id||''))fail('请使用原传输 UUID。');
   let row=load(service,id),fresh=false;
+  if(row){authorize(row.machine);if(row.from!==row.machine)authorize(row.from);}
+  else if(action==='create'){authorize(args.machine);if(args.kind==='copy')authorize(args.from);}
+  else if(known(args.machine))authorize(args.machine);
+  service.assertMaintenanceAllowed?.(operation,{...input,...(row?{machine:row.machine,from:row.from}:{})},principal);
   if(action==='create'&&!row){
-    if(!known(args.machine)||args.kind==='copy'&&!known(args.from))fail('请选择列表中的服务器。');
     if(!['upload','copy','download'].includes(args.kind))fail('请选择上传、下载或服务器间复制。');
     const ref=selectFields(args.reference,['dataset','project','ownerId','path','environment','jobId']);
     if(!ref.dataset&&!ref.project)fail('请选择来源数据集或项目目录。');
@@ -39,15 +50,19 @@ export async function transferCall(service,principal,operation,input,check=()=>{
       state:args.kind==='copy'?'CREATED':'WAITING_CLIENT',actor:userId,createdAt:new Date().toISOString()};save(service,row);fresh=true;
   }
   if(!row){
-    if(!known(args.machine))return {id,key:id,state:'UNKNOWN',message:'传输位置暂未读到，请保留原编号稍后查询。'};
-    return call(args.machine,operation,{...args,id});
+    // Without the original source reference, a limited grant cannot authorize
+    // a copy by its target alone. Keep the original ID queryable as unknown.
+    const unknown=()=>({id,key:id,state:'UNKNOWN',message:'传输位置暂未读到，请保留原编号稍后查询。'});
+    const allServers=()=>MACHINES.every(machine=>canUseMachine(service.store.get(userId),machine.id));
+    if(!known(args.machine)||!allServers())return unknown();
+    const result=await call(args.machine,operation,{...args,id});return allServers()?result:unknown();
   }
   const view=value=>({...row,...value,id,key:id});
   const finish=async value=>{
     if(row.reference.environment&&['FAILED','CANCELED'].includes(value.state)){
       row.state=value.state;row.sourceCompletePending=true;save(service,row);
       try{await call(row.from,'transfers.project.complete',{id});delete row.sourceCompletePending;save(service,row);}
-      catch{} // The original status/cancel retries; the source's hourly collect also expires abandoned exports.
+      catch(error){if([401,403].includes(error.status))throw error;} // The original status/cancel retries; the source's hourly collect also expires abandoned exports.
     }
     return view(value);
   };
@@ -55,7 +70,7 @@ export async function transferCall(service,principal,operation,input,check=()=>{
     if(action==='cancel'||row.state==='CANCELING'&&action==='resume'){
       row.state='CANCELING';save(service,row);
       try{for(const key of row.uploadKeys||[])await call(row.machine,'data.upload.cancel',{key});row.state='CANCELED';save(service,row);return row;}
-      catch{return {...row,state:'UNKNOWN',message:'取消结果未知，请按原传输编号继续查询或取消。'};}
+      catch(error){if([401,403].includes(error.status))throw error;return {...row,state:'UNKNOWN',message:'取消结果未知，请按原传输编号继续查询或取消。'};}
     }
     if(action==='progress'&&row.state!=='CANCELED'){if(!Number.isSafeInteger(args.bytes)||args.bytes<0)fail('传输字节数无效。');row.bytes=args.bytes;if(args.complete===true)row.state='SUCCEEDED';save(service,row);return row;}
     if(['create','status','resume','progress'].includes(action))return row;

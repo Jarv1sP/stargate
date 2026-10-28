@@ -18,6 +18,6 @@ test('the existing completion operation retains owner, machine and enabled-accou
  const result=await executionCall(service,principal,'jobs.completion',{jobId});assert.equal(result.submission.key,key);assert.equal(result.readOnly,true);assert.equal(result.completed,false);assert.deepEqual(calls,[]);
  assert.equal((await executionCall(service,{userId:other.id,role:'member'},'jobs.completion',{jobId})).submission.key,key);
  owner.enabled=false;await assert.rejects(executionCall(service,principal,'jobs.completion',{jobId}),e=>e.status===403);
- owner.enabled=true;owner.limits={};assert.equal((await executionCall(service,principal,'jobs.completion',{jobId})).submission.key,key);
+ owner.enabled=true;owner.limits={};await assert.rejects(executionCall(service,principal,'jobs.completion',{jobId}),e=>e.status===403);
  assert.deepEqual(job,before);assert.deepEqual(calls,[]);
 });

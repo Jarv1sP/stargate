@@ -6,7 +6,8 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
-import {usage} from '../execution.mjs';
+
+import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
 
 const password='Fair-Reconcile-Fixture-Only-2026!';
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
