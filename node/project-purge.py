@@ -197,29 +197,3 @@ class Trash:
 
     def collect(self):
         return [self.purge({'key':r['key']},automatic=True) for r in self.listing()['items'] if time.time()>=r['retainUntil']]
-
-
-def orphan_outputs(ops,key):
-    """One-time local command: preview first; never infer absence from partial lists."""
-    trash=Trash(ops.config);key=trash.key(key);rows,complete=finished_outputs(ops.config)
-    try:
-        projects=ops.store.list(include_usage=True)
-        present={(r.get('ownerId') or r.get('userId'),r['project']) for r in projects['projects']}
-        complete=complete and projects['complete']
-    except (OSError,ValueError,TypeError,KeyError,RecursionError):complete=False;present=set()
-    items=[]
-    if complete:
-        for row in rows:
-            if (row['ownerId'],row['project']) not in present:
-                items.append({**row,'key':trash.output_key(key,row['jobId']),**trash.d.size(row['path'],partial=True)})
-    result={'key':key,'complete':complete,'items':items,'state':'PREVIEW' if complete else 'SKIPPED'}
-    if not complete:result['error']='任务记录或项目列表读取不完整，本次未移动任何输出；请修复读取问题后重试。'
-    return result
-
-
-def trash_orphan_outputs(config,preview,actor):
-    if not preview['complete']:return preview
-    trash=Trash(config)
-    for row in preview['items']:
-        trash.delete(row['path'],row['key'],'output',actor,jobId=row['jobId'],project=row['project'],userId=row['ownerId'])
-    return {**preview,'state':'TRASHED'}
