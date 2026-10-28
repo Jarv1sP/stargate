@@ -44,7 +44,7 @@ async function fixture(t){
   const admin=await service.login('admin',password);
   const submit=async(machine=MACHINES[0].id)=>(await service.invoke(admin.token,'jobs.submit',{machine,project:'sample',cards:1,argv:['true'],key:randomUUID()})).result;
   const job=id=>service.store.jobs.find(j=>j.id===id);
-  const old=async(machine=MACHINES[0].id)=>{const result=await submit(machine);Object.assign(job(result.id),{state:'PENDING',dispatchPending:false});service.save();return result;};
+  const old=async(machine=MACHINES[0].id)=>{const result=await submit(machine);Object.assign(job(result.id),{state:'PENDING',dispatchPending:false,nodeJobId:'J'+result.id});service.save();return result;};
   const block=id=>{const response=deferred();blocks.set(id,response);return response;};
   const start=()=>{service.reconciling=false;const work=service.reconcile();works.push(work);return work;};
   t.after(async()=>{
@@ -127,7 +127,7 @@ test('closing never dispatches queued work or saves late results',{timeout:3000}
   const f=await fixture(t),first=await f.submit(),second=await f.submit(),held=f.block(first.id),work=f.start();await tick();
   f.service.closing=true;held.resolve();await work;
   assert.equal(f.calls.length,1);assert.equal(f.job(first.id).state,'SUBMITTING');assert.equal(f.job(first.id).dispatchPending,false);
-  assert.equal(f.job(second.id).dispatchPending,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),2);
+  assert.equal(f.job(second.id).dispatchPending,true);assert.equal(usage(f.service.store.jobs,'builtin-admin'),1);
 });
 
 test('maintenance pauses new dispatch and observations while cancellation remains available',{timeout:3000},async t=>{

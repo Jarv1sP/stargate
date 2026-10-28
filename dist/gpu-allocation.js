@@ -1,5 +1,30 @@
 // One allocation contract shared by browser, CLI and submission service.
 import {schedulingPolicy} from './scheduling-policy.js';
+export function occupiesGpu(job){
+  if(job.state==='SUBMITTING'&&job.dispatchPending===true)return false;
+  return ['STARTING','RUNNING','PREEMPTING','CANCELING','UNKNOWN'].includes(job.state)||
+    ['PENDING','QUEUED'].includes(job.state)&&!!job.nodeJobId&&job.dispatchPending!==true||
+    job.state==='SUBMITTING'&&job.dispatchPending!==true||job.latestAttempt?.state==='DRAINING'&&job.latestAttempt.finishedAt==null;
+}
+// Dispatched work holds quota even while queued on the node. Only jobs still
+// waiting in the portal are free; use reported cards, fixed cards, then capacity.
+export function gpuCardUsage(jobs,userId,machine,candidate){
+  const cards=new Set();let unknown=0;
+  const add=(host,indices)=>{for(const index of indices)cards.add(host+':'+index);};
+  for(const job of jobs){
+    if(job.userId!==userId||machine&&job.machine!==machine||candidate?.id&&job.id===candidate.id||!occupiesGpu(job))continue;
+    const indices=job.assignedIndices?.length?job.assignedIndices:(job.placement??job.spec?.placement)?.gpuIndices;
+    if(indices?.length){
+      add(job.machine,indices);
+      if(job.elastic??job.spec?.elastic)unknown+=Math.max(0,job.cards-indices.length);
+    }else unknown+=job.cards;
+  }
+  if(candidate){
+    const indices=(candidate.placement??candidate.spec?.placement)?.gpuIndices;
+    if(indices?.length)add(candidate.machine,indices);else unknown+=candidate.cards;
+  }
+  return cards.size+unknown;
+}
 // Existing Console contract: scripts/configure.mjs inventories and the
 // job-resources.py budget reader both support up to 64 cards per node. Native
 // GPUQ itself limits by configured pool size; this is not a new native cap.

@@ -2,6 +2,7 @@ import {progressPercent,progressText,jobTiming} from './job-progress.js';
 import {formatTimestamp} from './time-format.js';
 import {maintenanceActive} from './maintenance-state.js';
 import {captureObject,sharedObject,reducedMotion} from './motion-ui.js';
+import {gpuCardUsage,occupiesGpu} from './gpu-allocation.js';
 
 export const escapeUI=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 export function serverIdHTML(value,className=''){
@@ -133,13 +134,12 @@ export function personalQuotaReadout(user,usage,limit=user?.total){
 }
 export function quotaLedgerHTML(store,machine=''){
   const user=store.users.find(row=>row.id===store.principal?.userId);if(!user)return '';
-  const jobs=store.jobs.filter(job=>job.userId===user.id&&!endedJob(job)&&(!machine||job.machine===machine));
-  const groups=[{label:'运行 / 启动 / 待确认',rows:jobs.filter(job=>!['PENDING','QUEUED'].includes(job.state)||job.cancelRequested)},{label:'排队占用',rows:jobs.filter(job=>['PENDING','QUEUED'].includes(job.state)&&!job.cancelRequested)}].filter(group=>group.rows.length);
+  const jobs=store.jobs.filter(job=>job.userId===user.id&&(!endedJob(job)||occupiesGpu(job))&&(!machine||job.machine===machine));
+  const groups=[{label:'占用额度',rows:jobs.filter(occupiesGpu)},{label:'等待额度（不占额度）',rows:jobs.filter(job=>!occupiesGpu(job))}].filter(group=>group.rows.length);
   const number=value=>Number.isSafeInteger(value)&&value>=0?value:'—';
   const usage=store.usage(user.id,machine||undefined),limit=machine?user.limits?.[machine]:user.total,total=store.usage(user.id);
   const readout=personalQuotaReadout(user,usage,limit),totalReadout=personalQuotaReadout(user,total);
-  if(readout.exempt)groups.forEach(group=>{if(group.label==='排队占用')group.label='排队请求';});
-  return `<section class="wb-ledger" id="quota-ledger" aria-labelledby="quota-ledger-title"><div class="wb-ledger-head"><h2 id="quota-ledger-title">${readout.exempt?'不限个人额度':'我的额度'}</h2>${infoHTML(readout.exempt?'管理员免个人累计卡数额度。这里统计运行、启动、待确认和排队请求，不代表实际占卡；资源不足正常排队，不自动抢停他人任务。':'占用数来自任务记录，排队也计入。服务器确认结束后才释放。',readout.exempt?'用卡请求来源':'额度来源')}${machine?serverIdHTML(machine,'mono'):'<span class="mono">全部服务器</span>'}<strong>${readout.exempt?'<small>已占用 </small>':''}${readout.value} <small>张</small></strong></div>${readout.exempt?'<div class="wb-ledger-total">不限个人额度 · 资源不足正常排队</div>':''}${machine?`<div class="wb-ledger-total">合计 ${totalReadout.value} 张</div>`:''}<div class="wb-ledger-groups">${groups.map(group=>`<details><summary><span>${group.label}</span><strong>${group.rows.every(job=>Number.isSafeInteger(job.cards)&&job.cards>=0)?group.rows.reduce((sum,job)=>sum+job.cards,0):'—'} <small>张</small></strong></summary><ul>${group.rows.map(job=>`<li><button class="button quiet" type="button" data-job-detail="${escapeUI(job.id)}">${escapeUI(job.name||'训练')}</button><span class="mono">${number(job.cards)} 张</span></li>`).join('')}</ul></details>`).join('')||'<span class="muted">'+(readout.exempt?'没有进行中的用卡请求':'没有占用额度')+'</span>'}</div></section>`;
+  return `<section class="wb-ledger" id="quota-ledger" aria-labelledby="quota-ledger-title"><div class="wb-ledger-head"><h2 id="quota-ledger-title">${readout.exempt?'不限个人额度':'我的额度'}</h2>${infoHTML('已派发到节点的任务开始占额度，同一张卡的共享任务只算一张；等待额度的任务留在平台，不占额度。弹性按最大卡数计入，启动结果未知时保留占用。', '额度来源')}${machine?serverIdHTML(machine,'mono'):'<span class="mono">全部服务器</span>'}<strong>${readout.exempt?'<small>已占用 </small>':''}${readout.value} <small>张</small></strong></div>${readout.exempt?'<div class="wb-ledger-total">不限个人额度 · 资源不足正常排队</div>':''}${machine?`<div class="wb-ledger-total">合计 ${totalReadout.value} 张</div>`:''}<div class="wb-ledger-groups">${groups.map(group=>`<details><summary><span>${group.label}</span><strong>${number(gpuCardUsage(group.rows,user.id,machine||undefined))} <small>张</small></strong></summary><ul>${group.rows.map(job=>`<li><button class="button quiet" type="button" data-job-detail="${escapeUI(job.id)}">${escapeUI(job.name||'训练')}</button><span class="mono">${occupiesGpu(job)?number(job.elastic?job.cards:job.assignedIndices?.length||job.cards):'申请 '+number(job.cards)} 张${['PENDING','QUEUED'].includes(job.state)&&occupiesGpu(job)?'<br><small>已派发，等待显卡</small>':''}</span></li>`).join('')}</ul></details>`).join('')||'<span class="muted">没有占用额度</span>'}</div></section>`;
 }
 export function boundarySweep(element){
   const line=element?.querySelector('.r5-boundary-line');if(!line)return;

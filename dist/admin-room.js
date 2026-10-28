@@ -3,6 +3,7 @@
 // maintenance.set, the Aliyun account through cloud.auth.*; limits and reasons open in sheets.
 import {registerAdminSection} from './admin-ui.js';
 import {openSheet,closeSheet,confirmSheet} from './sheet-ui.js';
+import {infoHTML} from './workbench-ui.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pending=u=>u.enabled&&u.role!=='admin'&&!u.approvedAt&&u.total===0;
 const roleLabel=u=>!u.enabled?'已暂停':u.role==='admin'?'管理员':pending(u)?'待审批':'成员';
@@ -33,14 +34,14 @@ export function adminRoomUI(store,{machines,refresh}){
             <td class="adm-sub mono">${admin?'全部':limits.length?limits.map(([m,n])=>`${esc(short(m))} ${n}`).join(' · '):'未授权'}</td>
             <td class="mono adm-sub">${store.usage(u.id)} 张</td>
             <td class="adm-acts">${admin?'':`${pending(u)?'<button type="button" class="jr-btn primary" data-adm-full>批准全部额度</button>':''}<button type="button" class="jr-link" data-adm-edit>编辑</button>`}</td></tr>`;}).join('')||'<tr><td colspan="6" class="adm-sub">暂无待审批成员。</td></tr>'}</tbody></table></div>
-        <p class="jr-hint">额度按卡数算，排队也占额度。管理员不受个人额度限制。</p>`;
+        <div class="jr-hint">同卡共享算一张，超出额度先在平台排队；管理员不限。${infoHTML('额度是你同时能占用的显卡张数，同一张卡上的多个共享任务只算一张。提交不受额度限制；超出额度的任务先在平台排队，有额度时再派发。','用卡额度')}</div>`;
     }
     function editLimits(user){
       const draft=store.get(user.id);
       sheet.innerHTML=`<div class="pr-sheet-in">${sheetHead('服务器额度',esc(draft.name||draft.username))}
         <div class="adm-limits">${machines.map(m=>`<label class="adm-limit"><input type="checkbox" data-adm-machine="${esc(m.id)}" ${draft.limits[m.id]?'checked':''}><span class="adm-name">${esc(m.id)}</span><span class="adm-sub">${m.cards} × ${esc(m.model||'')}</span><span class="adm-limit-n">最多 <input class="jr-input adm-num" type="number" min="1" max="${m.cards}" data-adm-limit="${esc(m.id)}" value="${draft.limits[m.id]||1}" ${draft.limits[m.id]?'':'disabled'}> / ${m.cards} 张</span></label>`).join('')}</div>
         <label class="adm-total">同时最多用卡（所有服务器加起来） <input class="jr-input adm-num" type="number" min="0" max="${capacity()}" data-adm-total value="${draft.total}"> / ${capacity()} 张</label>
-        <p class="adm-hint">上面是每台服务器最多用几张，这里是同一时间所有服务器加起来最多占几张，两条同时生效。例：每台都给满、这里填 8，就是同时最多占 8 张；排队中的任务也算。</p>
+        <p class="adm-hint">每台上限与同时总上限一起生效。已派发到节点的任务占额度；超出额度的任务留在平台等待，不占额度。</p>
         <p class="jr-error" data-adm-error hidden></p>
         <div class="jr-actions"><button type="button" class="jr-btn ghost" data-sheet-close>取消</button><button type="button" class="jr-btn primary" data-adm-save>${pending(user)?'批准授权':'保存'}</button></div></div>`;
       sheet.onchange=event=>{const id=event.target.dataset.admMachine;if(!id)return;const input=sheet.querySelector(`[data-adm-limit="${CSS.escape(id)}"]`);input.disabled=!event.target.checked;};

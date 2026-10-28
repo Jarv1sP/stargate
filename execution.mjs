@@ -11,6 +11,8 @@ import {applyJobFeedback,jobTiming,projectProgress} from './dist/job-progress.js
 import {maintainTaskNotes} from './community.mjs';
 import {projectCall,projectReference,validateProjectFile,UUID} from './projects.mjs';
 import {personalCardQuotaExempt} from './job-submission.mjs';
+import {gpuCardUsage as usage} from './dist/gpu-allocation.js';
+export {usage};
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 
 export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
@@ -161,39 +163,6 @@ export function installExecution(service,bridge){
   };
   if(bridge){service.executionTimer=setInterval(()=>{service.reconcile().catch(()=>{});service.refreshStorage?.(true).catch(()=>{});},15000);service.executionTimer.unref();}
 }
-export function usage(jobs,userId,machine){
-  const active=jobs.filter(j=>j.userId===userId&&!TERMINAL.has(j.state)&&(!machine||j.machine===machine));
-  const total=active.reduce((sum,job)=>sum+job.cards,0);
-  if(!active.some(job=>job.after?.length))return total;
-  // Maximum concurrent card demand is the weighted antichain of this DAG.
-  // A flow matches reusable parent/child card slots; branches stay independent.
-  // Relay through other-user jobs keeps transitive dependencies intact.
-  jobs=jobs.filter(job=>!TERMINAL.has(job.state));
-  const ids=new Map(jobs.map((job,index)=>[job.id,index])),weights=new Map(active.map(job=>[job.id,job.cards]));
-  const source=jobs.length*2,sink=source+1,graph=Array.from({length:sink+1},()=>[]);
-  const edge=(from,to,capacity)=>{
-    const forward={to,capacity},backward={to:from,capacity:0};
-    forward.reverse=backward;backward.reverse=forward;graph[from].push(forward);graph[to].push(backward);
-  };
-  jobs.forEach((job,index)=>{
-    const left=index*2,right=left+1,weight=weights.get(job.id)||0;
-    edge(source,left,weight);edge(right,sink,weight);edge(right,left,total);
-    for(const dependency of job.after||[]){const parent=ids.get(dependency.id);if(parent!==undefined)edge(parent*2,right,total);}
-  });
-  let overlap=0;
-  for(;;){
-    const previous=Array(graph.length).fill(null),queue=[source];previous[source]=[];
-    for(const from of queue){
-      for(const link of graph[from])if(link.capacity>0&&previous[link.to]===null){previous[link.to]=[from,link];queue.push(link.to);}
-      if(previous[sink])break;
-    }
-    if(!previous[sink])return total-overlap;
-    let amount=total;
-    for(let at=sink;at!==source;at=previous[at][0])amount=Math.min(amount,previous[at][1].capacity);
-    for(let at=sink;at!==source;at=previous[at][0]){const link=previous[at][1];link.capacity-=amount;link.reverse.capacity+=amount;}
-    overlap+=amount;
-  }
-}
 // Presentation only: never persist these deductions or use them for admission.
 // A node-supplied reason remains authoritative; missing observations are not
 // proof of free cards, a sharing limit, or a new dispatch opportunity.
@@ -246,10 +215,8 @@ export function pendingJobReason(service,job,now=Date.now()){
   if(service.maintenanceFor?.(job.machine))return '机器维护中';
   const user=service.store.get(job.userId),limit=user.limits?.[job.machine];
   if(!personalCardQuotaExempt(user)&&Number.isSafeInteger(limit)&&limit>=0){
-    // The current pending job already owns its reservation; counting it as
-    // its own blocker would incorrectly label an admitted one-card job full.
-    const used=Math.max(0,usage(jobs,job.userId,job.machine)-job.cards);
-    if(used>=limit)return `配额已满（本人在该机已用 ${used}/${limit} 张）`;
+    if(usage(jobs,job.userId,job.machine,job)>limit)return `已占用 ${usage(jobs,job.userId,job.machine)}/${limit} 张卡`;
+    if(usage(jobs,job.userId,undefined,job)>user.total)return `已占用 ${usage(jobs,job.userId)}/${user.total} 张卡`;
   }
   return '等待调度器分配，原因未上报';
 }
@@ -260,7 +227,7 @@ function publicGpuMetrics(job){
   const fresh=!TERMINAL.has(job.state)&&job.state!=='UNKNOWN'&&Number.isFinite(receivedAt)&&Date.now()-receivedAt<=30000;
   return {...metrics,gpus:(metrics.gpus||[]).map(gpu=>fresh?{...gpu}:{...gpu,utilization:null,memoryUsedMiB:null})};
 }
-export function publicJob(job,users=[]){const {spec,schedulerPolicy,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,gpuMetrics:publicGpuMetrics(job),
+export function publicJob(job,users=[]){const {spec,schedulerPolicy,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,dispatchPending,gpuMetrics:publicGpuMetrics(job),
   ...(job.state==='SUBMITTING'&&dispatchPending!==true?{submissionState:submissionReconciliation?.state||'CHECKING',
     canRetryDispatch:false,error:submissionError(job)}:{}),
   ...projectProgress(job),...jobTiming(job),...taskIdentity(job,users),ownerId:job.ownerId??job.userId,ownerName:users.find(user=>user.id===job.userId)?.name??null,command:spec.argv,
