@@ -175,7 +175,7 @@ class StorageUsage(unittest.TestCase):
             self.assertIn('--root='+str(ops.store.path/'.oci'/owner/'graph'),args)
             self.assertEqual(kwargs['timeout'],3600)
             self.assertEqual(kwargs['env']['HOME'],str(ops.store.path/'.oci'/owner/'home'))
-            self.assertEqual([path.name for path in (ops.store.path/'.oci'/owner).iterdir()],['graph'])
+            self.assertEqual({path.name for path in (ops.store.path/'.oci'/owner).iterdir()},{'graph','runtime.lock'})
 
     def test_partial_areas_and_project_outputs_preserve_known_bytes(self):
         ops=self.ops();ops.store.create('alice','demo');key=str(uuid.uuid4())

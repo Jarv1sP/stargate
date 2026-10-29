@@ -1,7 +1,9 @@
 """A reboot discards only Podman's volatile state, never project storage."""
-import importlib.util,os,unittest
+import importlib.util,os,subprocess,unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('directory_fixture',Path(__file__).with_name('node-friction.test.py'))
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
@@ -65,6 +67,44 @@ class OCIReboot(unittest.TestCase):
         (engine.folder/'tmp/alive').write_bytes(Path('/proc/sys/kernel/random/boot_id').read_bytes())
         self.engine()
         self.assertEqual(current.read_bytes(),b'new runtime')
+
+    def test_storage_recovers_old_boot_before_podman_without_initializing_the_library(self):
+        oci=f.module('personal-oci')
+        for operation in ('storage_size','storage_containers'):
+            with self.subTest(operation=operation):
+                folder=Path(self.config['workspacesRoot'])/'.oci'/operation
+                for name in ('graph','run','tmp'):(folder/name).mkdir(parents=True)
+                layer=folder/'graph/container-layer';layer.write_bytes(b'keep layer');inode=layer.stat().st_ino
+                self.stale_runtime(SimpleNamespace(folder=folder))
+                def podman(argv,**kwargs):
+                    for name in ('run','tmp'):
+                        self.assertTrue((folder/name).is_dir())
+                        self.assertFalse((folder/name/'stale').exists())
+                    self.assertFalse((folder/'tmp/alive').exists())
+                    return subprocess.CompletedProcess(argv,0,'7 graph' if operation=='storage_size' else '','')
+                with patch.object(oci.subprocess,'run',podman):
+                    result=getattr(oci,operation)(self.config,folder)
+                self.assertEqual(result,{'size':7,'complete':True} if operation=='storage_size' else [])
+                self.assertEqual((layer.read_bytes(),layer.stat().st_ino),(b'keep layer',inode))
+                self.assertFalse(any((folder/name).exists() for name in ('home','auth.json','registries.conf','containers.conf')))
+
+    def test_storage_preserves_same_boot_runtime_and_does_not_create_missing_libraries(self):
+        oci=f.module('personal-oci');boot=Path('/proc/sys/kernel/random/boot_id').read_bytes()
+        for operation in ('storage_size','storage_containers'):
+            with self.subTest(operation=operation):
+                folder=Path(self.config['workspacesRoot'])/'.oci'/operation
+                for name in ('graph','run','tmp'):(folder/name).mkdir(parents=True)
+                alive=folder/'tmp/alive';alive.write_bytes(boot)
+                active=folder/'run/current';active.write_bytes(b'live runtime')
+                before=(alive.stat().st_ino,active.stat().st_ino)
+                with patch.object(oci.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'7 graph' if operation=='storage_size' else '','')):
+                    getattr(oci,operation)(self.config,folder)
+                self.assertEqual((alive.read_bytes(),active.read_bytes()),(boot,b'live runtime'))
+                self.assertEqual((alive.stat().st_ino,active.stat().st_ino),before)
+                absent=folder.parent/(operation+'-absent')
+                with patch.object(oci.subprocess,'run',side_effect=AssertionError('missing library reached podman')):
+                    with self.assertRaises(FileNotFoundError):getattr(oci,operation)(self.config,absent)
+                self.assertFalse(absent.exists())
 
 
 if __name__=='__main__':unittest.main()
