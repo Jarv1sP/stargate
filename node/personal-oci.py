@@ -24,8 +24,29 @@ def engine_environment(folder):
             'CONTAINERS_REGISTRIES_CONF':str(folder/'registries.conf'),
             'CONTAINERS_CONF':str(folder/'containers.conf')}
 
+def recover_runtime(folder,*,initialize=False):
+    store=module('project-store')
+    lock=os.open(folder/'runtime.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    try:
+        store.wait_project_lock(lock,fcntl.LOCK_EX,'个人容器正在恢复，请稍后重试。')
+        if initialize:
+            for name in ('graph','run','tmp','home'):store.private_dir(folder/name,create=True)
+        try:
+            with os.fdopen(os.open(folder/'tmp/alive',os.O_RDONLY|os.O_NOFOLLOW),'rb') as alive:
+                cached_boot=alive.read(128).strip()
+        except FileNotFoundError:cached_boot=b''
+        if cached_boot and cached_boot!=Path('/proc/sys/kernel/random/boot_id').read_bytes().strip():
+            # Podman normally keeps these in tmpfs. Data-disk runtimes need
+            # the same reboot cleanup; graph and project files persist.
+            for name in ('run','tmp'):
+                shutil.rmtree(folder/name)
+                store.private_dir(folder/name,create=True)
+    finally:os.close(lock)
+
 def storage_size(config,folder,path=None):
-    # Counting existing storage must not initialize/reset an owner's runtime.
+    # Recover only a previous boot's volatile state: it cannot contain live
+    # processes after reboot. Counting never initializes an owner's library.
+    recover_runtime(folder)
     target=folder if path is None else module('local-data').require_data_path(config,path)
     result=subprocess.run(engine_command(config,folder,'unshare','/usr/bin/du','-sb','--one-file-system',str(target)),
                           env=engine_environment(folder),capture_output=True,text=True,timeout=3600)
@@ -34,6 +55,7 @@ def storage_size(config,folder,path=None):
     return {'size':size,'complete':result.returncode==0 and size is not None}
 
 def storage_containers(config,folder):
+    recover_runtime(folder)
     def read(*args):
         result=subprocess.run(engine_command(config,folder,*args),env=engine_environment(folder),
                               capture_output=True,text=True,timeout=30)
@@ -84,21 +106,7 @@ class PersonalOCI:
         self.root=self.d.root(config,'root');self.owner=self.d.name(user)
         self.policy=config['personalOci'];self.folder=self.s.private_dir(self.d.root(config,'workspacesRoot')/'.oci',create=True)
         self.folder=self.s.private_dir(self.folder/self.owner,create=True)
-        lock=os.open(self.folder/'runtime.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
-        try:
-            self.s.wait_project_lock(lock,fcntl.LOCK_EX,'个人容器正在恢复，请稍后重试。')
-            for name in ('graph','run','tmp','home'):self.s.private_dir(self.folder/name,create=True)
-            try:
-                with os.fdopen(os.open(self.folder/'tmp/alive',os.O_RDONLY|os.O_NOFOLLOW),'rb') as alive:
-                    cached_boot=alive.read(128).strip()
-            except FileNotFoundError:cached_boot=b''
-            if cached_boot and cached_boot!=Path('/proc/sys/kernel/random/boot_id').read_bytes().strip():
-                # Podman normally keeps these in tmpfs. Data-disk runtimes need
-                # the same reboot cleanup; graph and project files persist.
-                for name in ('run','tmp'):
-                    shutil.rmtree(self.folder/name)
-                    self.s.private_dir(self.folder/name,create=True)
-        finally:os.close(lock)
+        recover_runtime(self.folder,initialize=True)
         self.runtime_tmp=self.folder/'run'
         self.env=engine_environment(self.folder)
         # The node's outbound proxy serves image pulls and every container (git, pip, conda).
