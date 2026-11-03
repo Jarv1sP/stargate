@@ -19,11 +19,12 @@ const focused=page=>page.evaluate(()=>document.activeElement?.name);
 const noScroll=async page=>assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'no horizontal scroll');
 try{
  for(const [name,scenario] of Object.entries(scenarios))for(const width of [1440,390,320]){
-  const userId='member-a',calls=[],errors=[],unexpected=[];
+  const userId='member-a',calls=[],errors=[],unexpected=[];let catalogDelay=0;
   const users=[{id:userId,username:'alice',name:'成员甲',role:scenario.role,enabled:true,approvedAt:checkedAt,total:Object.values(scenario.limits).reduce((sum,n)=>sum+n,0),limits:scenario.limits},{id:'member-b',username:'bob',name:'成员乙',role:'member',enabled:true,total:8,limits:Object.fromEntries(machines.map(row=>[row.id,8]))}];
   const state={machines,users,jobs:[],executionEnabled:true,execution:{},operationalMaintenance:{global:null,machines:{}},gpuq:{stale:false,checkedAt,hosts:machines.map(row=>host(row,!scenario.usable.includes(row.id)))}};
   const projects=machine=>[{project:'vision',ownerId:'member-b',ownerName:'成员乙',displayName:'视觉基线 '+machine,environmentMode:'oci',lifecycle:{state:'ACTIVE'}},{project:'team',ownerId:'member-c',ownerName:'成员丙',shared:true,displayName:'团队共用 '+machine,environmentMode:'oci',lifecycle:{state:'ACTIVE'}}];
   async function rpc(op,args){
+   if(catalogDelay&&['projects.list','datasets.list'].includes(op))await new Promise(resolve=>setTimeout(resolve,catalogDelay));
    calls.push({op,args});
    if(args.machine&&!scenario.usable.includes(args.machine))unexpected.push(op+' '+args.machine);
    if(op==='state')return {principal:{userId,username:'alice',role:scenario.role},state};
@@ -77,6 +78,13 @@ try{
   }
   // Command palette: search reads only usable servers; actions explain when there are none.
   await page.keyboard.press('Control+k');await page.locator('#control-command').waitFor();await page.locator('#palette-status').filter({hasText:'Enter 打开'}).waitFor();
+  if(name==='two'&&width===1440){
+   catalogDelay=100;
+   await page.evaluate(()=>{document.querySelector('#mission-control').close();document.querySelector('[data-shell-action=control]').click();});
+   await page.locator('#control-command').fill('新建任务');
+   await page.locator('#palette-status').filter({hasText:'Enter 打开'}).waitFor();
+   catalogDelay=0;
+  }
   assert.deepEqual([...new Set(calls.filter(row=>row.op==='datasets.list').map(row=>row.args.machine))].sort(),[...scenario.usable].sort());
   assert.doesNotMatch(await page.locator('#control-suggestions').innerText(),/部分内容暂时读不到/);
   if(!scenario.usable.length)for(const command of ['新建项目','打开终端','上传数据集']){
