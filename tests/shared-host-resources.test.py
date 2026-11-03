@@ -80,7 +80,7 @@ class SharedResources(unittest.TestCase):
                 db.executescript('CREATE TABLE jobs(id TEXT,submit_key TEXT); CREATE TABLE attempts(job_id TEXT,unit_name TEXT,state TEXT);')
                 for i in (1, 2):
                     db.execute('INSERT INTO jobs VALUES (?,?)', (str(i), str(i)))
-                    db.execute('INSERT INTO attempts VALUES (?,?,?)', (str(i), 'gpuq-a'+str(i), 'RUNNING'))
+                    db.execute('INSERT INTO attempts VALUES (?,?,?)', (str(i), 'gpuq-a'+str(i), 'STARTING' if i == 1 else 'RUNNING'))
             (state/'jobs/1.json').write_text(json.dumps({'cards':1}))
             (state/'jobs/2.json').write_text(json.dumps({'cards':1, 'memoryLimitGiB':64}))
             (state/'terminals/3.json').write_text('{}')

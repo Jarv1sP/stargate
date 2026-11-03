@@ -17,8 +17,7 @@ def refresh(config, *, cgroups=Path('/sys/fs/cgroup')):
                         'MemoryMax='+str(pool['maxBytes']), 'MemoryOOMGroup=no'], check=True)
     with sqlite3.connect('file:'+config['database']+'?mode=ro', uri=True) as db:
         jobs = {(unit if unit.endswith('.service') else unit+'.service'): key
-                for unit, key in db.execute('SELECT a.unit_name,j.submit_key FROM attempts a JOIN jobs j ON j.id=a.job_id '
-                                            "WHERE a.state='RUNNING'") if unit}
+                for unit, key in db.execute('SELECT a.unit_name,j.submit_key FROM attempts a JOIN jobs j ON j.id=a.job_id') if unit}
     units = subprocess.check_output(['systemctl', '--user', 'list-units', '--type=service', '--state=running',
                                      '--plain', '--no-legend', '--no-pager', 'gpuq-*', 'amax-term-*'], text=True)
     changed = []
