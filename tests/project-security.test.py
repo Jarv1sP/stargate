@@ -130,8 +130,8 @@ class ProjectContract(unittest.TestCase):
 
     def test_argv_limit_is_resource_floor_and_not_field_whitelist(self):
         resources=f.module('job-resources');spec={'cards':2,'futureField':'ignored'}
-        limits=resources.requested_limits(spec,False,{'jobMemoryGiBPerCard':16})
-        self.assertEqual(limits['memory'],32*1024**3)
+        limits=resources.requested_limits(spec,False,{})
+        self.assertEqual(limits['memory'],os.sysconf('SC_PHYS_PAGES')*os.sysconf('SC_PAGE_SIZE')*9//10)
         with self.assertRaises(ValueError):resources.requested_limits({'cards':0},False,{})
 
     def test_unknown_scheduling_fields_do_not_refuse_current_request(self):

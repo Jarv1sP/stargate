@@ -377,15 +377,17 @@ gpuctl reconcile-resources JOB_ID --json
 
 `logs` 默认查看最后 200 行；加 `--output 本机文件` 经门户 HTTPS 分块下载最近一次运行的完整主日志（stdout/stderr，不附加诊断摘要）。中断后保留本机临时文件和 `.gpuctl-download.json`，重复原命令从原运行、原字节偏移续传，不会混入后来重跑的日志。首次不覆盖已有文件。建议任务结束后导出；日志仍在增长或被改写导致大小变化时会暂停，应等它稳定后下载到新文件。尚未启动的任务没有运行日志，不会生成假成功的空文件。
 
-任务容器按实际分到的 GPU 绑定 CPU：每张卡固定分一段 NUMA 就近的可用逻辑核；无法读取 NUMA，或就近分配导致某张卡少于全机平均核数时，按 GPU 编号顺序均分。同一物理核的超线程放在同一段。例如 128 个可用逻辑核、8 张卡通常每卡 16 核，2 卡任务可见约 32 核；弹性任务按当前卡数，共享同一张卡的任务使用该卡同一段 CPU。原 CPU 时间配额不变，普通开发终端仍为 2 核配额、不绑定 CPU。节点未委托 cpuset 或无法查询 GPU 拓扑时省略绑核，仍注入线程默认值，任务照常启动。
+训练任务和开发终端共享整机可用 CPU、内存，不按 GPU 张数绑核或划分内存。单卡任务也能使用全部可用 CPU 和共享内存池，GPU 仍只可见调度器分配的卡。内存按实际使用，不提前预留；所有任务合计受节点共享池限制，为系统保留余量。需要主动限制某项训练时，用 `gpuctl run --memory-limit-gib 64 ...`。并发任务仍会争用资源，共享池耗尽可能触发 OOM。
 
-`OMP_NUM_THREADS`、`MKL_NUM_THREADS`、`OPENBLAS_NUM_THREADS`、`NUMEXPR_NUM_THREADS`、`VECLIB_MAXIMUM_THREADS` 和 `TORCHINDUCTOR_COMPILE_THREADS` 默认取实际 CPU 配额向下取整与所绑 CPU 核数的较小值、至少 1；未绑核时按配额，开发终端通常为 2。工作区镜像已有的设置、显式传入的环境变量和脚本中的设置保留；主动使用 `gpuq-ray` 时各 worker 的计算线程固定为 1，避免并发 worker 再各开一整份线程池。可在普通任务的终端或启动命令里覆盖，例如：
+`OMP_NUM_THREADS`、`MKL_NUM_THREADS`、`OPENBLAS_NUM_THREADS`、`NUMEXPR_NUM_THREADS`、`VECLIB_MAXIMUM_THREADS` 和 `TORCHINDUCTOR_COMPILE_THREADS` 默认取实际可用 CPU 预算向下取整、至少 1。镜像、命令或脚本显式设置的值保留；主动使用 `gpuq-ray` 时各 worker 的计算线程为 1。可按需要覆盖，例如：
 
 ```sh container
 OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 python train.py
 python -c 'import os; print(sorted(os.sched_getaffinity(0)))'
 env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc
 ```
+
+部署会放宽运行中任务的 CPU 配额、容器绑核和未主动设置的内存上限，不重启任务。已有进程的线程池、Ray 逻辑资源和启动时资源快照不会重新初始化；要采用新启动参数，请在自己下一次启动任务或终端时使用。
 
 GNU `nproc` 会受 OMP 环境变量影响；上面的清变量命令查看实际亲和性的核数，`GPUQ_CPU_LIMIT` 查看时间配额。`gpuctl jobs` 和 `gpuctl diagnostics JOB_ID --json` 的 `gpuMetrics` 包含每张分配卡的利用率、当前显存和本次运行采到的显存峰值（MiB）。这些是整张卡的采样，共享卡会包含其他进程；峰值按每次运行重新记录，短于采样间隔的瞬时峰值可能未采到。未采到的为未知；任务结束或采样超过 30 秒后当前值为未知，已采到的峰值保留。
 

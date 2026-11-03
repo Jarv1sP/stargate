@@ -11,8 +11,10 @@ export default {features:["容器里自带 git，代码用 git 管理（pull/com
   try{
     const output=await terminalCommand(ctx,member,terminal,"git status; git -c user.name=g -c user.email=g@example.invalid commit --allow-empty -m gray; GIT_PAGER=cat git log -1; printf 'GRAY_%s\\n' GIT_DONE\n",'GRAY_GIT_DONE');
     ctx.check('git status/commit/log 有实际输出',/On branch/.test(output)&&/commit [a-f0-9]{20,}/.test(output)&&/gray/.test(output));
-    const threads=await terminalCommand(ctx,member,terminal,"python -c 'import os; keys=\"OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS NUMEXPR_NUM_THREADS VECLIB_MAXIMUM_THREADS TORCHINDUCTOR_COMPILE_THREADS\".split(); print(\"THREAD_DEFAULTS=\"+\",\".join(os.environ.get(k,\"missing\") for k in keys))'; printf 'GRAY_%s\\n' THREAD_DONE\n",'GRAY_THREAD_DONE');
-    ctx.check('开发终端六个线程默认值均为 2',threads.includes('THREAD_DEFAULTS=2,2,2,2,2,2'),threads);
+    const threads=await terminalCommand(ctx,member,terminal,"python -c 'import os,json; b=json.load(open(\"/run/gpuq/resources.json\")); keys=\"OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS NUMEXPR_NUM_THREADS VECLIB_MAXIMUM_THREADS TORCHINDUCTOR_COMPILE_THREADS\".split(); print(\"THREAD_DEFAULTS=\"+json.dumps(dict(threads=[os.environ.get(k) for k in keys],quota=b[\"cpuLimit\"],requested=b[\"requested\"][\"cpu\"],available=len(os.sched_getaffinity(0)))))'; printf 'GRAY_%s\\n' THREAD_DONE\n",'GRAY_THREAD_DONE');
+    const budget=JSON.parse(threads.match(/THREAD_DEFAULTS=(\{[^\r\n]+\})/)?.[1]||'{}');
+    ctx.check('开发终端使用整机可用 CPU 预算',budget.requested>0&&budget.requested===budget.available,budget);
+    ctx.check('开发终端六个线程默认值使用实际预算',budget.threads?.length===6&&budget.threads.every(value=>value===String(Math.max(1,Math.floor(budget.quota)))),budget);
     await call(ctx,member,'terminal.detach',terminal);
     const reconnected=await openTerminal(ctx,member,name,{mode:'reconnect',id:terminal.id});
     const history=await call(ctx,member,'terminal.exchange',{...reconnected,offset:0});

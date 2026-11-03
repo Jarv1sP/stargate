@@ -20,7 +20,6 @@
       "root": "/mnt/data/stargate/state",
       "workspacesRoot": "/mnt/data/workspaces",
       "datasetsRoot": "/mnt/data/datasets",
-      "jobMemoryGiBPerCard": 2,
       "memoryPool": null,
       "personalOci": {
         "baseImage": "registry.example.invalid/team/python:3",
