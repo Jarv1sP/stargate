@@ -241,10 +241,11 @@ def terminal_op(operation,args):
                 session_state={'clientId':args['clientId'],'writerToken':str(uuid.uuid4()),'state':'OPEN','leaseExpiresAt':time.time()+30}
                 atomic_json(session,session_state)
                 # The terminal shares the persistent OCI environment with all jobs.
+                limits=module('job-resources').requested_limits(spec,True,CONFIG)
                 command=['/usr/bin/systemd-run','--user','--collect','--unit=amax-term-'+jid,
                     '--property=KillMode=control-group','--property=KillSignal=SIGHUP','--property=TimeoutStopSec=5',
-                    '--property=Delegate=yes','--property=MemoryMax=8G',
-                    '--property=CPUQuota=200%','--property=TasksMax=2048']
+                    '--property=Delegate=yes','--property=MemoryMax='+str(limits['memory']),
+                    '--property=CPUQuota='+str(limits['cpu']*100)+'%','--property=TasksMax=2048']
                 if CONFIG.get('memoryPool'):command+=['--slice=gpuq-workloads.slice','--property=OOMPolicy=kill']
                 run(command+['/usr/bin/python3',str(HERE/'terminal-helper.py'),jid])
             elif session_state is not None and session_state.get('clientId')!=args['clientId'] and session_state.get('leaseExpiresAt',0)>time.time() and not args.get('takeover'):

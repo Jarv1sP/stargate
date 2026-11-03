@@ -48,13 +48,13 @@ export default {features:["提交任务（指定卡数、自动选服务器、�
       ctx.check('任务只可见一张分配卡',result.visibleGpuUuids.length===1,result.visibleGpuUuids);
       if(mode==='gpu')ctx.check('指定 GPU 1 生效',result.visibleGpuUuids[0]==='GPU-00000000-0000-0000-0000-000000000002');
       const layout=await stackExec(ctx.stack,'gray-node-1','python3','-c',
-        'import importlib.util,json,sys;from pathlib import Path;c=json.load(open("/etc/gpuq-console/node-install.json"));p=Path(c["releaseRoot"])/"current/node/job-resources.py";s=importlib.util.spec_from_file_location("resources",p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print(json.dumps(m.allocated_cpus(json.loads(sys.argv[1]))))',JSON.stringify(result.visibleGpuUuids));
+        'import json,os;print(json.dumps(sorted(os.sched_getaffinity(0))))');
       const expected=JSON.parse(layout.stdout);
-      ctx.check('容器亲和性等于分配卡的 CPU 段',JSON.stringify(result.cpu.affinity)===JSON.stringify(expected),{actual:result.cpu,expected});
-      ctx.check('nproc 等于分到的核数（清掉 OMP 对显示的覆盖）',result.cpu.nproc===expected.length,result.cpu);
-      ctx.check('六个线程变量默认取配额与 CPU 段的较小值',Object.keys(result.cpu.threads).length===6&&Object.values(result.cpu.threads).every(value=>value===String(Math.max(1,Math.min(Math.floor(result.cpu.quota),expected.length)))),result.cpu);
+      ctx.check('单卡任务可用整机 CPU 亲和性',JSON.stringify(result.cpu.affinity)===JSON.stringify(expected),{actual:result.cpu,expected});
+      ctx.check('nproc 显示整机可用核数',result.cpu.nproc===expected.length,result.cpu);
+      ctx.check('线程默认值使用实际 CPU 预算',Object.keys(result.cpu.threads).length===6&&Object.values(result.cpu.threads).every(value=>value===String(Math.max(1,Math.floor(result.cpu.quota)))),result.cpu);
       const other=ctx.shared.trained.find(job=>job.result.visibleGpuUuids[0]!==result.visibleGpuUuids[0]);
-      if(other)ctx.check('不同卡的两个作业 CPU 段不重叠',other.result.cpu.affinity.every(cpu=>!result.cpu.affinity.includes(cpu)),{previous:other.result.cpu,actual:result.cpu});
+      if(other)ctx.check('不同卡任务共享相同 CPU 范围',JSON.stringify(other.result.cpu.affinity)===JSON.stringify(result.cpu.affinity),{previous:other.result.cpu,actual:result.cpu});
       ctx.check('诊断保留本次显存峰值，已结束的当前值为未知',diagnostics.gpuMetrics?.gpus?.length===1&&diagnostics.gpuMetrics.gpus.every(g=>Number.isFinite(g.memoryPeakMiB)&&g.utilization===null&&g.memoryUsedMiB===null),diagnostics.gpuMetrics);
       ctx.shared.trained.push({jobId:job.id,project:name,member,result,bytes:bytes.toString('base64')});
 

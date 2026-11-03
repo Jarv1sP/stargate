@@ -194,6 +194,7 @@ class Installer:
                 value = {**config, 'gpu': str(gpu), 'gpuqArchive': scheduler['archive_path'],
                          'database': scheduler['db_path'], 'controlRoot': scheduler['control_dir'],
                          'dataMountPoints': mounts}
+                value.pop('jobMemoryGiBPerCard', None)
                 atomic(staging / manifest['profiles'][name]['installedConfig'], encoded(value))
             if self.config.get('hamiLibrary'):
                 source = data_path(self.config['hamiLibrary'], mounts)
@@ -217,6 +218,12 @@ class Installer:
         delegation = self.system_units / f'user@{self.owner[0]}.service.d/50-stargate-cpuset.conf'
         files = {str(delegation): (b'[Service]\nDelegate=cpu cpuset io memory pids\n', 0o644, (0, 0))}
         unit_dir = self.home / '.config/systemd/user'
+        pool = next((p.get('memoryPool') for p in self.config['profiles'].values() if p.get('memoryPool')), None)
+        if pool:
+            files[str(unit_dir/'gpuq-workloads.slice.d/60-stargate-resources.conf')] = (
+                ('[Slice]\nMemoryMax='+str(pool['maxBytes'])+'\nMemoryOOMGroup=no\n').encode(), 0o644, self.owner)
+            files[str(unit_dir/'gpuq-.service.d/60-stargate-resources.conf')] = (
+                b'[Service]\nSlice=gpuq-workloads.slice\n', 0o644, self.owner)
         gpu_spec = {**self.config.get('gpuqService', {}), 'gpuq': True}
         specs = [{**gpu_spec, 'name': gpu_spec.get('name', 'gpuq.service'), 'scope': 'user'},
                  *self.config.get('services', [])]
@@ -372,6 +379,9 @@ class Installer:
                 self.systemctl(unit['scope'], 'enable', unit['name'])
                 self.systemctl(unit['scope'], 'start', unit['name'])
             self.healthy(units)
+            profile = next(iter(self.config['profiles']))
+            self.run(['/usr/bin/python3', '-I', '-B', str(release/'node/refresh-resources.py'),
+                      str(release/'profiles'/profile/'node-config.json')], user=True)
         except BaseException:
             self.restore(record)
             raise

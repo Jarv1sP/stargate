@@ -54,7 +54,7 @@ def config_template(machine):
     # private config; null is not a guessed path, budget, role or memory pool.
     return dict(machine=machine,cards=None,root=None,datasetsRoot=None,workspacesRoot=None,
                 dataMountPoints=[],database=None,gpu=None,gpuqArchive=None,controlRoot=None,
-                jobMemoryGiBPerCard=None,memoryPool=None,
+                memoryPool=None,
                 personalOci=dict(baseImage=None,cdiSpec=None),directUpload=None,
                 transferPeer=None,transferPeers=None,cloudFiles=None)
 
