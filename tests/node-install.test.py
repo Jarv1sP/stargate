@@ -147,6 +147,7 @@ class InstallationTests(unittest.TestCase):
         self.host.install(self.package)
         unit_dir = self.home/'.config/systemd/user'
         self.assertIn('MemoryMax='+str(pool['maxBytes']), (unit_dir/'gpuq-workloads.slice.d/60-stargate-resources.conf').read_text())
+        self.assertNotIn('MemoryOOMGroup', (unit_dir/'gpuq-workloads.slice.d/60-stargate-resources.conf').read_text())
         self.assertIn('Slice=gpuq-workloads.slice', (unit_dir/'gpuq-.service.d/60-stargate-resources.conf').read_text())
         refresh = [argv for user, argv in self.host.calls if user is True and any(str(a).endswith('/refresh-resources.py') for a in argv)]
         self.assertEqual(len(refresh), 1)

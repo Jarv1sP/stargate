@@ -14,7 +14,7 @@ def refresh(config, *, cgroups=Path('/sys/fs/cgroup')):
     pool = resources.memory_pool(config)
     if pool:
         subprocess.run(['systemctl', '--user', 'set-property', '--runtime', 'gpuq-workloads.slice',
-                        'MemoryMax='+str(pool['maxBytes']), 'MemoryOOMGroup=no'], check=True)
+                        'MemoryMax='+str(pool['maxBytes'])], check=True)
     with sqlite3.connect('file:'+config['database']+'?mode=ro', uri=True) as db:
         jobs = {(unit if unit.endswith('.service') else unit+'.service'): key
                 for unit, key in db.execute('SELECT a.unit_name,j.submit_key FROM attempts a JOIN jobs j ON j.id=a.job_id') if unit}

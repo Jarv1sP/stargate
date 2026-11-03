@@ -102,6 +102,8 @@ class SharedResources(unittest.TestCase):
                 self.assertEqual(refresh.refresh(config, cgroups=root), units)
             calls = [call.args[0] for call in commands.call_args_list]
             self.assertTrue(all('set-property' in argv for argv in calls))
+            self.assertEqual(calls[0], ['systemctl', '--user', 'set-property', '--runtime',
+                                       'gpuq-workloads.slice', 'MemoryMax='+str(450*GIB)])
             self.assertIn('MemoryMax='+str(450*GIB), calls[0])
             self.assertIn('MemoryMax='+str(450*GIB), calls[1])
             self.assertFalse(any(p.startswith('MemoryMax=') for p in calls[2]))

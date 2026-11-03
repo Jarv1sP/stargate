@@ -221,7 +221,7 @@ class Installer:
         pool = next((p.get('memoryPool') for p in self.config['profiles'].values() if p.get('memoryPool')), None)
         if pool:
             files[str(unit_dir/'gpuq-workloads.slice.d/60-stargate-resources.conf')] = (
-                ('[Slice]\nMemoryMax='+str(pool['maxBytes'])+'\nMemoryOOMGroup=no\n').encode(), 0o644, self.owner)
+                ('[Slice]\nMemoryMax='+str(pool['maxBytes'])+'\n').encode(), 0o644, self.owner)
             files[str(unit_dir/'gpuq-.service.d/60-stargate-resources.conf')] = (
                 b'[Service]\nSlice=gpuq-workloads.slice\n', 0o644, self.owner)
         gpu_spec = {**self.config.get('gpuqService', {}), 'gpuq': True}

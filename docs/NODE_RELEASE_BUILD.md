@@ -37,3 +37,4 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 每版使用独立的真实 pyz 路径；current 原子切换后只重启受管服务，独立任务单元、旧发布目录和数据库保留；仅新库初始化。
 健康仅看服务 active 和 GPU 可读；失败时即使新单元损坏或停止失败，也先恢复旧文件和指针，再重启原先活跃的服务。`python3 deploy/node/install.py --config <私有JSON> --rollback` 回上一版，不回滚用户数据。
 灰测的 `deploy/gray-local/node-setup.sh` 生成模拟配置并调用同一安装器；私有配置保持 0600，模拟 CDI 规范为 0644，供非 root 任务读取，不另写安装流程。
+灰测节点启用共享内存池，覆盖 slice 配置、在线上限更新和真实任务启动；共享 slice 沿用内核默认的 `memory.oom.group=0`，不使用不存在的 systemd `MemoryOOMGroup` 属性。
