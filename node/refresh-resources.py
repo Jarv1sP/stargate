@@ -68,7 +68,7 @@ def refresh(config, *, cgroups=Path('/sys/fs/cgroup')):
             for mask in path.glob('*/cpuset.cpus'):
                 try:
                     if mask.read_text().strip():
-                        mask.write_text('\n')
+                        mask.write_text((path/'cpuset.cpus.effective').read_text())
                 except FileNotFoundError:
                     pass  # The payload exited; there is nothing left to relax.
         except (FileNotFoundError, subprocess.CalledProcessError):

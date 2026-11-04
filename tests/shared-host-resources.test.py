@@ -111,6 +111,7 @@ class SharedResources(unittest.TestCase):
                 folder = root/'user.slice/gpuq-workloads.slice'/unit
                 (folder/'payload').mkdir(parents=True)
                 (folder/'memory.max').write_text(str(64*GIB))
+                (folder/'cpuset.cpus.effective').write_text('0-127\n')
                 (folder/'payload/cpuset.cpus').write_text('0-15')
                 (folder/'payload/user-nested').mkdir()
                 (folder/'payload/user-nested/cpuset.cpus').write_text('0-1')
@@ -131,7 +132,7 @@ class SharedResources(unittest.TestCase):
             self.assertIn('MemoryMax='+str(450*GIB), calls[3])
             for unit in units:
                 folder = root/'user.slice/gpuq-workloads.slice'/unit
-                self.assertEqual((folder/'payload/cpuset.cpus').read_text().strip(), '')
+                self.assertEqual((folder/'payload/cpuset.cpus').read_text().strip(), '0-127')
                 self.assertEqual((folder/'payload/user-nested/cpuset.cpus').read_text(), '0-1')
 
 
