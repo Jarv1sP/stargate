@@ -33,11 +33,13 @@ try:
                 sent = True
         if child.poll() is not None:
             break
-    if child.poll() is None:
+    try:
+        code = child.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
         os.killpg(child.pid, signal.SIGTERM)
         child.wait(timeout=5)
         sys.exit(124)
-    sys.exit(child.returncode)
+    sys.exit(code)
 finally:
     os.close(master)
     if child.poll() is None:
