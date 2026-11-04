@@ -76,11 +76,14 @@ class SharedResources(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dbfile = Path(tmp)/'jobs.db'; runner = Path(tmp)/'releases/current/node/oci-runner.py'
             old = str(Path(tmp)/'releases/release-old/node/oci-runner.py')
+            # GPUQ resolves the Python executable symlink before persisting argv.
+            interpreters = ('/usr/bin/python3.10', '/usr/bin/python3', '/usr/bin/python3')
             with sqlite3.connect(dbfile) as db:
                 db.execute('CREATE TABLE jobs(id TEXT,state TEXT,argv_json TEXT,env_json TEXT,submit_key TEXT,submit_digest TEXT,sequence INTEGER,priority INTEGER)')
                 for i, state in enumerate(('PENDING','RUNNING','FAILED')):
-                    db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)', (str(i),state,json.dumps(['/usr/bin/python3',old,'job-'+str(i)]),json.dumps({'GPUQ_CONSOLE_OCI':'1'}),'key-'+str(i),'original-submission',i,2))
-                db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)', ('native','PENDING','["python", "train.py"]','{}','native-key','native-submit',9,4))
+                    db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)', (str(i),state,json.dumps([interpreters[i],old,'job-'+str(i)]),json.dumps({'GPUQ_CONSOLE_OCI':'1'}),'key-'+str(i),'original-submission',i,2))
+                native = ['/usr/bin/python3.10', old, 'native-job']
+                db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)', ('native','PENDING',json.dumps(native),'{}','native-key','native-submit',9,4))
                 before = db.execute('SELECT id,state,env_json,submit_key,submit_digest,sequence,priority FROM jobs ORDER BY id').fetchall()
             self.assertEqual(refresh.rebind_runners({'database':str(dbfile)},runner), 2)
             self.assertEqual(refresh.rebind_runners({'database':str(dbfile)},runner), 0)
@@ -88,9 +91,9 @@ class SharedResources(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT id,state,env_json,submit_key,submit_digest,sequence,priority FROM jobs ORDER BY id').fetchall(), before)
                 argv = dict(db.execute('SELECT id,argv_json FROM jobs'))
             for i in ('0','1'):
-                self.assertEqual(json.loads(argv[i]), ['/usr/bin/python3',str(runner),'job-'+i])
+                self.assertEqual(json.loads(argv[i]), [interpreters[int(i)],str(runner),'job-'+i])
             self.assertEqual(json.loads(argv['2'])[1], old)
-            self.assertEqual(json.loads(argv['native']), ['python','train.py'])
+            self.assertEqual(json.loads(argv['native']), native)
 
     def test_live_relaxation_preserves_explicit_limits_and_does_not_restart(self):
         refresh = load('refresh-resources')
