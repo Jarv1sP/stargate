@@ -152,6 +152,9 @@ class InstallationTests(unittest.TestCase):
         refresh = [argv for user, argv in self.host.calls if user is True and any(str(a).endswith('/refresh-resources.py') for a in argv)]
         self.assertEqual(len(refresh), 1)
         self.assertEqual(Path(refresh[0][-1]), self.selected()/'profiles/7IM/node-config.json')
+        refresh_index = next(i for i, (_, argv) in enumerate(self.host.calls) if any(str(a).endswith('/refresh-resources.py') for a in argv))
+        scheduler_start = self.host.calls.index(('user', ['start', 'gpuq.service']))
+        self.assertLess(refresh_index, scheduler_start)
 
     def assert_running(self):
         for name in ('gpuq.service', 'node-http.service', 'storage-collect.timer', 'container-observer.timer'):

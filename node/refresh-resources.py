@@ -7,6 +7,26 @@ import subprocess
 import sys
 
 
+def rebind_runners(config, runner):
+    """Update the platform wrapper used by future attempts, not user commands."""
+    changed = 0
+    with sqlite3.connect(config['database']) as db:
+        rows = db.execute("SELECT id,argv_json,env_json FROM jobs WHERE state NOT IN ('SUCCEEDED','FAILED','CANCELED','LOST')").fetchall()
+        for job, raw, environment in rows:
+            argv = json.loads(raw)
+            if len(argv) != 3 or argv[0] != '/usr/bin/python3' or json.loads(environment).get('GPUQ_CONSOLE_OCI') != '1':
+                continue
+            entry = Path(argv[1])
+            if entry.name != 'oci-runner.py' or entry.parent.name != 'node' or entry.parent.parent.parent != runner.parent.parent.parent:
+                continue
+            if entry == runner:
+                continue
+            argv[1] = str(runner)
+            db.execute('UPDATE jobs SET argv_json=? WHERE id=?', (json.dumps(argv), job))
+            changed += 1
+    return changed
+
+
 def refresh(config, *, cgroups=Path('/sys/fs/cgroup')):
     module = importlib.util.spec_from_file_location('shared_resources', Path(__file__).with_name('job-resources.py'))
     resources = importlib.util.module_from_spec(module)
@@ -60,4 +80,7 @@ def refresh(config, *, cgroups=Path('/sys/fs/cgroup')):
 
 
 if __name__ == '__main__':
-    print(json.dumps({'relaxedUnits': refresh(json.loads(Path(sys.argv[1]).read_text()))}))
+    config = json.loads(Path(sys.argv[1]).read_text())
+    runner = Path(__file__).resolve().parents[2]/'current/node/oci-runner.py'
+    rebound = rebind_runners(config, runner)
+    print(json.dumps({'reboundRunners': rebound, 'relaxedUnits': refresh(config)}))

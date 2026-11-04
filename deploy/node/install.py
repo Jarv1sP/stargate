@@ -375,13 +375,13 @@ class Installer:
             self.reload(units)
             if not Path(self.config['gpuq']['db_path']).exists():
                 self.run([str(release / 'gpu'), '_init'], user=True)
+            profile = next(iter(self.config['profiles']))
+            self.run(['/usr/bin/python3', '-I', '-B', str(release/'node/refresh-resources.py'),
+                      str(release/'profiles'/profile/'node-config.json')], user=True)
             for unit in units:
                 self.systemctl(unit['scope'], 'enable', unit['name'])
                 self.systemctl(unit['scope'], 'start', unit['name'])
             self.healthy(units)
-            profile = next(iter(self.config['profiles']))
-            self.run(['/usr/bin/python3', '-I', '-B', str(release/'node/refresh-resources.py'),
-                      str(release/'profiles'/profile/'node-config.json')], user=True)
         except BaseException:
             self.restore(record)
             raise
