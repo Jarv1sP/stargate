@@ -90,7 +90,7 @@ export function controlUI(store,{navigate,toast,openSubmit,openJob}){
   document.addEventListener('click',event=>{if(event.target.closest('[data-shell-action=control]'))open();});
   dialog.addEventListener('click',event=>{const button=event.target.closest('[data-command-id]');if(button)run(button.dataset.commandId);if(event.target.closest('[data-control-close]')||event.target===dialog)close();});
   dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
-  dialog.addEventListener('close',()=>readController?.abort());
+  dialog.addEventListener('close',()=>{if(!dialog.open)readController?.abort();});
   dialog.addEventListener('input',event=>{if(event.target.id==='control-command'){cursor=0;render();}});
   document.addEventListener('keydown',event=>{
     if(openDialogs().some(layer=>layer!==dialog))return;
