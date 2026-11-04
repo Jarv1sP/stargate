@@ -5,6 +5,7 @@ from pathlib import Path
 CONFIG=json.loads(Path(os.environ.get('STARGATE_VPS_CONFIG','/etc/stargate/vps.json')).read_text())
 BASE=Path(CONFIG['transport']['credentialDirectory'])
 HOSTS=CONFIG['transport']['hosts']
+SSH_CONFIG=CONFIG['transport'].get('sshConfig','/dev/null')
 RUNTIME=Path(CONFIG['bridge']['runtimeDirectory'])
 
 class NodeTransportError(ValueError):
@@ -74,7 +75,7 @@ class SSHConnections:
         return s.st_dev,s.st_ino
 
     def command(self, target, path):
-        return ['/usr/bin/ssh','-F','/dev/null','-T','-o','BatchMode=yes','-o','ConnectionAttempts=1',
+        return ['/usr/bin/ssh','-F',SSH_CONFIG,'-T','-o','BatchMode=yes','-o','ConnectionAttempts=1',
             '-o','ConnectTimeout=5','-o','StrictHostKeyChecking=yes','-o','IdentitiesOnly=yes',
             '-o',f'UserKnownHostsFile={self.base}/known_hosts','-i',str(self.base/'id_ed25519'),
             '-o','ForwardAgent=no','-o','ForwardX11=no','-o','ClearAllForwardings=yes',
