@@ -71,6 +71,27 @@ class SharedResources(unittest.TestCase):
                 self.assertEqual(refresh.refresh({'root':str(base),'database':str(dbfile)}, cgroups=base/'cgroups'), [])
                 self.assertEqual(run.call_args.args[0], ['systemctl','--user','is-active','--quiet','amax-term-ended.service'])
 
+    def test_queued_and_requeued_jobs_use_current_wrapper_without_changing_submission(self):
+        refresh = load('refresh-resources')
+        with tempfile.TemporaryDirectory() as tmp:
+            dbfile = Path(tmp)/'jobs.db'; runner = Path(tmp)/'releases/current/node/oci-runner.py'
+            old = str(Path(tmp)/'releases/release-old/node/oci-runner.py')
+            with sqlite3.connect(dbfile) as db:
+                db.execute('CREATE TABLE jobs(id TEXT,state TEXT,argv_json TEXT,env_json TEXT,submit_key TEXT,submit_digest TEXT,sequence INTEGER,priority INTEGER)')
+                for i, state in enumerate(('PENDING','RUNNING','FAILED')):
+                    db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)', (str(i),state,json.dumps(['/usr/bin/python3',old,'job-'+str(i)]),json.dumps({'GPUQ_CONSOLE_OCI':'1'}),'key-'+str(i),'original-submission',i,2))
+                db.execute('INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)', ('native','PENDING','["python", "train.py"]','{}','native-key','native-submit',9,4))
+                before = db.execute('SELECT id,state,env_json,submit_key,submit_digest,sequence,priority FROM jobs ORDER BY id').fetchall()
+            self.assertEqual(refresh.rebind_runners({'database':str(dbfile)},runner), 2)
+            self.assertEqual(refresh.rebind_runners({'database':str(dbfile)},runner), 0)
+            with sqlite3.connect(dbfile) as db:
+                self.assertEqual(db.execute('SELECT id,state,env_json,submit_key,submit_digest,sequence,priority FROM jobs ORDER BY id').fetchall(), before)
+                argv = dict(db.execute('SELECT id,argv_json FROM jobs'))
+            for i in ('0','1'):
+                self.assertEqual(json.loads(argv[i]), ['/usr/bin/python3',str(runner),'job-'+i])
+            self.assertEqual(json.loads(argv['2'])[1], old)
+            self.assertEqual(json.loads(argv['native']), ['python','train.py'])
+
     def test_live_relaxation_preserves_explicit_limits_and_does_not_restart(self):
         refresh = load('refresh-resources')
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +123,8 @@ class SharedResources(unittest.TestCase):
                 self.assertEqual(refresh.refresh(config, cgroups=root), units)
             calls = [call.args[0] for call in commands.call_args_list]
             self.assertTrue(all('set-property' in argv for argv in calls))
+            self.assertEqual(calls[0], ['systemctl', '--user', 'set-property', '--runtime',
+                                       'gpuq-workloads.slice', 'MemoryMax='+str(450*GIB)])
             self.assertIn('MemoryMax='+str(450*GIB), calls[0])
             self.assertIn('MemoryMax='+str(450*GIB), calls[1])
             self.assertFalse(any(p.startswith('MemoryMax=') for p in calls[2]))
