@@ -14,7 +14,7 @@ def rebind_runners(config, runner):
         rows = db.execute("SELECT id,argv_json,env_json FROM jobs WHERE state NOT IN ('SUCCEEDED','FAILED','CANCELED','LOST')").fetchall()
         for job, raw, environment in rows:
             argv = json.loads(raw)
-            if len(argv) != 3 or argv[0] != '/usr/bin/python3' or json.loads(environment).get('GPUQ_CONSOLE_OCI') != '1':
+            if len(argv) != 3 or json.loads(environment).get('GPUQ_CONSOLE_OCI') != '1':
                 continue
             entry = Path(argv[1])
             if entry.name != 'oci-runner.py' or entry.parent.name != 'node' or entry.parent.parent.parent != runner.parent.parent.parent:
