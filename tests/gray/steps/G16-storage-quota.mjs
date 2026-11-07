@@ -120,6 +120,11 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     await job(['python3','-c',"import os,stat; os.rename('/tmp/gray-quota-legacy-link','/tmp/gray-quota-link-moved'); assert os.readlink('/tmp/gray-quota-link-moved')=='/etc/profile'; assert stat.S_ISFIFO(os.stat('/tmp/gray-quota-legacy-fifo').st_mode)"],'迁移前的符号链接迁移后可在同目录 rename，FIFO 保留',legacy);
     const known=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.complete&&p?.environment?.complete;});
     ctx.check('平台迁移标记写入后输出与环境已知',known.projects.some(p=>p.project===name&&p.outputs.complete&&p.environment.complete));
+    // 灰度节点本来没有外部目录：建一个平台外的旧目录，验收整棵树只打编号、不设继承。
+    const outside='/data2/gray-quota-external';
+    await stackExec(ctx.stack,'gray-node-1','sh','-c',`mkdir -p ${outside}/sub && echo legacy > ${outside}/sub/file && ln -sfn sub ${outside}/link && chown -R gpuops:gpuops ${outside}`);
     for(const group of ['datasets','external']){const report=await migrate('--only',group);ctx.check(group+' 分组迁移成功',report.includes('['+group+']'),report.slice(-2000));}
+    const tagged=await inspect({outside,sub:outside+'/sub',file:outside+'/sub/file'});const external=tagged.ids['x:'+outside];
+    for(const key of ['outside','sub','file'])ctx.check('外部目录 '+key+' 只打编号、不设继承',typeof external==='number'&&external>0&&JSON.stringify(tagged.attrs[key])===JSON.stringify([external,false]),{external,attrs:tagged.attrs[key]});
   }]]);
 }};
