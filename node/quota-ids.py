@@ -267,12 +267,12 @@ def tag_tree(path,value,*,top=True,prune=(),linked=False,reclaim=(),counts=None,
                 if folder=='.':raise
                 failed(counts,error);dirnames[:]=[];continue
             counts['directories']+=1
-            # Recompute after pass 1: a newly created directory must also be walked.
-            dirnames[:]=directories(names)
             # New names have the shortest rename window; unchanged inodes need no reopen.
             originals=set(filenames)
             files((name for name in names if name not in originals),second=True)
             files((name for name in names if name in originals),second=True)
+            # Recompute after pass 1 without delaying the new-file catch-up.
+            dirnames[:]=directories(names)
             for name in os.listdir(dirfd):
                 try:
                     info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
