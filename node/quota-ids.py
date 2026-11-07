@@ -125,22 +125,34 @@ def open_file(name,parent):
 
 def temporary_name(name):return re.fullmatch(r'\.quota-[0-9a-f]{32}',name) is not None
 
-def cleanup_temporary(parent,counts):
-    """Discard only this tool's reserved names; never follow a leftover link."""
+def special(info):
+    return stat.S_ISLNK(info.st_mode) or stat.S_ISFIFO(info.st_mode) or (stat.S_ISCHR(info.st_mode) and info.st_rdev==0)
+
+def cleanup_temporary(parent,counts,*,staging=False):
+    """Remove abandoned special inodes, and root-only staging at known locations.
+
+    An ordinary file with a reserved-looking name is still user data.
+    """
+    removed=set()
     for name in os.listdir(parent):
         if not temporary_name(name):continue
         try:
             info=os.stat(name,dir_fd=parent,follow_symlinks=False)
-            if stat.S_ISDIR(info.st_mode):
+            if stat.S_ISDIR(info.st_mode) and staging:
                 child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent)
                 try:
-                    # A staging directory contains new special inodes, never user trees.
-                    for leaf in os.listdir(child):os.unlink(leaf,dir_fd=child)
+                    info=os.fstat(child)
+                    if info.st_uid!=0 or stat.S_IMODE(info.st_mode)!=0o700:continue
+                    leaves=os.listdir(child)
+                    if not all(special(os.stat(leaf,dir_fd=child,follow_symlinks=False)) for leaf in leaves):continue
+                    for leaf in leaves:os.unlink(leaf,dir_fd=child)
                 finally:os.close(child)
                 os.rmdir(name,dir_fd=parent)
-            else:os.unlink(name,dir_fd=parent)
-            counts['cleaned']+=1
+            elif special(info):os.unlink(name,dir_fd=parent)
+            else:continue
+            removed.add(name);counts['cleaned']+=1
         except OSError as error:failed(counts,error)
+    return removed
 
 def rebuild_staged(name,parent,value,counts):
     """Rebuild under a tagged staging child, preserving a non-inheriting parent."""
@@ -187,62 +199,81 @@ def rebuild_special(name,parent,counts,*,staging=None):
         with contextlib.suppress(FileNotFoundError):os.unlink(temporary,dir_fd=target_parent)
 
 
-def tag_tree(path,value,*,top=True,prune=(),linked=False,counts=None,inherit=True,rebuild=False,cleanup=False):
-    """Directories get the ID and `inherit`, files only the ID.
+def tag_tree(path,value,*,top=True,prune=(),linked=False,reclaim=(),counts=None,inherit=True,rebuild=False,cleanup=False):
+    """Tag files before enabling inheritance in each directory, then catch arrivals.
 
-    Never follows symlinks or leaves the top directory's device. `top=False`
-    treats the top as a container-type directory (no PROJINHERIT, ID kept).
-    `prune` holds (st_dev, st_ino) of directories that keep their own IDs.
-    `linked=True` skips hard-linked files with a non-zero ID; 'all' skips
-    every hard link (external directories leave unclaimed inodes to datasets).
+    Child directories first receive only the ID; inheritance waits for their own
+    files. Never follows symlinks or leaves the top device. `top=False` keeps the
+    top ID without inheritance. `prune` contains directory (dev, ino) pairs.
+    `linked=True` preserves nonzero hardlink IDs except those in `reclaim` (an
+    external ID may be reclaimed by the first dataset that reaches the inode).
     """
     counts=counter() if counts is None else counts
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
     try:
         device=os.fstat(fd).st_dev
         for folder,dirnames,filenames,dirfd in os.fwalk('.',dir_fd=fd,follow_symlinks=False,onerror=lambda error:failed(counts,error)):
-            if cleanup:cleanup_temporary(dirfd,counts)
-            kept=[]
-            for name in dirnames:
-                if cleanup and temporary_name(name):continue
-                try:
-                    info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
-                    if info.st_dev!=device or (info.st_dev,info.st_ino) in prune:counts['skipped']+=1;continue
-                    # Child directories are tagged only when fwalk reaches them.
-                    if stat.S_ISDIR(info.st_mode):kept.append(name)
-                except OSError as error:failed(counts,error)
-            dirnames[:]=kept
-            reported=set()
-            def files(names,second=False):
+            removed=cleanup_temporary(dirfd,counts) if cleanup else set()
+            try:setx(dirfd,value if folder!='.' or top else projid(dirfd),False)
+            except OSError as error:
+                if folder=='.':raise
+                failed(counts,error);dirnames[:]=[];continue
+            blocked=set();excluded=set()
+            def directories(names):
+                kept=[]
                 for name in names:
-                    if cleanup and temporary_name(name):continue
+                    token=None
                     try:
                         info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
+                        if not stat.S_ISDIR(info.st_mode):continue
+                        token=(info.st_dev,info.st_ino)
+                        if token in blocked:continue
+                        if info.st_dev!=device or token in prune:
+                            if token not in excluded:counts['skipped']+=1;excluded.add(token)
+                            continue
+                        child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=dirfd)
+                        try:setx(child,value,False)
+                        finally:os.close(child)
+                        kept.append(name)
+                    except OSError as error:
+                        if token is not None:blocked.add(token)
+                        failed(counts,error)
+                return kept
+            dirnames[:]=directories(name for name in dirnames if name not in removed)
+            handled={}
+            def files(names,second=False):
+                for name in names:
+                    try:
+                        info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
+                        token=(info.st_dev,info.st_ino)
+                        if second and name in handled and handled[name] in (None,token):continue
+                        handled[name]=token
                         if info.st_dev!=device or not stat.S_ISREG(info.st_mode):continue
                         child=open_file(name,dirfd)
                         try:
+                            info=os.fstat(child);handled[name]=(info.st_dev,info.st_ino)
                             current=projid(child)
-                            if second and current==value:continue
-                            token=(name,info.st_dev,info.st_ino)
-                            if linked and info.st_nlink>1 and (linked=='all' or current!=0):
-                                if token not in reported:counts['linked']+=1;reported.add(token)
-                                continue
-                            setx(child,value)
-                            if token not in reported:counts['files']+=1;reported.add(token)
+                            if linked and info.st_nlink>1 and current!=0 and current not in reclaim:
+                                counts['linked']+=1;continue
+                            setx(child,value);counts['files']+=1
                         finally:os.close(child)
-                    except OSError as error:failed(counts,error)
-            files(filenames)
+                    except OSError as error:
+                        handled.setdefault(name,None);failed(counts,error)
+            files(name for name in filenames if name not in removed)
             try:
-                if folder!='.' or top:setx(dirfd,value,inherit)
-                else:setx(dirfd,projid(dirfd),False)
+                setx(dirfd,value if folder!='.' or top else projid(dirfd),inherit if folder!='.' or top else False)
+                names=os.listdir(dirfd)
             except OSError as error:
                 if folder=='.':raise
                 failed(counts,error);dirnames[:]=[];continue
             counts['directories']+=1
-            # Catch regular files created before PROJINHERIT was enabled.
-            files(os.listdir(dirfd),second=True)
+            # Recompute after pass 1: a newly created directory must also be walked.
+            dirnames[:]=directories(names)
+            # New names have the shortest rename window; unchanged inodes need no reopen.
+            originals=set(filenames)
+            files((name for name in names if name not in originals),second=True)
+            files((name for name in names if name in originals),second=True)
             for name in os.listdir(dirfd):
-                if cleanup and temporary_name(name):continue
                 try:
                     info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
                     if info.st_dev!=device or stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):continue
@@ -263,9 +294,8 @@ def tag_layer(layer,env,images,*,rebuild=False,cleanup=False):
     fd=os.open(layer,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
     try:
         setx(fd,images,False)
-        if cleanup:cleanup_temporary(fd,counts)
+        if cleanup:cleanup_temporary(fd,counts,staging=True)
         for name in sorted(os.listdir(fd)):
-            if cleanup and temporary_name(name):continue
             try:
                 info=os.stat(name,dir_fd=fd,follow_symlinks=False)
                 if stat.S_ISDIR(info.st_mode):

@@ -94,7 +94,7 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
     const after=await inspect({layer});
     ctx.check('podman rm 已删除该容器层',after.attrs.layer===null,{layer,attrs:after.attrs});
   }],['迁移工具 dry-run 与正式执行',async()=>{
-    // 专用项目：共享项目的容器层可能被别的步骤留下的终端一直挂载着，生产迁移在维护窗口里卸盘后进行，不会有活的 overlay。
+    // 专用项目保留旧特殊 inode；首轮验证共享项目的活层跳过，再停止 podman 完成实际迁移。
     const legacy=ctx.name('legacy');
     await call(ctx,member,'projects.create',{machine:ctx.machine,project:legacy});
     await job(['true'],'专用项目容器已建好',legacy);
@@ -110,7 +110,32 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     const migrate=async(...args)=>(await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',source,'--config','/etc/gpuq-console/node-install.json',...args)).stdout;
     const plan=await migrate('--dry-run');ctx.note(plan.split('\n').slice(0,40).join('\n'));
     ctx.check('dry-run 打印计划且未改动',plan.includes('仅打印计划')&&plan.includes('4 项目文件'),plan.slice(0,2000));
+    const legacyHead=await inspect({},{dev:`{workspacesRoot}/${owner}/${legacy}/oci.json`}),legacyLayer=legacyHead.oci.dev.layer;
+    const first=await migrate('--only','platform');ctx.note(first.split('\n').slice(-40).join('\n'));
+    const mounted=text=>[...text.matchAll(/活 overlay 层跳过 (\d+)/g)].reduce((sum,match)=>sum+Number(match[1]),0);
+    const skipped=first.split('\n').filter(line=>line.includes('注意：容器层仍有活 overlay'));
+    ctx.check('首轮 platform 仅跳过共享项目仍挂载的层',mounted(first)===1&&skipped.length===1&&skipped[0].endsWith(facts.oci.dev.layer),{skipped,mounted:mounted(first)});
+    const unknown=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.size===null&&p?.environment?.size===null;});
+    ctx.check('跳过活层时输出与环境仍未知',unknown.projects.some(p=>p.project===name&&p.outputs.size===null&&p.environment.size===null));
+    // 隔离灰度节点：停止服务账户所有引擎的容器及 pause，满足维护窗口前提。
+    await stackExec(ctx.stack,'gray-node-1',...asService,`import importlib.util,json,subprocess,sys
+from pathlib import Path
+node=Path(sys.argv[1])/'current'/'node'
+def load(name):
+    s=importlib.util.spec_from_file_location(name,node/(name+'.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
+config=json.loads(load('runtime-profile').read_private(node.parent/'profiles'/'7IM'/'node-config.json'));oci=load('personal-oci')
+for folder in sorted((Path(config['workspacesRoot'])/'.oci').iterdir()):
+    if not (folder/'graph').is_dir():continue
+    for args in (('stop','--all'),('system','migrate')):
+        subprocess.run(oci.engine_command(config,folder,*args),env=oci.engine_environment(folder),capture_output=True,text=True,timeout=120,check=True)`,facts.release);
     const done=await migrate('--only','platform');ctx.note(done.split('\n').slice(-40).join('\n'));
+    ctx.check('停止 podman 后 platform 不再跳过活层',mounted(done)===0,done.slice(-5000));
+    const completed=await node('python3','-I','-B','-c',`import json,os,sys;print(json.dumps(os.path.isfile(sys.argv[1]+'/quota/migrated.json')))`,facts.config.root);
+    ctx.check('platform 成功写出 migrated.json',completed);
+    const actual=await inspect({diff:legacyLayer+'/diff',work:legacyLayer+'/work'}),env=actual.ids[`p:${owner}/${legacy}:env`];
+    for(const part of ['diff','work'])ctx.check('旧层 '+part+' 实际迁移到环境号并继承',typeof env==='number'&&JSON.stringify(actual.attrs[part])===JSON.stringify([env,true]),actual.attrs);
+    const known=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.complete&&p?.environment?.complete;});
+    ctx.check('平台迁移标记写入后输出与环境 complete',known.projects.some(p=>p.project===name&&p.outputs.complete&&p.environment.complete));
     const line=done.split('\n').find(l=>l.startsWith('完成后 /data1：'));const match=line?.match(/已用 ([\d,]+) 字节，未登记（编号 0）([\d,]+) 字节/);
     const [used,untracked]=match?match.slice(1).map(v=>Number(v.replaceAll(',',''))):[0,Infinity];
     ctx.check('迁移后 /data1 未登记接近 0',untracked<=Math.max(64*1024**2,used*0.02),{line,used,untracked});
@@ -118,9 +143,6 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     ctx.check('迁移后工作区盘列出平台运行数据',after.disks.find(d=>d.roles.includes('workspace')).items.some(i=>i.kind==='platform'));
     await job(['sh','-c','mkdir /usr/share/doc && echo restored > /usr/share/doc/gray-quota && echo "# after migration" >> /etc/profile'],'迁移后可在镜像 whiteout 原路径 mkdir 并写文件',legacy);
     await job(['python3','-c',"import os,stat; os.rename('/tmp/gray-quota-legacy-link','/tmp/gray-quota-link-moved'); assert os.readlink('/tmp/gray-quota-link-moved')=='/etc/profile'; assert stat.S_ISFIFO(os.stat('/tmp/gray-quota-legacy-fifo').st_mode)"],'迁移前的符号链接迁移后可在同目录 rename，FIFO 保留',legacy);
-    const active=/活 overlay 层跳过 [1-9]/.test(done);
-    const known=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return active?p?.outputs?.size===null&&p?.environment?.size===null:p?.outputs?.complete&&p?.environment?.complete;});
-    ctx.check(active?'活 overlay 被跳过，平台迁移标记暂不发布':'平台迁移标记写入后输出与环境已知',known.projects.some(p=>p.project===name&&(active?p.outputs.size===null&&p.environment.size===null:p.outputs.complete&&p.environment.complete)));
     // 灰度节点本来没有外部目录：建一个平台外的旧目录，验收整棵树只打编号、不设继承。
     const outside='/data2/gray-quota-external';
     await stackExec(ctx.stack,'gray-node-1','sh','-c',`mkdir -p ${outside}/sub && echo legacy > ${outside}/sub/file && ln -sfn sub ${outside}/link && chown -R gpuops:gpuops ${outside}`);
@@ -136,7 +158,7 @@ os.link(root/'val/shared',outside/'shared')`,base,outside);
     await call(ctx,member,'data.upload.begin',upload);
     await call(ctx,member,'data.upload.chunk',{machine:ctx.machine,key,offset:0,data:bytes.toString('base64')});
     const externalFirst=await migrate('--only','external');ctx.check('external 可先运行',externalFirst.includes('[external]'));
-    const unclaimed=await inspect({shared:outside+'/shared'});ctx.check('external 不抢占编号 0 的硬链接',unclaimed.attrs.shared?.[0]===0,unclaimed.attrs);
+    const claimed=await inspect({shared:outside+'/shared'});ctx.check('external 先运行时共享硬链接计入外部编号',typeof claimed.ids['x:'+outside]==='number'&&claimed.attrs.shared?.[0]===claimed.ids['x:'+outside],claimed.attrs);
     const script=`import json,os,signal,time
 from pathlib import Path
 ns={'__name__':'online_migrate','__file__':'quota-migrate.py'};exec(${JSON.stringify(source)},ns)

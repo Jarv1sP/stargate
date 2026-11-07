@@ -1,5 +1,5 @@
 """Maintenance migration: plan, every tagging phase, hard links, idempotent rerun."""
-import copy,importlib.util,json,os,shutil,signal,tempfile,unittest,uuid
+import errno,stat,copy,importlib.util,json,os,shutil,signal,tempfile,unittest,uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -53,7 +53,7 @@ class Migration(unittest.TestCase):
         account=SimpleNamespace(pw_name='nodeops',pw_uid=os.getuid(),pw_gid=os.getgid(),pw_dir='/home/nodeops')
         with patch.object(migrate.pwd,'getpwnam',return_value=account),patch.object(migrate.os,'chown'):
             tool=migrate.Migration(self.config,ROOT/'node',out=self.out.append,only=only)
-            with patch.object(tool,'layer_mounted',return_value=False),patch.object(tool,'containers',return_value=[{'name':'gpuq-dev-1','labels':{},'upper':str(self.layer/'diff')}]),\
+            with patch.object(tool,'active_overlays',return_value=[]),patch.object(tool,'containers',return_value=[{'name':'gpuq-dev-1','labels':{},'upper':str(self.layer/'diff')}]),\
                  patch.object(tool.sampler,'filesystems',return_value=[{'mountPoints':[str(self.mount)],'quota':True,'usedBytes':1,'ids':{'0':{'bytes':1}}}]):
                 if before_run:before_run(tool)
                 return tool.run(dry_run)
@@ -167,6 +167,8 @@ class Migration(unittest.TestCase):
                 if Path(path)==ds/'images':
                     registered=tool.q.read(self.paths['root']/'quota')['ids']
                     self.assertNotIn('d:later',registered);self.assertNotIn('d:gone',registered)
+                    future=tool.q.read(self.paths['root']/'quota')['next']
+                    (self.paths['root']/'samples'/'quota.json').write_text(json.dumps({'quota':True,'next':future+1,'filesystems':[{'quota':True,'mountPoints':[str(self.mount)],'ids':{str(future):{'bytes':7777}}}]}))
                     config={**{key:str(value) for key,value in self.paths.items()},'dataMountPoints':[str(self.mount)]}
                     data=fixture.f.module('local-data');data.root=lambda config,field:Path(config[field])
                     sample=fixture.f.module('storage-usage');load=sample.module
@@ -175,16 +177,20 @@ class Migration(unittest.TestCase):
                     files=fixture.f.module('dataset-files')
                     with patch.object(files,'data',return_value=data):
                         row=next(row for row in files.datasets(config)['datasets'] if row['name']=='later')
-                    self.assertEqual((row['size'],row['complete']),(13,True));observed.append(True)
+                    self.assertEqual((row['size'],row['complete']),(13,True))
+                    usage=sample.Sample(config);self.assertIn(str(self.mount),usage.filesystems)
+                    usage.names[future]='d:later'
+                    self.assertEqual(usage.size('d:later',ds/'later'),{'size':7777,'complete':True})
+                    observed.append(True)
                 return original(path,value,**kwargs)
             tool.q.tag_tree=tag
         with fixture.Kernel():self.run_migration(False,only='datasets',before_run=inspect_registration)
         self.assertEqual(observed,[True]);self.assertIn('d:gone',self.ids());self.assertIn('[datasets] 8 回收站','\n'.join(self.out))
 
-    def test_external_hardlinks_stay_zero_until_the_dataset_claims_them(self):
+    def test_external_hardlinks_are_accounted_and_reclaimed_by_the_dataset(self):
         q=fixture.q;shared=self.mount/'cyx'/'shared.bin'
         with fixture.Kernel() as kernel:
-            self.run_migration(False,only='external');self.assertEqual(kernel.of(shared),(0,False))
+            self.run_migration(False,only='external');self.assertEqual(kernel.of(shared),(self.ids()[q.external_key(self.mount/'cyx')],False))
             self.run_migration(False,only='datasets')
             self.assertEqual(kernel.of(shared),(self.ids()[q.dataset_key('images')],False))
 
@@ -198,13 +204,46 @@ class Migration(unittest.TestCase):
             for group in groups:self.assertIn(f'[{group}] 无条目','\n'.join(self.out))
 
     def test_mounted_layer_is_skipped_and_withholds_the_platform_marker(self):
-        def active(tool):tool.layer_mounted=lambda layer:True
+        def active(tool):tool.active_overlays=lambda:[(str(self.layer/'diff'),'/anywhere')]
         with fixture.Kernel() as kernel:
             self.run_migration(False,only='platform',before_run=active)
             self.assertEqual(kernel.of(self.layer),(0,False))
             self.assertNotEqual(kernel.of(self.paths['workspacesRoot']/'alice'/'demo')[0],0)
         self.assertIn('活 overlay 层跳过 1','\n'.join(self.out))
         self.assertFalse((self.paths['root']/'quota'/'migrated.json').exists())
+
+    def test_mount_scan_runs_once_and_prunes_layers_missing_from_container_inventory(self):
+        orphan=self.layer.parent/'orphan';(orphan/'diff').mkdir(parents=True);(orphan/'diff'/'link').symlink_to('missing')
+        seen=[]
+        def active(tool):
+            def scan():seen.append(True);return [('orphan/diff','/elsewhere')]
+            tool.active_overlays=scan
+        with fixture.Kernel() as kernel:
+            self.run_migration(False,only='platform',before_run=active)
+            self.assertEqual(kernel.of(orphan),(0,False));self.assertEqual(kernel.of(orphan/'diff'),(0,False))
+        self.assertEqual(seen,[True]);self.assertIn('活 overlay 层跳过 1','\n'.join(self.out))
+        self.assertFalse((self.paths['root']/'quota'/'migrated.json').exists())
+
+    def test_mounted_layers_are_pruned_even_when_container_listing_fails(self):
+        def failed_listing(tool):
+            def containers(engine):tool.list_failures+=1;return []
+            tool.containers=containers
+            tool.active_overlays=lambda:[(None,str(self.layer/'merged'))]
+        with fixture.Kernel() as kernel:
+            self.run_migration(False,only='platform',before_run=failed_listing)
+            self.assertEqual(kernel.of(self.layer),(0,False));self.assertEqual(kernel.of(self.layer/'diff'),(0,False))
+        self.assertIn('活 overlay 层跳过 1','\n'.join(self.out));self.assertIn("'LIST': 1",'\n'.join(self.out))
+        self.assertFalse((self.paths['root']/'quota'/'migrated.json').exists())
+
+    def test_external_cleanup_is_disabled_and_external_only_hardlinks_get_an_id(self):
+        outside=self.mount/'cyx';link=outside/('.quota-'+'a'*32);link.symlink_to('missing')
+        os.link(outside/'own',outside/'own2');(self.mount/'second').mkdir();os.link(outside/'own',self.mount/'second'/'own')
+        with fixture.Kernel() as kernel:
+            self.run_migration(False,only='external')
+            value=kernel.of(outside/'own')[0]
+            self.assertIn(value,[v for k,v in self.ids().items() if k.startswith('x:')]);self.assertNotEqual(value,0)
+            self.assertEqual(kernel.of(self.mount/'second'/'own'),(value,False))
+        self.assertTrue(link.is_symlink())
 
     def test_changed_specials_withhold_a_new_platform_marker(self):
         def changed(tool):
@@ -222,14 +261,32 @@ class Migration(unittest.TestCase):
         (proc/'101/mountinfo').write_text(mount);(proc/'101/status').write_text(f'Uid:\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}')
         account=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())
         with patch.object(migrate.pwd,'getpwnam',return_value=account):tool=migrate.Migration(self.config,ROOT/'node')
-        tool.proc=proc;self.assertFalse(tool.layer_mounted(self.layer))
+        tool.proc=proc;self.assertFalse(tool.layer_mounted(self.layer,tool.active_overlays()))
         (proc/'102/ns').mkdir(parents=True);(proc/'102/ns/mnt').touch();(proc/'102/mountinfo').write_text(mount);(proc/'102/status').write_text(f'Uid:\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}')
-        self.assertTrue(tool.layer_mounted(self.layer))
-        self.assertFalse(tool.layer_mounted(self.layer.parent/'other'))
+        overlays=tool.active_overlays();self.assertTrue(tool.layer_mounted(self.layer,overlays))
+        self.assertFalse(tool.layer_mounted(self.layer.parent/'other',overlays))
+        self.assertTrue(tool.layer_mounted(self.layer,[('L1/diff','/elsewhere')]))
+        self.assertTrue(tool.layer_mounted(self.layer,[('not-matching',str(self.layer/'merged'))]))
+
+    def test_mount_scan_ignores_process_exit_errors(self):
+        account=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())
+        with patch.object(migrate.pwd,'getpwnam',return_value=account):tool=migrate.Migration(self.config,ROOT/'node')
+        proc=self.mount/'proc';(proc/'1/ns').mkdir(parents=True);(proc/'1/ns/mnt').touch();(proc/'102').mkdir()
+        tool.proc=proc;read=Path.read_text
+        for error in (ProcessLookupError(errno.ESRCH,'gone'),OSError(errno.EINVAL,'gone')):
+            def text(path,*args,**kwargs):
+                if path==proc/'102/status':raise error
+                return read(path,*args,**kwargs)
+            with patch.object(Path,'read_text',text):self.assertEqual(tool.active_overlays(),[])
 
     def test_trash_root_leftover_staging_is_cleaned_on_rerun(self):
-        trash=self.paths['datasetsRoot']/'.trash';staging=trash/('.quota-'+'c'*32);staging.mkdir();(staging/'new').symlink_to('missing')
-        with fixture.Kernel():self.run_migration(False,only='datasets')
+        trash=self.paths['datasetsRoot']/'.trash';staging=trash/('.quota-'+'c'*32);staging.mkdir(mode=0o700);(staging/'new').symlink_to('missing')
+        original=os.fstat;inode=staging.stat().st_ino
+        def root_owned(fd):
+            info=original(fd)
+            if info.st_ino!=inode:return info
+            fields=list(info);fields[4]=0;return os.stat_result(fields)
+        with fixture.Kernel(),patch.object(os,'fstat',side_effect=root_owned):self.run_migration(False,only='datasets')
         self.assertFalse(staging.exists());self.assertIn('清理中断残留 1','\n'.join(self.out))
 
     @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')

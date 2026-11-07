@@ -150,21 +150,52 @@ class Tagging(unittest.TestCase):
     def test_each_directory_tags_its_regular_files_before_enabling_inheritance(self):
         top=self.base/'online';(top/'train').mkdir(parents=True);(top/'val').mkdir()
         for name in ('train/.upload-a','val/.upload-b'):(top/name).write_bytes(b'old')
+        children={os.stat(top/name).st_ino:top/name for name in ('train','val')}
         with Kernel() as kernel:
-            original=q.setx;seen=[]
+            original=q.setx;visited=set()
             def setx(fd,value,inherit=None):
                 info=os.fstat(fd)
+                if info.st_ino in children and inherit is False:
+                    self.assertFalse(kernel.of(children[info.st_ino])[1])
                 if inherit is True:
                     for name in os.listdir(fd):
                         child=os.stat(name,dir_fd=fd,follow_symlinks=False)
-                        if stat.S_ISREG(child.st_mode):
-                            self.assertEqual(kernel.of(Path('/proc/self/fd')/str(fd)/name)[0] if Path('/proc').exists() else kernel.attrs[(child.st_dev,child.st_ino)][1],value)
-                    if info.st_ino==os.stat(top/'train').st_ino:
-                        self.assertEqual(kernel.of(top/'val'),(0,False))
-                        seen.append('train')
+                        if stat.S_ISREG(child.st_mode):self.assertEqual(kernel.attrs[(child.st_dev,child.st_ino)][1],value)
+                    if info.st_ino in children:
+                        for inode,path in children.items():
+                            if inode not in visited:self.assertEqual(kernel.of(path),(value,False))
+                        visited.add(info.st_ino)
                 return original(fd,value,inherit)
             with patch.object(q,'setx',side_effect=setx):q.tag_tree(top,1001)
-        self.assertEqual(seen,['train'])
+        self.assertEqual(visited,set(children))  # No assumption about readdir order.
+
+    def test_directory_created_during_pass_one_is_discovered_and_walked(self):
+        top=self.base/'online';top.mkdir();old=top/'old';old.write_text('old')
+        with Kernel() as kernel:
+            original=q.setx;injected=[]
+            def setx(fd,value,inherit=None):
+                if os.fstat(fd).st_ino==old.stat().st_ino and not injected:
+                    (top/'late').mkdir();(top/'late'/'file').write_text('late');injected.append(True)
+                return original(fd,value,inherit)
+            with patch.object(q,'setx',side_effect=setx):q.tag_tree(top,1001)
+        self.assertEqual(kernel.of(top/'late'),(1001,True))
+        self.assertEqual(kernel.of(top/'late'/'file'),(1001,False))
+
+    def test_second_pass_prioritizes_new_names_and_only_reopens_replaced_inodes(self):
+        top=self.base/'online';top.mkdir()
+        for name in ('stable','replaced'):(top/name).write_text('old')
+        with Kernel() as kernel:
+            original=q.setx;open_file=q.open_file;opened=[];injected=[]
+            def setx(fd,value,inherit=None):
+                if inherit is True and not injected:
+                    (top/'new').write_text('new');(top/'replacement').write_text('replacement')
+                    os.replace(top/'replacement',top/'replaced');injected.append(True)
+                return original(fd,value,inherit)
+            def opened_file(name,parent):opened.append(name);return open_file(name,parent)
+            with patch.object(q,'setx',side_effect=setx),patch.object(q,'open_file',side_effect=opened_file):q.tag_tree(top,1001)
+        self.assertEqual(opened.count('stable'),1);self.assertEqual(opened.count('replaced'),2)
+        self.assertEqual(opened[-2:],['new','replaced'])
+        for name in ('stable','replaced','new'):self.assertEqual(kernel.of(top/name),(1001,False))
 
     def test_second_pass_tags_a_file_created_before_directory_inheritance(self):
         top=self.base/'online';top.mkdir();(top/'old').write_text('x')
@@ -206,21 +237,44 @@ class Tagging(unittest.TestCase):
             with patch.object(q,'rebuild_special',side_effect=rebuilt):q.tag_layer(layer,1003,1002,rebuild=True,cleanup=True)
         self.assertEqual(observed,[True]);self.assertEqual(os.readlink(layer/'symlink'),'diff')
 
-    def test_reserved_temporary_names_are_cleaned_without_following_links(self):
+    def test_cleanup_preserves_user_files_and_only_removes_known_root_staging(self):
         top=self.base/'leftovers';top.mkdir();outside=self.base/'kept';outside.mkdir();(outside/'data').write_text('keep')
-        (top/('.quota-'+'a'*32)).symlink_to(outside)
-        staging=top/('.quota-'+'b'*32);staging.mkdir();(staging/'new').symlink_to(outside/'data')
-        (top/'.quota-user-file').write_text('keep');counts=q.counter()
-        fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY)
-        try:q.cleanup_temporary(fd,counts)
+        link=top/('.quota-'+'a'*32);link.symlink_to(outside)
+        fifo=top/('.quota-'+'b'*32);os.mkfifo(fifo)
+        staging=top/('.quota-'+'c'*32);staging.mkdir(mode=0o700);(staging/'new').symlink_to(outside/'data')
+        user=top/('.quota-'+'d'*32);user.write_text('user content')
+        userdir=top/('.quota-'+'e'*32);userdir.mkdir(mode=0o700);(userdir/'file').write_text('keep')
+        counts=q.counter();fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY)
+        original=os.fstat
+        def root_owned(fd):
+            info=original(fd);fields=list(info);fields[4]=0;return os.stat_result(fields)
+        try:
+            with patch.object(q.os,'fstat',side_effect=root_owned):
+                q.cleanup_temporary(fd,counts)  # Normal trees are not staging locations.
+                self.assertTrue(staging.exists());self.assertEqual(counts['cleaned'],2)
+                q.cleanup_temporary(fd,counts,staging=True)
         finally:os.close(fd)
-        self.assertEqual(counts['cleaned'],2);self.assertEqual((outside/'data').read_text(),'keep')
-        self.assertEqual((top/'.quota-user-file').read_text(),'keep')
+        self.assertFalse(staging.exists());self.assertEqual(counts['cleaned'],3)
+        self.assertEqual(user.read_text(),'user content');self.assertEqual((userdir/'file').read_text(),'keep')
+        self.assertEqual((outside/'data').read_text(),'keep')
+        with Kernel() as kernel:q.tag_tree(top,1001,cleanup=True)
+        self.assertEqual(kernel.of(user),(1001,False));self.assertEqual(kernel.of(userdir),(1001,True))
+
+    def test_cleanup_keeps_staging_with_wrong_owner_or_permissions(self):
+        top=self.base/'leftovers';top.mkdir();stage=top/('.quota-'+'a'*32);stage.mkdir(mode=0o755)
+        (stage/'new').symlink_to('missing');fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY);original=os.fstat
+        try:
+            for uid,mode in ((0,0o755),(1001,0o700)):
+                def info(fd):
+                    fields=list(original(fd));fields[0]=stat.S_IFDIR|mode;fields[4]=uid;return os.stat_result(fields)
+                with patch.object(q.os,'fstat',side_effect=info):q.cleanup_temporary(fd,q.counter(),staging=True)
+                self.assertTrue(stage.exists())
+        finally:os.close(fd)
 
     def test_errors_are_counted_and_the_walk_continues(self):
         top,_=self.tree();blocked=os.stat(top/'a'/'f').st_ino
         with Kernel(fail=lambda info:errno.EPERM if info.st_ino==blocked else None) as kernel:counts=q.tag_tree(top,5)
-        self.assertEqual(counts['errors'],{'EPERM':2});self.assertEqual(kernel.of(top/'g'),(5,False))
+        self.assertEqual(counts['errors'],{'EPERM':1});self.assertEqual(kernel.of(top/'g'),(5,False))
 
     def test_unsupported_filesystem_fails_at_the_top(self):
         top,_=self.tree()
