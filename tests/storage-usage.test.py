@@ -175,6 +175,18 @@ class StorageUsage(unittest.TestCase):
         self.assertEqual(row['outputs']['size'],0);self.assertEqual(row['environment'],{'size':0,'complete':True})
         self.assertEqual(result['disks'][0]['items'][-1],{'kind':'filesystem','bytes':-2})
 
+    def test_registered_ids_newer_than_the_sample_are_unknown_and_new_datasets_are_measured(self):
+        ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo')
+        ids=self.write_sample(ops,[],[q.outputs_key('alice','demo'),q.env_key('alice','demo'),q.dataset_key('fresh')])
+        self.write_sample(ops,[self.fs({'0':{'bytes':5,'inodes':1}},5)])
+        row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
+        self.assertEqual((row['size'],row['complete']),(None,False))
+        self.assertEqual((row['outputs']['size'],row['outputs']['complete']),(None,False))
+        self.assertEqual(row['environment'],{'size':None,'complete':False})
+        folder=Path(self.config['datasetsRoot'])/'fresh';folder.mkdir();(folder/'f').write_bytes(b'12345')
+        dataset=self.files.datasets(self.config)['datasets'][0]
+        self.assertEqual((dataset['size'],dataset['complete']),(5,True),'a dataset newer than the sample is measured, not zero')
+
     def test_hourly_collect_measures_trash_and_counts_outputs_but_never_sizes_projects(self):
         ops=self.ops();ops.store.create('alice','demo');jobs=ops.store.root/'jobs';jobs.mkdir()
         (ops.store.dev_paths('alice','demo')['code']/'big').write_bytes(b'x'*4096)

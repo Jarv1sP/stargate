@@ -55,10 +55,17 @@ class Sample:
         return totals
 
     def size(self,key,path):
-        """{'size','complete'} for one key on the disk holding `path`; None when quota does not cover it."""
+        """{'size','complete'} for one key on the disk holding `path`; None when it is unknown.
+
+        A tagged directory always has an inode under its ID, so a registered key
+        missing from the sample means the sample predates it or tagging failed.
+        A key that was never registered has no bytes.
+        """
         mount=self.mount(path)
         if mount not in self.filesystems:return None
-        return {'size':self.bytes(mount).get(key,0),'complete':True}
+        totals=self.bytes(mount)
+        if key in totals:return {'size':totals[key],'complete':True}
+        return None if key in self.names.values() else {'size':0,'complete':True}
 
     def items(self,mount,used):
         q=module('quota-ids');projects={};rows=[];untracked=0

@@ -9,22 +9,22 @@ mount --make-rshared /
 i=0
 while [ "$i" -lt 64 ]; do [ -e "/dev/loop$i" ] || mknod -m 660 "/dev/loop$i" b 7 "$i"; i=$((i+1)); done
 quota_disk() {
+  # 每 64KiB 一个 inode：一份 Python 镜像约三万个文件，需容纳多份镜像和项目。
   image="$1/.gray-quota.img"; kind="$1/.gray-quota.type"
+  ext4='-q -F -O project,quota -E quotatype=prjquota,lazy_itable_init=1,lazy_journal_init=1 -i 65536'
   if [ ! -s "$kind" ]; then
     truncate -s 160G "$image"
     if [ "$2" = xfs ] && mkfs.xfs -q -f "$image"; then echo xfs > "$kind"
-    else mkfs.ext4 -q -F -O project,quota -E quotatype=prjquota,lazy_itable_init=1,lazy_journal_init=1 -T largefile4 "$image"; echo ext4 > "$kind"
+    else mkfs.ext4 $ext4 "$image"; echo ext4 > "$kind"
     fi
   fi
-  if [ "$(cat "$kind")" = xfs ]; then
-    if ! mount -o loop,prjquota "$image" "$1"; then
-      echo "gray-node-quota: $1 无法挂载 XFS，改用 ext4" >&2
-      mkfs.ext4 -q -F -O project,quota -E quotatype=prjquota,lazy_itable_init=1,lazy_journal_init=1 -T largefile4 "$image"; echo ext4 > "$kind"
-      mount -o loop "$image" "$1"
-    fi
-  else mount -o loop "$image" "$1"
+  type=$(cat "$kind")  # 挂载后原卷里的记录文件被遮住，先读出
+  if [ "$type" = xfs ] && ! mount -o loop,prjquota "$image" "$1"; then
+    echo "gray-node-quota: $1 无法挂载 XFS，改用 ext4" >&2
+    mkfs.ext4 $ext4 "$image"; echo ext4 > "$kind"; type=ext4
   fi
-  echo "$1 $(cat "$kind")" >> /run/gray-node-quota
+  [ "$type" = xfs ] || mount -o loop "$image" "$1"
+  echo "$1 $type" >> /run/gray-node-quota
 }
 quota_disk /data1 ext4
 quota_disk /data2 xfs

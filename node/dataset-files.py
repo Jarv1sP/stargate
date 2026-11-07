@@ -19,7 +19,7 @@ def datasets(config):
         records=Path(config['root'])/'dataset-uploaders'
         try:uploader=d.module('project-store').read_json(records/(folder.name+'.json')).get('userId')
         except (OSError,ValueError):pass
-        # Tagged datasets read the quota sample; the rest are still measured here.
+        # Tagged datasets read the quota sample; the rest (and ones newer than the sample) are measured here.
         size=usage.size(q.dataset_key(folder.name),folder) if q.dataset_key(folder.name) in registered else None
         rows.append({'name':folder.name,'dataset':folder.name,**(size or d.size(folder,partial=True)),
                      'uploadedBy':uploader,'modifiedAt':info.st_mtime})

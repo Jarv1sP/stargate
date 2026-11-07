@@ -44,7 +44,7 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
   const node=async(...args)=>JSON.parse((await stackExec(ctx.stack,'gray-node-1',...args)).stdout);
   const inspect=(paths,oci={})=>node('python3','-I','-B','-c',ROOTCHECK,JSON.stringify(paths),JSON.stringify(oci));
   const ids=facts=>key=>facts.ids[key];
-  const usage=async predicate=>waitFor(()=>call(ctx,member,'projects.list',{machine:ctx.machine,includeUsage:true}),predicate,{timeoutMs:180000,intervalMs:5000,what:'root 采样写出带本项目的用量'});
+  const usage=async predicate=>waitFor(()=>call(ctx,member,'projects.list',{machine:ctx.machine,includeUsage:true}),predicate,{timeoutMs:180000,intervalMs:5000,what:'root 采样写出预期的用量'});
   const job=async(argv,what)=>{const sent=await submit(ctx,member,name,argv);const ended=await waitJob(ctx,member,sent.id,terminalStates,{timeoutMs:300000});ctx.check(what,ended.state==='SUCCEEDED',ended);return ended;};
   let facts;
   await sections(ctx,[['数据盘开启项目配额',async()=>{
@@ -74,7 +74,7 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
     ctx.check('用量接口带样本时间',typeof result.checkedAt==='string',result.checkedAt);
     const sum=disk.items.reduce((total,i)=>total+(i.bytes??0)+(i.files??0)+(i.outputs??0)+(i.environment??0),0);
     ctx.check('工作区盘各项相加等于已用',disk.accounting==='quota'&&sum===disk.usedBytes,{sum,used:disk.usedBytes});
-    ctx.check('工作区盘列出本人镜像与平台运行数据',disk.items.some(i=>i.kind==='images'&&i.ownerId===owner)&&disk.items.some(i=>i.kind==='platform'),disk.items);
+    ctx.check('工作区盘列出本人镜像',disk.items.some(i=>i.kind==='images'&&i.ownerId===owner),disk.items);
     ctx.check('项目行三项都来自记账且已知',row&&row.size>0&&row.complete===true&&row.outputs.size>0&&row.environment.size>0,row);
   }],['打标后拉镜像、建容器、commit 与删除',async()=>{
     const created=await node(...asService,ENGINE,facts.release,'create');
@@ -102,6 +102,8 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
     const line=done.split('\n').find(l=>l.startsWith('完成后 /data1：'));const match=line?.match(/已用 ([\d,]+) 字节，未登记（编号 0）([\d,]+) 字节/);
     const [used,untracked]=match?match.slice(1).map(v=>Number(v.replaceAll(',',''))):[0,Infinity];
     ctx.check('迁移后 /data1 未登记接近 0',untracked<=Math.max(64*1024**2,used*0.02),{line,used,untracked});
+    const after=await usage(v=>v.disks?.some(d=>d.roles.includes('workspace')&&d.items.some(i=>i.kind==='platform')));
+    ctx.check('迁移后工作区盘列出平台运行数据',after.disks.find(d=>d.roles.includes('workspace')).items.some(i=>i.kind==='platform'));
     await job(['sh','-c','echo "# after migration" >> /etc/profile'],'迁移后任务照常运行并能改写镜像文件');
   }]]);
 }};
