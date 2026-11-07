@@ -1,4 +1,4 @@
-import {transferBytes} from './data-route.js';
+import {projectUsage,usageText,usagePartsText} from './storage-usage.js';
 import {diskLabel} from './disk-media.js';
 import {uploadBrowserFile} from './personal-upload.js';
 import {downloadBrowserPath} from './file-transfer-ui.js';
@@ -79,8 +79,9 @@ export function createSubmitSelectionGuard(){
 }
 export function projectDiskQuotaHTML(value){
   const bytes=n=>Number.isFinite(n)?new Intl.NumberFormat('zh-CN',{maximumFractionDigits:1}).format(n/1024**3)+' GiB':'未知';
-  const usage=value?.projectUsage,volumes=value?.volumes||[];
-  return (usage?`<p>项目文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${Number.isFinite(usage.size)?transferBytes(usage.size):'未知'}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${diskLabel(row)}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
+  // Same snapshot row and formatter as the data page, so both show one number.
+  const usage=value?.projectUsage?projectUsage(value.projectUsage):null,volumes=value?.volumes||[];
+  return (usage?`<p>项目用量：${usageText(usage.total)}</p><p class="disk-quota-parts">${usagePartsText(usage)}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${diskLabel(row)}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
 }
 export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,route,onRoute,current=()=>true,onRecoverySupport=()=>{}}={}){
   const check=()=>{signal?.throwIfAborted();if(!current())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');};
@@ -174,7 +175,7 @@ export function executionUI(store,refresh,toast){
       const value=await projectActivity.run(signal=>store.call('storage.snapshot',{machine:target},{signal:AbortSignal.any([signal,controller.signal])}));
       if(!current())return;
       const sample=value.machines?.find(row=>row.machine===target),usage=sample?.projects?.error?null:sample?.projects?.projects?.find(row=>row.project===project&&row.ownerId===(projectOwner||actor));
-      quotaResult=projectDiskQuotaHTML({volumes:sample?.quota?.error?[]:sample?.quota?.volumes,projectUsage:project?{size:usage?.size??null,complete:usage?.complete}:null});
+      quotaResult=projectDiskQuotaHTML({volumes:sample?.quota?.error?[]:sample?.quota?.volumes,projectUsage:project?usage||{}:null});
       quotaCheckedAt=(project?sample?.projects?.checkedAt:sample?.quota?.checkedAt)||null;quotaAt=Date.now();quotaState='ready';
     }catch(error){if(!current()||error.name==='AbortError')return;quotaState='unknown';quotaResult=null;quotaError=error.message||'磁盘用量未知，请稍后刷新。';}
     finally{if(current()){quotaController=null;renderDiskQuota();}}
@@ -248,7 +249,7 @@ export function executionUI(store,refresh,toast){
     const contextInfo=query('#workspace-mode-note').closest('.ui-info'),statusInfo=query('#project-status-detail').closest('.ui-info'),contextCopy=document.createElement('div');contextCopy.className='ui-info-content';
     for(const id of ['workspace-mode-note','project-status-detail']){const note=query('#'+id);note.classList.remove('ui-info-content');contextCopy.append(note);}contextInfo.append(contextCopy);statusInfo.remove();contextInfo.querySelector('summary').setAttribute('aria-label','项目与 Git 说明');query('.workspace-context-heading>div').append(contextInfo);
     const disk=document.createElement('details');disk.id='project-disk-quota';disk.className='execution-panel';
-    disk.innerHTML='<summary>磁盘用量<span id="disk-quota-state"></span></summary><div class="disk-quota-head"><span id="disk-quota-machine" class="server-id mono"></span>'+infoHTML('项目文件用量不分摊共享容器镜像。盘容量包含同盘其他内容；至少表示有目录读不到，未知不代表零用量。','磁盘用量说明')+'<button id="disk-quota-refresh" class="button quiet" type="button">刷新</button></div><div id="disk-quota-result" role="status" aria-live="polite"></div>';
+    disk.innerHTML='<summary>磁盘用量<span id="disk-quota-state"></span></summary><div class="disk-quota-head"><span id="disk-quota-machine" class="server-id mono"></span>'+infoHTML('项目用量是项目文件、它在这台服务器上的任务输出和容器环境之和，与数据页同一份统计；镜像与容器引擎按人计在数据页。至少表示有部分读不到，未知不代表零用量。','磁盘用量说明')+'<button id="disk-quota-refresh" class="button quiet" type="button">刷新</button></div><div id="disk-quota-result" role="status" aria-live="polite"></div>';
     query('[data-pp=settings]').append(disk);disk.addEventListener('toggle',()=>{if(disk.open){activateProjectActivity();syncDiskQuota();}else cancelDiskQuota();});query('#disk-quota-refresh').addEventListener('click',()=>void loadDiskQuota(true));
   }
   const receiptActor=()=>JSON.stringify([store.principal?.userId,store.principal?.role,store.authGeneration]);

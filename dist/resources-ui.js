@@ -122,7 +122,7 @@ function disksHTML(view){
   // The monitor reports configured data mounts. Do not manufacture a second
   // disk from the GPU model or duplicate one filesystem when it is identified.
   if(view.observed)for(const disk of view.host?.disks||[]){
-    if(disks.some(row=>disk.filesystem!=null&&disk.filesystem!==''&&row.filesystem===disk.filesystem||disk.mountPoint&&row.mountPoint===disk.mountPoint))continue;
+    if(disks.some(row=>disk.fs!=null&&disk.fs!==''&&row.fs===disk.fs||disk.mountPoint&&row.mountPoint===disk.mountPoint))continue;
     disks.push(disk);
   }
   return `<section class="resource-disks" aria-label="数据盘"><h3>${disks.length===1?'数据盘':disks.length?disks.length+' 块数据盘':'数据盘'}</h3>${disks.length?disks.map(disk=>{

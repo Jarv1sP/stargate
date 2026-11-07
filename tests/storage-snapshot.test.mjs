@@ -12,7 +12,7 @@ const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {
 async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'storage-snapshot-')),database=join(root,'portal'),bootstrap=join(root,'bootstrap'),calls=[];
  await writeFile(bootstrap,JSON.stringify({username:'admin',password:'Storage-Cache-Local-Fixture!'}));
- let read=async(_machine,operation)=>operation==='projects.quota'?{volumes:[{kind:'shared',fs:'11',usedBytes:3,availableBytes:9,totalBytes:12}]}:operation==='datasets.list'?{datasets:[{dataset:'images',size:null,complete:false,uploadedBy:'peer'}],complete:true}:operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:false}],complete:true}:{state:'COMPLETE',project:'vision'};
+ let read=async(_machine,operation)=>operation==='projects.quota'?{volumes:[{kind:'shared',fs:'11',usedBytes:3,availableBytes:9,totalBytes:12}]}:operation==='datasets.list'?{datasets:[{dataset:'images',size:null,complete:false,uploadedBy:'peer'}],complete:true}:operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:false}],complete:true,checkedAt:'2026-11-07T00:00:00.000Z'}:{state:'COMPLETE',project:'vision'};
  const bridge=async(...args)=>{calls.push(structuredClone(args));return read(...args);};
  let service;
  const open=async()=>{service=await PortalService.open(database,bootstrap,undefined,bridge);clearInterval(service.executionTimer);return service;};
@@ -29,14 +29,14 @@ test('storage.snapshot is local, accepts extra fields, and an empty cache stays 
  await assert.rejects(f.service.invoke('not-logged-in','storage.snapshot',{}),{status:401});assert.equal(f.calls.length,0);
 });
 
-test('refresh scans only the requested server once and reuses its cache for five minutes',async t=>{
+test('refresh scans only the requested server once and reuses its cache for one minute',async t=>{
  const f=await fixture(t),selected=MACHINES[1].id;let now=Date.now();t.mock.method(Date,'now',()=>now);
  const reply=(await f.service.invoke(f.token(),'storage.refresh',{machine:selected,extra:'ignored'})).result;assert.equal(reply.machines[0].refreshing,true);
  await f.service.storageWork;
  assert.deepEqual(f.calls.map(row=>[row[0],row[1]]),[[selected,'projects.quota'],[selected,'datasets.list'],[selected,'projects.list']]);assert.equal(f.calls[2][2].includeUsage,true);
  const saved=(await f.snapshot(selected)).machines[0];assert.equal(saved.quota.volumes[0].kind,'shared');assert.equal(saved.datasets.datasets[0].size,null);assert.equal(saved.projects.projects[0].complete,false);
  for(const part of ['quota','datasets','projects'])assert.ok(saved[part].checkedAt);assert.ok(saved.checkedAt);
- now+=5*minute-1;const cached=(await f.service.invoke(f.token(),'storage.refresh',{machine:selected})).result;assert.equal(cached.machines[0].refreshing,false);assert.equal(f.calls.length,3);
+ now+=minute-1;const cached=(await f.service.invoke(f.token(),'storage.refresh',{machine:selected})).result;assert.equal(cached.machines[0].refreshing,false);assert.equal(f.calls.length,3);
  now++;await f.service.invoke(f.token(),'storage.refresh',{machine:selected});await f.service.storageWork;assert.equal(f.calls.length,6);
 });
 
@@ -52,12 +52,12 @@ test('queued and concurrent refresh requests scan one server at a time without d
  assert.deepEqual(f.calls.map(row=>row[0]),[machine,machine,machine,...Array(3).fill(MACHINES[1].id)]);
 });
 
-test('periodic usage scans are staggered by server; quota alone updates every five minutes',async t=>{
+test('periodic refresh reads disks, datasets and projects together every five minutes, staggered by server',async t=>{
  let now=Date.now();t.mock.method(Date,'now',()=>now);const f=await fixture(t),start=now;
- await f.service.refreshStorage(true);assert.deepEqual(f.calls.filter(row=>row[1]==='datasets.list').map(row=>row[0]),[machine]);
- now=start+5*minute;await f.service.refreshStorage(true);assert.equal(f.calls.filter(row=>row[0]===machine&&row[1]==='projects.quota').length,2);assert.equal(f.calls.filter(row=>row[1]==='datasets.list').length,1);
- now=start+30*minute/MACHINES.length;await f.service.refreshStorage(true);assert.deepEqual(f.calls.filter(row=>row[1]==='datasets.list').map(row=>row[0]),[machine,MACHINES[1].id]);
- now=start+30*minute;await f.service.refreshStorage(true);assert.equal(f.calls.filter(row=>row[0]===machine&&row[1]==='datasets.list').length,2);
+ await f.service.refreshStorage(true);assert.deepEqual(f.calls.map(row=>[row[0],row[1]]),[[machine,'projects.quota'],[machine,'datasets.list'],[machine,'projects.list']]);
+ now=start+5*minute/MACHINES.length;await f.service.refreshStorage(true);assert.deepEqual(f.calls.filter(row=>row[1]==='projects.list').map(row=>row[0]),[machine,MACHINES[1].id]);
+ now=start+5*minute-1;await f.service.refreshStorage(true);assert.equal(f.calls.filter(row=>row[0]===machine).length,3);
+ now=start+5*minute;await f.service.refreshStorage(true);for(const operation of ['projects.quota','datasets.list','projects.list'])assert.equal(f.calls.filter(row=>row[0]===machine&&row[1]===operation).length,2,operation);
 });
 
 test('dataset upload completion and project changes schedule one debounced refresh',async t=>{
@@ -85,20 +85,24 @@ test('cache survives Portal restart without node reads and preserves partial and
  await f.service.invoke(f.token(),'storage.refresh',{machine});assert.equal(f.calls.length,0);
 });
 
-test('project presentation and persisted storage snapshots pass through environment, outputs and all area readings',async t=>{
- const f=await fixture(t),outputs={size:17,complete:false,count:2},environment={size:31,complete:false},areasCheckedAt='2026-10-20T00:00:00.000Z';
- const areas={outputs:{size:23,complete:true},environments:{size:null,complete:false},trash:{size:5,complete:true},temporary:{size:7,complete:true}};
- f.read(async(_host,operation)=>operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:true,outputs,environment}],areas,areasCheckedAt,complete:true}:operation==='projects.quota'?{volumes:[]}:{datasets:[]});
+test('snapshots pass through project parts, every disk composition and the node sample time, with owner names',async t=>{
+ const f=await fixture(t),outputs={size:17,complete:true,count:2},environment={size:31,complete:true},checkedAt='2026-11-07T00:00:00.000Z';
+ const disks=[{mountPoint:'/fixture/data0',totalBytes:100,usedBytes:60,availableBytes:40,media:'ssd',roles:['workspace'],accounting:'quota',trashBytes:5,futureField:'kept',items:[
+  {kind:'project',ownerId:'builtin-admin',project:'vision',files:3,outputs:17,environment:31},{kind:'images',ownerId:'gone',bytes:4},{kind:'external',path:'/fixture/data0/cyx',bytes:2},{kind:'filesystem',bytes:3}]},
+  {mountPoint:'/fixture/data1',totalBytes:100,usedBytes:null,availableBytes:null,media:null,roles:['datasets'],accounting:'unavailable',items:[]}];
+ f.read(async(_host,operation)=>operation==='projects.list'?{projects:[{project:'vision',ownerId:'builtin-admin',size:3,complete:true,outputs,environment}],disks,checkedAt,complete:true}:operation==='projects.quota'?{volumes:[]}:{datasets:[]});
  await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
  const before=(await f.snapshot(machine)).machines[0].projects;
- assert.deepEqual(before.areas,areas);assert.deepEqual(before.projects[0].outputs,outputs);
- assert.deepEqual(before.projects[0].environment,environment);
- assert.equal(before.areasCheckedAt,areasCheckedAt);
- const direct=(await f.service.invoke(f.token(),'projects.list',{machine,includeUsage:true})).result;
- assert.deepEqual(direct.areas,areas);assert.deepEqual(direct.projects[0].outputs,outputs);
- assert.deepEqual(direct.projects[0].environment,environment);
- assert.equal(direct.areasCheckedAt,areasCheckedAt);
+ assert.equal(before.checkedAt,checkedAt,'the node sample time, not the Portal read time');
+ assert.deepEqual(before.projects[0].outputs,outputs);assert.deepEqual(before.projects[0].environment,environment);
+ assert.equal(before.disks.length,2);assert.equal(before.disks[0].futureField,'kept');assert.deepEqual(before.disks[1],disks[1]);
+ assert.deepEqual(before.disks[0].items.map(item=>item.ownerName),['管理员',null,undefined,undefined]);
+ assert.equal('areas' in before,false);
  await f.reopen();assert.deepEqual((await f.snapshot(machine)).machines[0].projects,before);
+ // A node without a sample says so; the Portal does not substitute its own read time.
+ f.read(async(_host,operation)=>operation==='projects.list'?{projects:[],disks:[],checkedAt:null}:operation==='projects.quota'?{volumes:[]}:{datasets:[]});
+ f.service.scheduleStorageRefresh(machine,0);await f.service.refreshStorage();
+ assert.equal((await f.snapshot(machine)).machines[0].projects.checkedAt,null);
 });
 
 test('a failed refresh retains the last readings and timestamps with an error, never invented zeros',async t=>{

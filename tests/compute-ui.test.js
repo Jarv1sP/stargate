@@ -74,7 +74,9 @@ test('disks follow observed inventory, merge known filesystems and keep missing 
   const disk={mountPoint:'/fixture/ssd',media:'hdd',roles:['workspace','datasets'],totalBytes:1024**4,usedBytes:256*1024**3,availableBytes:768*1024**3};
   const single=render({disks:[disk]});assert.equal((single.match(/class="resource-disk /g)||[]).length,1);assert.match(single,/HDD · 工作区与数据集共用/);assert.doesNotMatch(single,/SSD/);
   assert.equal((render({disks:[disk,{...disk,mountPoint:'/fixture/hdd'}]}).match(/class="resource-disk /g)||[]).length,2);
-  assert.equal((render({disks:[{...disk,filesystem:'shared'},{...disk,mountPoint:'/fixture/datasets',filesystem:'shared'}]}).match(/class="resource-disk /g)||[]).length,1);
+  // The node names the filesystem id `fs`; one filesystem behind two mounts is one disk.
+  assert.equal((render({disks:[{...disk,fs:'shared'},{...disk,mountPoint:'/fixture/datasets',fs:'shared'}]}).match(/class="resource-disk /g)||[]).length,1);
+  assert.equal((render({disks:[{...disk,fs:'1'},{...disk,mountPoint:'/fixture/datasets',fs:'2'}]}).match(/class="resource-disk /g)||[]).length,2);
   const unknown=render({disks:[{mountPoint:'/fixture/ssd',totalBytes:null,usedBytes:null,availableBytes:null}]});assert.match(unknown,/resource-disk unknown/);assert.match(unknown,/可用 未知/);assert.doesNotMatch(unknown,/可用 0/);
   assert.match(render(),/数据盘读数未知/);
   assert.match(render({disks:[{...disk,availableBytes:63*1024**3}]}),/空间不足，低于 64 GiB/);
