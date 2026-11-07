@@ -2,7 +2,8 @@
 
 gpu-1: SSD workspace disk with project-quota accounting (every item kind) and an
 HDD dataset disk without it. gpu-2: workspace and datasets share one quota
-filesystem. gpu-3: SSD below the 64 GiB floor without accounting (project
+filesystem whose datasets are newer than the sample (measured, one partly
+unreadable). gpu-3: SSD below the 64 GiB floor without accounting (project
 usage unknown) and an HDD dataset disk with accounting. Every quota disk's
 items add up to its usedBytes.
 """
@@ -45,8 +46,7 @@ try:
                            q.images_key('fixture-member'):35,q.images_key('builtin-admin'):18,q.dataset_key('images'):50,q.PLATFORM:6,
                            q.external_key('/fixture/data1/cyx'):655,q.UNASSIGNED:12,None:30,'overhead':3},str(hdd):None},
         'gpu-2':{str(ssd):{q.files_key(*V):200,q.outputs_key(*V):150,q.env_key(*V):30,q.files_key(*R):90,q.outputs_key(*R):60,q.env_key(*R):20,
-                           q.images_key('fixture-member'):40,q.images_key('builtin-admin'):22,q.dataset_key('images'):500,q.dataset_key('motion'):300,
-                           q.PLATFORM:5,q.UNASSIGNED:4,None:10,'overhead':3}},
+                           q.images_key('fixture-member'):40,q.images_key('builtin-admin'):22,q.PLATFORM:5,q.UNASSIGNED:4,None:810,'overhead':3}},
         'gpu-3':{str(ssd):None,str(hdd):{q.dataset_key('images'):3000,q.dataset_key('motion'):2000,q.external_key('/fixture/data2/archive'):3000,None:190,'overhead':2}}}
     ids=q.allocate(q.folder(case.config),sorted({key for disks in usage.values() for rows in disks.values() if rows for key in rows if key not in (None,'overhead')}))
     capacity_of=lambda machine,path:dict(total=(2 if machine=='gpu-2' or str(path).startswith(str(ssd)) else 16)*1024*GiB,
