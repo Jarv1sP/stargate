@@ -126,8 +126,8 @@ class ProjectCopy:
 
     def target(self,row):
         # Staging is renamed into the new project, so it starts on the target's files ID.
-        folder=runtime_folder(self.j.config,row['id']);ref=row['target']
-        if self.s.created_dir(folder):
+        folder=runtime_folder(self.j.config,row['id']);ref=row.get('target') or {}
+        if self.s.created_dir(folder) and (ref.get('ownerId') or ref.get('userId')) and ref.get('project'):
             q=self.s.quota();q.assign(self.j.config,q.files_key(ref.get('ownerId') or ref['userId'],ref['project']),folder)
         return folder
 

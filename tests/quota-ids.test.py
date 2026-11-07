@@ -27,6 +27,11 @@ class Kernel:
         info=os.stat(path,follow_symlinks=False);flags,value=self.attrs.get((info.st_dev,info.st_ino),(0,0))
         return value,bool(flags&q.FS_XFLAG_PROJINHERIT)
 
+    def forget(self,*paths):
+        # A recreated directory may reuse a deleted inode number; a real new inode starts on ID 0.
+        for path in paths:
+            info=os.stat(path,follow_symlinks=False);self.attrs.pop((info.st_dev,info.st_ino),None)
+
     def __enter__(self):self.patch=patch.object(fcntl,'ioctl',self.ioctl);self.patch.start();return self
     def __exit__(self,*args):self.patch.stop()
 
@@ -121,10 +126,12 @@ class Tagging(unittest.TestCase):
         with Kernel() as kernel:
             q.tag_layer(layer,1003,1002);self.assertFalse(q.heal_layer(layer,1003))
             (layer/'work'/'work').rmdir();(layer/'work').rmdir();(layer/'work'/'work').mkdir(parents=True)
+            kernel.forget(layer/'work',layer/'work'/'work')
             self.assertTrue(q.heal_layer(layer,1003))
             self.assertEqual(kernel.of(layer/'work'),(1003,True));self.assertEqual(kernel.of(layer/'work'/'work'),(1003,True))
             fresh=layer.parent/'fresh'
             for name in ('diff','work'):(fresh/name).mkdir(parents=True)
+            kernel.forget(fresh/'diff',fresh/'work')
             self.assertFalse(q.heal_layer(fresh,1003))  # never tagged: leave it to the migration
             self.assertEqual(kernel.of(fresh/'diff'),(0,False))
 
@@ -198,7 +205,7 @@ class RuntimeEntries(unittest.TestCase):
             self.assertEqual(engine.create_container('gpuq-dev-x','image','demo'),{'layer':str(layer)})
             ids=self.ids();self.assertEqual(kernel.of(layer),(ids[q.images_key('alice')],False))
             for name in ('diff','work','merged'):self.assertEqual(kernel.of(layer/name),(ids[q.env_key('alice','demo')],True))
-            (layer/'work').rmdir();(layer/'work').mkdir()
+            (layer/'work').rmdir();(layer/'work').mkdir();kernel.forget(layer/'work')
             engine.heal_layer({'container':'gpuq-dev-x','layer':str(layer)},'demo')
             self.assertEqual(kernel.of(layer/'work'),(ids[q.env_key('alice','demo')],True))
         self.assertEqual(commands[0][0],'create');self.assertEqual(sum(c[0]=='container' for c in commands),1)
