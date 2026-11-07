@@ -185,14 +185,20 @@ class Tagging(unittest.TestCase):
         top=self.base/'online';top.mkdir()
         for name in ('stable','replaced'):(top/name).write_text('old')
         with Kernel() as kernel:
-            original=q.setx;open_file=q.open_file;opened=[];injected=[]
+            original=q.setx;open_file=q.open_file;lstat=os.stat;opened=[];injected=[];inherited=[]
             def setx(fd,value,inherit=None):
                 if inherit is True and not injected:
                     (top/'new').write_text('new');(top/'replacement').write_text('replacement')
                     os.replace(top/'replacement',top/'replaced');injected.append(True)
-                return original(fd,value,inherit)
+                result=original(fd,value,inherit)
+                if inherit is True:inherited.append(fd)
+                return result
+            def checked_stat(name,*args,**kwargs):
+                if inherited and kwargs.get('dir_fd')==inherited[0] and name in ('stable','replaced'):
+                    self.assertEqual(kernel.of(top/'new'),(1001,False),'new names must be tagged before scanning old names')
+                return lstat(name,*args,**kwargs)
             def opened_file(name,parent):opened.append(name);return open_file(name,parent)
-            with patch.object(q,'setx',side_effect=setx),patch.object(q,'open_file',side_effect=opened_file):q.tag_tree(top,1001)
+            with patch.object(q,'setx',side_effect=setx),patch.object(q,'open_file',side_effect=opened_file),patch.object(q.os,'stat',side_effect=checked_stat):q.tag_tree(top,1001)
         self.assertEqual(opened.count('stable'),1);self.assertEqual(opened.count('replaced'),2)
         self.assertEqual(opened[-2:],['new','replaced'])
         for name in ('stable','replaced','new'):self.assertEqual(kernel.of(top/name),(1001,False))
