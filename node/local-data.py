@@ -71,16 +71,18 @@ def root(config,field):
 
 def dataset_root(config,dataset,create=False):
     base=root(config,'datasetsRoot');dataset=name(dataset)
-    fd=open_directory(base)
+    fd=open_directory(base);fresh=False
     try:
         if create:
-            try:os.mkdir(dataset,0o700,dir_fd=fd)
+            try:os.mkdir(dataset,0o700,dir_fd=fd);fresh=True
             except FileExistsError:pass
         child=os.open(dataset,DIR_FLAGS,dir_fd=fd)
         try:
             if os.fstat(child).st_dev!=os.fstat(fd).st_dev:raise ValueError('数据集不能跨出配置的数据盘。')
         finally:os.close(child)
     finally:os.close(fd)
+    if fresh:
+        q=module('quota-ids');q.assign(config,q.dataset_key(dataset),base/dataset)
     return base/dataset
 
 def size(path,*,partial=False):

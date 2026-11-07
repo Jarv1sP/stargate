@@ -18,10 +18,30 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 
 节点状态采样使用 GPUQ 现有查询上限 1000，从返回的活跃作业中保留全部运行中、启动中和让位中作业，以及按优先级/FIFO 排序的前 100 个 `PENDING`；快照 `limit` 为 100 加非 `PENDING` 数量，门户保留该列表，避免排队作业挤掉 GPU 进程对应的任务信息。
 
-现有 `7IM` 的每小时 `--storage-collect` 服务以 nice19/idle I/O 清理暂存并统计存储，原子保存数据盘 `samples/storage-areas.json`（含 `checkedAt`）。项目用量请求只读缓存并返回 `areasCheckedAt`，缺失或损坏时保留项目列表、用量显示未知；部分可读保留大小下限。该服务与容器服务使用安装器配置的同一账户，复用已有 Podman 用户命名空间，不新增服务。
-升级后先手动触发一次配置中的 storage-collect 服务，生成首份采样；无需等到下一个小时。该步骤由节点安装者执行。
+## 项目编号记账
 
-项目采样另带 `environment:{size,complete}`，按同一 owner 内的 `io.gpuq.project` 标签归属，无标签时匹配项目 `oci.json` 的容器名；只计各容器自身的 UpperDir，rootfs 型任务容器跳过，共用镜像与未归属层保留在既有 `areas.environments`。项目文件和可写层均在已有 owner 的 Podman 用户命名空间计量，不初始化运行时；缓存未含 environment 时返回 null，部分读取保留大小下限。
+数据盘必须开启文件系统的项目配额：ext4 在卸载状态下执行 `tune2fs -O project` 和 `tune2fs -Q prjquota`，挂载选项不变；XFS 用 `prjquota` 挂载。只记账，不设任何限额。未开启的盘在用量里显示“未知”，不显示 0。
+
+每个可记账对象有一个固定编号，登记在 `<root>/quota/ids.json`（服务账户所有，0600，flock 串行分配，从 1000 起只增不复用）。节点在新建时打标（`node/quota-ids.py`，目录设继承标志，文件只设编号）：新项目目录、任务输出目录、个人引擎目录 `.oci/<owner>`、新数据集目录（所有上传、导入、云盘下载、服务器间接收都经 `dataset_root(create=True)`）、复制暂存 `.copies/<key>`（目标项目号）与 `.copy-exports/<key>`（源项目号）。开发容器在 `podman create` 之后、首次启动之前打层：层目录 `graph/overlay/<layerId>/` 本身保留镜像号、不设继承（Podman 删除容器时会把它整体改名进 `overlay/tempdirs`），其下 diff、work、merged 等整层用项目·环境号。每次进入开发容器前读一次 diff/work 的编号，不一致就补打，只修复、不拒绝。打标失败（例如盘未开启）只在 stderr 记一行，用户操作照常完成，相应字节计入“未登记”。
+
+继承目录之间改名时编号不同会得到 EXDEV，所以根目录、`workspacesRoot`、`workspacesRoot/<owner>`、`.oci`、各 `.trash`、`root/outputs`、`.copies`、`.copy-exports`、`datasetsRoot`、数据盘挂载点和容器层目录本身都不设继承标志。
+
+安装器把 `node/quota-sample.py` 与 `node/quota-ids.py` 复制为 root 所有的 `/usr/local/libexec/stargate/` 下的副本，并写系统级 `stargate-quota-sample.service`/`.timer`（开机 30 秒后、之后每 60 秒，Nice=19、idle I/O，以 root 只读运行）。它对每块数据盘（同一设备的多个挂载点只算一次）用 `quotactl(Q_GETNEXTQUOTA, PRJQUOTA)` 读出各编号的字节与 inode，原子写入 `<root>/samples/quota.json`（0600，属主为服务账户）。该单元与其他单元一起纳入安装、停止、健康和回退流程，健康判断不变。
+
+`projects.list {includeUsage:true}` 只读样本和登记表：项目行的 `size`、`outputs.size`、`environment.size` 来自编号字节，`complete` 表示该盘有样本且开启记账；顶层 `disks` 按盘列出完整构成（项目、个人镜像、数据集、平台运行数据、外部目录、未归属输出、未登记、文件系统开销，相加等于 `usedBytes`），`checkedAt` 为样本时间，无样本为 null。`projects.quota` 只返回盘容量。`datasets.list` 对已登记的数据集读样本，未登记的仍现场测量。
+
+现有 `7IM` 的每小时 `--storage-collect` 以 nice19/idle I/O 清空过期回收站和暂存，测量各 `.trash` 大小并统计每个项目的任务输出数，原子写入 `<root>/samples/storage-usage.json`；它不再测量项目、输出或环境。回收站条目里容器用户（子 UID）所有的文件，由该账户在已有 Podman 用户命名空间里删除；单条失败只跳过该条，后续条目和统计照常进行。
+
+### 迁移现有数据
+
+开启项目配额并装好新版后，节点维护者以 root 执行（低优先级、幂等，可重复执行，重复执行沿用已分配的编号）：
+
+```sh
+python3 -I -B deploy/node/quota-migrate.py --config /etc/gpuq-console/node-install.json --dry-run
+python3 -I -B deploy/node/quota-migrate.py --config /etc/gpuq-console/node-install.json
+```
+
+`--dry-run` 只打印计划、各盘当前未登记字节和无法判断归属的回收站条目。正式执行请选在没有任务、终端和 Git 命令运行时，依次给平台运行数据、个人镜像与容器层、项目、输出、复制暂存、数据集、回收站条目和外部目录打标；路径全部来自安装配置。外部目录指数据盘上不属于任何平台目录的目录和文件（`lost+found`、符号链接和挂在别处的同设备别名除外），最后处理，并跳过已带非 0 编号的硬链接 inode，避免把数据集的字节改记到外部目录。结束时输出每块盘的未登记字节和前 20 个仍为编号 0 的大目录。默认从 `/usr/local/libexec/stargate/` 读取 root 所有的辅助文件，可用 `--node-dir` 指定。
 
 任务启动前，宿主 runner 在 attempt 控制目录的同级私有文件中保存该次 payload 的确切删除命令，不放进容器可写挂载。正常结束、被杀、启动失败都由 GPUQ 现有 attempt 清理动作按原名字删除容器记录；不扫描其他容器，开发容器和项目文件保留。清理失败沿既有动作重试，单元已卸载也继续清理。
 
@@ -37,6 +57,6 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 平台包装入口按平台标记和发布目录识别，解释器路径保持不变；GPUQ 将 Python 符号链接解析为实际路径，不影响排队入口更新。
 每版使用独立的真实 pyz 路径；current 原子切换后只重启受管服务，独立任务单元、旧发布目录和数据库保留；仅新库初始化。
 健康仅看服务 active 和 GPU 可读；失败时即使新单元损坏或停止失败，也先恢复旧文件和指针，再重启原先活跃的服务。`python3 deploy/node/install.py --config <私有JSON> --rollback` 回上一版，不回滚用户数据。
-灰测的 `deploy/gray-local/node-setup.sh` 生成模拟配置并调用同一安装器；私有配置保持 0600，模拟 CDI 规范为 0644，供非 root 任务读取，不另写安装流程。
+灰测的 `deploy/gray-local/node-setup.sh` 生成模拟配置并调用同一安装器；私有配置保持 0600，模拟 CDI 规范为 0644，供非 root 任务读取，不另写安装流程。灰测节点的 /data1、/data2 是开启项目配额的回环 ext4/XFS，G16 在其上核对打标、采样、容器层、清空带容器的项目和迁移工具。
 灰测节点启用共享内存池，覆盖 slice 配置、在线上限更新和真实任务启动；共享 slice 沿用内核默认的 `memory.oom.group=0`，不使用不存在的 systemd `MemoryOOMGroup` 属性。
 放宽运行中容器的 cpuset 时写入父级完整有效 CPU 集合，不向已有进程的集合写空值；部分内核会以 ENOSPC 拒绝后者，该错误不表示数据盘已满。

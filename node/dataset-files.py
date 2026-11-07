@@ -9,6 +9,7 @@ def data():
 
 def datasets(config):
     d=data();root=d.root(config,'datasetsRoot');rows=[];complete=True
+    usage=d.module('storage-usage').Sample(config);registered=set(usage.names.values());q=d.module('quota-ids')
     for folder in sorted(root.iterdir()):
         try:
             if folder.name.startswith('.') or folder.is_symlink() or not folder.is_dir():continue
@@ -18,7 +19,9 @@ def datasets(config):
         records=Path(config['root'])/'dataset-uploaders'
         try:uploader=d.module('project-store').read_json(records/(folder.name+'.json')).get('userId')
         except (OSError,ValueError):pass
-        rows.append({'name':folder.name,'dataset':folder.name,**d.size(folder,partial=True),
+        # Tagged datasets read the quota sample; the rest are still measured here.
+        size=usage.size(q.dataset_key(folder.name),folder) if q.dataset_key(folder.name) in registered else None
+        rows.append({'name':folder.name,'dataset':folder.name,**(size or d.size(folder,partial=True)),
                      'uploadedBy':uploader,'modifiedAt':info.st_mtime})
     return {'datasets':rows,'complete':complete}
 

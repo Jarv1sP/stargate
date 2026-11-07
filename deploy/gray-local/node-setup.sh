@@ -3,6 +3,31 @@
 set -eu
 /usr/bin/python3 --version > /run/gray-node-python
 mount --make-rshared /
+# 数据盘与生产一致开启项目配额：/data1 用 ext4（project,quota），/data2 用 XFS（prjquota）。
+# 回环镜像是本轮卷里的稀疏文件，挂在原卷之上；宿主内核没有 XFS 时 /data2 也用 ext4，并在日志里写明。
+[ -e /dev/loop-control ] || mknod -m 660 /dev/loop-control c 10 237
+i=0
+while [ "$i" -lt 64 ]; do [ -e "/dev/loop$i" ] || mknod -m 660 "/dev/loop$i" b 7 "$i"; i=$((i+1)); done
+quota_disk() {
+  image="$1/.gray-quota.img"; kind="$1/.gray-quota.type"
+  if [ ! -s "$kind" ]; then
+    truncate -s 160G "$image"
+    if [ "$2" = xfs ] && mkfs.xfs -q -f "$image"; then echo xfs > "$kind"
+    else mkfs.ext4 -q -F -O project,quota -E quotatype=prjquota,lazy_itable_init=1,lazy_journal_init=1 -T largefile4 "$image"; echo ext4 > "$kind"
+    fi
+  fi
+  if [ "$(cat "$kind")" = xfs ]; then
+    if ! mount -o loop,prjquota "$image" "$1"; then
+      echo "gray-node-quota: $1 无法挂载 XFS，改用 ext4" >&2
+      mkfs.ext4 -q -F -O project,quota -E quotatype=prjquota,lazy_itable_init=1,lazy_journal_init=1 -T largefile4 "$image"; echo ext4 > "$kind"
+      mount -o loop "$image" "$1"
+    fi
+  else mount -o loop "$image" "$1"
+  fi
+  echo "$1 $(cat "$kind")" >> /run/gray-node-quota
+}
+quota_disk /data1 ext4
+quota_disk /data2 xfs
 # Keep one complete proc view: the simulated driver and systemd add submounts to /proc.
 install -d /run/gray-proc
 mount -t proc proc /run/gray-proc

@@ -49,8 +49,11 @@ def low_priority_scan():
     subprocess.run(['/usr/bin/ionice','-c3','-p',str(os.getpid())],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
 def storage_collect():
-    low_priority_scan()
-    collected=module('project-purge').Trash(CONFIG).collect()+transfers().collect()
+    low_priority_scan();collected=[]
+    # Each cleanup is independent; a failure never skips the usage sample.
+    for kind,step in (('trash',lambda:module('project-purge').Trash(CONFIG).collect()),('transfers',lambda:transfers().collect())):
+        try:collected+=step()
+        except Exception as error:collected.append({'kind':kind,'state':'UNKNOWN','error':str(error)[:400]})
     module('storage-usage').refresh(projects())
     return collected
 

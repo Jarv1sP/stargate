@@ -41,6 +41,7 @@ class Host(INSTALL.Installer):
         super().__init__(config)
         self.policy = base / 'etc/containers/policy.json'
         self.system_units = base / 'etc/systemd/system'
+        self.libexec = base / 'usr/local/libexec/stargate'
         self.states, self.calls = {}, []
         self.fail_start = self.fail_stop = None
         self.gpu_only_release = None
@@ -127,7 +128,7 @@ class InstallationTests(unittest.TestCase):
     def make_package(self, label):
         package = self.base / label
         (package/'node').mkdir(parents=True)
-        for name in ('core-entry.py', 'core-service.py', 'node-probe.py', 'runtime-profile.py'):
+        for name in ('core-entry.py', 'core-service.py', 'node-probe.py', 'runtime-profile.py', 'quota-sample.py', 'quota-ids.py'):
             (package/'node'/name).write_bytes((ROOT/'node'/name).read_bytes())
         with zipfile.ZipFile(package/'gpuq.pyz', 'w') as archive:
             archive.writestr('__main__.py', 'print("READY", flush=True)\ninput()\nimport late\nprint(late.VALUE)\n')
@@ -160,6 +161,34 @@ class InstallationTests(unittest.TestCase):
         for name in ('gpuq.service', 'node-http.service', 'storage-collect.timer', 'container-observer.timer'):
             self.assertTrue(self.host.states['user', name]['active'], name)
         self.assertTrue(self.host.states['system', 'node-peer.service']['active'])
+        self.assertTrue(self.host.states['system', 'stargate-quota-sample.timer']['active'])
+
+    def test_quota_sampler_is_a_root_owned_copy_on_a_minute_timer(self):
+        self.host.install(self.package)
+        service = (self.host.system_units/'stargate-quota-sample.service').read_text()
+        timer = (self.host.system_units/'stargate-quota-sample.timer').read_text()
+        sampler = self.host.libexec/'quota-sample.py'
+        self.assertEqual(sampler.read_bytes(), (ROOT/'node/quota-sample.py').read_bytes())
+        self.assertEqual((self.host.libexec/'quota-ids.py').read_bytes(), (ROOT/'node/quota-ids.py').read_bytes())
+        self.assertIn('ExecStart="/usr/bin/python3" "-I" "-B" '+json.dumps(str(sampler)), service)
+        self.assertNotIn(str(self.host.root), service.split('ExecStart=')[1].split('--account')[0])
+        self.assertNotIn('User=', service)
+        self.assertIn('"--account" "nodeops" "--root" '+json.dumps(self.config['profiles']['7IM']['root']), service)
+        self.assertEqual(service.count('"--root"'), 1)
+        self.assertTrue(service.rstrip().endswith(json.dumps(self.config['dataMountPoints'][0])))
+        for line in ('Type=oneshot', 'Nice=19', 'IOSchedulingClass=idle'):
+            self.assertIn(line, service)
+        for line in ('OnBootSec=30', 'OnUnitActiveSec=60', 'Unit=stargate-quota-sample.service'):
+            self.assertIn(line, timer)
+        self.assertTrue(self.host.states['system', 'stargate-quota-sample.timer']['enabled'])
+
+    def test_rollback_to_a_release_without_the_sampler_removes_its_units(self):
+        first = self.host.install(self.package)
+        self.host.fail_start = 'stargate-quota-sample.timer'
+        with self.assertRaises(Exception):
+            self.host.install(self.make_package('second'))
+        self.assertEqual(str(self.selected()), first['release'])
+        self.assertTrue((self.host.system_units/'stargate-quota-sample.timer').exists())
 
     def test_install_writes_private_profiles_policy_keys_units_and_only_initializes_new_database(self):
         ssh = self.home/'.ssh'
@@ -331,7 +360,7 @@ class InstallationTests(unittest.TestCase):
         root.mkdir()
         self.config['gpuq']['root'] = str(root)
         manifest = json.loads((self.package/'manifest.json').read_text())
-        files, _ = self.host.bindings(manifest)
+        files, _ = self.host.bindings(manifest, self.package)
         body = files[str(self.home/'.config/systemd/user/gpuq.service')][0].decode()
         setting = next(line for line in body.splitlines() if line.startswith('WorkingDirectory='))
         unit = self.base/'working-directory.service'

@@ -13,7 +13,7 @@ class WorkspaceInitialization(unittest.TestCase):
         self.temporary=tempfile.TemporaryDirectory();self.addCleanup(self.temporary.cleanup)
         self.path=Path(self.temporary.name)/'oci.json'
         self.engine=oci.PersonalOCI.__new__(oci.PersonalOCI)
-        self.engine.s=oci.module('project-store');self.engine.policy={'baseImage':'fixture-image'}
+        self.engine.s=oci.module('project-store');self.engine.policy={'baseImage':'fixture-image'};self.engine.owner='alice'
         self.engine.state_path=lambda slug:self.path
 
     def test_an_existing_workspace_is_usable_while_another_operation_holds_the_short_lock(self):
@@ -41,7 +41,8 @@ class WorkspaceInitialization(unittest.TestCase):
                 with self.assertRaises(TimeoutError):second.result(timeout=2.5)
             finally:release.set()
             a,b=first.result(timeout=2),second.result(timeout=2)
-        self.assertEqual(a,b);self.assertEqual(commands,['pull','create'])
+        # The one inspect after create finds the layer to put on the project's env ID.
+        self.assertEqual(a,b);self.assertEqual(commands,['pull','create','container'])
         self.assertEqual(json.loads(self.path.read_text())['container'],a['container'])
 
     def test_failed_initialization_releases_the_lock_without_publishing_an_empty_container(self):

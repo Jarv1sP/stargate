@@ -55,7 +55,9 @@ class ProjectCopy:
             row=self.s.read_json(file) if file.exists() else None
             if row and row['state'] not in ('FAILED','COMPLETE'):return {k:row[k] for k in ('id','token','state')}
             exports=self.s.private_dir(self.d.root(self.j.config,'workspacesRoot')/'.copy-exports',create=True)
-            folder=self.s.private_dir(exports/key,create=True)
+            folder=exports/key
+            if self.s.created_dir(folder):
+                q=self.s.quota();q.assign(self.j.config,q.files_key(ref.get('ownerId') or ref['userId'],ref['project']),folder)
             bundle=self.s.private_dir(folder/'bundle',create=True)
             row={**(row or {}),'id':key,'token':row['token'] if row else uuid.uuid4().hex,'request':{'source':ref},
                  'root':str(bundle),'state':'PREPARING','environment':True,'fullImage':False,'mode':row.get('mode','full') if row else args.get('mode','full')}
@@ -123,7 +125,11 @@ class ProjectCopy:
             row.update(state='READY');row.pop('error',None);self.s.atomic_json(file,row);return 0
 
     def target(self,row):
-        return self.s.private_dir(runtime_folder(self.j.config,row['id']),create=True)
+        # Staging is renamed into the new project, so it starts on the target's files ID.
+        folder=runtime_folder(self.j.config,row['id']);ref=row['target']
+        if self.s.created_dir(folder):
+            q=self.s.quota();q.assign(self.j.config,q.files_key(ref.get('ownerId') or ref['userId'],ref['project']),folder)
+        return folder
 
     def sync(self):
         import importlib.util
@@ -234,8 +240,8 @@ class ProjectCopy:
             head=engine.load(project)
             if not incremental and head.get('container') is None:
                 container='gpuq-dev-'+uuid.uuid4().hex
-                engine.run('create','--name',container,'--network=none','--entrypoint','/bin/sh',manifest['image'])
-                self.s.atomic_json(working/'oci.json',{'image':manifest['image'],'container':container})
+                layer=engine.create_container(container,manifest['image'],project)
+                self.s.atomic_json(working/'oci.json',{'image':manifest['image'],'container':container,**layer})
         if not incremental and head.get('container') is not None:
             # A terminal/another copy may have initialized it during transport.
             self.s.require_workspace_space(folder,needed=manifest['rootfsBytes'])
@@ -288,8 +294,8 @@ class ProjectCopy:
             if head.get('container') is None:
                 engine.run('load','--input',str(bundle/'image.tar'),timeout=3600)
                 container='gpuq-dev-'+uuid.uuid4().hex
-                engine.run('create','--name',container,'--network=none','--entrypoint','/bin/sh',manifest['image'])
-                self.s.atomic_json(folder/'oci.json',{'image':manifest['image'],'container':container})
+                layer=engine.create_container(container,manifest['image'],project)
+                self.s.atomic_json(folder/'oci.json',{'image':manifest['image'],'container':container,**layer})
         engine.workspace_command(owner,'copy-'+key,['tar','--extract','--file','/run/gpuq/project-copy.tar','--directory','/'],
                                  paths=paths,archive=bundle/'workspace.tar',timeout=3600)
         with self.j.lock(key):

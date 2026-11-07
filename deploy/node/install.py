@@ -107,6 +107,7 @@ def unpack(package, destination):
 
 class Installer:
     system_units = Path('/etc/systemd/system')
+    libexec = Path('/usr/local/libexec/stargate')
     policy = Path('/etc/containers/policy.json')
     health_attempts = 30
     health_delay = 1
@@ -214,7 +215,26 @@ class Installer:
     def unit_word(value):
         return json.dumps(str(value)).replace('%', '%%').replace('$', '$$')
 
-    def bindings(self, manifest):
+    def quota_sampler(self, release):
+        """The one root service: read-only project-quota sampling every minute.
+
+        It runs a root-owned copy of the sampler, never the service-owned
+        release; quota-ids.py sits beside it for the maintenance migration.
+        """
+        files = {str(self.libexec/name): ((Path(release)/'node'/name).read_bytes(), 0o644, (0, 0))
+                 for name in ('quota-sample.py', 'quota-ids.py')}
+        roots = list(dict.fromkeys(profile['root'] for profile in self.config['profiles'].values()))
+        command = ['/usr/bin/python3', '-I', '-B', str(self.libexec/'quota-sample.py'), '--account', self.account.pw_name,
+                   *[word for root in roots for word in ('--root', root)], *self.config['dataMountPoints']]
+        service = ('[Unit]\nDescription=STARGATE project-quota sampler (read-only)\n[Service]\nType=oneshot\n'
+                   'Nice=19\nIOSchedulingClass=idle\nUMask=0077\nExecStart=' + ' '.join(map(self.unit_word, command)) + '\n')
+        timer = ('[Unit]\nDescription=STARGATE project-quota sampler\n[Timer]\nOnBootSec=30\nOnUnitActiveSec=60\n'
+                 'Unit=stargate-quota-sample.service\n[Install]\nWantedBy=timers.target\n')
+        files[str(self.system_units/'stargate-quota-sample.service')] = (service.encode(), 0o644, (0, 0))
+        files[str(self.system_units/'stargate-quota-sample.timer')] = (timer.encode(), 0o644, (0, 0))
+        return files, dict(scope='system', name='stargate-quota-sample.timer', service='stargate-quota-sample.service')
+
+    def bindings(self, manifest, release=None):
         delegation = self.system_units / f'user@{self.owner[0]}.service.d/50-stargate-cpuset.conf'
         files = {str(delegation): (b'[Service]\nDelegate=cpu cpuset io memory pids\n', 0o644, (0, 0))}
         unit_dir = self.home / '.config/systemd/user'
@@ -263,6 +283,9 @@ class Installer:
                 timer = f'[Timer]\nOnBootSec=15\nOnUnitActiveSec={seconds}\nUnit={name}\n[Install]\nWantedBy=timers.target\n'
                 files[str(directory / target)] = (timer.encode(), 0o644, owner)
             units.append(dict(scope=scope, name=target, service=name if seconds else None))
+        sampler, unit = self.quota_sampler(release or self.current)
+        files.update(sampler)
+        units.append(unit)
         gpu_command = Path(self.config.get('gpuCommand', self.home / 'bin/gpu'))
         files[str(gpu_command)] = (('#!/bin/sh\nexec ' + shlex.quote(str(self.current / 'gpu')) + ' "$@"\n').encode(), 0o700, self.owner)
         if 'authorizedKeys' in self.config:
@@ -361,7 +384,7 @@ class Installer:
 
     def install(self, package):
         release, manifest = self.stage(package)
-        files, units = self.bindings(manifest)
+        files, units = self.bindings(manifest, release)
         self.run(['/usr/bin/loginctl', 'enable-linger', self.account.pw_name])
         self.run(['/usr/bin/systemctl', 'start', f'user@{self.owner[0]}.service'])
         record = self.capture(files, units)

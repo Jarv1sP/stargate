@@ -19,7 +19,7 @@ class DirectoryContract(unittest.TestCase):
         original_stat=os.stat;original_read=Path.read_text
         def stat_fake(path,*args,**kwargs):
             v=original_stat(path,*args,**kwargs)
-            if os.fspath(path)=='/':v=os.stat_result([v.st_mode,v.st_ino,v.st_dev+1,v.st_nlink,v.st_uid,v.st_gid,v.st_size,v.st_atime,v.st_mtime,v.st_ctime])
+            if not isinstance(path,int) and os.fspath(path)=='/':v=os.stat_result([v.st_mode,v.st_ino,v.st_dev+1,v.st_nlink,v.st_uid,v.st_gid,v.st_size,v.st_atime,v.st_mtime,v.st_ctime])
             return v
         def read_fake(path,*args,**kwargs):
             if str(path)=='/proc/self/mountinfo':return f'1 0 0:1 / / rw - ext4 root rw\n2 1 0:2 / {self.base} rw - ext4 data rw\n'
