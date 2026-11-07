@@ -21,6 +21,9 @@ import {installTaskDisplay,taskDisplayCall} from './task-display.mjs';
 
 // Aggregate history is a presentation view; point queries use durable jobs.
 const STATE_JOBS_BYTES=300000;
+// Nodes answer usage from their quota sample (refreshed each minute) without
+// scanning, so disks, datasets and projects refresh together every five minutes.
+const STORAGE_REFRESH_MS=300000,STORAGE_REUSE_MS=60000;
 function stateCommand(argv){
   let remaining=200;
   const command=[];
@@ -88,10 +91,8 @@ export class PortalService extends DemoService{
     maintainTaskNotes(service);
     installTransfers(service);installFileCampus(service);
     const now=Date.now();service.storageQueue=new Map();
-    service.storageDue=new Map(MACHINES.map((machine,index)=>[machine.id,{
-      usage:service.storageSnapshots[machine.id]?.scannedAt?Date.parse(service.storageSnapshots[machine.id].scannedAt)+1800000:now+index*1800000/MACHINES.length,
-      quota:service.storageSnapshots[machine.id]?.quota?.checkedAt?Date.parse(service.storageSnapshots[machine.id].quota.checkedAt)+300000:now+index*300000/MACHINES.length
-    }]));
+    service.storageDue=new Map(MACHINES.map((machine,index)=>[machine.id,
+      service.storageSnapshots[machine.id]?.scannedAt?Date.parse(service.storageSnapshots[machine.id].scannedAt)+STORAGE_REFRESH_MS:now+index*STORAGE_REFRESH_MS/MACHINES.length]));
     return service;
   }
   export(){return {schema:2,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),jobs:this.store.jobs,sequence:this.store.sequence,storage:this.storageSnapshots};}
@@ -113,16 +114,17 @@ export class PortalService extends DemoService{
         })},
         projects:{projects:[],complete:false,checkedAt:null,...row.projects,projects:(row.projects?.projects||[]).map(value=>({
           ...this.projectPresentation(value.ownerId,id,value),ownerId:value.ownerId,ownerName:name(value.ownerId)
-        }))}};
+        })),...Array.isArray(row.projects?.disks)?{disks:row.projects.disks.map(disk=>({...disk,
+          items:(Array.isArray(disk?.items)?disk.items:[]).map(item=>item?.ownerId===undefined?item:{...item,ownerName:name(item.ownerId)})}))}:{}}};
     })});
   }
   scheduleStorageRefresh(machine,delay=30000){
     if(!this.storageDue.has(machine))return;
     const now=Date.now(),queued=this.storageQueue.get(machine);
-    this.storageQueue.set(machine,{at:queued?.at<=now?queued.at:now+delay,usage:true});
+    this.storageQueue.set(machine,{at:queued?.at<=now?queued.at:now+delay});
   }
   requestStorageRefresh(machine){
-    if(!(this.storageCurrent?.machine===machine&&this.storageCurrent?.usage)&&!(Date.now()-Date.parse(this.storageSnapshots[machine]?.scannedAt)<300000)){
+    if(this.storageCurrent?.machine!==machine&&!(Date.now()-Date.parse(this.storageSnapshots[machine]?.scannedAt)<STORAGE_REUSE_MS)){
       this.scheduleStorageRefresh(machine,0);void this.refreshStorage().catch(()=>{});
     }
     return this.storageSnapshot(machine);
@@ -130,25 +132,24 @@ export class PortalService extends DemoService{
   refreshStorage(periodic=false){
     const now=Date.now();
     if(periodic)for(const [machine,due] of this.storageDue){
-      if(this.storageCurrent?.machine!==machine&&!this.storageQueue.has(machine)&&(due.usage<=now||due.quota<=now))this.storageQueue.set(machine,{at:now,usage:due.usage<=now});
+      if(this.storageCurrent?.machine!==machine&&!this.storageQueue.has(machine)&&due<=now)this.storageQueue.set(machine,{at:now});
     }
     if(this.storageWork)return this.storageWork;
     this.storageWork=(async()=>{
       while(!this.closing&&this.bridge){
         const next=[...this.storageQueue].find(([,row])=>row.at<=Date.now());if(!next)break;
-        const [machine,request]=next;this.storageQueue.delete(machine);this.storageCurrent={machine,usage:request.usage};
-        const row=this.storageSnapshots[machine]??={},due=this.storageDue.get(machine);
+        const [machine]=next;this.storageQueue.delete(machine);this.storageCurrent={machine};
+        const row=this.storageSnapshots[machine]??={};
+        // Project sizes keep the node's sample time; other parts record when they were read.
         const read=async(part,operation,args={})=>{
           if(this.closing)return false;
-          try{const value=await this.bridge(machine,operation,args);row[part]={...value,checkedAt:new Date(Date.now()).toISOString()};return true;}
+          try{const value=await this.bridge(machine,operation,args);row[part]={...value,checkedAt:part==='projects'?value?.checkedAt??null:new Date(Date.now()).toISOString()};return true;}
           catch{row[part]={...row[part],error:'暂时读不到，请稍后刷新。'};return false;}
         };
-        await read('quota','projects.quota');due.quota=Date.now()+300000;
-        if(request.usage&&!this.closing){
-          const datasets=await read('datasets','datasets.list'),projects=await read('projects','projects.list',{includeUsage:true});
-          row.scannedAt=new Date(Date.now()).toISOString();due.usage=Date.now()+1800000;
-          if(datasets&&projects)row.checkedAt=row.scannedAt;
-        }
+        await read('quota','projects.quota');
+        const datasets=await read('datasets','datasets.list'),projects=await read('projects','projects.list',{includeUsage:true});
+        if(!this.closing){row.scannedAt=new Date(Date.now()).toISOString();if(datasets&&projects)row.checkedAt=row.scannedAt;}
+        this.storageDue.set(machine,Date.now()+STORAGE_REFRESH_MS);
         if(!this.closing)this.save();this.storageCurrent=null;
       }
     })().finally(()=>{this.storageCurrent=null;this.storageWork=null;});

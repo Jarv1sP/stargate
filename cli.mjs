@@ -10,6 +10,7 @@ import {runCommunityCommand,formatCommunityResult,communityJSON,showCLIAnnouncem
 import {watchJob} from './job-watch.mjs';
 import {progressText,jobTimingText} from './dist/job-progress.js';
 import {diskLabel} from './dist/disk-media.js';
+import {quotaReport,quotaUsageLines} from './dist/storage-usage.js';
 import {elasticAllocation,allocationLabel,gpuPlacement} from './dist/gpu-allocation.js';
 import {schedulingPolicy} from './dist/scheduling-policy.js';
 import {displayName,taskDescription} from './dist/task-metadata.js';
@@ -40,7 +41,7 @@ gpuctl state / use MACHINE_ID / jobs / queue
 gpuctl jobs --key UUID --json （按原提交 key 查询，包括已结束任务）
 
 gpuctl project create NAME [--repo GIT_URL] [--shared]
-gpuctl project list / use NAME / status / quota
+gpuctl project list / use NAME / status / quota [--project NAME | --all]
 gpuctl project share NAME [--off]（共用 / 取消共用，仅改变归属显示）
 gpuctl project copy NAME --from SOURCE --to TARGET [--name NEW_NAME] [--key UUID] [--detach]
 gpuctl project label NAME --display-name TEXT
@@ -131,7 +132,7 @@ function fail9(message) {
   throw Error(message);
 }
 var CLI_OPTIONS = new Map([
-  ...['overwrite','json','password-stdin','credentials-stdin','help','full','detach','takeover','general','checkpointable','auto-expand','dry-run','share','shared','off','hami','recursive','interactive','pin','sync'].map(key=>[key,'flag']),
+  ...['overwrite','json','password-stdin','credentials-stdin','help','full','all','detach','takeover','general','checkpointable','auto-expand','dry-run','share','shared','off','hami','recursive','interactive','pin','sync'].map(key=>[key,'flag']),
   ...['url','session-file','total','cards','role','name','description','display-name','min-vram','key','project','job','priority','timeout','reconnect','rank','yield','restart-policy','mode','min-cards','global-batch','micro-batch','interval','from','to','gpu','vram-mib','sm-percent','reason','revision','cursor','limit','members','primary','owner','via','memory-limit-gib','repo','dataset','kind','status','title','body','body-file','announcement-type','layout','background','text-color','accent','file-id','password-code','source-url','sync-dir','candidates','output'].map(key=>[key,'value']),
   ['machine','machines'], ['after','after']
 ]);
@@ -472,7 +473,9 @@ async function main() {
         const id=positionals[2];if(!id)fail9('Usage: project group UUID [--display-name NAME --members SERVER/PROJECT,...]');
         if(options['display-name']===undefined)result=(await call('projects.group.get',{id})).result;
         else{const ref=value=>{const parts=value.split('/');if(parts.length!==2)fail9('组成员使用 SERVER/PROJECT。');return {machine:machineName(parts[0]),project:projectSlug(parts[1]),...(targetOwnerId?{ownerId:targetOwnerId}:{})};};result=(await call('projects.group.set',{id,displayName:options['display-name'],members:options.members==='none'?[]:String(options.members||'').split(',').filter(Boolean).map(ref),...(options.primary?{primary:ref(options.primary)}:{})})).result;}
-      }else if(['list','quota'].includes(action))result=(await call('projects.'+action,{machine,...(targetOwnerId?{ownerId:targetOwnerId}:{}),...(action==='quota'&&options.project?{project:projectSlug(options.project)}:{})})).result;
+      }else if(action==='list')result=(await call('projects.list',{machine,...(targetOwnerId?{ownerId:targetOwnerId}:{})})).result;
+      // Same Portal snapshot as the data page and project settings, so the numbers match.
+      else if(action==='quota')result=quotaReport((await call('storage.snapshot',{machine})).result.machines?.find(row=>row.machine===machine),{...(options.project?{project:projectSlug(options.project),ownerId:targetOwnerId||session.principal.userId}:{}),all:options.all===true});
       else if(['create','use','status','label','share','archive','unarchive','delete','retire'].includes(action)){
         const project=projectSlug(positionals[2]||options.project||selectedProject(machine)),args={machine,project,...(targetOwnerId?{ownerId:targetOwnerId}:{})};
         if(action==='label')result=(await call('projects.label.'+(options['display-name']===undefined?'get':'set'),{...args,...(options['display-name']===undefined?{}:{displayName:options['display-name']})})).result;
@@ -774,9 +777,10 @@ ${result.project ? "当前项目：" + result.project : "未选择项目；可�
     return;
   }
   if (command === "project" && positionals[1] === "quota") {
-    const bytes=value=>Number.isFinite(value)?value.toLocaleString('en-US')+' B':'未知',usage=result.projectUsage;
-    for (const row of result.volumes||[])console.log(`${diskLabel(row)}\n  已用 ${bytes(row.usedBytes)} / 总量 ${bytes(row.totalBytes)}；可用 ${bytes(row.availableBytes)}`);
-    if(usage)console.log(`项目 ${usage.project} 文件用量：${usage.complete===false&&Number.isFinite(usage.size)?'至少 ':''}${bytes(usage.size)}`);
+    const bytes=value=>Number.isFinite(value)?value.toLocaleString('en-US')+' B':'未知';
+    for (const row of result.volumes)console.log(`${diskLabel(row)}\n  已用 ${bytes(row.usedBytes)} / 总量 ${bytes(row.totalBytes)}；可用 ${bytes(row.availableBytes)}`);
+    if(!result.volumes.length)console.log('盘容量未知，请稍后重试。');
+    for (const line of quotaUsageLines(result))console.log(line);
     return;
   }
   if (command === "run") {

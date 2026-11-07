@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {projectStatusText,trainingTarget,projectDiskQuotaHTML} from '../dist/execution-ui.js';
-import {datasetRows,directoryBytes,gaugeDiskHTML,storageMixHTML,projectStorageRows,baseImages} from '../dist/datasets-ui.js';
+import {datasetRows,directoryBytes,gaugeDiskHTML,diskGroups,diskMixHTML,storageMixHTML,projectStorageRows,ownerStorageRows} from '../dist/datasets-ui.js';
+import {ownerUsage,quotaReport,quotaUsageLines} from '../dist/storage-usage.js';
 import {trashReference,trashLabel} from '../dist/trash-ui.js';
 import {uploadPersonalFile} from '../dist/personal-upload.js';
 import {resourceServerView,resourceCards} from '../dist/resources-ui.js';
@@ -14,7 +15,7 @@ test('ordinary dataset rows show uploader and actions without versions or prepar
 test('projects display repository and automatic jobs can use the default OCI workspace',()=>{
  assert.equal(projectStatusText({git:{url:'https://example.test/team/repo.git',branch:'main',commit:'abc123'}}),'https://example.test/team/repo.git · main · abc123');
  assert.deepEqual(trainingTarget('auto','node-a',null,'node-a',[{id:'node-a'}]),{machine:'auto',machineSelection:{mode:'auto',candidates:['node-a']}});
- assert.match(projectDiskQuotaHTML({extra:true,volumes:[{kind:'workspace',usedBytes:1024,totalBytes:4096,availableBytes:3072}],projectUsage:{size:12,complete:false}}),/项目文件用量：至少 12 B/);
+ assert.match(projectDiskQuotaHTML({extra:true,volumes:[{kind:'workspace',usedBytes:1024,totalBytes:4096,availableBytes:3072}],projectUsage:{size:12,complete:false}}),/项目用量：至少 12 B<\/p><p class="disk-quota-parts">文件 至少 12 B · 输出 未知 · 环境 未知/);
 });
 test('one shared trash restores outputs and datasets using the original key and kind',()=>{
  const row={key:'original-operation',kind:'output',ownerId:'member-b',project:'vision',jobId:'job',originalPath:'models/final.pt'};
@@ -55,7 +56,7 @@ test('storage distinguishes lower bounds, unknown and real zero without filling 
 test('shared HDD quota renders once using measured media',()=>{
  const volume={kind:'shared',media:'hdd',fs:'9223372036854775815',usedBytes:100,totalBytes:200,availableBytes:100};
  const html=projectDiskQuotaHTML({volumes:[volume],projectUsage:{size:null,complete:false}});
- assert.equal((html.match(/<li>/g)||[]).length,1);assert.match(html,/HDD · 工作区与数据集共用/);assert.match(html,/项目文件用量：未知/);assert.doesNotMatch(html,/SSD/);
+ assert.equal((html.match(/<li>/g)||[]).length,1);assert.match(html,/HDD · 工作区与数据集共用/);assert.match(html,/项目用量：未知/);assert.doesNotMatch(html,/SSD/);
  const gauge=gaugeDiskHTML('HDD · 工作区与数据集共用',volume);assert.match(gauge,/HDD · 工作区与数据集共用/);assert.match(gauge,/data-fill="50"/);assert.doesNotMatch(gauge,/SSD/);
 });
 
@@ -67,53 +68,73 @@ test('quota labels use measured media and unknown media stays a data disk',()=>{
  }
 });
 
-test('space mix adds up to used space and never derives "other" from an unknown part',()=>{
- const G=1024**3,disk={kind:'workspace',media:'ssd',usedBytes:1400*G,totalBytes:3500*G,availableBytes:2100*G};
- const snapshot={projects:{complete:true,projects:[{size:437*G,complete:true}],areas:{outputs:{size:692*G,complete:true},environments:{size:208*G,complete:true},trash:{size:42*G,complete:true},temporary:{size:0,complete:true}}}};
- const html=storageMixHTML(disk,snapshot);
- for(const label of ['项目文件','任务输出','容器环境','回收站','传输暂存','其他'])assert.ok(html.includes(label),label);
- assert.match(html,/data-k="other" data-fill="0\.6/);assert.doesNotMatch(html,/data-k="temporary" data-fill/);assert.doesNotMatch(html,/data-k="datasets"/);
- const partial=storageMixHTML(disk,{projects:{...snapshot.projects,areas:{...snapshot.projects.areas,outputs:{size:600*G,complete:false}}}});
- assert.match(partial,/至少 600 GiB/);assert.match(partial,/至多 /);
- const unknown=storageMixHTML(disk,{projects:{complete:true,projects:[{size:437*G,complete:true}]}});
- assert.doesNotMatch(unknown,/data-k="other" data-fill/);assert.match(unknown,/<li data-k="other" class="unk">/);assert.match(unknown,/<li data-k="outputs" class="unk">/);
- assert.match(storageMixHTML({...disk,kind:'shared'},{...snapshot,datasets:{datasets:[{size:5*G,complete:true}]}},{datasets:true}),/数据集<span class="num">5 GiB/);
- assert.equal(storageMixHTML({usedBytes:null,totalBytes:null},snapshot),'');
+const G=1024**3;
+const quotaDisk={mountPoint:'/fixture/data0',media:'ssd',roles:['workspace'],accounting:'quota',totalBytes:3500*G,usedBytes:1400*G,availableBytes:2000*G,trashBytes:42*G,items:[
+ {kind:'project',ownerId:'a',ownerName:'甲',project:'chga',files:374*G,outputs:300*G,environment:26*G},{kind:'project',ownerId:'b',ownerName:'乙',project:'small',files:10*G,outputs:0,environment:40*G},
+ {kind:'images',ownerId:'a',ownerName:'甲',bytes:30*G},{kind:'images',ownerId:'b',ownerName:'乙',bytes:20*G},{kind:'dataset',name:'images',bytes:200*G},{kind:'platform',bytes:5*G},
+ {kind:'external',path:'/fixture/data0/cyx',bytes:300*G},{kind:'external',path:'/fixture/data0/lpl',bytes:70*G},{kind:'unassignedOutputs',bytes:3*G},{kind:'untracked',bytes:20*G},{kind:'filesystem',bytes:2*G},{kind:'futureKind',bytes:1}]};
+test('each disk lists its full composition, summing to used space, with no "other"',()=>{
+ const groups=diskGroups(quotaDisk);
+ assert.deepEqual(groups.map(group=>group.label),['项目','镜像与容器引擎','数据集','平台运行数据','外部目录','未归属输出','未登记','文件系统开销']);
+ assert.equal(groups.reduce((sum,group)=>sum+group.size,0),quotaDisk.usedBytes);
+ assert.deepEqual(groups[0].rows.map(row=>[row.label,row.size/G]),[['甲',700],['乙',50]]);assert.deepEqual(groups[4].rows.map(row=>row.label),['/fixture/data0/cyx','/fixture/data0/lpl']);
+ const html=diskMixHTML(quotaDisk);
+ assert.doesNotMatch(html,/其他|基础镜像/);assert.match(html,/\/fixture\/data0\/cyx<\/span><span class="num">300 GiB/);assert.match(html,/镜像与容器引擎<\/span><span class="num">50 GiB/);
+ assert.match(html,/可用<\/span><span class="num">2.0 TiB/);assert.match(html,/其中回收站 42 GiB，7 天内可恢复/);assert.match(html,/\/fixture\/data0/);
+ assert.equal((html.match(/data-fill=/g)||[]).length,8);
+ // Overhead is reported as is, even slightly negative, and never drawn.
+ const negative=diskMixHTML({...quotaDisk,items:[...quotaDisk.items.filter(item=>item.kind!=='filesystem'),{kind:'filesystem',bytes:-3*1024**2}]});
+ assert.match(negative,/文件系统开销<\/span><span class="num">−3.0 MiB/);assert.doesNotMatch(negative,/data-k="filesystem" data-fill/);
+ // Empty groups are left out except the overhead line.
+ assert.deepEqual(diskGroups({...quotaDisk,items:[{kind:'platform',bytes:5}]}).map(group=>group.kind),['platform','filesystem']);
+});
+test('a disk without project accounting, or no disk reading at all, stays unknown instead of zero',()=>{
+ const off=diskMixHTML({...quotaDisk,accounting:'unavailable',items:[]});
+ assert.match(off,/未开启项目记账，用量未知/);assert.match(off,/dr-mix-bar is-unknown/);assert.doesNotMatch(off,/data-fill|>0 B</);
+ assert.match(diskMixHTML({...quotaDisk,usedBytes:null,totalBytes:null}),/用量未知/);
+ for(const projects of [undefined,{error:'x'},{projects:[]}])assert.match(storageMixHTML(projects),/空间构成<\/strong><span>未知，请刷新重试/);
+ const two=storageMixHTML({disks:[quotaDisk,{...quotaDisk,mountPoint:'/fixture/data1',accounting:'unavailable',items:[]}]});
+ assert.equal((two.match(/<section class="dr-mix"/g)||[]).length,2);assert.equal(storageMixHTML({disks:[]}),'');
+});
+test('project rows show the total with files, outputs and environment and sort by the total',()=>{
+ const html=projectStorageRows([{project:'small',ownerName:'甲',size:10*G,complete:true,outputs:{size:0,complete:true,count:0},environment:{size:40*G,complete:true}},
+  {project:'chga',ownerName:'乙',size:374*G,complete:true,outputs:{size:688*G,complete:true,count:1617},environment:{size:26*G,complete:true}},{project:'old',size:5*G,complete:true}]);
+ assert.ok(html.indexOf('chga')<html.indexOf('small')&&html.indexOf('small')<html.indexOf('old'));
+ assert.match(html,/文件 374 GiB · 输出 688 GiB · 环境 26 GiB<\/div><\/div>.*data-project-total>1.1 TiB/);
+ assert.match(html,/文件 10 GiB · 输出 0 B · 环境 40 GiB/);
+ // A part read as unknown makes the total a lower bound; nothing known stays unknown.
+ assert.match(html,/文件 5 GiB · 输出 未知 · 环境 未知<\/div><\/div>.*data-project-total>至少 5 GiB/);
+ assert.match(projectStorageRows([{project:'p',size:null,complete:false,outputs:{size:null,complete:false},environment:{size:null,complete:false}}]),/data-project-total>未知/);
+ assert.doesNotMatch(html,/基础镜像/);
+});
+test('people sum their projects and images over accounted disks; an unaccounted disk makes totals a lower bound',()=>{
+ const owners=ownerUsage([quotaDisk]);
+ assert.deepEqual(owners.map(row=>[row.ownerName,row.projects.size/G,row.images.size/G,row.total.size/G,row.total.complete]),[['甲',700,30,730,true],['乙',50,20,70,true]]);
+ const html=ownerStorageRows(owners);assert.match(html,/甲<\/div><div class="dr-s">项目 700 GiB · 镜像与容器引擎 30 GiB/);assert.ok(html.indexOf('甲')<html.indexOf('乙'));
+ const partial=ownerUsage([quotaDisk,{mountPoint:'/fixture/data1',accounting:'unavailable',items:[]}]);assert.equal(partial[0].total.complete,false);assert.match(ownerStorageRows(partial),/至少 730 GiB/);
+ assert.equal(ownerUsage([{accounting:'unavailable',items:[]}]),null);assert.equal(ownerUsage(undefined),null);assert.match(ownerStorageRows(null),/未知/);
+});
+test('CLI report reads the same snapshot row as the web and lists every project and person',()=>{
+ const sample={machine:'node-a',quota:{volumes:[{kind:'shared',usedBytes:1}],checkedAt:'2026-11-07T00:00:00Z'},projects:{checkedAt:'2026-11-07T00:10:00Z',disks:[quotaDisk],projects:[
+  {project:'small',ownerId:'b',ownerName:'乙',shared:true,size:10*G,complete:true,outputs:{size:0,complete:true},environment:{size:40*G,complete:true}},
+  {project:'chga',ownerId:'a',ownerName:'甲',size:374*G,complete:true,outputs:{size:300*G,complete:true},environment:{size:26*G,complete:true}}]}};
+ const one=quotaReport(sample,{project:'small',ownerId:'b'});assert.equal(one.checkedAt,'2026-11-07T00:10:00Z');assert.equal(one.projectUsage.total.size,50*G);
+ const lines=quotaUsageLines(one,Date.parse('2026-11-07T00:13:00Z'));
+ assert.deepEqual(lines,['项目 small（共用 · 创建人 乙）：合计 50 GiB；文件 10 GiB · 输出 0 B · 环境 40 GiB','统计于 3 分钟前']);
+ const web=projectStorageRows(sample.projects.projects);assert.match(web,/data-project-row="small"[\s\S]*共用 · 创建人 乙[\s\S]*data-project-total>50 GiB/);
+ const all=quotaUsageLines(quotaReport(sample,{all:true}),Date.parse('2026-11-07T00:13:00Z'));
+ assert.ok(all.indexOf('  chga（甲）：合计 700 GiB；文件 374 GiB · 输出 300 GiB · 环境 26 GiB')<all.indexOf('  small（共用 · 创建人 乙）：合计 50 GiB；文件 10 GiB · 输出 0 B · 环境 40 GiB'));
+ assert.ok(all.includes('  甲：合计 730 GiB；项目 700 GiB · 镜像与容器引擎 30 GiB'));
+ assert.deepEqual(quotaUsageLines(quotaReport(sample,{project:'missing',ownerId:'a'})).slice(0,1),['项目 missing：合计 未知；文件 未知 · 输出 未知 · 环境 未知']);
+ assert.deepEqual(quotaUsageLines(quotaReport({...sample,projects:{error:'x'}},{all:true})).slice(0,4),['本机项目（按合计排序）：','  未知，请稍后重试。','按人汇总：','  未知：这台服务器还没有项目记账数据。']);
 });
 
-test('project rows count job outputs and sort by the combined footprint',()=>{
- const G=1024**3,html=projectStorageRows([{project:'small',ownerName:'甲',size:10*G,complete:true,outputs:{size:0,complete:true,count:0}},
-  {project:'chga',ownerName:'乙',size:374*G,complete:true,outputs:{size:688*G,complete:true,count:1617}},{project:'old',size:5*G,complete:true}]);
- assert.ok(html.indexOf('chga')<html.indexOf('small'));assert.match(html,/1,062 GiB|1062 GiB|1\.0 TiB/);
- // One total per project container, no per-part breakdown.
- assert.doesNotMatch(html,/文件 |输出 |dr-split/);assert.equal((html.slice(0,html.indexOf('small')).match(/data-fill/g)||[]).length,1);
- assert.match(projectStorageRows([{project:'p',size:G,complete:true,outputs:{size:null,complete:false}}]),/至少 /);
-});
-
-test('base images show as the last row after the projects',()=>{
- const G=1024**3,areas={outputs:{size:699*G,complete:true},environments:{size:213*G,complete:true}};
- const projects=[{project:'chga',ownerName:'乙',size:378*G,complete:true,outputs:{size:689*G,complete:true},environment:{size:129*G,complete:true}},
-  {project:'small',ownerName:'甲',size:69*G,complete:true,outputs:{size:4*G,complete:true},environment:{size:40*G,complete:true}}];
- const shared=baseImages({projects:{complete:true,projects,areas}});assert.deepEqual(shared,{size:44*G,complete:true,upper:false});
- const html=projectStorageRows(projects,shared);
- assert.match(html,/<div class="dr-t">基础镜像<\/div>/);assert.ok(html.indexOf('chga')<html.indexOf('small')&&html.indexOf('small')<html.indexOf('基础镜像'));
- // Larger than a project, still last.
- assert.ok(projectStorageRows([projects[1]],{size:500*G,complete:true}).indexOf('small')<projectStorageRows([projects[1]],{size:500*G,complete:true}).indexOf('基础镜像'));
- assert.doesNotMatch(html,/不属于单个项目|合计|回收站|data-rest-trash/);
- // With no projects the whole container environment is base images.
- assert.deepEqual(baseImages({projects:{complete:true,projects:[],areas}}),{size:213*G,complete:true,upper:false});
- // A project environment the node couldn't read leaves base images as an upper bound, never zero.
- const short=baseImages({projects:{complete:true,projects:[{...projects[0],environment:null},projects[1]],areas}});
- assert.equal(short.upper,true);assert.match(projectStorageRows([{...projects[0],environment:null}],short),/至少 1\.0 TiB[\s\S]*至多 173 GiB/);
- assert.deepEqual(baseImages({projects:{complete:true,projects,areas:{}}}),{size:null,complete:false});
- assert.equal(baseImages({projects:{error:'x'}}),null);
-});
-
-test('a shared project shows as 共用 instead of its creator',async()=>{
+test('a shared project shows as 共用 in pickers and with its creator in storage views',async()=>{
  const {projectSelectHTML}=await import('../dist/project-management-ui.js'),{projectOwnerText}=await import('../dist/workbench-ui.js');
  const own={project:'mine',ownerName:'甲',machine:'amax-5090'},team={project:'team',ownerName:'乙',shared:true,machine:'amax-5090'};
  assert.equal(projectOwnerText(own),'甲');assert.equal(projectOwnerText(team),'共用');
  const options=projectSelectHTML([own,team]);assert.match(options,/mine · 甲/);assert.match(options,/team · 共用/);assert.doesNotMatch(options,/乙/);
+ // Storage views keep the creator of a shared project visible.
  const rows=projectStorageRows([{...own,size:1,complete:true},{...team,size:2,complete:true}]);
- assert.match(rows,/甲 的项目/);assert.match(rows,/<div class="dr-s">共用<\/div>/);assert.doesNotMatch(rows,/乙/);
+ assert.match(rows,/甲 的项目/);assert.match(rows,/<div class="dr-s">共用 · 创建人 乙<\/div>/);
 });

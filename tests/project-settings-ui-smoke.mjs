@@ -25,7 +25,7 @@ window.store={production:true,authGeneration:1,principal:{userId:owner,role},use
   try{await gates[op]?.promise;options.signal?.throwIfAborted();
    if(op==='projects.list')return {projects:structuredClone(projects)};
    if(op==='projects.status'){if(window.failStatus)throw Error('节点暂时没有响应。');return {...structuredClone(projects.find(row=>row.ownerId===args.ownerId)),git:{url:'https://example.test/team/vision.git',branch:'main',commit:'abc123'}};}
-   if(op==='storage.snapshot'){const checkedAt=new Date(Date.now()-7*60000).toISOString();return {machines:[{machine,checkedAt,refreshing:false,quota:{volumes:[{kind:'shared',usedBytes:40*1024**3,totalBytes:400*1024**3,availableBytes:360*1024**3}],checkedAt},projects:{projects:missing?[]:[{project:'vision',ownerId:'peer',size:3*1024**3,complete:false},{project:'vision',ownerId:owner,size:null,complete:false}],checkedAt:missing?null:checkedAt}}]};}
+   if(op==='storage.snapshot'){const checkedAt=new Date(Date.now()-7*60000).toISOString();return {machines:[{machine,checkedAt,refreshing:false,quota:{volumes:[{kind:'shared',usedBytes:40*1024**3,totalBytes:400*1024**3,availableBytes:360*1024**3}],checkedAt},projects:{projects:missing?[]:[{project:'vision',ownerId:'peer',size:3*1024**3,complete:true,outputs:{size:2*1024**3,complete:true,count:1},environment:{size:1024**3,complete:true}},{project:'vision',ownerId:owner,size:null,complete:false}],checkedAt:missing?null:checkedAt}}]};}
    if(op==='projects.quota')return {volumes:[],projectUsage:{size:99*1024**3,complete:true}};
    if(op==='projects.catalog')return {groups:[{id:'fixture-group',logical:true,name:'研究组',instances:[{machine,project:'vision',ownerId:'peer',ownerName:'成员乙',displayName:'共享实验'}]}]};
    if(op==='projects.retire.list')return {items:[]};
@@ -58,7 +58,8 @@ try{
   assert.equal(await page.locator('[data-display-name]').isEnabled(),true,'pending Git does not lock the settings forms');
   assert.equal(await page.locator('#project-network-check').isEnabled(),true,'pending Git does not lock other operations');
   assert.match(await page.locator('#project-status-detail').textContent(),/读取|更新/,'Git has its own loading placeholder');
-  await page.locator('#disk-quota-result').filter({hasText:'至少 3.00 GiB'}).waitFor();
+  await page.locator('#disk-quota-result').filter({hasText:'项目用量：6 GiB'}).waitFor();
+  assert.match(await page.locator('#disk-quota-result .disk-quota-parts').textContent(),/^文件 3 GiB · 输出 2 GiB · 环境 1 GiB$/,'the panel shows the same parts as the data page');
   assert.match(await page.locator('#disk-quota-state').textContent(),/统计于 7 分钟前/);
   assert.equal(await page.evaluate(()=>calls.filter(row=>row.op==='projects.quota').length),0,'project size never scans the node');
   assert.equal(await page.evaluate(()=>calls.filter(row=>row.op==='storage.refresh').length),0,'opening settings does not request a new scan');
@@ -76,10 +77,10 @@ try{
   await page.screenshot({path:join(shots,'settings-'+role+'-'+width+'-ready.png'),fullPage:true,animations:'disabled'});
   // A project switch invalidates the small in-memory cache, including same slugs with different owners.
   await page.locator('#pr-switch').click();await page.locator('[name=workspace-project]').selectOption({label:'自己的同名项目 · 我 · OCI 容器 · fixture-node'});await page.locator('#pr-switch-sheet').waitFor({state:'hidden'});
-  await page.locator('#disk-quota-result').filter({hasText:'项目文件用量：未知'}).waitFor();
-  assert.doesNotMatch(await page.locator('#disk-quota-result').textContent(),/至少 3/,'another owner never inherits the old size');
+  await page.locator('#disk-quota-result').filter({hasText:'项目用量：未知'}).waitFor();
+  assert.doesNotMatch(await page.locator('#disk-quota-result').textContent(),/项目用量：6 GiB/,'another owner never inherits the old size');
   await page.locator('#pr-switch').click();await page.locator('[name=workspace-project]').selectOption({label:'共享实验 · 成员乙 · OCI 容器 · fixture-node'});await page.locator('#pr-switch-sheet').waitFor({state:'hidden'});
-  await page.locator('#disk-quota-result').filter({hasText:'至少 3.00 GiB'}).waitFor();
+  await page.locator('#disk-quota-result').filter({hasText:'项目用量：6 GiB'}).waitFor();
   {
    // Refresh bypasses short-lived Git/catalog results but does not wait to render cached content.
    await page.evaluate(()=>{hold('projects.status');window.failStatus=true;});
@@ -88,15 +89,15 @@ try{
    assert.equal(await page.locator('[data-display-name]').isEnabled(),true);
    await page.evaluate(()=>release('projects.status'));await page.locator('#project-status-detail').filter({hasText:'Git 状态未知'}).waitFor({state:'attached'});
    assert.equal(await page.locator('[data-display-name]').isEnabled(),true,'a failed Git read only marks Git unknown');
-   assert.match(await page.locator('#disk-quota-result').textContent(),/至少 3.00 GiB/);
+   assert.match(await page.locator('#disk-quota-result').textContent(),/项目用量：6 GiB/);
    await page.screenshot({path:join(shots,'settings-'+role+'-'+width+'-git-unavailable.png'),fullPage:true,animations:'disabled'});
    await page.evaluate(()=>{window.failStatus=false;});await page.locator('#pr-switch').click();await page.locator('#projects-refresh').click();await page.locator('#pr-switch-close').click();
    await page.locator('#project-status-detail').filter({hasText:'abc123'}).waitFor({state:'attached'});
   }
   await page.evaluate(()=>{missing=true;});await page.locator('#disk-quota-refresh').click();
-  await page.locator('#disk-quota-result').filter({hasText:'项目文件用量：未知'}).waitFor();
+  await page.locator('#disk-quota-result').filter({hasText:'项目用量：未知'}).waitFor();
   assert.match(await page.locator('#disk-quota-state').textContent(),/统计时间未知/);
-  assert.doesNotMatch(await page.locator('#disk-quota-result').textContent(),/项目文件用量：0/);
+  assert.doesNotMatch(await page.locator('#disk-quota-result').textContent(),/项目用量：0/);
   await page.screenshot({path:join(shots,'settings-'+role+'-'+width+'-unknown.png'),fullPage:true,animations:'disabled'});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   assert.equal(await page.evaluate(()=>calls.some(row=>['projects.group.get','projects.label.get'].includes(row.op))),false,'known presentation fields need no duplicate read');
