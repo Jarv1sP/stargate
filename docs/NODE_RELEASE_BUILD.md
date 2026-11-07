@@ -28,7 +28,7 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 
 安装器把 `node/quota-sample.py` 与 `node/quota-ids.py` 复制为 root 所有的 `/usr/local/libexec/stargate/` 下的副本，并写系统级 `stargate-quota-sample.service`/`.timer`（开机 30 秒后、之后每 60 秒，Nice=19、idle I/O，以 root 只读运行）。它对每块数据盘（同一设备的多个挂载点只算一次）用 `quotactl(Q_GETNEXTQUOTA, PRJQUOTA)` 读出各编号的字节与 inode，原子写入 `<root>/samples/quota.json`（0600，属主为服务账户）。该单元与其他单元一起纳入安装、停止、健康和回退流程，健康判断不变。
 
-`projects.list {includeUsage:true}` 只读样本和登记表：项目行的 `size`、`outputs.size`、`environment.size` 来自编号字节，`complete` 表示该盘有样本且开启记账；顶层 `disks` 按盘列出完整构成（项目、个人镜像、数据集、平台运行数据、外部目录、未归属输出、未登记、文件系统开销，相加等于 `usedBytes`），`checkedAt` 为样本时间，无样本为 null。`projects.quota` 只返回盘容量。`datasets.list` 对已登记的数据集读样本，未登记的仍现场测量。
+`projects.list {includeUsage:true}` 只读样本和登记表：项目行的 `size`、`outputs.size`、`environment.size` 来自编号字节，`complete` 表示该盘有样本且开启记账；顶层 `disks` 按盘列出完整构成（项目、个人镜像、数据集、平台运行数据、外部目录、未归属输出、未登记、文件系统开销，相加等于 `usedBytes`），`checkedAt` 为样本时间，无样本为 null。采样前记录登记表的 `next`，样本缺席且编号小于 `next` 的用量为 0，之后新分配的编号保持未知。没有 `quota/migrated.json` 时，项目输出与环境显示未知。`projects.quota` 只返回盘容量。`datasets.list` 对已登记的数据集读样本，未登记的仍现场测量。
 
 现有 `7IM` 的每小时 `--storage-collect` 以 nice19/idle I/O 清空过期回收站和暂存，测量各 `.trash` 大小并统计每个项目的任务输出数，原子写入 `<root>/samples/storage-usage.json`；它不再测量项目、输出或环境。回收站条目里容器用户（子 UID）所有的文件，由该账户在已有 Podman 用户命名空间里删除；单条失败只跳过该条，后续条目和统计照常进行。
 
@@ -41,7 +41,13 @@ python3 -I -B deploy/node/quota-migrate.py --config /etc/gpuq-console/node-insta
 python3 -I -B deploy/node/quota-migrate.py --config /etc/gpuq-console/node-install.json
 ```
 
-`--dry-run` 只打印计划、各盘当前未登记字节和无法判断归属的回收站条目。正式执行请选在没有任务、终端和 Git 命令运行时，依次给平台运行数据、个人镜像与容器层、项目、输出、复制暂存、数据集、回收站条目和外部目录打标；路径全部来自安装配置。外部目录指数据盘上不属于任何平台目录的目录和文件（`lost+found`、符号链接和挂在别处的同设备别名除外），最后处理，并跳过已带非 0 编号的硬链接 inode，避免把数据集的字节改记到外部目录。结束时输出每块盘的未登记字节和前 20 个仍为编号 0 的大目录。默认从 `/usr/local/libexec/stargate/` 读取 root 所有的辅助文件，可用 `--node-dir` 指定。
+`--dry-run` 只打印计划、各盘当前未登记字节和无法判断归属的回收站条目。默认执行全部，也可分组：
+
+- 维护窗口内无任务、终端或 Git 命令时运行 `--only platform`：平台运行数据、个人镜像与容器层、项目、输出、复制暂存、回收站。成功后写服务账户所有的 `quota/migrated.json`。
+- 恢复平台后运行 `--only datasets`，给数据集打标。数据集之间、项目之间跨编号移动时，`mv` / `shutil.move` 会变为复制后删除，大文件需要额外时间与空间；数据集打标期间其树内的移动也可能暂时 EXDEV。
+- `--only external` 可在后台运行：外部目录整棵树只设编号、清除继承标志，之后新建文件计入“未登记”，不会给移入外部目录的操作增加编号限制。
+
+路径启动时全部解析为已存在的真实路径；计划若要给受保护根设置继承，工具提示调整配置并拒绝执行。外部目录是不属于平台的数据盘目录与文件（`lost+found`、符号链接和挂载别名除外）。数据集与外部阶段对 nlink>1 且已有非 0 编号的 inode 都跳过并计数，先到先得。项目、输出、容器层子项、数据集和回收站树里的符号链接、0:0 whiteout、FIFO 以新 inode 原位重建，保留属主、时间和全部 xattr（包括 overlay 属性）；socket 保留并报告数量。单个容器层在清单生成后消失会跳过并计数。报告按组列计数，最后输出各盘未登记字节和前 20 个仍为编号 0 的大目录。默认从 `/usr/local/libexec/stargate/` 读取 root 所有的辅助文件，可用 `--node-dir` 指定。
 
 任务启动前，宿主 runner 在 attempt 控制目录的同级私有文件中保存该次 payload 的确切删除命令，不放进容器可写挂载。正常结束、被杀、启动失败都由 GPUQ 现有 attempt 清理动作按原名字删除容器记录；不扫描其他容器，开发容器和项目文件保留。清理失败沿既有动作重试，单元已卸载也继续清理。
 

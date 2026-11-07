@@ -30,6 +30,14 @@ class Sampler(unittest.TestCase):
         with self.assertRaises(OSError) as caught:sampler.usage('/dev/sdb1',Libc({},error=errno.ESRCH))
         self.assertEqual(caught.exception.errno,errno.ESRCH)
 
+    def test_enoent_before_any_id_is_an_error_not_an_empty_quota_enabled_table(self):
+        with self.assertRaises(OSError) as caught:sampler.usage('/dev/loop7',Libc({}))
+        self.assertEqual(caught.exception.errno,errno.ENOENT)
+        info=os.stat(self.base);number=f'{os.major(info.st_dev)}:{os.minor(info.st_dev)}'
+        mountinfo=f'1 0 {number} / {self.base} rw - ext4 /dev/loop7 rw'
+        rows=sampler.filesystems([str(self.base)],mountinfo,read=lambda device:sampler.usage(device,Libc({})))
+        self.assertEqual((rows[0]['quota'],rows[0]['error']),(False,'ENOENT'))
+
     def test_bind_aliases_share_one_row_and_quota_off_is_reported_not_zero(self):
         alias=self.base/'alias';alias.mkdir();number=f'{os.major(os.stat(self.base).st_dev)}:{os.minor(os.stat(self.base).st_dev)}'
         info=f'1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 {number} / {self.base} rw - ext4 /dev/loop7 rw,prjquota\n'
@@ -60,13 +68,26 @@ class Sampler(unittest.TestCase):
         with patch.object(sampler.os,'fchown'),self.assertRaises(OSError):sampler.publish(self.config['root'],{},(1,1))
         self.assertEqual(list(target.iterdir()),[])
 
-    def test_main_writes_each_distinct_root_once(self):
-        account=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid());written=[]
-        with patch.object(sampler.pwd,'getpwnam',return_value=account),patch.object(sampler,'filesystems',return_value=[]),\
-             patch.object(sampler,'publish',side_effect=lambda root,value,owner:written.append(root)),\
-             patch.object(sampler.Path,'read_text',return_value=''):
-            code=sampler.main(['--account','nodeops','--root','/r1','--root','/r1','--root','/r2','/data0','/data1'])
-        self.assertEqual((code,written),(0,['/r1','/r2']))
+    def test_main_resolves_roots_and_reads_registry_next_before_sampling(self):
+        account=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid());written=[];events=[]
+        r1=self.base/'r1';r2=self.base/'r2';r1.mkdir();r2.mkdir();alias=self.base/'alias';alias.symlink_to(r1)
+        def read_next(root):events.append('registry');return 1009 if root==str(r1) else 1012
+        def sample(*args):events.append('sample');return []
+        def publish(root,value,owner):written.append((root,value['next']))
+        with (
+            patch.object(sampler.pwd,'getpwnam',return_value=account),patch.object(sampler,'filesystems',side_effect=sample),
+            patch.object(sampler,'registry_next',side_effect=read_next),patch.object(sampler,'publish',side_effect=publish),
+            patch.object(sampler.Path,'read_text',return_value=''),
+        ):
+            code=sampler.main(['--account','nodeops','--root',str(alias),'--root',str(r1),'--root',str(r2),str(self.base)])
+        self.assertEqual((code,written),(0,[(str(r1),1009),(str(r2),1012)]));self.assertEqual(events,['registry','registry','sample'])
+
+    def test_registry_next_is_read_without_following_registry_links(self):
+        root=Path(self.config['root']);(root/'quota').mkdir()
+        (root/'quota'/'ids.json').write_text('{"next":1003,"ids":{}}')
+        self.assertEqual(sampler.registry_next(root),1003)
+        (root/'quota'/'ids.json').unlink();(root/'quota'/'ids.json').symlink_to(self.base/'other')
+        with self.assertRaises(OSError):sampler.registry_next(root)
 
 
 if __name__=='__main__':unittest.main()

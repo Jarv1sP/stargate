@@ -6,7 +6,7 @@ with quotactl(Q_GETNEXTQUOTA, PRJQUOTA) and writes <root>/samples/quota.json,
 owned by the service account. It never sets a limit. Self-contained: the
 installer runs a root-owned copy of this file, not the service-owned release.
 """
-import argparse,ctypes,ctypes.util,errno,json,os,pwd,re,uuid
+import argparse,ctypes,ctypes.util,errno,json,os,pwd,re,stat,uuid
 from datetime import datetime,timezone
 from pathlib import Path
 Q_GETNEXTQUOTA=0x800009
@@ -28,7 +28,7 @@ def usage(device,libc=None):
         row=NextDquot()
         if libc.quotactl(command,os.fsencode(device),current,ctypes.byref(row))!=0:
             code=ctypes.get_errno()
-            if code==errno.ENOENT:return result
+            if code==errno.ENOENT and result:return result
             raise OSError(code,os.strerror(code))
         result[row.id]=(row.curspace,row.curinodes)
         if row.id==0xFFFFFFFF:return result
@@ -100,20 +100,39 @@ def publish(root,value,owner):
         os.close(folder)
 
 
+def registry_next(root):
+    """Capture the registry before sampling so later allocations stay unknown."""
+    base=open_directory(root)
+    try:folder=os.open('quota',DIR_FLAGS,dir_fd=base)
+    finally:os.close(base)
+    try:fd=os.open('ids.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=folder)
+    finally:os.close(folder)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):raise ValueError('登记表不是普通文件')
+        with os.fdopen(os.dup(fd),'rb') as stream:return int(json.load(stream)['next'])
+    finally:os.close(fd)
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--account',required=True)
     parser.add_argument('--root',action='append',required=True,help='profile state root; repeatable')
     parser.add_argument('mounts',nargs='+',help='dataMountPoints in configuration order')
     args=parser.parse_args(argv)
+    roots=list(dict.fromkeys(str(Path(root).resolve(strict=True)) for root in args.root))
+    points=[str(Path(point).resolve(strict=True)) for point in args.mounts]
     account=pwd.getpwnam(args.account)
+    next_ids={}
+    for root in roots:
+        try:next_ids[root]=registry_next(root)
+        except (OSError,ValueError,KeyError):next_ids[root]=None
     value={'checkedAt':datetime.now(timezone.utc).isoformat(),
-           'filesystems':filesystems(args.mounts,Path('/proc/self/mountinfo').read_text())}
+           'filesystems':filesystems(points,Path('/proc/self/mountinfo').read_text())}
     failures=0
-    for root in dict.fromkeys(args.root):
-        try:publish(root,value,(account.pw_uid,account.pw_gid))
+    for root in roots:
+        try:publish(root,{**value,'next':next_ids[root]},(account.pw_uid,account.pw_gid))
         except OSError as error:failures+=1;print(f'用量样本未写入 {root}：{error}',flush=True)
-    return 1 if failures==len(set(args.root)) else 0
+    return 1 if failures==len(roots) else 0
 
 
 if __name__=='__main__':

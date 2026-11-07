@@ -102,12 +102,13 @@ class StorageUsage(unittest.TestCase):
         with patch.object(Path,'iterdir',listed):
             with self.assertRaises(PermissionError):self.files.datasets(self.config)
 
-    def write_sample(self,ops,filesystems,keys=(),checked='2026-11-07T00:00:00+00:00'):
+    def write_sample(self,ops,filesystems,keys=(),checked='2026-11-07T00:00:00+00:00',migrated=True,next_id=None):
         """The root sampler's file plus registry keys allocated in order (IDs from 1000)."""
         q=f.module('quota-ids');folder=q.folder(self.config)
         if keys:q.allocate(folder,list(keys))
+        if migrated:(folder/'migrated.json').write_text('{}')
         samples=ops.store.root/'samples';samples.mkdir(mode=0o700,exist_ok=True)
-        (samples/'quota.json').write_text(json.dumps({'checkedAt':checked,'filesystems':filesystems}))
+        (samples/'quota.json').write_text(json.dumps({'checkedAt':checked,'filesystems':filesystems,'next':next_id}))
         return q.read(folder)['ids']
 
     def fs(self,ids,used,mounts=None,quota=True):
@@ -166,6 +167,13 @@ class StorageUsage(unittest.TestCase):
         self.assertEqual([d['mountPoint'] for d in disks],[str(self.base)])
         self.assertEqual(disks[0]['items'],[{'kind':'untracked','bytes':10},{'kind':'filesystem','bytes':0}])
 
+    def test_symlinked_configured_mount_reads_the_sample_under_its_real_path(self):
+        alias=self.base/'mount-alias';alias.symlink_to(self.base,target_is_directory=True)
+        self.config['dataMountPoints']=[str(alias)];ops=self.ops()
+        self.write_sample(ops,[self.fs({'0':{'bytes':10,'inodes':1}},10)])
+        [disk]=ops.process('projects.list',{'includeUsage':True})['disks']
+        self.assertEqual((disk['mountPoint'],disk['accounting']),(str(self.base),'quota'))
+
     def test_unregistered_project_files_are_unknown_and_filesystem_overhead_may_be_negative(self):
         ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo')
         registry=ops.store.root/'quota'/'ids.json';registry.unlink()
@@ -186,6 +194,30 @@ class StorageUsage(unittest.TestCase):
         folder=Path(self.config['datasetsRoot'])/'fresh';folder.mkdir();(folder/'f').write_bytes(b'12345')
         dataset=self.files.datasets(self.config)['datasets'][0]
         self.assertEqual((dataset['size'],dataset['complete']),(5,True),'a dataset newer than the sample is measured, not zero')
+
+    def test_absent_registered_ids_before_sample_next_are_zero_but_later_ids_are_unknown(self):
+        ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo')
+        keys=[q.outputs_key('alice','demo'),q.env_key('alice','demo')]
+        self.write_sample(ops,[],keys)
+        next_id=q.read(q.folder(self.config))['next']
+        self.write_sample(ops,[self.fs({'0':{'bytes':1,'inodes':1}},1)],next_id=next_id)
+        row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
+        self.assertEqual((row['size'],row['outputs']['size'],row['environment']['size']),(0,0,0))
+        sample=f.module('storage-usage').Sample(self.config)
+        late=q.allocate(q.folder(self.config),['d:late'])['d:late']
+        self.assertEqual(late,next_id)
+        sample=f.module('storage-usage').Sample(self.config)
+        self.assertIsNone(sample.size('d:late',ops.store.path))
+
+    def test_outputs_and_environment_remain_unknown_until_platform_migration(self):
+        ops=self.ops();ops.store.create('alice','demo');q=f.module('quota-ids')
+        keys=[q.outputs_key('alice','demo'),q.env_key('alice','demo')]
+        ids=self.write_sample(ops,[],keys,migrated=False)
+        self.write_sample(ops,[self.fs({str(value):{'bytes':20,'inodes':1} for value in ids.values()},60)],migrated=False)
+        row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
+        self.assertEqual(row['size'],20)
+        self.assertEqual(row['environment'],{'size':None,'complete':False})
+        self.assertEqual((row['outputs']['size'],row['outputs']['complete']),(None,False))
 
     def test_hourly_collect_measures_trash_and_counts_outputs_but_never_sizes_projects(self):
         ops=self.ops();ops.store.create('alice','demo');jobs=ops.store.root/'jobs';jobs.mkdir()
@@ -219,6 +251,7 @@ class StorageUsage(unittest.TestCase):
                 calls.append(args)
                 if rows[1]['key'] in args[-1]:raise ValueError('rm failed')
                 rmtree(args[-1])
+        (Path(self.config['workspacesRoot'])/'.oci'/'alice').mkdir(parents=True)
         rows=[]
         for name in ('subuid','blocked','plain'):
             folder=Path(self.config['datasetsRoot'])/name;(folder/'inner').mkdir(parents=True);(folder/'inner'/'f').write_bytes(b'x')
@@ -233,13 +266,14 @@ class StorageUsage(unittest.TestCase):
         self.assertEqual(result[rows[0]['key']]['state'],'PURGED');self.assertEqual(result[rows[2]['key']]['state'],'PURGED')
         self.assertEqual((result[rows[1]['key']]['state'],result[rows[1]['key']]['error']),('UNKNOWN','rm failed'))
         unshare=[c for c in calls if c[0]=='unshare']
-        self.assertEqual([c[:4] for c in unshare],[('unshare','/usr/bin/rm','-rf','--')]*2)
+        self.assertEqual([c[:5] for c in unshare],[('unshare','/usr/bin/rm','-rf','--one-file-system','--')]*2)
         self.assertFalse((Path(self.config['datasetsRoot'])/'.trash'/(rows[0]['key']+'.data')).exists())
 
     def test_namespace_owner_reuses_an_existing_engine_without_creating_one(self):
         trash=f.module('project-purge').Trash(self.config);oci=Path(self.config['workspacesRoot'])/'.oci'
         row={'kind':'dataset','originalPath':str(Path(self.config['datasetsRoot'])/'d')}
-        self.assertIsNone(trash.namespace_owner(row))
+        with self.assertRaises(FileNotFoundError):trash.namespace_owner(row)
+        self.assertFalse(oci.exists())
         (oci/'bob').mkdir(parents=True);self.assertEqual(trash.namespace_owner(row),'bob')
         (oci/'alice').mkdir();self.assertEqual(trash.namespace_owner({**row,'kind':'project','originalPath':str(Path(self.config['workspacesRoot'])/'alice'/'p')}),'alice')
 

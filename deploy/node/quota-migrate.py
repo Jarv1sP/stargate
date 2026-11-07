@@ -2,17 +2,18 @@
 """One-off project-ID migration, run by the maintainer as root after the data
 disks have project quota enabled. Idempotent: rerunning reuses every ID.
 
-    quota-migrate.py --config /etc/gpuq-console/node-install.json [--dry-run]
+    quota-migrate.py --config /etc/gpuq-console/node-install.json [--dry-run] [--only platform|datasets|external]
 
 Order (design STOR-001 2.6): registry, platform, images + container layers,
 projects, outputs, copy staging, datasets, trash entries, external
 directories (last, skipping hard-linked inodes that already carry an ID).
-Run it while no task, terminal or Git command is active: a directory tree that
+Run the platform group while no task, terminal or Git command is active: a directory tree that
 is half tagged can refuse renames until it is finished. Paths all come from
 the installer config. Reads that need the service account (podman) go through
-runuser. It never sets a limit, moves data or deletes anything.
+runuser. It never sets a limit or relocates data; special inodes are rebuilt in place.
 """
-import argparse,errno,importlib.util,json,os,pwd,stat,subprocess,sys
+import argparse,contextlib,errno,importlib.util,json,os,pwd,stat,subprocess,sys,uuid
+from datetime import datetime,timezone
 from pathlib import Path
 CONTAINER_TYPE=('.trash','.copies','.copy-exports','.oci')
 INSPECT=r'''
@@ -64,38 +65,43 @@ def identity(path):
 
 
 class Migration:
-    def __init__(self,config,node_dir,out=print):
-        self.config=config;self.out=out;self.q=load(Path(node_dir)/'quota-ids.py','quota_ids')
-        self.sampler=load(Path(node_dir)/'quota-sample.py','quota_sample')
+    def __init__(self,config,node_dir,out=print,only=None):
+        self.config=config;self.out=out;self.only=only;self.q=load(Path(node_dir).resolve(strict=True)/'quota-ids.py','quota_ids')
+        self.sampler=load(Path(node_dir).resolve(strict=True)/'quota-sample.py','quota_sample')
         self.account=pwd.getpwnam(config['account']);self.owner=(self.account.pw_uid,self.account.pw_gid)
-        triples={tuple(profile[k] for k in ('root','workspacesRoot','datasetsRoot')) for profile in config['profiles'].values()}
+        triples={tuple(str(Path(profile[k]).resolve(strict=True)) for k in ('root','workspacesRoot','datasetsRoot')) for profile in config['profiles'].values()}
         if len(triples)!=1:raise SystemExit('各 profile 的 root/workspacesRoot/datasetsRoot 不一致，本工具只处理相同路径。')
         root,workspaces,datasets=next(iter(triples))
         self.root,self.workspaces,self.datasets=Path(root),Path(workspaces),Path(datasets)
-        self.release=Path(config['releaseRoot']);gpuq=config.get('gpuq') or {}
-        self.platform_extra=[Path(gpuq[k]) for k in ('root','log_dir','control_dir') if gpuq.get(k)]
-        if gpuq.get('db_path'):self.platform_extra.append(Path(gpuq['db_path']).parent)
+        self.release=Path(config['releaseRoot']).resolve(strict=True);gpuq=config.get('gpuq') or {}
+        self.platform_extra=[Path(gpuq[k]).resolve(strict=True) for k in ('root','log_dir','control_dir') if gpuq.get(k)]
+        if gpuq.get('db_path'):self.platform_extra.append(Path(gpuq['db_path']).resolve(strict=True).parent)
         self.mounts=[];seen=set()
         for mount in config['dataMountPoints']:
-            try:device=os.stat(mount).st_dev
-            except OSError:continue
+            mount=Path(mount).resolve(strict=True)
+            device=os.stat(mount).st_dev
             if device not in seen:seen.add(device);self.mounts.append(Path(mount))
         self.plan=[];self.keys={};self.notes=[];self.totals={}
 
     # -- inventory (read-only) -------------------------------------------------
     def add(self,phase,key,path,kind='tree',**extra):
-        self.plan.append(dict(phase=phase,key=key,path=Path(path),kind=kind,**extra))
+        group='datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform'
+        if self.only is not None and group!=self.only:return
+        self.plan.append(dict(group=group,phase=phase,key=key,path=Path(path),kind=kind,**extra))
 
     def protected(self):
         """Container-type roots and every ancestor up to a data mount: never inherit."""
-        result=set();platform=[self.release,*self.platform_extra]
-        inside=lambda item:any(item==p or p in item.parents for p in platform)
-        for path in (self.root,self.workspaces,self.datasets,*platform,*self.mounts):
+        result=set();platform=(self.release,*self.platform_extra)
+        for path in (self.root,self.workspaces,self.datasets,*self.mounts):
             for item in (path,*path.parents):
-                # Release and scheduler folders are platform data (a:platform), only their ancestors are containers.
-                if item not in self.mounts and path in platform and inside(item):continue
                 try:result.add(identity(item))
                 except OSError:pass
+                if item in self.mounts:break
+        for path in platform:
+            for item in path.parents:
+                if not any(item==p or p in item.parents for p in platform):
+                    try:result.add(identity(item))
+                    except OSError:pass
                 if item in self.mounts:break
         for base in (self.root,self.workspaces,self.datasets):
             for name in ('.trash','outputs') if base==self.root else ('.trash',) if base==self.datasets else CONTAINER_TYPE:
@@ -125,7 +131,7 @@ class Migration:
             for project in children(owner):
                 if not project.name.startswith('.') and (project/'project.json').is_file():projects.append((owner.name,project.name,project))
         layers={}
-        for engine in children(self.workspaces/'.oci'):
+        for engine in children(self.workspaces/'.oci') if self.only in (None,'platform') else []:
             if engine.name.startswith('.'):continue
             self.add('3 镜像与容器引擎',q.images_key(engine.name),engine)
             for container in self.containers(engine):
@@ -146,7 +152,7 @@ class Migration:
             row=((record(self.root/'transfers'/(path.name+'.source.json')) or {}).get('request') or {}).get('source') or {}
             self.add('6 复制暂存',self.project_key(row),path)
         for path in children(self.datasets):
-            if not path.name.startswith('.'):self.add('7 数据集',q.dataset_key(path.name),path)
+            if not path.name.startswith('.'):self.add('7 数据集',q.dataset_key(path.name),path,linked=True)
         for base in (self.datasets,self.workspaces,self.root):
             for file in sorted((base/'.trash').glob('*.json')) if (base/'.trash').is_dir() else []:
                 row=record(file);payload=base/'.trash'/(file.stem+'.data')
@@ -155,13 +161,16 @@ class Migration:
                 if key is None:self.notes.append(f'回收站条目无法判断归属，保持编号 0：{payload}（{row.get("originalPath")}）');continue
                 self.add('8 回收站',key,payload,'tree' if payload.is_dir() and not payload.is_symlink() else 'file')
         self.external()
+        for row in self.plan:
+            if row['kind']=='tree' and row['group']!='external' and row['path'].exists() and identity(row['path']) in self.protect:
+                raise SystemExit(f'迁移计划会给受保护的根目录设置继承：{row["path"]}。请调整安装配置后重试。')
 
     def project_key(self,row):
         owner=row.get('ownerId') or row.get('userId');project=row.get('project')
         return self.q.files_key(owner,project) if isinstance(owner,str) and isinstance(project,str) else self.q.PLATFORM
 
     def trash_key(self,row):
-        q=self.q;path=Path(row.get('originalPath') or '/')
+        q=self.q;path=Path(row.get('originalPath') or '/').resolve()
         if row.get('kind')=='output' and row.get('jobId'):
             found=self.job_owner(row['jobId'])
             if found:return q.outputs_key(*found)
@@ -223,9 +232,10 @@ class Migration:
         for row in self.plan:phases.setdefault(row['phase'],[]).append(row)
         self.out(f'登记表 {self.root/"quota"/"ids.json"}：已有 {len(registry)} 个编号，本次新增 {len(new)} 个')
         for phase in sorted(phases):
-            rows=phases[phase];self.out(f'{phase}：{len(rows)} 处，{len({r["key"] for r in rows})} 个编号')
+            rows=phases[phase];self.out(f'[{rows[0]["group"]}] {phase}：{len(rows)} 处，{len({r["key"] for r in rows})} 个编号')
             if phase.startswith(('9','6','8')) or len(rows)<=12:
                 for row in rows:self.out(f'    {row["path"]} -> {row["key"]}')
+        if any(r['group']=='external' for r in self.plan):self.out('外部目录整棵树只设编号、不设继承；之后新建的文件计入未登记。')
         for line in self.notes:self.out('  注意：'+line)
         self.usage('当前')
 
@@ -242,7 +252,7 @@ class Migration:
     def ensure_registry(self):
         folder=self.root/'quota'
         try:
-            os.mkdir(folder,0o700);os.chown(folder,*self.owner)
+            os.mkdir(folder,0o700);os.chown(folder,*self.owner,follow_symlinks=False)
         except FileExistsError:pass
         return folder
 
@@ -253,38 +263,81 @@ class Migration:
         except OSError:pass
         folder=self.ensure_registry()
         ids=self.q.allocate(folder,[row['key'] for row in self.plan]+[row['images'] for row in self.plan if row['kind']=='layer'])
-        protected=self.protect;layers={identity(row['path']) for row in self.plan if row['kind']=='layer'}
-        counts={}
+        protected=self.protect;layers=set();counts={}
         for row in self.plan:
+            if row['kind']!='layer':continue
+            try:layers.add(identity(row['path']))
+            except FileNotFoundError:
+                row['missing']=True
+                counts.setdefault(row['phase'],self.q.counter())['skipped']+=1
+                self.notes.append(f'容器层已消失，跳过：{row["path"]}')
+        for row in self.plan:
+            if row.get('missing'):continue
             total=counts.setdefault(row['phase'],self.q.counter())
             try:
-                if row['kind']=='layer':self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']]))
+                if row['kind']=='layer':self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']],rebuild=True))
                 elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=row.get('linked'))
                 else:
-                    if identity(row['path']) in protected:
-                        self.q.tag_tree(row['path'],ids[row['key']],top=False,prune=protected|layers,linked=row.get('linked',False),counts=total)
-                    else:self.q.tag_tree(row['path'],ids[row['key']],prune=protected|layers,linked=row.get('linked',False),counts=total)
-            except OSError as error:self.q.failed(total,error);self.notes.append(f'{row["path"]}：{error}')
+                    self.q.tag_tree(row['path'],ids[row['key']],prune=protected|layers,
+                                    linked=row.get('linked',False),counts=total,
+                                    inherit=row['group']!='external',rebuild=row['group']!='external')
+            except OSError as error:
+                if row['kind']=='layer' and error.errno==errno.ENOENT:total['skipped']+=1
+                else:self.q.failed(total,error)
+                self.notes.append(f'{row["path"]}：{error}')
         for phase in sorted(counts):
             c=counts[phase]
-            self.out(f'{phase}：目录 {c["directories"]}，文件 {c["files"]}，跳过 {c["skipped"]}，'
+            group='datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform'
+            self.out(f'[{group}] {phase}：目录 {c["directories"]}，文件 {c["files"]}，跳过 {c["skipped"]}，'
+                     f'重建符号链接 {c["symlinks"]}，whiteout {c["whiteouts"]}，FIFO {c["fifos"]}，socket 保留 {c["sockets"]}，'
                      f'硬链接且已有编号而跳过 {c["linked"]}，错误 {sum(c["errors"].values())} {c["errors"] or ""}')
         for line in self.notes:self.out('  注意：'+line)
+        if self.only in (None,'platform') and not any(c['errors'] for phase,c in counts.items() if not phase.startswith(('7','9'))):
+            self.mark_migrated(folder)
         self.usage('完成后')
         self.leftovers(protected)
         return 0
 
     @staticmethod
     def merge(total,counts):
-        for key in ('directories','files','skipped','linked'):total[key]+=counts[key]
+        for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets'):total[key]+=counts[key]
         for key,value in counts['errors'].items():total['errors'][key]=total['errors'].get(key,0)+value
 
     def tag_file(self,path,value,total,linked=False):
+        info=os.lstat(path)
+        if not stat.S_ISREG(info.st_mode):
+            if stat.S_ISSOCK(info.st_mode):total['sockets']+=1;return
+            parent=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            temporary='.quota-'+uuid.uuid4().hex
+            try:
+                os.mkdir(temporary,0o700,dir_fd=parent)
+                staging=path.parent/temporary;self.q.tag_dir(staging,value)
+                child=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                try:self.q.rebuild_special(path.name,parent,total,staging=child)
+                finally:os.close(child)
+            finally:
+                os.rmdir(temporary,dir_fd=parent);os.close(parent)
+            return
         fd=os.open(path,self.q.FILE_FLAGS)
         try:
-            if linked and os.fstat(fd).st_nlink>1 and self.q.projid(fd) not in (0,value):total['linked']+=1
+            if linked and os.fstat(fd).st_nlink>1 and self.q.projid(fd)!=0:total['linked']+=1
             else:self.q.setx(fd,value);total['files']+=1
         finally:os.close(fd)
+
+    def mark_migrated(self,folder):
+        # Same descriptor-relative, service-owned atomic publication as the registry.
+        fd=os.open(folder,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        temporary='.migrated-'+uuid.uuid4().hex
+        try:
+            child=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
+            try:
+                os.fchown(child,*self.owner)
+                os.write(child,json.dumps({'checkedAt':datetime.now(timezone.utc).isoformat()}).encode());os.fsync(child)
+            finally:os.close(child)
+            os.replace(temporary,'migrated.json',src_dir_fd=fd,dst_dir_fd=fd);os.fsync(fd)
+        finally:
+            with contextlib.suppress(FileNotFoundError):os.unlink(temporary,dir_fd=fd)
+            os.close(fd)
 
     def leftovers(self,protected,limit=20):
         """Largest directory trees still on ID 0; container-type folders are walked, not listed."""
@@ -317,13 +370,14 @@ class Migration:
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--config',required=True,type=Path,help='node-install.json written for deploy/node/install.py')
+    parser.add_argument('--only',choices=('platform','datasets','external'),help='migrate one group; default: all groups')
     parser.add_argument('--dry-run',action='store_true',help='print the plan and current usage only')
     parser.add_argument('--node-dir',type=Path,default=Path('/usr/local/libexec/stargate'),
                         help='root-owned quota-ids.py / quota-sample.py (installed by the node installer)')
     args=parser.parse_args(argv)
     if os.geteuid()!=0:raise SystemExit('请用 root 运行：打标需要改动容器用户的文件。')
     os.umask(0o077)
-    return Migration(json.loads(args.config.read_text()),args.node_dir).run(args.dry_run)
+    return Migration(json.loads(args.config.resolve(strict=True).read_text()),args.node_dir,only=args.only).run(args.dry_run)
 
 
 if __name__=='__main__':

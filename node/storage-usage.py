@@ -24,11 +24,13 @@ class Sample:
     def __init__(self,config):
         self.config=config;self.d=module('local-data');root=self.d.root(config,'root')
         self.quota=saved(root/'samples'/'quota.json')
+        self.migrated=saved(root/'quota'/'migrated.json') is not None
         try:self.names={value:key for key,value in module('quota-ids').read(root/'quota')['ids'].items()}
         except (OSError,ValueError,TypeError,AttributeError):self.names={}
         self.disks=[];seen={}
         for mount in config.get('dataMountPoints') or []:
-            try:device=os.stat(mount).st_dev
+            try:
+                mount=str(Path(mount).resolve(strict=True));device=os.stat(mount).st_dev
             except OSError:device=('missing',mount)
             if device in seen:continue
             seen[device]=mount;self.disks.append((str(mount),device))
@@ -57,15 +59,17 @@ class Sample:
     def size(self,key,path):
         """{'size','complete'} for one key on the disk holding `path`; None when it is unknown.
 
-        A tagged directory always has an inode under its ID, so a registered key
-        missing from the sample means the sample predates it or tagging failed.
-        A key that was never registered has no bytes.
+        Absent IDs below the sampled registry next have zero usage. IDs allocated
+        after the sample remain unknown; an unregistered key has no bytes.
         """
         mount=self.mount(path)
         if mount not in self.filesystems:return None
         totals=self.bytes(mount)
         if key in totals:return {'size':totals[key],'complete':True}
-        return None if key in self.names.values() else {'size':0,'complete':True}
+        value=next((value for value,name in self.names.items() if name==key),None)
+        if value is None or (type((self.quota or {}).get('next')) is int and value<self.quota['next']):
+            return {'size':0,'complete':True}
+        return None
 
     def items(self,mount,used):
         q=module('quota-ids');projects={};rows=[];untracked=0
@@ -121,8 +125,8 @@ def cached(ops,result):
         owner=row.get('ownerId') or row.get('userId');project=row['project']
         # Unregistered files mean the project was never tagged: unknown, not zero.
         files=sample.size(q.files_key(owner,project),ops.store.path) if q.files_key(owner,project) in registered else None
-        outputs=sample.size(q.outputs_key(owner,project),ops.store.root)
-        environment=sample.size(q.env_key(owner,project),ops.store.path)
+        outputs=sample.size(q.outputs_key(owner,project),ops.store.root) if sample.migrated else None
+        environment=sample.size(q.env_key(owner,project),ops.store.path) if sample.migrated else None
         row.update(files or {'size':None,'complete':False})
         count=counts.get(owner+'/'+project,0) if isinstance(counts,dict) else None
         row['outputs']={**(outputs or {'size':None,'complete':False}),'count':count}

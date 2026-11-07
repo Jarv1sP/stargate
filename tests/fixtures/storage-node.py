@@ -49,6 +49,7 @@ try:
                            q.images_key('fixture-member'):40,q.images_key('builtin-admin'):22,q.PLATFORM:5,q.UNASSIGNED:4,None:810,'overhead':3}},
         'gpu-3':{str(ssd):None,str(hdd):{q.dataset_key('images'):3000,q.dataset_key('motion'):2000,q.external_key('/fixture/data2/archive'):3000,None:190,'overhead':2}}}
     ids=q.allocate(q.folder(case.config),sorted({key for disks in usage.values() for rows in disks.values() if rows for key in rows if key not in (None,'overhead')}))
+    (Path(case.config['root'])/'quota'/'migrated.json').write_text('{}')
     def capacity_of(machine,path):
         workspace=machine=='gpu-2' or str(path).startswith(str(ssd))
         return dict(total=(2 if workspace else 16)*1024*GiB,available=(32 if machine=='gpu-3' and workspace else 614 if workspace else 8*1024)*GiB)

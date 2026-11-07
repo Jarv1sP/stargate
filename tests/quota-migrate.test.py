@@ -1,5 +1,5 @@
 """Maintenance migration: plan, every tagging phase, hard links, idempotent rerun."""
-import importlib.util,json,os,tempfile,unittest,uuid
+import copy,importlib.util,json,os,shutil,tempfile,unittest,uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,6 +20,7 @@ class Migration(unittest.TestCase):
                          gpuq=dict(root=str(base/'scheduler'),db_path=str(base/'scheduler/state/gpuq.db'),log_dir=str(base/'scheduler/logs'),
                                    control_dir=str(base/'control')),profiles={'7IM':profile,'R6t':dict(profile)})
         for path in (*self.paths.values(),base/'releases',base/'scheduler/state',base/'scheduler/logs',base/'control'):path.mkdir(parents=True)
+        (base/'scheduler/state/gpuq.db').touch()
         root,ws,ds=self.paths['root'],self.paths['workspacesRoot'],self.paths['datasetsRoot']
         for name in ('jobs','samples','uploads'):(root/name).mkdir()
         project=ws/'alice'/'demo';(project/'code').mkdir(parents=True);(project/'project.json').write_text('{}')
@@ -48,12 +49,13 @@ class Migration(unittest.TestCase):
         (base/'oldstuff').mkdir()
         self.out=[]
 
-    def run_migration(self,dry_run):
+    def run_migration(self,dry_run,only=None,before_run=None):
         account=SimpleNamespace(pw_name='nodeops',pw_uid=os.getuid(),pw_gid=os.getgid(),pw_dir='/home/nodeops')
         with patch.object(migrate.pwd,'getpwnam',return_value=account),patch.object(migrate.os,'chown'):
-            tool=migrate.Migration(self.config,ROOT/'node',out=self.out.append)
+            tool=migrate.Migration(self.config,ROOT/'node',out=self.out.append,only=only)
             with patch.object(tool,'containers',return_value=[{'name':'gpuq-dev-1','labels':{},'upper':str(self.layer/'diff')}]),\
                  patch.object(tool.sampler,'filesystems',return_value=[{'mountPoints':[str(self.mount)],'quota':True,'usedBytes':1,'ids':{'0':{'bytes':1}}}]):
+                if before_run:before_run(tool)
                 return tool.run(dry_run)
 
     def ids(self):return tool_ids(self.paths['root'])
@@ -82,8 +84,8 @@ class Migration(unittest.TestCase):
             expect(ds/'images',q.dataset_key('images'));expect(ds/'images'/'shared.bin',q.dataset_key('images'),False)
             expect(self.trash[('project','old')],q.files_key('alice','old'));expect(self.trash[('output','x')],q.outputs_key('alice','demo'))
             expect(self.trash[('dataset','f')],q.dataset_key('gone'));self.assertEqual(kernel.of(self.trash[('output','nowhere')]),(0,False))
-            cyx=q.external_key(self.mount/'cyx');expect(self.mount/'cyx',cyx);expect(self.mount/'cyx'/'own',cyx,False)
-            expect(self.mount/'stargate'/'oldstuff',q.external_key(self.mount/'stargate'/'oldstuff'))
+            cyx=q.external_key(self.mount/'cyx');expect(self.mount/'cyx',cyx,False);expect(self.mount/'cyx'/'own',cyx,False)
+            expect(self.mount/'stargate'/'oldstuff',q.external_key(self.mount/'stargate'/'oldstuff'),False)
             expect(self.mount/'top.tar',q.external_key(self.mount/'top.tar'),False)
             self.assertEqual(kernel.of(self.mount/'cyx'/'shared.bin'),(ids[q.dataset_key('images')],False),'hard link stays with the dataset')
             for path in (self.mount,self.mount/'stargate',root,root/'outputs',ws,ws/'alice',ws/'.oci',ws/'.copies',ws/'.copy-exports',
@@ -93,6 +95,75 @@ class Migration(unittest.TestCase):
             text='\n'.join(self.out);self.assertIn('硬链接且已有编号而跳过 1',text);self.assertIn(str(ws/'alice'/'loose'),text)
             before=dict(ids);self.out.clear();self.run_migration(False)
             self.assertEqual(q.read(root/'quota')['ids'],before,'a rerun reuses every ID')
+            self.assertTrue((root/'quota'/'migrated.json').is_file())
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')
+    def test_special_inodes_are_rebuilt_in_every_migrated_tree(self):
+        roots=[self.paths['workspacesRoot']/'alice'/'demo',self.paths['root']/'outputs'/self.job,
+               self.layer/'diff',self.paths['datasetsRoot']/'images',self.trash[('project','old')]]
+        before={}
+        for root in roots:
+            (root/'old-link').symlink_to('missing');os.mkfifo(root/'old-fifo')
+            before[root]=(os.lstat(root/'old-link').st_ino,os.lstat(root/'old-fifo').st_ino)
+        with fixture.Kernel():self.run_migration(False)
+        for root in roots:
+            self.assertNotEqual(os.lstat(root/'old-link').st_ino,before[root][0])
+            self.assertNotEqual(os.lstat(root/'old-fifo').st_ino,before[root][1])
+            self.assertEqual(os.readlink(root/'old-link'),'missing')
+        self.assertIn('错误 0','\n'.join(self.out))
+
+    def test_each_group_only_tags_its_scope_and_platform_marks_migration(self):
+        for group in ('datasets','external','platform'):
+            with self.subTest(group=group),fixture.Kernel() as kernel:
+                self.run_migration(False,only=group)
+                ids=self.ids()
+                expected={'datasets':lambda key:key.startswith('d:'),'external':lambda key:key.startswith('x:'),
+                          'platform':lambda key:not key.startswith(('d:','x:'))}[group]
+                # Earlier groups keep their stable registrations; only this group is walked.
+                if group=='datasets':self.assertTrue(all(expected(key) for key in ids))
+                if group=='external':
+                    self.assertFalse(kernel.of(self.mount/'cyx')[1])
+                    self.assertEqual(kernel.of(self.paths['workspacesRoot']/'alice'/'demo'),(0,False))
+                marker=self.paths['root']/'quota'/'migrated.json'
+                self.assertEqual(marker.exists(),group=='platform')
+
+    def test_symlinked_config_is_resolved_and_protected_roots_are_refused(self):
+        alias=self.mount/'alias';alias.symlink_to(self.mount/'stargate',target_is_directory=True)
+        for profile in self.config['profiles'].values():
+            for field,path in self.paths.items():profile[field]=str(alias/path.name)
+        self.config['releaseRoot']=str(alias/'releases')
+        with fixture.Kernel() as kernel:self.run_migration(False)
+        self.assertFalse(kernel.of(self.paths['workspacesRoot'])[1])
+        self.config['releaseRoot']=str(alias/'datasets')
+        with fixture.Kernel(),self.assertRaisesRegex(SystemExit,'受保护'):
+            self.run_migration(False)
+
+    def test_dataset_hardlinks_keep_the_first_nonzero_id_and_external_inheritance_is_cleared(self):
+        ds=self.paths['datasetsRoot'];(ds/'second').mkdir();os.link(ds/'images'/'shared.bin',ds/'second'/'shared')
+        (self.mount/'cyx'/'nested').mkdir()
+        with fixture.Kernel() as kernel:
+            fixture.q.tag_tree(self.mount/'cyx',42)
+            self.run_migration(False)
+            self.assertEqual(kernel.of(ds/'images'/'shared.bin'),(42,False))
+            self.assertFalse(kernel.of(self.mount/'cyx')[1]);self.assertFalse(kernel.of(self.mount/'cyx'/'nested')[1])
+        self.assertIn('硬链接且已有编号而跳过','\n'.join(self.out))
+
+    def test_layer_disappearing_after_inventory_is_skipped_without_aborting_other_rows(self):
+        def remove_layer(tool):
+            report=tool.report_plan
+            def after_report():report();shutil.rmtree(self.layer)
+            tool.report_plan=after_report
+        with fixture.Kernel() as kernel:
+            self.run_migration(False,before_run=remove_layer)
+            self.assertNotEqual(kernel.of(self.paths['workspacesRoot']/'alice'/'demo')[0],0)
+        self.assertIn('容器层已消失，跳过','\n'.join(self.out))
+        self.assertIn('跳过 1','\n'.join(self.out))
+
+    def test_registry_chown_does_not_follow_a_link(self):
+        account=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())
+        with patch.object(migrate.pwd,'getpwnam',return_value=account),patch.object(migrate.os,'chown') as chown:
+            tool=migrate.Migration(self.config,ROOT/'node');tool.ensure_registry()
+        self.assertFalse(chown.call_args.kwargs['follow_symlinks'])
 
 
 def tool_ids(root):return fixture.q.read(Path(root)/'quota')['ids']
@@ -102,8 +173,8 @@ class Refusals(unittest.TestCase):
     def test_root_is_required_and_profiles_must_share_paths(self):
         with patch.object(migrate.os,'geteuid',return_value=1000),self.assertRaisesRegex(SystemExit,'root'):
             migrate.main(['--config','/nonexistent'])
-        config=dict(account='nodeops',releaseRoot='/r',dataMountPoints=['/'],profiles={'a':dict(root='/1',workspacesRoot='/w',datasetsRoot='/d'),
-                    'b':dict(root='/2',workspacesRoot='/w',datasetsRoot='/d')})
+        config=dict(account='nodeops',releaseRoot='/r',dataMountPoints=['/'],profiles={'a':dict(root=str(ROOT),workspacesRoot=str(ROOT),datasetsRoot=str(ROOT)),
+                    'b':dict(root=str(ROOT/'node'),workspacesRoot=str(ROOT),datasetsRoot=str(ROOT))})
         with patch.object(migrate.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),self.assertRaisesRegex(SystemExit,'不一致'):
             migrate.Migration(config,ROOT/'node')
 

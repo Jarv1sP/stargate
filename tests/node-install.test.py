@@ -182,6 +182,28 @@ class InstallationTests(unittest.TestCase):
             self.assertIn(line, timer)
         self.assertTrue(self.host.states['system', 'stargate-quota-sample.timer']['enabled'])
 
+    def test_root_sampler_uses_bytes_captured_before_service_chown_and_replaces_links(self):
+        original=INSTALL.os.chown;attacked=[]
+        def handoff(path,*args,**kwargs):
+            if Path(path).name.startswith('.stage-'):
+                source=Path(path)/'node'/'quota-sample.py';source.write_bytes(b'print("service-controlled")')
+                attacked.append(path)
+            return original(path,*args,**kwargs)
+        self.host.libexec.mkdir(parents=True);victim=self.base/'victim';victim.write_bytes(b'keep')
+        (self.host.libexec/'quota-sample.py').symlink_to(victim)
+        with patch.object(INSTALL.os,'chown',side_effect=handoff):self.host.install(self.package)
+        self.assertTrue(attacked)
+        self.assertEqual((self.host.libexec/'quota-sample.py').read_bytes(),(ROOT/'node/quota-sample.py').read_bytes())
+        self.assertFalse((self.host.libexec/'quota-sample.py').is_symlink());self.assertEqual(victim.read_bytes(),b'keep')
+
+    def test_sampler_unit_resolves_a_symlinked_state_root(self):
+        self.host.stage(self.package)
+        real=Path(self.config['profiles']['7IM']['root']);alias=self.base/'state-alias';alias.symlink_to(real)
+        for profile in self.config['profiles'].values():profile['root']=str(alias)
+        files,_=self.host.quota_sampler(self.host.current)
+        unit=files[str(self.host.system_units/'stargate-quota-sample.service')][0].decode()
+        self.assertIn('"--root" '+json.dumps(str(real.resolve())),unit);self.assertNotIn(str(alias),unit)
+
     def test_rollback_to_a_release_without_the_sampler_removes_its_units(self):
         first = self.host.install(self.package)
         self.host.fail_start = 'stargate-quota-sample.timer'
@@ -359,7 +381,7 @@ class InstallationTests(unittest.TestCase):
         root = self.base/'scheduler space %value'
         root.mkdir()
         self.config['gpuq']['root'] = str(root)
-        manifest = json.loads((self.package/'manifest.json').read_text())
+        _, manifest = self.host.stage(self.package)
         files, _ = self.host.bindings(manifest, self.package)
         body = files[str(self.home/'.config/systemd/user/gpuq.service')][0].decode()
         setting = next(line for line in body.splitlines() if line.startswith('WorkingDirectory='))

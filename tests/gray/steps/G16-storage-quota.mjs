@@ -75,7 +75,7 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
     const sum=disk.items.reduce((total,i)=>total+(i.bytes??0)+(i.files??0)+(i.outputs??0)+(i.environment??0),0);
     ctx.check('工作区盘各项相加等于已用',disk.accounting==='quota'&&sum===disk.usedBytes,{sum,used:disk.usedBytes});
     ctx.check('工作区盘列出本人镜像',disk.items.some(i=>i.kind==='images'&&i.ownerId===owner),disk.items);
-    ctx.check('项目行三项都来自记账且已知',row&&row.size>0&&row.complete===true&&row.outputs.size>0&&row.environment.size>0,row);
+    ctx.check('迁移前文件已知、输出与环境保持未知',row&&row.size>0&&row.complete===true&&row.outputs.size===null&&row.environment.size===null,row);
   }],['打标后拉镜像、建容器、commit 与删除',async()=>{
     const created=await node(...asService,ENGINE,facts.release,'create');
     const probe=await inspect({layer:created.layer,diff:created.layer+'/diff'});
@@ -94,16 +94,28 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
     const after=await inspect({layer});
     ctx.check('podman rm 已删除该容器层',after.attrs.layer===null,{layer,attrs:after.attrs});
   }],['迁移工具 dry-run 与正式执行',async()=>{
+    // 模拟启用 quota 前已有的层：旧特殊 inode 无法用 FSSETXATTR 改号。
+    await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',`import importlib.util,json,sys
+from pathlib import Path
+cfg=json.load(open('/etc/gpuq-console/node-install.json'));p=cfg['profiles']['7IM']
+head=json.load(open(Path(p['workspacesRoot'])/sys.argv[1]/sys.argv[2]/'oci.json'))
+s=importlib.util.spec_from_file_location('quota','/usr/local/libexec/stargate/quota-ids.py');q=importlib.util.module_from_spec(s);s.loader.exec_module(q)
+q.tag_tree(head['layer'],0,inherit=False)`,owner,name);
+    await job(['sh','-c','test -d /usr/share/doc && rm -rf /usr/share/doc && ln -s /etc/profile /tmp/gray-quota-legacy-link && mkfifo /tmp/gray-quota-legacy-fifo'],'迁移前删除镜像目录并创建旧符号链接和 FIFO');
     const source=await readFile(resolve(dirname(ctx.stack.file),'src/deploy/node/quota-migrate.py'),'utf8');
     const migrate=async(...args)=>(await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',source,'--config','/etc/gpuq-console/node-install.json',...args)).stdout;
     const plan=await migrate('--dry-run');ctx.note(plan.split('\n').slice(0,40).join('\n'));
     ctx.check('dry-run 打印计划且未改动',plan.includes('仅打印计划')&&plan.includes('4 项目文件'),plan.slice(0,2000));
-    const done=await migrate();ctx.note(done.split('\n').slice(-40).join('\n'));
+    const done=await migrate('--only','platform');ctx.note(done.split('\n').slice(-40).join('\n'));
     const line=done.split('\n').find(l=>l.startsWith('完成后 /data1：'));const match=line?.match(/已用 ([\d,]+) 字节，未登记（编号 0）([\d,]+) 字节/);
     const [used,untracked]=match?match.slice(1).map(v=>Number(v.replaceAll(',',''))):[0,Infinity];
     ctx.check('迁移后 /data1 未登记接近 0',untracked<=Math.max(64*1024**2,used*0.02),{line,used,untracked});
     const after=await usage(v=>v.disks?.some(d=>d.roles.includes('workspace')&&d.items.some(i=>i.kind==='platform')));
     ctx.check('迁移后工作区盘列出平台运行数据',after.disks.find(d=>d.roles.includes('workspace')).items.some(i=>i.kind==='platform'));
-    await job(['sh','-c','echo "# after migration" >> /etc/profile'],'迁移后任务照常运行并能改写镜像文件');
+    await job(['sh','-c','mkdir /usr/share/doc && echo restored > /usr/share/doc/gray-quota && echo "# after migration" >> /etc/profile'],'迁移后可在镜像 whiteout 原路径 mkdir 并写文件');
+    await job(['python3','-c',"import os,stat; os.rename('/tmp/gray-quota-legacy-link','/tmp/gray-quota-link-moved'); assert os.readlink('/tmp/gray-quota-link-moved')=='/etc/profile'; assert stat.S_ISFIFO(os.stat('/tmp/gray-quota-legacy-fifo').st_mode)"],'迁移前的符号链接迁移后可在同目录 rename，FIFO 保留');
+    const known=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.complete&&p?.environment?.complete;});
+    ctx.check('平台迁移标记写入后输出与环境已知',known.projects.some(p=>p.project===name&&p.outputs.complete&&p.environment.complete));
+    for(const group of ['datasets','external']){const report=await migrate('--only',group);ctx.check(group+' 分组迁移成功',report.includes('['+group+']'),report.slice(-2000));}
   }]]);
 }};

@@ -200,6 +200,9 @@ class Installer:
             if self.config.get('hamiLibrary'):
                 source = data_path(self.config['hamiLibrary'], mounts)
                 atomic(staging / 'hami/libvgpu.so', source.read_bytes(), 0o444)
+            # Capture root-executed code before granting the service account write access.
+            self.quota_programs = {name: (staging/'node'/name).read_bytes()
+                                   for name in ('quota-sample.py', 'quota-ids.py')}
             for path in [staging, *staging.rglob('*')]:
                 os.chown(path, *self.owner)
                 if path.is_dir():
@@ -221,9 +224,9 @@ class Installer:
         It runs a root-owned copy of the sampler, never the service-owned
         release; quota-ids.py sits beside it for the maintenance migration.
         """
-        files = {str(self.libexec/name): ((Path(release)/'node'/name).read_bytes(), 0o644, (0, 0))
-                 for name in ('quota-sample.py', 'quota-ids.py')}
-        roots = list(dict.fromkeys(profile['root'] for profile in self.config['profiles'].values()))
+        files = {str(self.libexec/name): (data, 0o644, (0, 0))
+                 for name, data in self.quota_programs.items()}
+        roots = list(dict.fromkeys(str(Path(profile['root']).resolve(strict=True)) for profile in self.config['profiles'].values()))
         command = ['/usr/bin/python3', '-I', '-B', str(self.libexec/'quota-sample.py'), '--account', self.account.pw_name,
                    *[word for root in roots for word in ('--root', root)], *self.config['dataMountPoints']]
         service = ('[Unit]\nDescription=STARGATE project-quota sampler (read-only)\n[Service]\nType=oneshot\n'

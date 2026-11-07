@@ -1,10 +1,12 @@
 """Trusted data disks and descriptor-relative file access."""
 import contextlib
+import fcntl
 import importlib.util
 import os
 from pathlib import Path
 import re
 import stat
+import uuid
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 SYS_DEV_BLOCK = Path('/sys/dev/block')
@@ -71,18 +73,27 @@ def root(config,field):
 
 def dataset_root(config,dataset,create=False):
     base=root(config,'datasetsRoot');dataset=name(dataset)
-    fd=open_directory(base);fresh=False
+    fd=open_directory(base)
     try:
         if create:
-            try:os.mkdir(dataset,0o700,dir_fd=fd);fresh=True
-            except FileExistsError:pass
+            # Serialize publication, including the case of an existing empty dataset.
+            fcntl.flock(fd,fcntl.LOCK_EX)
+            try:os.stat(dataset,dir_fd=fd,follow_symlinks=False);exists=True
+            except FileNotFoundError:exists=False
+            if not exists:
+                temporary='.dataset-'+uuid.uuid4().hex
+                os.mkdir(temporary,0o700,dir_fd=fd)
+                try:
+                    q=module('quota-ids');q.assign(config,q.dataset_key(dataset),base/temporary)
+                    os.rename(temporary,dataset,src_dir_fd=fd,dst_dir_fd=fd)
+                finally:
+                    try:os.rmdir(temporary,dir_fd=fd)
+                    except FileNotFoundError:pass
         child=os.open(dataset,DIR_FLAGS,dir_fd=fd)
         try:
             if os.fstat(child).st_dev!=os.fstat(fd).st_dev:raise ValueError('数据集不能跨出配置的数据盘。')
         finally:os.close(child)
     finally:os.close(fd)
-    if fresh:
-        q=module('quota-ids');q.assign(config,q.dataset_key(dataset),base/dataset)
     return base/dataset
 
 def size(path,*,partial=False):

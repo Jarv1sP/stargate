@@ -189,7 +189,7 @@ class Trash:
                         except PermissionError:
                             # Container users (sub-UIDs) own some files; remove them in the rootless namespace.
                             engine=module('personal-oci').PersonalOCI(self.config,self.namespace_owner(row))
-                            engine.run('unshare','/usr/bin/rm','-rf','--',str(folder/name),timeout=3600)
+                            engine.run('unshare','/usr/bin/rm','-rf','--one-file-system','--',str(folder/name),timeout=3600)
                     else:os.unlink(name,dir_fd=fd)
                 os.fsync(fd)
             finally:os.close(fd)
@@ -206,7 +206,8 @@ class Trash:
         oci=self.d.root(self.config,'workspacesRoot')/'.oci'
         try:existing=sorted(p.name for p in oci.iterdir() if not p.name.startswith('.') and not p.is_symlink() and p.is_dir())
         except FileNotFoundError:existing=[]
-        return owner if owner in existing or not existing else existing[0]
+        if not existing:raise FileNotFoundError('没有可用的容器引擎，请管理员清理此回收站条目。')
+        return owner if owner in existing else existing[0]
 
     def collect(self):
         results=[]

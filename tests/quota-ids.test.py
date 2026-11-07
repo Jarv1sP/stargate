@@ -1,5 +1,5 @@
 """Project-ID registry and tagging against a simulated FS_IOC_FS[GS]ETXATTR kernel."""
-import errno,fcntl,importlib.util,io,json,os,stat,struct,unittest,uuid
+import concurrent.futures,errno,fcntl,importlib.util,io,json,os,socket,stat,struct,threading,unittest,uuid
 from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,7 +89,62 @@ class Tagging(unittest.TestCase):
         with Kernel() as kernel:
             q.tag_tree(dataset,1001);counts=q.tag_tree(external,2001,linked=True)
         self.assertEqual(kernel.of(external/'shared'),(1001,False));self.assertEqual(kernel.of(external/'own'),(2001,False))
-        self.assertEqual(counts['linked'],1)
+        self.assertEqual(counts['linked'],2)
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')
+    def test_migration_rebuilds_symlinks_and_fifo_preserves_metadata_and_leaves_sockets(self):
+        top,outside=self.tree();sock=socket.socket(socket.AF_UNIX);sock.bind(str(top/'socket'));self.addCleanup(sock.close)
+        original={name:os.lstat(top/name) for name in ('link','filelink','fifo','socket')}
+        os.chmod(top/'fifo',0o640);os.utime(top/'fifo',ns=(1234567890000000000,1234567891000000000))
+        original['fifo']=os.lstat(top/'fifo')
+        target_info=os.stat(outside/'secret')
+        with Kernel() as kernel:counts=q.tag_tree(top,1234,rebuild=True)
+        self.assertEqual((counts['symlinks'],counts['fifos'],counts['sockets'],counts['errors']),(2,1,1,{}))
+        for name in ('link','filelink','fifo'):
+            info=os.lstat(top/name);self.assertNotEqual(info.st_ino,original[name].st_ino)
+            self.assertEqual((info.st_uid,info.st_gid,info.st_mtime_ns),(original[name].st_uid,original[name].st_gid,original[name].st_mtime_ns))
+        self.assertEqual(os.lstat(top/'socket').st_ino,original['socket'].st_ino)
+        self.assertEqual(os.readlink(top/'link'),str(outside))
+        self.assertEqual(stat.S_IMODE(os.stat(top/'fifo').st_mode),0o640)
+        self.assertEqual(os.stat(outside/'secret').st_mtime_ns,target_info.st_mtime_ns)
+        self.assertEqual(list(top.glob('.quota-*')),[])
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')
+    def test_special_rebuild_copies_every_xattr_and_keeps_original_on_failure(self):
+        top,_=self.tree();fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY);self.addCleanup(os.close,fd)
+        attrs={'trusted.overlay.origin':b'origin','user.overlay.whiteout':b'y','user.note':b'n'}
+        before=os.lstat(top/'filelink')
+        with (
+            patch.object(q.os,'listxattr',return_value=list(attrs)),patch.object(q.os,'getxattr',side_effect=lambda path,key,**kw:attrs[key]),
+            patch.object(q.os,'setxattr') as copied,
+        ):
+            q.rebuild_special('filelink',fd,q.counter())
+        self.assertEqual({call.args[1]:call.args[2] for call in copied.call_args_list},attrs)
+        self.assertTrue(all(call.kwargs['follow_symlinks'] is False for call in copied.call_args_list))
+        before=os.lstat(top/'filelink')
+        with (
+            patch.object(q.os,'listxattr',return_value=['user.note']),patch.object(q.os,'getxattr',return_value=b'n'),
+            patch.object(q.os,'setxattr',side_effect=PermissionError(1,'denied')),self.assertRaises(PermissionError),
+        ):
+            q.rebuild_special('filelink',fd,q.counter())
+        self.assertEqual(os.lstat(top/'filelink').st_ino,before.st_ino)
+        self.assertEqual(list(top.glob('.quota-*')),[])
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')
+    def test_whiteout_is_recreated_as_character_device_zero_with_its_xattrs(self):
+        top,_=self.tree();source=top/'whiteout';source.touch();info=os.lstat(source)
+        whiteout=SimpleNamespace(st_mode=stat.S_IFCHR|0o600,st_rdev=0,st_uid=info.st_uid,st_gid=info.st_gid,
+                                 st_atime_ns=info.st_atime_ns,st_mtime_ns=info.st_mtime_ns)
+        fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY);self.addCleanup(os.close,fd);counts=q.counter()
+        def create(name,mode,device,*,dir_fd):
+            child=os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600,dir_fd=dir_fd);os.close(child)
+        with (
+            patch.object(q.os,'stat',return_value=whiteout),patch.object(q.os,'listxattr',return_value=['trusted.overlay.whiteout']),
+            patch.object(q.os,'getxattr',return_value=b'y'),patch.object(q.os,'setxattr') as xattr,patch.object(q.os,'mknod',side_effect=create) as mknod,
+        ):
+            q.rebuild_special('whiteout',fd,counts)
+        self.assertEqual(mknod.call_args.args[1:],(stat.S_IFCHR|0o600,0))
+        self.assertEqual(xattr.call_args.args[1:],('trusted.overlay.whiteout',b'y'));self.assertEqual(counts['whiteouts'],1)
 
     def test_errors_are_counted_and_the_walk_continues(self):
         top,_=self.tree();blocked=os.stat(top/'a'/'f').st_ino
@@ -177,6 +232,21 @@ class RuntimeEntries(unittest.TestCase):
             self.upload('a.txt',b'abc')
         self.assertEqual(kernel.of(Path(self.config['datasetsRoot'])/'shared'),(self.ids()[q.dataset_key('shared')],True))
         self.assert_container_type(kernel,Path(self.config['datasetsRoot']))
+
+    def test_concurrent_dataset_creation_publishes_only_after_tagging(self):
+        data=f.module('local-data');tagged=threading.Event();release=threading.Event();seen=[]
+        qmod=SimpleNamespace(dataset_key=q.dataset_key)
+        def assign(config,key,path):
+            seen.append(path);tagged.set()
+            self.assertFalse((Path(config['datasetsRoot'])/'race').exists())
+            self.assertTrue(release.wait(5))
+        qmod.assign=assign
+        with patch.object(data,'module',return_value=qmod),concurrent.futures.ThreadPoolExecutor(2) as pool:
+            first=pool.submit(data.dataset_root,self.config,'race',True);self.assertTrue(tagged.wait(5))
+            second=pool.submit(data.dataset_root,self.config,'race',True)
+            release.set();one=first.result(5);two=second.result(5)
+        self.assertEqual(one,two);self.assertEqual(len(seen),1)
+        self.assertTrue(seen[0].name.startswith('.dataset-'));self.assertFalse(seen[0].exists())
 
     upload=f.DirectoryContract.upload
     key=f.DirectoryContract.key

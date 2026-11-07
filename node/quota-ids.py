@@ -114,7 +114,7 @@ def tag_dir(path,value,inherit=True):
     try:return setx(fd,value,inherit)
     finally:os.close(fd)
 
-def counter():return {'directories':0,'files':0,'skipped':0,'linked':0,'errors':{}}
+def counter():return {'directories':0,'files':0,'skipped':0,'linked':0,'symlinks':0,'whiteouts':0,'fifos':0,'sockets':0,'errors':{}}
 
 def failed(counts,error):
     name=errno.errorcode.get(error.errno,str(error.errno));counts['errors'][name]=counts['errors'].get(name,0)+1
@@ -123,8 +123,36 @@ def open_file(name,parent):
     try:return os.open(name,FILE_FLAGS|getattr(os,'O_NOATIME',0),dir_fd=parent)
     except PermissionError:return os.open(name,FILE_FLAGS,dir_fd=parent)
 
-def tag_tree(path,value,*,top=True,prune=(),linked=False,counts=None):
-    """Directories get the ID + PROJINHERIT, files only the ID.
+def rebuild_special(name,parent,counts,*,staging=None):
+    """Migration only: special inodes inherit the already tagged parent ID.
+
+    Keep the old name until metadata, including overlay xattrs, is copied.
+    /proc anchors xattr calls (no dir_fd in Python 3.10) at the held FD.
+    """
+    info=os.stat(name,dir_fd=parent,follow_symlinks=False);mode=info.st_mode
+    if stat.S_ISSOCK(mode):counts['sockets']+=1;return
+    kind='symlinks' if stat.S_ISLNK(mode) else 'fifos' if stat.S_ISFIFO(mode) else 'whiteouts' if stat.S_ISCHR(mode) and info.st_rdev==0 else None
+    if kind is None:counts['skipped']+=1;return
+    source=f'/proc/self/fd/{parent}/{name}'
+    attrs={key:os.getxattr(source,key,follow_symlinks=False) for key in os.listxattr(source,follow_symlinks=False)}
+    target=os.readlink(name,dir_fd=parent) if kind=='symlinks' else None
+    target_parent=parent if staging is None else staging
+    temporary='.quota-'+uuid.uuid4().hex;destination=f'/proc/self/fd/{target_parent}/{temporary}'
+    try:
+        if kind=='symlinks':os.symlink(target,temporary,dir_fd=target_parent)
+        elif kind=='fifos':os.mkfifo(temporary,stat.S_IMODE(mode),dir_fd=target_parent)
+        else:os.mknod(temporary,mode,0,dir_fd=target_parent)
+        os.chown(temporary,info.st_uid,info.st_gid,dir_fd=target_parent,follow_symlinks=False)
+        if kind!='symlinks':os.chmod(destination,stat.S_IMODE(mode),follow_symlinks=False)
+        for key,value in attrs.items():os.setxattr(destination,key,value,follow_symlinks=False)
+        os.utime(temporary,ns=(info.st_atime_ns,info.st_mtime_ns),dir_fd=target_parent,follow_symlinks=False)
+        os.replace(temporary,name,src_dir_fd=target_parent,dst_dir_fd=parent);counts[kind]+=1
+    finally:
+        with contextlib.suppress(FileNotFoundError):os.unlink(temporary,dir_fd=target_parent)
+
+
+def tag_tree(path,value,*,top=True,prune=(),linked=False,counts=None,inherit=True,rebuild=False):
+    """Directories get the ID and `inherit`, files only the ID.
 
     Never follows symlinks or leaves the top directory's device. `top=False`
     treats the top as a container-type directory (no PROJINHERIT, ID kept).
@@ -135,7 +163,7 @@ def tag_tree(path,value,*,top=True,prune=(),linked=False,counts=None):
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
     try:
         device=os.fstat(fd).st_dev
-        if top:setx(fd,value,True)
+        if top:setx(fd,value,inherit)
         else:setx(fd,projid(fd),False)
         counts['directories']+=1
         for _,dirnames,filenames,dirfd in os.fwalk('.',dir_fd=fd,follow_symlinks=False,onerror=lambda error:failed(counts,error)):
@@ -144,9 +172,13 @@ def tag_tree(path,value,*,top=True,prune=(),linked=False,counts=None):
                 try:
                     info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
                     # fwalk lists links to directories here too; they are never followed.
-                    if not stat.S_ISDIR(info.st_mode) or info.st_dev!=device or (info.st_dev,info.st_ino) in prune:counts['skipped']+=1;continue
+                    if info.st_dev!=device or (info.st_dev,info.st_ino) in prune:counts['skipped']+=1;continue
+                    if not stat.S_ISDIR(info.st_mode):
+                        if rebuild and inherit:rebuild_special(name,dirfd,counts)
+                        else:counts['skipped']+=1
+                        continue
                     child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=dirfd)
-                    try:setx(child,value,True)
+                    try:setx(child,value,inherit)
                     finally:os.close(child)
                     counts['directories']+=1;kept.append(name)
                 except OSError as error:failed(counts,error)
@@ -154,17 +186,22 @@ def tag_tree(path,value,*,top=True,prune=(),linked=False,counts=None):
             for name in filenames:
                 try:
                     info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
-                    if not stat.S_ISREG(info.st_mode) or info.st_dev!=device:counts['skipped']+=1;continue
+                    if info.st_dev!=device:counts['skipped']+=1;continue
+                    if not stat.S_ISREG(info.st_mode):
+                        if rebuild and inherit:rebuild_special(name,dirfd,counts)
+                        elif stat.S_ISSOCK(info.st_mode):counts['sockets']+=1
+                        else:counts['skipped']+=1
+                        continue
                     child=open_file(name,dirfd)
                     try:
-                        if linked and info.st_nlink>1 and projid(child) not in (0,value):counts['linked']+=1;continue
+                        if linked and info.st_nlink>1 and projid(child)!=0:counts['linked']+=1;continue
                         setx(child,value);counts['files']+=1
                     finally:os.close(child)
                 except OSError as error:failed(counts,error)
     finally:os.close(fd)
     return counts
 
-def tag_layer(layer,env,images):
+def tag_layer(layer,env,images,*,rebuild=False):
     """A container layer: the layer directory keeps the images ID without
     PROJINHERIT (podman stages its deletion by rename), everything below it
     carries one env ID so overlay copy-up stays inside one ID. A partial
@@ -172,21 +209,24 @@ def tag_layer(layer,env,images):
     layer=Path(layer);counts=counter();done=[]
     fd=os.open(layer,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
     try:
-        setx(fd,images,False)
+        setx(fd,env if rebuild else images,rebuild)
         for name in sorted(os.listdir(fd)):
             try:
                 info=os.stat(name,dir_fd=fd,follow_symlinks=False)
                 if stat.S_ISDIR(info.st_mode):
-                    done.append(layer/name);tag_tree(layer/name,env,counts=counts)
+                    done.append(layer/name);tag_tree(layer/name,env,counts=counts,rebuild=rebuild)
                 elif stat.S_ISREG(info.st_mode):
                     child=open_file(name,fd)
                     try:setx(child,env);counts['files']+=1
                     finally:os.close(child)
+                elif rebuild:rebuild_special(name,fd,counts)
             except OSError as error:failed(counts,error)
-    finally:os.close(fd)
+    finally:
+        try:setx(fd,images,False)
+        finally:os.close(fd)
     if counts['errors']:
         for child in done:
-            with contextlib.suppress(OSError):tag_tree(child,images)
+            with contextlib.suppress(OSError):tag_tree(child,images,rebuild=rebuild)
     return counts
 
 def heal_layer(layer,env):
