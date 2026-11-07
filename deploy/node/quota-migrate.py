@@ -4,13 +4,14 @@ disks have project quota enabled. Idempotent: rerunning reuses every ID.
 
     quota-migrate.py --config /etc/gpuq-console/node-install.json [--dry-run] [--only platform|datasets|external]
 
-Order (design STOR-001 2.6): registry, platform, images + container layers,
-projects, outputs, copy staging, datasets, trash entries, external
-directories (last, skipping hard-linked inodes that already carry an ID).
-Run the platform group while no task, terminal or Git command is active: a directory tree that
-is half tagged can refuse renames until it is finished. Paths all come from
-the installer config. Reads that need the service account (podman) go through
-runuser. It never sets a limit or relocates data; special inodes are rebuilt in place.
+Platform migration runs without tasks, terminals or Git commands. It scans live
+overlays once, prunes mounted layers, and withholds the completion marker until
+all platform rows finish. Datasets and their trash entries may run online; each
+row is registered just before tagging. External trees get IDs without inheritance.
+Datasets may reclaim hardlinked inodes from external IDs, preserving other owners.
+All paths come from installer config; podman reads run as the service account.
+No limits or data relocation; special inodes are rebuilt in place, and abandoned
+special temporaries / root-owned staging are cleaned only in platform/dataset trees.
 """
 import argparse,contextlib,errno,importlib.util,json,os,pwd,re,signal,stat,subprocess,sys,uuid
 from datetime import datetime,timezone
@@ -231,9 +232,10 @@ class Migration:
                 if key in ancestors:pending.append(path);continue
                 self.add('9 外部目录',self.q.external_key(path),path,'tree' if path.is_dir() else 'file',linked=True)
 
-    def layer_mounted(self,layer):
-        """Inspect each service-account mount namespace, excluding init's namespace."""
-        init=os.stat(self.proc/'1/ns/mnt').st_ino;seen={init};target=str(Path(layer)/'diff')
+    def active_overlays(self):
+        """Read each service-account mount namespace once, excluding init's."""
+        init=os.stat(self.proc/'1/ns/mnt').st_ino;seen={init};overlays=[]
+        def decode(value):return re.sub(r'\\([0-7]{3})',lambda match:chr(int(match[1],8)),value)
         for process in self.proc.iterdir():
             if not process.name.isdigit():continue
             try:
@@ -242,15 +244,32 @@ class Migration:
                 namespace=os.stat(process/'ns/mnt').st_ino
                 if namespace in seen:continue
                 text=(process/'mountinfo').read_text();seen.add(namespace)
-            except FileNotFoundError:continue  # Processes may exit during the scan.
+            except OSError as error:
+                if error.errno in (errno.ENOENT,errno.ESRCH,errno.EINVAL):continue
+                raise
             for line in text.splitlines():
-                _,_,tail=line.partition(' - ');fields=tail.split()
-                if len(fields)<3 or fields[0]!='overlay':continue
-                for option in fields[2].split(','):
-                    if not option.startswith('upperdir='):continue
-                    upper=re.sub(r'\\([0-7]{3})',lambda match:chr(int(match[1],8)),option[9:])
-                    if os.path.normpath(upper)==target:return True
+                head,_,tail=line.partition(' - ');fields=tail.split();mount=head.split()
+                if len(fields)<3 or len(mount)<5 or fields[0]!='overlay':continue
+                upper=next((decode(option[9:]) for option in fields[2].split(',') if option.startswith('upperdir=')),None)
+                overlays.append((upper,decode(mount[4])))
+        return overlays
+
+    @staticmethod
+    def layer_mounted(layer,overlays):
+        layer=Path(layer)
+        for upper,mount in overlays:
+            if os.path.normpath(mount)==str(layer/'merged'):return True
+            if upper is not None:
+                path=Path(upper)
+                if not path.is_absolute():path=layer.parent/path
+                if os.path.normpath(path)==str(layer/'diff'):return True
         return False
+
+    def mounted_layers(self):
+        overlays=self.active_overlays();candidates={row['path'] for row in self.plan if row['kind']=='layer'}
+        for row in self.plan:
+            if row['phase']=='3 镜像与容器引擎':candidates.update(children(row['path']/'graph'/'overlay'))
+        return {path for path in candidates if self.layer_mounted(path,overlays)}
 
     def cleanup_trash(self,counts):
         for group,bases in (('platform',(self.root,self.workspaces)),('datasets',(self.datasets,))):
@@ -261,7 +280,7 @@ class Migration:
                 except OSError as error:
                     self.q.failed(counts.setdefault((group,'1 中断残留'),self.q.counter()),error);continue
                 try:
-                    total=self.q.counter();self.q.cleanup_temporary(fd,total)
+                    total=self.q.counter();self.q.cleanup_temporary(fd,total,staging=True)
                     if total['cleaned'] or total['errors']:
                         self.merge(counts.setdefault((group,'1 中断残留'),self.q.counter()),total)
                 finally:os.close(fd)
@@ -310,6 +329,17 @@ class Migration:
                             [row['images'] for row in self.plan if row['kind']=='layer'])
         protected=self.protect;layers=set();counts={}
         self.cleanup_trash(counts)
+        mounted=set();scan_failed=False
+        if self.only in (None,'platform'):
+            try:mounted=self.mounted_layers()
+            except OSError as error:
+                scan_failed=True;self.q.failed(counts.setdefault(('platform','3 容器层'),self.q.counter()),error)
+                self.notes.append(f'读不到活 overlay 挂载，暂不处理引擎与容器层：{error}')
+            if mounted:counts.setdefault(('platform','3 容器层'),self.q.counter())['mounted']=len(mounted)
+            for path in sorted(mounted):
+                self.notes.append(f'容器层仍有活 overlay，跳过；请停止服务账户的 podman 后重跑：{path}')
+                try:layers.add(identity(path))
+                except FileNotFoundError:pass
         for row in self.plan:
             if row['kind']!='layer':continue
             try:layers.add(identity(row['path']))
@@ -318,20 +348,20 @@ class Migration:
                 counts.setdefault((row['group'],row['phase']),self.q.counter())['skipped']+=1
                 self.notes.append(f'容器层已消失，跳过：{row["path"]}')
         for row in self.plan:
-            if row.get('missing'):continue
+            if row.get('missing') or row['path'] in mounted:continue
+            if scan_failed and (row['kind']=='layer' or row['phase']=='3 镜像与容器引擎'):continue
             total=counts.setdefault((row['group'],row['phase']),self.q.counter())
             try:
                 if row['group']!='platform':ids.update(self.q.allocate(folder,[row['key']]))
-                linked='all' if row['group']=='external' else row.get('linked',False)
+                linked=row.get('linked',False)
+                reclaim={value for key,value in self.q.read(folder)['ids'].items() if key.startswith('x:')} if row['group']=='datasets' else set()
                 if row['kind']=='layer':
-                    if self.layer_mounted(row['path']):
-                        total['mounted']+=1;self.notes.append(f'容器层仍有活 overlay，跳过；请停止服务账户的 podman 后重跑：{row["path"]}');continue
                     self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']],rebuild=True,cleanup=True))
-                elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=linked)
+                elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=linked,reclaim=reclaim)
                 else:
                     self.q.tag_tree(row['path'],ids[row['key']],prune=protected|layers,
-                                    linked=linked,counts=total,
-                                    inherit=row['group']!='external',rebuild=row['group']!='external',cleanup=True)
+                                    linked=linked,reclaim=reclaim,counts=total,
+                                    inherit=row['group']!='external',rebuild=row['group']!='external',cleanup=row['group']!='external')
             except OSError as error:
                 if row['kind']=='layer' and error.errno==errno.ENOENT:total['skipped']+=1
                 else:self.q.failed(total,error)
@@ -355,7 +385,7 @@ class Migration:
         for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets','changed','cleaned','mounted'):total[key]+=counts[key]
         for key,value in counts['errors'].items():total['errors'][key]=total['errors'].get(key,0)+value
 
-    def tag_file(self,path,value,total,linked=False):
+    def tag_file(self,path,value,total,linked=False,reclaim=()):
         info=os.lstat(path)
         if not stat.S_ISREG(info.st_mode):
             if stat.S_ISSOCK(info.st_mode):total['sockets']+=1;return
@@ -365,7 +395,7 @@ class Migration:
             return
         fd=os.open(path,self.q.FILE_FLAGS)
         try:
-            if linked and os.fstat(fd).st_nlink>1 and (linked=='all' or self.q.projid(fd)!=0):total['linked']+=1
+            if linked and os.fstat(fd).st_nlink>1 and self.q.projid(fd) not in {0,*reclaim}:total['linked']+=1
             else:self.q.setx(fd,value);total['files']+=1
         finally:os.close(fd)
 
