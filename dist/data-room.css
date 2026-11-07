@@ -120,7 +120,7 @@
   .sb .dr-gauge{padding:12px}
   .sb .dr-mixes{margin-top:20px}
   .sb .dr-mix{padding:14px 14px 16px}
-  .sb .dr-ct .dr-main .dr-s{white-space:normal}
+  .sb .dr-ct .dr-main .dr-s,.sb .dr-ow .dr-main .dr-s{white-space:normal}
   .sb .dr-nm{font-size:17px}
   .sb .dr-row{grid-template-columns:minmax(0,1fr) auto;gap:12px}
   .sb .dr-ct{grid-template-columns:minmax(0,1fr) auto auto;gap:12px}

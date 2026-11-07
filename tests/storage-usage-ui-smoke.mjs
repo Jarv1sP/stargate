@@ -86,8 +86,9 @@ try{
   assert.match(await text(first.locator('[data-owner-row=fixture-member] .dr-s').first()),/项目 852 GiB · 镜像与容器引擎 60 GiB/);
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({path:join(shots,`usage-${role}-${width}-accounted.png`),fullPage:true,animations:'disabled'});
   const layout=await page.locator('#page-datasets').evaluate(node=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,undersized:[...node.querySelectorAll('button')].filter(b=>b.getClientRects().length&&b.getBoundingClientRect().height<43).map(b=>b.textContent),
-   overflow:[...node.querySelectorAll('.dr-mix,.dr-row')].filter(row=>row.getClientRects().length&&row.getBoundingClientRect().right>innerWidth+1).length}));
-  assert.equal(layout.scrollWidth,width,'no horizontal page scroll');assert.deepEqual(layout.undersized,[]);assert.equal(layout.overflow,0);observations.push({role,...layout});
+   overflow:[...node.querySelectorAll('.dr-mix,.dr-row')].filter(row=>row.getClientRects().length&&row.getBoundingClientRect().right>innerWidth+1).length,
+   clipped:[...node.querySelectorAll('[data-storage-machine]:not([hidden]) :is(.dr-ct,.dr-ow) .dr-main .dr-s')].filter(line=>line.scrollWidth>line.clientWidth+1).map(line=>line.textContent)}));
+  assert.equal(layout.scrollWidth,width,'no horizontal page scroll');assert.deepEqual(layout.undersized,[]);assert.equal(layout.overflow,0);assert.deepEqual(layout.clipped,[],'owner and part lines wrap instead of being cut off');observations.push({role,...layout});
   // gpu-2: no project accounting stays unknown, never zero.
   await show('gpu-2');const second=card('gpu-2');
   assert.match(await second.locator('.dr-mix').innerText(),/未开启项目记账，用量未知/);assert.equal(await second.locator('.dr-mix-bar.is-unknown').count(),1);assert.equal(await second.locator('.dr-mix [data-fill]').count(),0);
