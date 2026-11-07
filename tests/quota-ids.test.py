@@ -1,5 +1,5 @@
 """Project-ID registry and tagging against a simulated FS_IOC_FS[GS]ETXATTR kernel."""
-import concurrent.futures,errno,fcntl,importlib.util,io,json,os,socket,stat,struct,threading,unittest,uuid
+import concurrent.futures,errno,fcntl,importlib.util,io,json,os,signal,socket,stat,struct,subprocess,sys,threading,unittest,uuid
 from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
@@ -134,7 +134,8 @@ class Tagging(unittest.TestCase):
     def test_whiteout_is_recreated_as_character_device_zero_with_its_xattrs(self):
         top,_=self.tree();source=top/'whiteout';source.touch();info=os.lstat(source)
         whiteout=SimpleNamespace(st_mode=stat.S_IFCHR|0o600,st_rdev=0,st_uid=info.st_uid,st_gid=info.st_gid,
-                                 st_atime_ns=info.st_atime_ns,st_mtime_ns=info.st_mtime_ns)
+                                 st_atime_ns=info.st_atime_ns,st_mtime_ns=info.st_mtime_ns,
+                                 st_dev=info.st_dev,st_ino=info.st_ino,st_ctime_ns=info.st_ctime_ns)
         fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY);self.addCleanup(os.close,fd);counts=q.counter()
         def create(name,mode,device,*,dir_fd):
             child=os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600,dir_fd=dir_fd);os.close(child)
@@ -146,10 +147,80 @@ class Tagging(unittest.TestCase):
         self.assertEqual(mknod.call_args.args[1:],(stat.S_IFCHR|0o600,0))
         self.assertEqual(xattr.call_args.args[1:],('trusted.overlay.whiteout',b'y'));self.assertEqual(counts['whiteouts'],1)
 
+    def test_each_directory_tags_its_regular_files_before_enabling_inheritance(self):
+        top=self.base/'online';(top/'train').mkdir(parents=True);(top/'val').mkdir()
+        for name in ('train/.upload-a','val/.upload-b'):(top/name).write_bytes(b'old')
+        with Kernel() as kernel:
+            original=q.setx;seen=[]
+            def setx(fd,value,inherit=None):
+                info=os.fstat(fd)
+                if inherit is True:
+                    for name in os.listdir(fd):
+                        child=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                        if stat.S_ISREG(child.st_mode):
+                            self.assertEqual(kernel.of(Path('/proc/self/fd')/str(fd)/name)[0] if Path('/proc').exists() else kernel.attrs[(child.st_dev,child.st_ino)][1],value)
+                    if info.st_ino==os.stat(top/'train').st_ino:
+                        self.assertEqual(kernel.of(top/'val'),(0,False))
+                        seen.append('train')
+                return original(fd,value,inherit)
+            with patch.object(q,'setx',side_effect=setx):q.tag_tree(top,1001)
+        self.assertEqual(seen,['train'])
+
+    def test_second_pass_tags_a_file_created_before_directory_inheritance(self):
+        top=self.base/'online';top.mkdir();(top/'old').write_text('x')
+        with Kernel() as kernel:
+            original=q.setx;injected=[]
+            def setx(fd,value,inherit=None):
+                if inherit is True and not injected:
+                    (top/'late').write_text('late');injected.append(True)
+                return original(fd,value,inherit)
+            with patch.object(q,'setx',side_effect=setx):q.tag_tree(top,1001)
+        self.assertEqual(kernel.of(top/'late'),(1001,False))
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')
+    def test_special_rebuild_skips_a_concurrent_replacement(self):
+        top,_=self.tree();fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY);self.addCleanup(os.close,fd)
+        counts=q.counter();original=q.os.utime
+        def replace(*args,**kwargs):
+            original(*args,**kwargs)
+            replacement=top/'user-new';replacement.write_text('keep the user content');os.replace(replacement,top/'filelink')
+        with patch.object(q.os,'utime',side_effect=replace):q.rebuild_special('filelink',fd,counts)
+        self.assertEqual((top/'filelink').read_text(),'keep the user content')
+        self.assertEqual((counts['changed'],counts['symlinks']),(1,0));self.assertEqual(list(top.glob('.quota-*')),[])
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')
+    def test_interruption_cleans_temporary_inode_and_keeps_layer_root_plain(self):
+        layer=self.layer();(layer/'symlink').symlink_to('diff')
+        with Kernel() as kernel,patch.object(q.os,'utime',side_effect=SystemExit(143)),self.assertRaises(SystemExit):
+            q.tag_layer(layer,1003,1002,rebuild=True,cleanup=True)
+        self.assertEqual(kernel.of(layer),(1002,False));self.assertTrue((layer/'symlink').is_symlink())
+        self.assertEqual(list(layer.glob('.quota-*')),[])
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(),'Linux descriptor xattrs')
+    def test_layer_root_keeps_the_images_id_during_direct_special_rebuild(self):
+        layer=self.layer();(layer/'symlink').symlink_to('diff');original=q.rebuild_special;observed=[]
+        with Kernel() as kernel:
+            def rebuilt(*args,**kwargs):
+                self.assertEqual(kernel.of(layer),(1002,False));observed.append(True)
+                return original(*args,**kwargs)
+            with patch.object(q,'rebuild_special',side_effect=rebuilt):q.tag_layer(layer,1003,1002,rebuild=True,cleanup=True)
+        self.assertEqual(observed,[True]);self.assertEqual(os.readlink(layer/'symlink'),'diff')
+
+    def test_reserved_temporary_names_are_cleaned_without_following_links(self):
+        top=self.base/'leftovers';top.mkdir();outside=self.base/'kept';outside.mkdir();(outside/'data').write_text('keep')
+        (top/('.quota-'+'a'*32)).symlink_to(outside)
+        staging=top/('.quota-'+'b'*32);staging.mkdir();(staging/'new').symlink_to(outside/'data')
+        (top/'.quota-user-file').write_text('keep');counts=q.counter()
+        fd=os.open(top,os.O_RDONLY|os.O_DIRECTORY)
+        try:q.cleanup_temporary(fd,counts)
+        finally:os.close(fd)
+        self.assertEqual(counts['cleaned'],2);self.assertEqual((outside/'data').read_text(),'keep')
+        self.assertEqual((top/'.quota-user-file').read_text(),'keep')
+
     def test_errors_are_counted_and_the_walk_continues(self):
         top,_=self.tree();blocked=os.stat(top/'a'/'f').st_ino
         with Kernel(fail=lambda info:errno.EPERM if info.st_ino==blocked else None) as kernel:counts=q.tag_tree(top,5)
-        self.assertEqual(counts['errors'],{'EPERM':1});self.assertEqual(kernel.of(top/'g'),(5,False))
+        self.assertEqual(counts['errors'],{'EPERM':2});self.assertEqual(kernel.of(top/'g'),(5,False))
 
     def test_unsupported_filesystem_fails_at_the_top(self):
         top,_=self.tree()
@@ -241,12 +312,39 @@ class RuntimeEntries(unittest.TestCase):
             self.assertFalse((Path(config['datasetsRoot'])/'race').exists())
             self.assertTrue(release.wait(5))
         qmod.assign=assign
-        with patch.object(data,'module',return_value=qmod),concurrent.futures.ThreadPoolExecutor(2) as pool:
+        original=data.module
+        with patch.object(data,'module',side_effect=lambda name:qmod if name=='quota-ids' else original(name)),concurrent.futures.ThreadPoolExecutor(2) as pool:
             first=pool.submit(data.dataset_root,self.config,'race',True);self.assertTrue(tagged.wait(5))
             second=pool.submit(data.dataset_root,self.config,'race',True)
             release.set();one=first.result(5);two=second.result(5)
         self.assertEqual(one,two);self.assertEqual(len(seen),1)
         self.assertTrue(seen[0].name.startswith('.dataset-'));self.assertFalse(seen[0].exists())
+
+    def test_dataset_root_flock_held_by_another_process_does_not_block_publication(self):
+        data=f.module('local-data');base=Path(self.config['datasetsRoot'])
+        program="import fcntl,os,sys; fd=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY); fcntl.flock(fd,fcntl.LOCK_EX); print('ready',flush=True); sys.stdin.read()"
+        process=subprocess.Popen([sys.executable,'-c',program,str(base)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        pool=concurrent.futures.ThreadPoolExecutor(1)
+        try:
+            self.assertEqual(process.stdout.readline().strip(),'ready')
+            with Kernel():result=pool.submit(data.dataset_root,self.config,'unblocked',True).result(timeout=1)
+            self.assertEqual(result,base/'unblocked')
+        finally:
+            process.stdin.close();process.wait(5);process.stdout.close();pool.shutdown(wait=True)
+
+    def test_existing_dataset_does_not_open_or_wait_for_a_publication_lock(self):
+        data=f.module('local-data');base=Path(self.config['datasetsRoot']);(base/'existing').mkdir()
+        with patch.object(data,'module',side_effect=AssertionError('existing datasets must not lock')):
+            self.assertEqual(data.dataset_root(self.config,'existing',True),base/'existing')
+
+    def test_private_publication_lock_uses_the_existing_bounded_wait(self):
+        data=f.module('local-data');store=f.module('project-store');original=data.module
+        quota=store.private_dir(Path(self.config['root'])/'quota',create=True)
+        held=os.open(quota/'datasets.lock',os.O_RDWR|os.O_CREAT,0o600);fcntl.flock(held,fcntl.LOCK_EX)
+        try:
+            with patch.object(store,'PROJECT_LOCK_WAIT_SECONDS',0.05),patch.object(data,'module',side_effect=lambda name:store if name=='project-store' else original(name)),self.assertRaisesRegex(ValueError,'数据集正在创建，请稍后重试'):
+                data.dataset_root(self.config,'busy',True)
+        finally:os.close(held)
 
     upload=f.DirectoryContract.upload
     key=f.DirectoryContract.key

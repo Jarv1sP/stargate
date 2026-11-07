@@ -12,7 +12,7 @@ is half tagged can refuse renames until it is finished. Paths all come from
 the installer config. Reads that need the service account (podman) go through
 runuser. It never sets a limit or relocates data; special inodes are rebuilt in place.
 """
-import argparse,contextlib,errno,importlib.util,json,os,pwd,stat,subprocess,sys,uuid
+import argparse,contextlib,errno,importlib.util,json,os,pwd,re,signal,stat,subprocess,sys,uuid
 from datetime import datetime,timezone
 from pathlib import Path
 CONTAINER_TYPE=('.trash','.copies','.copy-exports','.oci')
@@ -83,11 +83,11 @@ class Migration:
             mount=Path(mount).resolve(strict=True)
             device=os.stat(mount).st_dev
             if device not in seen:seen.add(device);self.mounts.append(Path(mount))
-        self.plan=[];self.keys={};self.notes=[];self.totals={}
+        self.plan=[];self.keys={};self.notes=[];self.totals={};self.proc=Path('/proc')
 
     # -- inventory (read-only) -------------------------------------------------
-    def add(self,phase,key,path,kind='tree',**extra):
-        group='datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform'
+    def add(self,phase,key,path,kind='tree',group=None,**extra):
+        group=group or ('datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform')
         if self.only is not None and group!=self.only:return
         self.plan.append(dict(group=group,phase=phase,key=key,path=Path(path),kind=kind,**extra))
 
@@ -161,7 +161,8 @@ class Migration:
                 if not row or not os.path.lexists(payload) or row.get('state')!='TRASHED':continue
                 key=self.trash_key(row)
                 if key is None:self.notes.append(f'回收站条目无法判断归属，保持编号 0：{payload}（{row.get("originalPath")}）');continue
-                self.add('8 回收站',key,payload,'tree' if payload.is_dir() and not payload.is_symlink() else 'file')
+                self.add('8 回收站',key,payload,'tree' if payload.is_dir() and not payload.is_symlink() else 'file',
+                         group='datasets' if base==self.datasets else 'platform',linked=base==self.datasets)
         self.external()
         for row in self.plan:
             if row['kind']=='tree' and row['group']!='external' and row['path'].exists() and identity(row['path']) in self.protect:
@@ -230,14 +231,49 @@ class Migration:
                 if key in ancestors:pending.append(path);continue
                 self.add('9 外部目录',self.q.external_key(path),path,'tree' if path.is_dir() else 'file',linked=True)
 
+    def layer_mounted(self,layer):
+        """Inspect each service-account mount namespace, excluding init's namespace."""
+        init=os.stat(self.proc/'1/ns/mnt').st_ino;seen={init};target=str(Path(layer)/'diff')
+        for process in self.proc.iterdir():
+            if not process.name.isdigit():continue
+            try:
+                uid=next((line.split()[1] for line in (process/'status').read_text().splitlines() if line.startswith('Uid:')),None)
+                if uid is None or int(uid)!=self.owner[0]:continue
+                namespace=os.stat(process/'ns/mnt').st_ino
+                if namespace in seen:continue
+                text=(process/'mountinfo').read_text();seen.add(namespace)
+            except FileNotFoundError:continue  # Processes may exit during the scan.
+            for line in text.splitlines():
+                _,_,tail=line.partition(' - ');fields=tail.split()
+                if len(fields)<3 or fields[0]!='overlay':continue
+                for option in fields[2].split(','):
+                    if not option.startswith('upperdir='):continue
+                    upper=re.sub(r'\\([0-7]{3})',lambda match:chr(int(match[1],8)),option[9:])
+                    if os.path.normpath(upper)==target:return True
+        return False
+
+    def cleanup_trash(self,counts):
+        for group,bases in (('platform',(self.root,self.workspaces)),('datasets',(self.datasets,))):
+            if self.only is not None and group!=self.only:continue
+            for base in bases:
+                try:fd=os.open(base/'.trash',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                except FileNotFoundError:continue
+                except OSError as error:
+                    self.q.failed(counts.setdefault((group,'1 中断残留'),self.q.counter()),error);continue
+                try:
+                    total=self.q.counter();self.q.cleanup_temporary(fd,total)
+                    if total['cleaned'] or total['errors']:
+                        self.merge(counts.setdefault((group,'1 中断残留'),self.q.counter()),total)
+                finally:os.close(fd)
+
     # -- report and execution ----------------------------------------------------
     def report_plan(self):
         registry=self.q.read(self.root/'quota')['ids'];new=sorted({row['key'] for row in self.plan}-set(registry))
         phases={}
-        for row in self.plan:phases.setdefault(row['phase'],[]).append(row)
+        for row in self.plan:phases.setdefault((row['group'],row['phase']),[]).append(row)
         self.out(f'登记表 {self.root/"quota"/"ids.json"}：已有 {len(registry)} 个编号，本次新增 {len(new)} 个')
-        for phase in sorted(phases):
-            rows=phases[phase];self.out(f'[{rows[0]["group"]}] {phase}：{len(rows)} 处，{len({r["key"] for r in rows})} 个编号')
+        for group,phase in sorted(phases,key=lambda key:(('platform','datasets','external').index(key[0]),key[1])):
+            rows=phases[group,phase];self.out(f'[{rows[0]["group"]}] {phase}：{len(rows)} 处，{len({r["key"] for r in rows})} 个编号')
             if phase.startswith(('9','6','8')) or len(rows)<=12:
                 for row in rows:self.out(f'    {row["path"]} -> {row["key"]}')
         if any(r['group']=='external' for r in self.plan):self.out('外部目录整棵树只设编号、不设继承；之后新建的文件计入未登记。')
@@ -264,43 +300,51 @@ class Migration:
     def run(self,dry_run):
         self.dry_run=dry_run
         self.inventory();self.report_plan()
+        for group in ((self.only,) if self.only else ('platform','datasets','external')):
+            if not any(row['group']==group for row in self.plan):self.out(f'[{group}] 无条目')
         if dry_run:self.out('仅打印计划（--dry-run），未改动。');return 0
         try:os.nice(19);subprocess.run(['/usr/bin/ionice','-c3','-p',str(os.getpid())],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         except OSError:pass
         folder=self.ensure_registry()
-        ids=self.q.allocate(folder,[row['key'] for row in self.plan]+[row['images'] for row in self.plan if row['kind']=='layer'])
+        ids=self.q.allocate(folder,[row['key'] for row in self.plan if row['group']=='platform']+
+                            [row['images'] for row in self.plan if row['kind']=='layer'])
         protected=self.protect;layers=set();counts={}
+        self.cleanup_trash(counts)
         for row in self.plan:
             if row['kind']!='layer':continue
             try:layers.add(identity(row['path']))
             except FileNotFoundError:
                 row['missing']=True
-                counts.setdefault(row['phase'],self.q.counter())['skipped']+=1
+                counts.setdefault((row['group'],row['phase']),self.q.counter())['skipped']+=1
                 self.notes.append(f'容器层已消失，跳过：{row["path"]}')
         for row in self.plan:
             if row.get('missing'):continue
-            total=counts.setdefault(row['phase'],self.q.counter())
+            total=counts.setdefault((row['group'],row['phase']),self.q.counter())
             try:
-                if row['kind']=='layer':self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']],rebuild=True))
-                elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=row.get('linked'))
+                if row['group']!='platform':ids.update(self.q.allocate(folder,[row['key']]))
+                linked='all' if row['group']=='external' else row.get('linked',False)
+                if row['kind']=='layer':
+                    if self.layer_mounted(row['path']):
+                        total['mounted']+=1;self.notes.append(f'容器层仍有活 overlay，跳过；请停止服务账户的 podman 后重跑：{row["path"]}');continue
+                    self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']],rebuild=True,cleanup=True))
+                elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=linked)
                 else:
                     self.q.tag_tree(row['path'],ids[row['key']],prune=protected|layers,
-                                    linked=row.get('linked',False),counts=total,
-                                    inherit=row['group']!='external',rebuild=row['group']!='external')
+                                    linked=linked,counts=total,
+                                    inherit=row['group']!='external',rebuild=row['group']!='external',cleanup=True)
             except OSError as error:
                 if row['kind']=='layer' and error.errno==errno.ENOENT:total['skipped']+=1
                 else:self.q.failed(total,error)
                 self.notes.append(f'{row["path"]}：{error}')
         if self.list_failures:  # environments would read as complete zeros: withhold the marker, rerun later
-            counts.setdefault('3 容器层',self.q.counter())['errors']['LIST']=self.list_failures
-        for phase in sorted(counts):
-            c=counts[phase]
-            group='datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform'
+            counts.setdefault(('platform','3 容器层'),self.q.counter())['errors']['LIST']=self.list_failures
+        for group,phase in sorted(counts,key=lambda key:(('platform','datasets','external').index(key[0]),key[1])):
+            c=counts[group,phase]
             self.out(f'[{group}] {phase}：目录 {c["directories"]}，文件 {c["files"]}，跳过 {c["skipped"]}，'
                      f'重建符号链接 {c["symlinks"]}，whiteout {c["whiteouts"]}，FIFO {c["fifos"]}，socket 保留 {c["sockets"]}，'
-                     f'硬链接且已有编号而跳过 {c["linked"]}，错误 {sum(c["errors"].values())} {c["errors"] or ""}')
+                     f'清理中断残留 {c["cleaned"]}，活 overlay 层跳过 {c["mounted"]}，原项已变化而跳过 {c["changed"]}，硬链接跳过 {c["linked"]}，错误 {sum(c["errors"].values())} {c["errors"] or ""}')
         for line in self.notes:self.out('  注意：'+line)
-        if self.only in (None,'platform') and not any(c['errors'] for phase,c in counts.items() if not phase.startswith(('7','9'))):
+        if self.only in (None,'platform') and not any(c['errors'] or c['mounted'] or c['changed'] for (group,phase),c in counts.items() if group=='platform'):
             self.mark_migrated(folder)
         self.usage('完成后')
         self.leftovers(protected)
@@ -308,7 +352,7 @@ class Migration:
 
     @staticmethod
     def merge(total,counts):
-        for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets'):total[key]+=counts[key]
+        for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets','changed','cleaned','mounted'):total[key]+=counts[key]
         for key,value in counts['errors'].items():total['errors'][key]=total['errors'].get(key,0)+value
 
     def tag_file(self,path,value,total,linked=False):
@@ -316,19 +360,12 @@ class Migration:
         if not stat.S_ISREG(info.st_mode):
             if stat.S_ISSOCK(info.st_mode):total['sockets']+=1;return
             parent=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-            temporary='.quota-'+uuid.uuid4().hex
-            try:
-                os.mkdir(temporary,0o700,dir_fd=parent)
-                staging=path.parent/temporary;self.q.tag_dir(staging,value)
-                child=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-                try:self.q.rebuild_special(path.name,parent,total,staging=child)
-                finally:os.close(child)
-            finally:
-                os.rmdir(temporary,dir_fd=parent);os.close(parent)
+            try:self.q.rebuild_staged(path.name,parent,value,total)
+            finally:os.close(parent)
             return
         fd=os.open(path,self.q.FILE_FLAGS)
         try:
-            if linked and os.fstat(fd).st_nlink>1 and self.q.projid(fd)!=0:total['linked']+=1
+            if linked and os.fstat(fd).st_nlink>1 and (linked=='all' or self.q.projid(fd)!=0):total['linked']+=1
             else:self.q.setx(fd,value);total['files']+=1
         finally:os.close(fd)
 
@@ -375,6 +412,9 @@ class Migration:
         for path,size in rows:self.out(f'    {size:>18,}  {path}')
 
 
+def terminate(signum,frame):raise SystemExit(128+signum)
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--config',required=True,type=Path,help='node-install.json written for deploy/node/install.py')
@@ -385,6 +425,7 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if os.geteuid()!=0:raise SystemExit('请用 root 运行：打标需要改动容器用户的文件。')
     os.umask(0o077)
+    for signum in (signal.SIGTERM,signal.SIGHUP):signal.signal(signum,terminate)
     return Migration(json.loads(args.config.resolve(strict=True).read_text()),args.node_dir,only=args.only).run(args.dry_run)
 
 
