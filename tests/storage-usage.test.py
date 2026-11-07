@@ -197,13 +197,16 @@ class StorageUsage(unittest.TestCase):
 
     def test_absent_registered_ids_before_sample_next_are_zero_but_later_ids_are_unknown(self):
         ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo')
-        keys=[q.outputs_key('alice','demo'),q.env_key('alice','demo')]
+        keys=[q.outputs_key('alice','demo'),q.env_key('alice','demo'),q.dataset_key('walking')]
         self.write_sample(ops,[],keys)
         next_id=q.read(q.folder(self.config))['next']
         self.write_sample(ops,[self.fs({'0':{'bytes':1,'inodes':1}},1)],next_id=next_id)
         row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
-        self.assertEqual((row['size'],row['outputs']['size'],row['environment']['size']),(0,0,0))
+        # Outputs and environments can lose their last inode; files and datasets keep a directory, so absent means untagged.
+        self.assertEqual((row['size'],row['outputs']['size'],row['environment']['size']),(None,0,0))
         sample=f.module('storage-usage').Sample(self.config)
+        self.assertIsNone(sample.size(q.dataset_key('walking'),ops.store.path))
+        self.assertEqual(sample.size(q.dataset_key('walking'),ops.store.path,may_vanish=True),{'size':0,'complete':True})
         late=q.allocate(q.folder(self.config),['d:late'])['d:late']
         self.assertEqual(late,next_id)
         sample=f.module('storage-usage').Sample(self.config)

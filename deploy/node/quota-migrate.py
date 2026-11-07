@@ -68,7 +68,7 @@ def identity(path):
 
 class Migration:
     def __init__(self,config,node_dir,out=print,only=None):
-        self.config=config;self.out=out;self.only=only;self.dry_run=True;self.q=load(Path(node_dir).resolve(strict=True)/'quota-ids.py','quota_ids')
+        self.config=config;self.out=out;self.only=only;self.dry_run=True;self.list_failures=0;self.q=load(Path(node_dir).resolve(strict=True)/'quota-ids.py','quota_ids')
         self.sampler=load(Path(node_dir).resolve(strict=True)/'quota-sample.py','quota_sample')
         self.account=pwd.getpwnam(config['account']);self.owner=(self.account.pw_uid,self.account.pw_gid)
         triples={tuple(str(Path(profile[k]).resolve(strict=True)) for k in ('root','workspacesRoot','datasetsRoot')) for profile in config['profiles'].values()}
@@ -172,7 +172,9 @@ class Migration:
         return self.q.files_key(owner,project) if isinstance(owner,str) and isinstance(project,str) else self.q.PLATFORM
 
     def trash_key(self,row):
-        q=self.q;path=Path(row.get('originalPath') or '/').resolve()
+        q=self.q;raw=row.get('originalPath') or '/'
+        try:path=Path(raw).resolve()
+        except (OSError,RuntimeError):path=Path(os.path.normpath(raw))  # a user's link loop at the old path
         if row.get('kind')=='output' and row.get('jobId'):
             found=self.job_owner(row['jobId'])
             if found:return q.outputs_key(*found)
@@ -195,6 +197,7 @@ class Migration:
             if result.returncode:raise OSError(result.stderr.strip()[-300:])
             return json.loads(result.stdout)
         except (OSError,ValueError,subprocess.TimeoutExpired) as error:
+            self.list_failures+=1
             self.notes.append(f'读不到 {engine.name} 的容器列表，容器层暂记在镜像：{error}');return []
 
     def container_project(self,owner,container,projects):
@@ -288,6 +291,8 @@ class Migration:
                 if row['kind']=='layer' and error.errno==errno.ENOENT:total['skipped']+=1
                 else:self.q.failed(total,error)
                 self.notes.append(f'{row["path"]}：{error}')
+        if self.list_failures:  # environments would read as complete zeros: withhold the marker, rerun later
+            counts.setdefault('3 容器层',self.q.counter())['errors']['LIST']=self.list_failures
         for phase in sorted(counts):
             c=counts[phase]
             group='datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform'

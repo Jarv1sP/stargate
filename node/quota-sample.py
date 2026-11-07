@@ -119,7 +119,9 @@ def main(argv=None):
     parser.add_argument('--root',action='append',required=True,help='profile state root; repeatable')
     parser.add_argument('mounts',nargs='+',help='dataMountPoints in configuration order')
     args=parser.parse_args(argv)
-    roots=list(dict.fromkeys(str(Path(root).resolve(strict=True)) for root in args.root))
+    # The installer resolves roots once; a root that later turns into a link fails
+    # closed in open_directory instead of steering root writes elsewhere.
+    roots=list(dict.fromkeys(args.root))
     points=[str(Path(point).resolve(strict=True)) for point in args.mounts]
     account=pwd.getpwnam(args.account)
     next_ids={}

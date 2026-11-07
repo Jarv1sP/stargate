@@ -68,7 +68,12 @@ class Sampler(unittest.TestCase):
         with patch.object(sampler.os,'fchown'),self.assertRaises(OSError):sampler.publish(self.config['root'],{},(1,1))
         self.assertEqual(list(target.iterdir()),[])
 
-    def test_main_resolves_roots_and_reads_registry_next_before_sampling(self):
+    def test_publish_never_follows_a_root_that_became_a_link(self):
+        target=self.base/'elsewhere';target.mkdir();alias=self.base/'alias';alias.symlink_to(target)
+        with patch.object(sampler.os,'fchown'),self.assertRaises(OSError):sampler.publish(str(alias),{},(1,1))
+        self.assertEqual(list(target.iterdir()),[])
+
+    def test_main_keeps_installer_roots_and_reads_registry_next_before_sampling(self):
         account=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid());written=[];events=[]
         r1=self.base/'r1';r2=self.base/'r2';r1.mkdir();r2.mkdir();alias=self.base/'alias';alias.symlink_to(r1)
         def read_next(root):events.append('registry');return 1009 if root==str(r1) else 1012
@@ -79,8 +84,10 @@ class Sampler(unittest.TestCase):
             patch.object(sampler,'registry_next',side_effect=read_next),patch.object(sampler,'publish',side_effect=publish),
             patch.object(sampler.Path,'read_text',return_value=''),
         ):
-            code=sampler.main(['--account','nodeops','--root',str(alias),'--root',str(r1),'--root',str(r2),str(self.base)])
-        self.assertEqual((code,written),(0,[(str(r1),1009),(str(r2),1012)]));self.assertEqual(events,['registry','registry','sample'])
+            code=sampler.main(['--account','nodeops','--root',str(alias),'--root',str(r1),'--root',str(r1),'--root',str(r2),str(self.base)])
+        # Roots are used exactly as the installer resolved them: a link is not followed here.
+        self.assertEqual((code,written),(0,[(str(alias),1012),(str(r1),1009),(str(r2),1012)]))
+        self.assertEqual(events,['registry','registry','registry','sample'])
 
     def test_registry_next_is_read_without_following_registry_links(self):
         root=Path(self.config['root']);(root/'quota').mkdir()

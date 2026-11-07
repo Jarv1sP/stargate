@@ -196,6 +196,17 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual((self.host.libexec/'quota-sample.py').read_bytes(),(ROOT/'node/quota-sample.py').read_bytes())
         self.assertFalse((self.host.libexec/'quota-sample.py').is_symlink());self.assertEqual(victim.read_bytes(),b'keep')
 
+    def test_root_programs_come_from_the_package_even_if_staging_is_swapped_during_unpack(self):
+        original=INSTALL.atomic;swapped=[]
+        def write(path,data,*args,**kwargs):
+            original(path,data,*args,**kwargs)
+            if Path(path).parent.name=='node' and Path(path).name in ('quota-sample.py','quota-ids.py'):
+                Path(path).write_bytes(b'print("service-controlled")');swapped.append(Path(path).name)
+        with patch.object(INSTALL,'atomic',side_effect=write):self.host.install(self.package)
+        self.assertEqual(sorted(swapped),['quota-ids.py','quota-sample.py'])
+        for name in ('quota-sample.py','quota-ids.py'):
+            self.assertEqual((self.host.libexec/name).read_bytes(),(ROOT/'node'/name).read_bytes())
+
     def test_sampler_unit_resolves_a_symlinked_state_root(self):
         self.host.stage(self.package)
         real=Path(self.config['profiles']['7IM']['root']);alias=self.base/'state-alias';alias.symlink_to(real)

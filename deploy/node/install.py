@@ -73,8 +73,16 @@ def data_path(path, mounts):
     return target
 
 
+ROOT_PROGRAMS = ('node/quota-sample.py', 'node/quota-ids.py')
+
+
 def unpack(package, destination):
-    """Accept a build-node-release directory or a single-node tar archive."""
+    """Accept a build-node-release directory or a single-node tar archive.
+
+    Returns the bytes of ROOT_PROGRAMS as read from the root-owned package,
+    never from the staging tree the service account will own.
+    """
+    programs = {}
     if package.is_dir():
         for source in package.rglob('*'):
             target = destination / source.relative_to(package)
@@ -82,7 +90,10 @@ def unpack(package, destination):
             if stat.S_ISDIR(info.st_mode):
                 target.mkdir(parents=True, exist_ok=True)
             elif stat.S_ISREG(info.st_mode):
-                atomic(target, source.read_bytes(), stat.S_IMODE(info.st_mode))
+                data = source.read_bytes()
+                if source.relative_to(package).as_posix() in ROOT_PROGRAMS:
+                    programs[source.name] = data
+                atomic(target, data, stat.S_IMODE(info.st_mode))
             else:
                 raise ValueError('节点包只接受普通文件和目录，不能包含链接。')
     else:
@@ -102,7 +113,11 @@ def unpack(package, destination):
                     target.mkdir(parents=True, exist_ok=True)
                 else:
                     with archive.extractfile(member) as source:
-                        atomic(target, source.read(), member.mode)
+                        data = source.read()
+                    if relative.as_posix() in ROOT_PROGRAMS:
+                        programs[relative.name] = data
+                    atomic(target, data, member.mode)
+    return programs
 
 
 class Installer:
@@ -181,7 +196,7 @@ class Installer:
         staging = self.root / ('.stage-' + uuid.uuid4().hex)
         staging.mkdir(mode=0o700)
         try:
-            unpack(Path(package), staging)
+            programs = unpack(Path(package), staging)
             manifest = json.loads((staging / 'manifest.json').read_text())
             scheduler = {**self.config['gpuq'], 'allowed_uid': self.owner[0],
                          'archive_path': str(release / 'gpuq.pyz')}
@@ -200,9 +215,11 @@ class Installer:
             if self.config.get('hamiLibrary'):
                 source = data_path(self.config['hamiLibrary'], mounts)
                 atomic(staging / 'hami/libvgpu.so', source.read_bytes(), 0o444)
-            # Capture root-executed code before granting the service account write access.
-            self.quota_programs = {name: (staging/'node'/name).read_bytes()
-                                   for name in ('quota-sample.py', 'quota-ids.py')}
+            # Root-executed code comes from the package itself, not from staging.
+            missing = [name for name in ROOT_PROGRAMS if PurePosixPath(name).name not in programs]
+            if missing:
+                raise ValueError('节点包缺少 ' + '、'.join(missing))
+            self.quota_programs = programs
             for path in [staging, *staging.rglob('*')]:
                 os.chown(path, *self.owner)
                 if path.is_dir():
