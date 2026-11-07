@@ -21,6 +21,8 @@ import importlib.util,json,subprocess,sys
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('oci',sys.argv[1]);oci=importlib.util.module_from_spec(spec);spec.loader.exec_module(oci)
 folder=Path(sys.argv[2]);env=oci.engine_environment(folder)
+# Same reboot cleanup the platform does on next use; skipped by --dry-run.
+if sys.argv[3]=='heal':oci.recover_runtime(folder)
 def run(*args):
     return subprocess.run(oci.engine_command({},folder,*args),env=env,capture_output=True,text=True,timeout=120,check=True).stdout
 ids=run('ps','--all','--quiet','--no-trunc').split()
@@ -66,7 +68,7 @@ def identity(path):
 
 class Migration:
     def __init__(self,config,node_dir,out=print,only=None):
-        self.config=config;self.out=out;self.only=only;self.q=load(Path(node_dir).resolve(strict=True)/'quota-ids.py','quota_ids')
+        self.config=config;self.out=out;self.only=only;self.dry_run=True;self.q=load(Path(node_dir).resolve(strict=True)/'quota-ids.py','quota_ids')
         self.sampler=load(Path(node_dir).resolve(strict=True)/'quota-sample.py','quota_sample')
         self.account=pwd.getpwnam(config['account']);self.owner=(self.account.pw_uid,self.account.pw_gid)
         triples={tuple(str(Path(profile[k]).resolve(strict=True)) for k in ('root','workspacesRoot','datasetsRoot')) for profile in config['profiles'].values()}
@@ -187,7 +189,7 @@ class Migration:
         program=self.release/'current'/'node'/'personal-oci.py'
         command=['/usr/sbin/runuser','-u',self.account.pw_name,'--','/usr/bin/env','HOME='+self.account.pw_dir,
                  'XDG_RUNTIME_DIR=/run/user/'+str(self.owner[0]),'PATH=/usr/bin:/bin',
-                 '/usr/bin/python3','-I','-B','-c',INSPECT,str(program),str(engine)]
+                 '/usr/bin/python3','-I','-B','-c',INSPECT,str(program),str(engine),'read' if self.dry_run else 'heal']
         try:
             result=subprocess.run(command,capture_output=True,text=True,timeout=300)
             if result.returncode:raise OSError(result.stderr.strip()[-300:])
@@ -257,6 +259,7 @@ class Migration:
         return folder
 
     def run(self,dry_run):
+        self.dry_run=dry_run
         self.inventory();self.report_plan()
         if dry_run:self.out('仅打印计划（--dry-run），未改动。');return 0
         try:os.nice(19);subprocess.run(['/usr/bin/ionice','-c3','-p',str(os.getpid())],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)

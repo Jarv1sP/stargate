@@ -45,7 +45,7 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
   const inspect=(paths,oci={})=>node('python3','-I','-B','-c',ROOTCHECK,JSON.stringify(paths),JSON.stringify(oci));
   const ids=facts=>key=>facts.ids[key];
   const usage=async predicate=>waitFor(()=>call(ctx,member,'projects.list',{machine:ctx.machine,includeUsage:true}),predicate,{timeoutMs:180000,intervalMs:5000,what:'root 采样写出预期的用量'});
-  const job=async(argv,what)=>{const sent=await submit(ctx,member,name,argv);const ended=await waitJob(ctx,member,sent.id,terminalStates,{timeoutMs:300000});ctx.check(what,ended.state==='SUCCEEDED',ended);return ended;};
+  const job=async(argv,what,where=name)=>{const sent=await submit(ctx,member,where,argv);const ended=await waitJob(ctx,member,sent.id,terminalStates,{timeoutMs:300000});ctx.check(what,ended.state==='SUCCEEDED',ended);return ended;};
   let facts;
   await sections(ctx,[['数据盘开启项目配额',async()=>{
     facts=await inspect({});
@@ -94,14 +94,18 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
     const after=await inspect({layer});
     ctx.check('podman rm 已删除该容器层',after.attrs.layer===null,{layer,attrs:after.attrs});
   }],['迁移工具 dry-run 与正式执行',async()=>{
+    // 专用项目：共享项目的容器层可能被别的步骤留下的终端一直挂载着，生产迁移在维护窗口里卸盘后进行，不会有活的 overlay。
+    const legacy=ctx.name('legacy');
+    await call(ctx,member,'projects.create',{machine:ctx.machine,project:legacy});
+    await job(['true'],'专用项目容器已建好',legacy);
     // 模拟启用 quota 前已有的层：旧特殊 inode 无法用 FSSETXATTR 改号。
     await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',`import importlib.util,json,sys
 from pathlib import Path
 cfg=json.load(open('/etc/gpuq-console/node-install.json'));p=cfg['profiles']['7IM']
 head=json.load(open(Path(p['workspacesRoot'])/sys.argv[1]/sys.argv[2]/'oci.json'))
 s=importlib.util.spec_from_file_location('quota','/usr/local/libexec/stargate/quota-ids.py');q=importlib.util.module_from_spec(s);s.loader.exec_module(q)
-q.tag_tree(head['layer'],0,inherit=False)`,owner,name);
-    await job(['sh','-c','test -d /usr/share/doc && rm -rf /usr/share/doc && ln -s /etc/profile /tmp/gray-quota-legacy-link && mkfifo /tmp/gray-quota-legacy-fifo'],'迁移前删除镜像目录并创建旧符号链接和 FIFO');
+q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
+    await job(['sh','-c','test -d /usr/share/doc && rm -rf /usr/share/doc && ln -s /etc/profile /tmp/gray-quota-legacy-link && mkfifo /tmp/gray-quota-legacy-fifo'],'迁移前删除镜像目录并创建旧符号链接和 FIFO',legacy);
     const source=await readFile(resolve(dirname(ctx.stack.file),'src/deploy/node/quota-migrate.py'),'utf8');
     const migrate=async(...args)=>(await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',source,'--config','/etc/gpuq-console/node-install.json',...args)).stdout;
     const plan=await migrate('--dry-run');ctx.note(plan.split('\n').slice(0,40).join('\n'));
@@ -112,8 +116,8 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,name);
     ctx.check('迁移后 /data1 未登记接近 0',untracked<=Math.max(64*1024**2,used*0.02),{line,used,untracked});
     const after=await usage(v=>v.disks?.some(d=>d.roles.includes('workspace')&&d.items.some(i=>i.kind==='platform')));
     ctx.check('迁移后工作区盘列出平台运行数据',after.disks.find(d=>d.roles.includes('workspace')).items.some(i=>i.kind==='platform'));
-    await job(['sh','-c','mkdir /usr/share/doc && echo restored > /usr/share/doc/gray-quota && echo "# after migration" >> /etc/profile'],'迁移后可在镜像 whiteout 原路径 mkdir 并写文件');
-    await job(['python3','-c',"import os,stat; os.rename('/tmp/gray-quota-legacy-link','/tmp/gray-quota-link-moved'); assert os.readlink('/tmp/gray-quota-link-moved')=='/etc/profile'; assert stat.S_ISFIFO(os.stat('/tmp/gray-quota-legacy-fifo').st_mode)"],'迁移前的符号链接迁移后可在同目录 rename，FIFO 保留');
+    await job(['sh','-c','mkdir /usr/share/doc && echo restored > /usr/share/doc/gray-quota && echo "# after migration" >> /etc/profile'],'迁移后可在镜像 whiteout 原路径 mkdir 并写文件',legacy);
+    await job(['python3','-c',"import os,stat; os.rename('/tmp/gray-quota-legacy-link','/tmp/gray-quota-link-moved'); assert os.readlink('/tmp/gray-quota-link-moved')=='/etc/profile'; assert stat.S_ISFIFO(os.stat('/tmp/gray-quota-legacy-fifo').st_mode)"],'迁移前的符号链接迁移后可在同目录 rename，FIFO 保留',legacy);
     const known=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.complete&&p?.environment?.complete;});
     ctx.check('平台迁移标记写入后输出与环境已知',known.projects.some(p=>p.project===name&&p.outputs.complete&&p.environment.complete));
     for(const group of ['datasets','external']){const report=await migrate('--only',group);ctx.check(group+' 分组迁移成功',report.includes('['+group+']'),report.slice(-2000));}
