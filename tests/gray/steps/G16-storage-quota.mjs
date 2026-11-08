@@ -117,15 +117,26 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     ctx.check('首轮 platform 仅跳过共享项目仍挂载的层',mounted(first)===1&&skipped.length===1&&skipped[0].endsWith(facts.oci.dev.layer),{skipped,mounted:mounted(first)});
     const unknown=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.size===null&&p?.environment?.size===null;});
     ctx.check('跳过活层时输出与环境仍未知',unknown.projects.some(p=>p.project===name&&p.outputs.size===null&&p.environment.size===null));
-    // 隔离灰度节点：直接结束服务账户的 pause；已有容器可能带着故障步骤留下的失效 conmon 状态。
-    await stackExec(ctx.stack,'gray-node-1',...asService,`import contextlib,os,signal,time
+    // 隔离灰度节点：结束持有 OCI overlay 的服务账户运行时进程；故障步骤可留下失效 conmon 状态。
+    await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',`import contextlib,errno,json,os,pwd,signal,sys,time
 from pathlib import Path
-pidfile=Path(os.environ['XDG_RUNTIME_DIR'])/'libpod/tmp/pause.pid';pid=int(pidfile.read_text())
-with contextlib.suppress(ProcessLookupError):os.kill(pid,signal.SIGKILL)
-pidfile.unlink(missing_ok=True);deadline=time.monotonic()+15
-while (Path('/proc')/str(pid)/'ns/mnt').exists():
-    if time.monotonic()>deadline:raise TimeoutError('rootless pause did not exit')
-    time.sleep(.05)`);
+uid=pwd.getpwnam('gpuops').pw_uid;engine=str(Path(sys.argv[1])/'.oci')+'/';init=os.stat('/proc/1/ns/mnt').st_ino;victims=[]
+for process in Path('/proc').iterdir():
+    if not process.name.isdigit():continue
+    try:
+        owner=next((line.split()[1] for line in (process/'status').read_text().splitlines() if line.startswith('Uid:')),None)
+        if owner!=str(uid) or os.stat(process/'ns/mnt').st_ino==init:continue
+        if not any(' - overlay ' in line and engine in line for line in (process/'mountinfo').read_text().splitlines()):continue
+        victims.append((int(process.name),(process/'comm').read_text().strip()))
+    except OSError as error:
+        if error.errno not in (errno.ENOENT,errno.ESRCH,errno.EINVAL):raise
+for pid,_ in victims:
+    with contextlib.suppress(ProcessLookupError):os.kill(pid,signal.SIGKILL)
+(Path('/run/user')/str(uid)/'libpod/tmp/pause.pid').unlink(missing_ok=True);deadline=time.monotonic()+15
+while any((Path('/proc')/str(pid)/'ns/mnt').exists() for pid,_ in victims):
+    if time.monotonic()>deadline:raise TimeoutError('OCI mount namespace holders did not exit: '+str(victims))
+    time.sleep(.05)
+print(json.dumps({'stopped':victims}))`,facts.config.workspacesRoot);
     const done=await migrate('--only','platform');ctx.note(done.split('\n').slice(-40).join('\n'));
     ctx.check('停止 podman 后 platform 不再跳过活层',mounted(done)===0,done.slice(-5000));
     const completed=await node('python3','-I','-B','-c',`import json,os,sys;print(json.dumps(os.path.isfile(sys.argv[1]+'/quota/migrated.json')))`,facts.config.root);
