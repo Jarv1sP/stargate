@@ -47,7 +47,6 @@ try{
    if(op==='projects.retire.restore'){const row=trash.find(row=>row.key===args.key);assert.equal(args.kind,row.kind);if(row.kind==='dataset')datasets.push({dataset:row.dataset,name:row.dataset,size:3,ownerName:'成员乙'});trash.splice(trash.indexOf(row),1);return {state:'RESTORED',key:args.key};}
    if(op==='projects.retire.purge'){const row=trash.find(row=>row.key===args.key);trash.splice(trash.indexOf(row),1);return {state:'PURGED',key:args.key};}
    if(op==='cloud.import.list')return {imports};
-   if(op==='cloud.import.resume')throw Error('项目工作区导入已停用，请重新导入为数据集。');
    if(op==='cloud.import.start')return {operationId:args.key,state:'QUEUED'};
    if(op==='transfers.list')return {transfers:[],nextCursor:null};
    if(op==='community.posts.list')return {posts:[{id:'post-pinned',kind:'discussion',pinned:true,title:'今晚 23:00 起 3090 下线维护',body:'新任务会自动排到其他三台。',author:{id:peer,name:'成员乙'},createdAt:'2026-10-14T10:40:00.000Z',commentCount:2},{id:'post-a',kind:'feedback',status:'open',title:'5090 上 tensorboard 端口怎么映射？',body:'求助',author:{id:owner,name:'成员甲'},createdAt:'2026-10-14T09:00:00.000Z',commentCount:0}],nextCursor:null};
@@ -73,7 +72,14 @@ try{
     if(url.pathname==='/guide')return route.fulfill({contentType:'text/html',body:await guidePage(null,origin)});
     if(url.pathname==='/machines.js')return route.fulfill({contentType:'text/javascript',body:'export const MACHINES='+JSON.stringify(state.machines)});
     if(url.pathname==='/capabilities'){probes++;return campusReachable?route.fulfill({contentType:'application/json',body:'{}'}):route.abort('connectionrefused');}
-    if(url.pathname.startsWith('/api/')){const body=request.postDataJSON(),result=await rpc(body.operation,body.args||{});return route.fulfill({contentType:'application/json',body:JSON.stringify(body.operation==='state'?result:{ok:true,result})});}
+    if(url.pathname.startsWith('/api/')){
+     const body=request.postDataJSON();
+     if(body.operation==='cloud.import.resume'){
+      calls.push({op:body.operation,args:body.args});
+      return route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({ok:false,error:'批量数据只能导入为数据集；请用数据集名称重新导入，不能保存到项目工作区。'})});
+     }
+     const result=await rpc(body.operation,body.args||{});return route.fulfill({contentType:'application/json',body:JSON.stringify(body.operation==='state'?result:{ok:true,result})});
+    }
     if(url.pathname.startsWith('/v1/files/')){const parts=url.pathname.split('/'),args=grants.get(parts[3]),offset=Number(url.searchParams.get('offset'));assert.ok(args);if(parts[4]==='put'){const bytes=request.postDataBuffer(),row=uploads.get(args.uploadId);assert.equal(offset,row.offset);assert.ok(bytes.length<=1024**2);row.bytes=Buffer.concat([row.bytes,bytes]);row.offset+=bytes.length;return route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,result:{key:row.key,offset:row.offset,state:'UPLOADING'}})});}const bytes=files.get(resource(args))||Buffer.from('abc');return route.fulfill({contentType:'application/octet-stream',headers:{'x-gpuq-file-metadata':Buffer.from(JSON.stringify({size:bytes.length,offset})).toString('base64url')},body:bytes.subarray(offset)});}
     const path=resolve(root,'.'+url.pathname);if(!path.startsWith(root+'/'))throw Error('Outside static root');
     if(process.env.AISPACE_THEME==='1'&&url.pathname==='/app.js')return route.fulfill({contentType:'text/javascript',body:(await readFile(path,'utf8'))+'\nwindow.mountAISpace=()=>mountAISpace({store});window.aispaceAdapter=aispace;'});
@@ -165,7 +171,7 @@ try{
   await page.locator('[name=cloud-target-name]').fill('images');await page.locator('[name=cloud-url]').fill('https://example.test/payload.bin');await page.locator('[name=cloud-path]').fill('payload.bin');await page.locator('#cloud-import-form [type=submit]').click();await page.waitForTimeout(50);const imported=calls.find(row=>row.op==='cloud.import.start');assert.equal(imported.args.area,'dataset');assert.equal(imported.args.dataset,'images');
   assert.equal(Object.hasOwn(imported.args,'project'),false);
   await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-import.png')});
-  imports=[{operationId:jobId,path:'old-project-data.bin',state:'PAUSED',project:'vision',canResume:true}];await page.locator('#cloud-import-refresh').click();await page.locator('[data-import-resume]').click();await page.locator('#cloud-import-status').filter({hasText:'重新导入为数据集'}).waitFor();
+  imports=[{operationId:jobId,path:'old-project-data.bin',state:'PAUSED',project:'vision',canResume:true}];await page.locator('#cloud-import-refresh').click();await page.locator('[data-import-resume]').click();await page.locator('#cloud-import-status').filter({hasText:'数据集名称重新导入'}).waitFor();
   await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-import-rejected.png')});await page.locator('#dr-import-sheet [data-sheet-close]').click();await page.locator('#dr-import-sheet').waitFor({state:'hidden'});
   await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-datasets.png'),fullPage:true});
   await page.locator('[data-nav=resources]').click();await page.evaluate(()=>document.fonts.ready);await page.screenshot({animations:'disabled',path:join(shots,role+'-'+width+'-resources.png'),fullPage:true});
