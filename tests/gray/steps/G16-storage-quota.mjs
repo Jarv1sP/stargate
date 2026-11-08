@@ -117,17 +117,15 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     ctx.check('首轮 platform 仅跳过共享项目仍挂载的层',mounted(first)===1&&skipped.length===1&&skipped[0].endsWith(facts.oci.dev.layer),{skipped,mounted:mounted(first)});
     const unknown=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.size===null&&p?.environment?.size===null;});
     ctx.check('跳过活层时输出与环境仍未知',unknown.projects.some(p=>p.project===name&&p.outputs.size===null&&p.environment.size===null));
-    // 隔离灰度节点：停止服务账户所有引擎的容器及 pause，满足维护窗口前提。
-    await stackExec(ctx.stack,'gray-node-1',...asService,`import importlib.util,json,subprocess,sys
+    // 隔离灰度节点：直接结束服务账户的 pause；已有容器可能带着故障步骤留下的失效 conmon 状态。
+    await stackExec(ctx.stack,'gray-node-1',...asService,`import contextlib,os,signal,time
 from pathlib import Path
-node=Path(sys.argv[1])/'current'/'node'
-def load(name):
-    s=importlib.util.spec_from_file_location(name,node/(name+'.py'));m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
-config=json.loads(load('runtime-profile').read_private(node.parent/'profiles'/'7IM'/'node-config.json'));oci=load('personal-oci')
-for folder in sorted((Path(config['workspacesRoot'])/'.oci').iterdir()):
-    if not (folder/'graph').is_dir():continue
-    result=subprocess.run(oci.engine_command(config,folder,'system','migrate'),env=oci.engine_environment(folder),capture_output=True,text=True,timeout=120)
-    if result.returncode:raise RuntimeError(str(folder)+': '+result.stderr+result.stdout)`,facts.release);
+pidfile=Path(os.environ['XDG_RUNTIME_DIR'])/'libpod/tmp/pause.pid';pid=int(pidfile.read_text())
+with contextlib.suppress(ProcessLookupError):os.kill(pid,signal.SIGKILL)
+pidfile.unlink(missing_ok=True);deadline=time.monotonic()+15
+while (Path('/proc')/str(pid)/'ns/mnt').exists():
+    if time.monotonic()>deadline:raise TimeoutError('rootless pause did not exit')
+    time.sleep(.05)`);
     const done=await migrate('--only','platform');ctx.note(done.split('\n').slice(-40).join('\n'));
     ctx.check('停止 podman 后 platform 不再跳过活层',mounted(done)===0,done.slice(-5000));
     const completed=await node('python3','-I','-B','-c',`import json,os,sys;print(json.dumps(os.path.isfile(sys.argv[1]+'/quota/migrated.json')))`,facts.config.root);
