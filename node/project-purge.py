@@ -184,7 +184,12 @@ class Trash:
                             # Remove the actual private container, not only its workspace files.
                             engine.run('rm','--force',head['container'])
                     # Python 3.10: anchor the symlink-safe traversal at the held data-directory FD.
-                    if __import__('stat').S_ISDIR(info.st_mode):shutil.rmtree('/proc/self/fd/'+str(fd)+'/'+name)
+                    if __import__('stat').S_ISDIR(info.st_mode):
+                        try:shutil.rmtree('/proc/self/fd/'+str(fd)+'/'+name)
+                        except PermissionError:
+                            # Container users (sub-UIDs) own some files; remove them in the rootless namespace.
+                            engine=module('personal-oci').PersonalOCI(self.config,self.namespace_owner(row))
+                            engine.run('unshare','/usr/bin/rm','-rf','--one-file-system','--',str(folder/name),timeout=3600)
                     else:os.unlink(name,dir_fd=fd)
                 os.fsync(fd)
             finally:os.close(fd)
@@ -195,5 +200,20 @@ class Trash:
                 except FileNotFoundError:pass
             return row
 
+    def namespace_owner(self,row):
+        # Every owner's engine shares the service account's sub-UID map; reuse an existing one.
+        owner=Path(row['originalPath']).parent.name if row['kind']=='project' else row.get('userId')
+        oci=self.d.root(self.config,'workspacesRoot')/'.oci'
+        try:existing=sorted(p.name for p in oci.iterdir() if not p.name.startswith('.') and not p.is_symlink() and p.is_dir())
+        except FileNotFoundError:existing=[]
+        if not existing:raise FileNotFoundError('没有可用的容器引擎，请管理员清理此回收站条目。')
+        return owner if owner in existing else existing[0]
+
     def collect(self):
-        return [self.purge({'key':r['key']},automatic=True) for r in self.listing()['items'] if time.time()>=r['retainUntil']]
+        results=[]
+        for row in self.listing()['items']:
+            if time.time()<row['retainUntil']:continue
+            # One entry that cannot be removed is skipped; the next ones and the usage sample continue.
+            try:results.append(self.purge({'key':row['key']},automatic=True))
+            except Exception as error:results.append({'key':row['key'],'kind':row.get('kind'),'state':'UNKNOWN','error':str(error)[:400]})
+        return results

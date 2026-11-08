@@ -1,8 +1,12 @@
-"""Hourly disk accounting; project requests only read the atomic sample."""
-import importlib.util,os,stat,subprocess
+"""Disk usage from the root quota sample and the ID registry; requests never scan.
+
+stargate-quota-sample.timer (root) writes samples/quota.json every minute.
+The hourly collector only measures .trash and counts output folders.
+"""
+import importlib.util,os
 from datetime import datetime,timezone
 from pathlib import Path
-AREAS=('outputs','environments','trash','temporary')
+ORDER=('project','images','dataset','platform','external','unassignedOutputs')
 
 
 def module(name):
@@ -10,140 +14,164 @@ def module(name):
     result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
 
 
-def total(rows):
-    rows=list(rows);sizes=[row['size'] for row in rows if row['size'] is not None]
-    return {'size':sum(sizes) if sizes or not rows else None,'complete':all(row['complete'] for row in rows)}
+def saved(path):
+    try:return module('project-store').read_json(path)
+    except (OSError,ValueError,TypeError,AttributeError,RecursionError):return None
 
 
-def measured(data,path):
-    try:path.lstat()
-    except FileNotFoundError:return {'size':0,'complete':True}
-    except OSError:return {'size':None,'complete':False}
-    return data.size(path,partial=True)
+class Sample:
+    """One reading of samples/quota.json mapped through the registry."""
+    def __init__(self,config):
+        self.config=config;self.d=module('local-data');root=self.d.root(config,'root')
+        self.quota=saved(root/'samples'/'quota.json')
+        self.migrated=saved(root/'quota'/'migrated.json') is not None
+        try:self.names={value:key for key,value in module('quota-ids').read(root/'quota')['ids'].items()}
+        except (OSError,ValueError,TypeError,AttributeError):self.names={}
+        self.disks=[];seen={}
+        for mount in config.get('dataMountPoints') or []:
+            try:
+                mount=str(Path(mount).resolve(strict=True));device=os.stat(mount).st_dev
+            except OSError:device=('missing',mount)
+            if device in seen:continue
+            seen[device]=mount;self.disks.append((str(mount),device))
+        filesystems=(self.quota or {}).get('filesystems') if isinstance(self.quota,dict) else None
+        self.filesystems={}
+        for mount,_ in self.disks:
+            row=next((fs for fs in filesystems or [] if isinstance(fs,dict) and mount in (fs.get('mountPoints') or [])),None)
+            if row is not None and row.get('quota') is True and isinstance(row.get('ids'),dict):self.filesystems[mount]=row
+
+    @property
+    def checked(self):return self.quota.get('checkedAt') if isinstance(self.quota,dict) else None
+
+    def mount(self,path):
+        try:device=os.stat(path).st_dev
+        except OSError:return None
+        return next((mount for mount,value in self.disks if value==device),None)
+
+    def bytes(self,mount):
+        totals={}
+        for raw,row in self.filesystems[mount]['ids'].items():
+            if not str(raw).isdigit() or not isinstance(row,dict):continue
+            key=self.names.get(int(raw)) if int(raw) else None
+            totals[key]=totals.get(key,0)+int(row.get('bytes') or 0)
+        return totals
+
+    def size(self,key,path,*,may_vanish=False):
+        """{'size','complete'} for one key on the disk holding `path`; None when it is unknown.
+
+        An unregistered key has no bytes. A registered key absent from the sample
+        is zero only for outputs and environments (may_vanish), whose last inode
+        can go away; a dataset or project-files ID keeps its directory inode, so
+        absence means it is not tagged yet and stays unknown.
+        """
+        mount=self.mount(path)
+        if mount not in self.filesystems:return None
+        totals=self.bytes(mount)
+        if key in totals:return {'size':totals[key],'complete':True}
+        value=next((value for value,name in self.names.items() if name==key),None)
+        if value is None or (may_vanish and type((self.quota or {}).get('next')) is int and value<self.quota['next']):
+            return {'size':0,'complete':True}
+        return None
+
+    def items(self,mount,used):
+        q=module('quota-ids');projects={};rows=[];untracked=0
+        totals=self.bytes(mount)
+        for key,value in totals.items():
+            kind=q.describe(key) if key else None
+            if kind is None:untracked+=value;continue
+            if kind[0]=='project':
+                row=projects.setdefault(kind[1:3],{'kind':'project','ownerId':kind[1],'project':kind[2],'files':0,'outputs':0,'environment':0})
+                row[{'files':'files','outputs':'outputs','env':'environment'}[kind[3]]]+=value
+            elif kind[0]=='images':rows.append({'kind':'images','ownerId':kind[1],'bytes':value})
+            elif kind[0]=='dataset':rows.append({'kind':'dataset','name':kind[1],'bytes':value})
+            elif kind[0]=='external':rows.append({'kind':'external','path':kind[1],'bytes':value})
+            else:rows.append({'kind':kind[0],'bytes':value})
+        rows+=[row for row in projects.values() if row['files'] or row['outputs'] or row['environment']]
+        rows=[row for row in rows if row['kind']=='project' or row['bytes']]
+        size=lambda row:row['files']+row['outputs']+row['environment'] if row['kind']=='project' else row['bytes']
+        rows.sort(key=lambda row:(ORDER.index(row['kind']),-size(row)))
+        return rows+[{'kind':'untracked','bytes':untracked},{'kind':'filesystem','bytes':used-sum(totals.values())}]
+
+
+def roles(config,sample):
+    result={}
+    for role,field in (('workspace','workspacesRoot'),('datasets','datasetsRoot')):
+        if config.get(field):
+            mount=sample.mount(config[field])
+            if mount is not None:result.setdefault(mount,[]).append(role)
+    return result
+
+
+def disks(config,sample,collected):
+    d=module('local-data');result=[];assigned=roles(config,sample);trash=(collected or {}).get('trash') or {}
+    for mount,_ in sample.disks:
+        row={'mountPoint':mount,'totalBytes':None,'usedBytes':None,'availableBytes':None,'media':None,
+             'roles':assigned.get(mount,[]),'accounting':'unavailable','items':[],'trashBytes':(trash.get(mount) or {}).get('size')}
+        fs=sample.filesystems.get(mount)
+        if fs is not None and all(type(fs.get(k)) is int for k in ('totalBytes','usedBytes','availableBytes')):
+            row.update({k:fs[k] for k in ('totalBytes','usedBytes','availableBytes')},media=d.disk_media(mount),accounting='quota')
+            row['items']=sample.items(mount,fs['usedBytes'])
+        else:
+            try:row.update({k:v for k,v in d.disk_usage(d.require_data_path(config,mount)).items() if k!='fs'})
+            except (OSError,ValueError):pass
+        result.append(row)
+    return result
 
 
 def cached(ops,result):
-    try:
-        saved=module('project-store').read_json(ops.store.root/'samples'/'storage-areas.json')
-        areas={name:dict(saved['areas'][name]) for name in AREAS};checked=saved['checkedAt']
-        projects={(row['ownerId'],row['project']):row for row in saved['projects']}
-    except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError):
-        areas={name:{'size':None,'complete':False} for name in AREAS};checked=None;projects={}
+    """projects.list {includeUsage:true}: read the samples, O(IDs), no file walk."""
+    q=module('quota-ids');sample=Sample(ops.config);collected=saved(ops.store.root/'samples'/'storage-usage.json')
+    counts=(collected or {}).get('outputs') if isinstance(collected,dict) else None
+    registered=set(sample.names.values())
     for row in result['projects']:
-        sample=projects.get((row.get('ownerId') or row.get('userId'),row['project']),{})
-        row.update(size=sample.get('size'),complete=sample.get('complete',False),
-                   outputs=sample.get('outputs',{'size':None,'complete':False,'count':None}),environment=sample.get('environment'))
-    return {**result,'areas':areas,'areasCheckedAt':checked}
+        owner=row.get('ownerId') or row.get('userId');project=row['project']
+        # Unregistered files mean the project was never tagged: unknown, not zero.
+        files=sample.size(q.files_key(owner,project),ops.store.path) if q.files_key(owner,project) in registered else None
+        outputs=sample.size(q.outputs_key(owner,project),ops.store.root,may_vanish=True) if sample.migrated else None
+        environment=sample.size(q.env_key(owner,project),ops.store.path,may_vanish=True) if sample.migrated else None
+        row.update(files or {'size':None,'complete':False})
+        count=counts.get(owner+'/'+project,0) if isinstance(counts,dict) else None
+        row['outputs']={**(outputs or {'size':None,'complete':False}),'count':count}
+        row['environment']=environment or {'size':None,'complete':False}
+    return {**result,'disks':disks(ops.config,sample,collected),'checkedAt':sample.checked}
 
 
-def refresh(ops):
-    result=scan(ops,ops.store.list(include_usage=True));s=module('project-store')
-    saved={'checkedAt':datetime.now(timezone.utc).isoformat(),'areas':result['areas'],
-           'projects':[{key:row.get(key) for key in ('ownerId','project','size','complete','outputs','environment')} for row in result['projects']]}
-    folder=s.private_dir(ops.store.root/'samples',create=True)
-    s.atomic_json(folder/'storage-areas.json',saved)
-    return saved
-
-
-def project_usage(ops,projects):
-    s=module('project-store');data=s.data();oci=module('personal-oci');owners={}
-    unknown={'size':None,'complete':False}
-    for row in projects:owners.setdefault(row.get('ownerId') or row.get('userId'),[]).append(row)
-    for owner,rows in owners.items():
-        folder=ops.store.path/'.oci'/owner
-        try:engine=not folder.is_symlink() and (folder/'graph').is_dir()
-        except OSError:engine=None
-        layers={row['project']:[] for row in rows};aliases={};incomplete=set();seen=set()
-        for row in rows:
-            path=ops.store.path/owner/row['project'];size=None
-            if engine:
-                try:size=oci.storage_size(ops.config,folder,path)
-                except (OSError,ValueError,subprocess.TimeoutExpired):pass
-            row.update(size if size is not None and size['size'] is not None else data.size(path,partial=True))
-            row['environment']={'size':0,'complete':True} if engine is False else dict(unknown)
-            if engine:
-                try:
-                    container=s.read_json(path/'oci.json').get('container')
-                    if container:aliases[container]=row['project']
-                except FileNotFoundError:pass
-                except (OSError,ValueError,AttributeError,RecursionError):incomplete.add(row['project'])
-        if not engine:continue
-        inventory_complete=True
-        try:
-            containers=oci.storage_containers(ops.config,folder)
-            for container in containers:
-                label=(container.get('Config') or {}).get('Labels') or {}
-                project=label.get('io.gpuq.project') or aliases.get((container.get('Name') or '').lstrip('/')) or aliases.get(container.get('Id'))
-                upper=((container.get('GraphDriver') or {}).get('Data') or {}).get('UpperDir')
-                if project not in layers or not upper or upper in seen:continue
-                seen.add(upper)
-                try:value=oci.storage_size(ops.config,folder,upper)
-                except (OSError,ValueError,subprocess.TimeoutExpired):value=dict(unknown)
-                layers[project].append(value)
-        except (OSError,ValueError,TypeError,AttributeError,RecursionError,subprocess.TimeoutExpired):inventory_complete=False
-        for row in rows:
-            value=total(layers[row['project']])
-            if not inventory_complete or row['project'] in incomplete:
-                value['complete']=False
-                if not layers[row['project']]:value['size']=None
-            row['environment']=value
-
-
-def scan(ops,result):
-    store=ops.store;s=module('project-store');data=s.data();root=store.root
-    project_usage(ops,result['projects'])
-    outputs={};records_complete=True
+def output_counts(ops):
+    """Finished-or-not output folders per project, from job records; never sizes."""
+    s=module('project-store');root=ops.store.root;owners={};counts={}
     try:
         for file in (root/'jobs').iterdir():
             if file.suffix!='.json' or not s.JOB_ID.fullmatch(file.stem):continue
-            try:
-                job=s.read_json(file)
-                outputs[file.stem]=(job.get('ownerId') or job.get('userId'),job.get('project'))
-            except (OSError,ValueError,AttributeError,RecursionError):records_complete=False
+            try:job=s.read_json(file);owners[file.stem]=(job.get('ownerId') or job.get('userId'))+'/'+job['project']
+            except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError):continue
     except FileNotFoundError:pass
-    except OSError:records_complete=False
-    by_project={};all_outputs=[]
     try:
         with s.directory(root/'outputs') as fd,os.scandir(fd) as entries:
             for entry in entries:
-                try:
-                    info=entry.stat(follow_symlinks=False)
-                    if stat.S_ISDIR(info.st_mode):row=measured(data,root/'outputs'/entry.name)
-                    elif stat.S_ISREG(info.st_mode):row={'size':info.st_size,'complete':True}
-                    else:continue
-                except OSError:row={'size':None,'complete':False}
-                all_outputs.append(row)
-                if entry.name in outputs:by_project.setdefault(outputs[entry.name],[]).append(row)
+                if entry.name in owners and entry.is_dir(follow_symlinks=False):counts[owners[entry.name]]=counts.get(owners[entry.name],0)+1
     except FileNotFoundError:pass
-    except OSError:all_outputs.append({'size':None,'complete':False});records_complete=False
-    for project in result['projects']:
-        rows=by_project.get((project.get('ownerId') or project.get('userId'),project['project']),[])
-        usage=total(rows)
-        if not records_complete:
-            usage['complete']=False
-            if not rows:usage['size']=None
-        project['outputs']={**usage,'count':len(rows) if records_complete or rows else None}
-    environments=[]
-    try:
-        for owner in (store.path/'.oci').iterdir():
-            try:
-                if owner.is_symlink() or not owner.is_dir():continue
-                try:(owner/'graph').stat()
-                except FileNotFoundError:continue
-                environments.append(module('personal-oci').storage_size(ops.config,owner))
-            except (OSError,ValueError,IndexError,subprocess.TimeoutExpired):environments.append({'size':None,'complete':False})
-    except FileNotFoundError:pass
-    except OSError:environments.append({'size':None,'complete':False})
-    trash=[];temporary=[]
-    workspace_device=store.path.stat().st_dev
-    roots={root,store.path}
-    try:roots.add(data.root(ops.config,'datasetsRoot'))
-    except (OSError,ValueError):trash.append({'size':None,'complete':False})
+    return counts
+
+
+def refresh(ops):
+    """Hourly: .trash sizes per disk and output counts, written atomically."""
+    s=module('project-store');data=s.data();sample=Sample(ops.config);trash={}
+    roots=[ops.store.root,ops.store.path]
+    try:roots.append(data.root(ops.config,'datasetsRoot'))
+    except (OSError,ValueError):pass
     for base in roots:
-        try:
-            if base.stat().st_dev==workspace_device:trash.append(measured(data,base/'.trash'))
-        except OSError:trash.append({'size':None,'complete':False})
-    for name in ('.copy-exports','.copies'):temporary.append(measured(data,store.path/name))
-    result['areas']={'outputs':total(all_outputs),'environments':total(environments),
-                     'trash':total(trash),'temporary':total(temporary)}
-    return result
+        mount=sample.mount(base)
+        if mount is None:continue
+        try:(base/'.trash').lstat();value=data.size(base/'.trash',partial=True)
+        except FileNotFoundError:value={'size':0,'complete':True}
+        except OSError:value={'size':None,'complete':False}
+        old=trash.get(mount,{'size':0,'complete':True})
+        trash[mount]={'size':None if old['size'] is None or value['size'] is None else old['size']+value['size'],
+                      'complete':old['complete'] and value['complete']}
+    try:outputs=output_counts(ops)
+    except OSError:outputs=None
+    value={'checkedAt':datetime.now(timezone.utc).isoformat(),'trash':trash,'outputs':outputs}
+    folder=s.private_dir(ops.store.root/'samples',create=True)
+    s.atomic_json(folder/'storage-usage.json',value)
+    (folder/'storage-areas.json').unlink(missing_ok=True)
+    return value

@@ -13,6 +13,10 @@ def data():
     spec=importlib.util.spec_from_file_location('project_data',Path(__file__).with_name('local-data.py'))
     result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
 
+def quota():
+    spec=importlib.util.spec_from_file_location('project_quota',Path(__file__).with_name('quota-ids.py'))
+    result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
+
 def check_platform_root(root,config):return data().require_data_path(config,root)
 
 class ProjectError(ValueError):
@@ -102,6 +106,17 @@ def private_dir(path, create=False):
     return path
 
 
+def created_dir(path):
+    """private_dir(create=True) that also reports whether this call created it."""
+    try:
+        path.mkdir(mode=0o700)
+        fresh = True
+    except FileExistsError:
+        fresh = False
+    private_dir(path)
+    return fresh
+
+
 def read_json(path, limit=None):
     fd = os.open(path, FILE_FLAGS)
     try:
@@ -171,6 +186,7 @@ class ProjectStore:
         file=path/'project.json'
         if file.exists():return self.status(user,slug)
         for n in ('code','home'):private_dir(path/n,create=True)
+        q=quota();q.assign(self.config,q.files_key(user,slug),path,tree=True)
         atomic_json(file,{'project':slug,'userId':user,'ownerId':user,'createdAt':time.time(),
                          'environmentMode':'oci','repo':repo,'archived':False,'name':slug,'group':''})
         return self.status(user,slug)
@@ -213,7 +229,10 @@ class ProjectStore:
     def workspace_output(self,user,slug,*,jobid,create=True):
         if not isinstance(jobid,str) or not JOB_ID.fullmatch(jobid):raise ValueError('任务编号无效。')
         outputs=private_dir(self.root/'outputs',create=create)
-        return private_dir(outputs/jobid,create=create)
+        if not create:return private_dir(outputs/jobid)
+        if created_dir(outputs/jobid) and user and slug:
+            q=quota();q.assign(self.config,q.outputs_key(user,slug),outputs/jobid)
+        return outputs/jobid
 
     def runtime_paths(self,spec,jobid,terminal=False):
         if spec.get('projectCopy'):
@@ -223,7 +242,7 @@ class ProjectStore:
             folder=copy.runtime_folder(self.config,spec['projectCopy'])
             paths={name:private_dir(folder/name) for name in ('code','home')}
         else:paths=self.dev_paths(spec.get('ownerId') or spec['userId'],spec['project'])
-        return {**paths,'output':self.workspace_output(spec['userId'],spec['project'],jobid=jobid),
+        return {**paths,'output':self.workspace_output(spec.get('ownerId') or spec['userId'],spec['project'],jobid=jobid),
                 'environmentMode':'oci','workspace':True,'readonly':False}
 
     def existing_run_paths(self,user,slug,version,jobid):

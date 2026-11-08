@@ -71,11 +71,6 @@ class ProjectOperations:
                 shared=next((volume for volume in result['volumes'] if row['fs'] is not None and volume['fs']==row['fs']),None)
                 if shared is None:result['volumes'].append(row)
                 else:shared['kind']='shared'
-            if slug:
-                usage={'project':slug,'ownerId':user,'size':None,'complete':False}
-                try:usage.update(d.size(self.store._project(user,slug)[0],partial=True))
-                except OSError:pass
-                result['projectUsage']=usage
             return result
         trash=module('project-purge').Trash(self.config)
         if operation=='projects.retire.list':return trash.listing(args)

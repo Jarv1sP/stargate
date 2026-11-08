@@ -1,5 +1,5 @@
-"""Disk readings are independent of partial directory-size observations."""
-import importlib.util,json,os,subprocess,tempfile,unittest,uuid
+"""Disk usage comes from the root quota sample; project requests never scan."""
+import importlib.util,json,os,shutil,subprocess,tempfile,unittest,uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
@@ -13,22 +13,6 @@ class StorageUsage(unittest.TestCase):
         return f.module('project-ops').ProjectOperations(SimpleNamespace(CONFIG=self.config,ROOT=Path(self.config['root'])))
 
     def refresh(self,ops):return f.module('storage-usage').refresh(ops)
-
-    def fake_podman(self,ops,containers,sizes,owner='alice'):
-        folder=ops.store.path/'.oci'/owner;(folder/'graph').mkdir(parents=True,exist_ok=True);calls=[]
-        for row in containers:
-            upper=((row.get('GraphDriver') or {}).get('Data') or {}).get('UpperDir')
-            if upper and self.base in Path(upper).parents:Path(upper).mkdir(parents=True,exist_ok=True)
-        def run(argv,**kwargs):
-            calls.append((argv,kwargs))
-            if 'ps' in argv:return subprocess.CompletedProcess(argv,0,' '.join('fixture-'+str(i) for i in range(len(containers))),'')
-            if 'inspect' in argv:return subprocess.CompletedProcess(argv,0,json.dumps(containers),'')
-            self.assertIn('unshare',argv);self.assertEqual(argv[-4:-1],['/usr/bin/du','-sb','--one-file-system'])
-            value=sizes.get(Path(argv[-1]),1000)
-            if isinstance(value,Exception):raise value
-            code,raw=value if isinstance(value,tuple) else (0,str(value)+'\t'+argv[-1])
-            return subprocess.CompletedProcess(argv,code,raw,'')
-        return run,calls
 
     def deny(self,name):
         original=os.open
@@ -78,11 +62,11 @@ class StorageUsage(unittest.TestCase):
         self.assertIsNone(result['volumes'][0]['usedBytes']);self.assertEqual(result['volumes'][1]['availableBytes'],40*4096)
         self.assertEqual([row['fs'] for row in result['volumes']],[None,'12'])
 
-    def test_unreadable_project_keeps_disk_readings_and_an_unknown_project_size(self):
-        ops=self.ops()
-        with patch.object(ops.store,'_project',side_effect=PermissionError('project unavailable')):
+    def test_quota_returns_disk_volumes_only_without_measuring_the_project(self):
+        ops=self.ops();ops.store.create('alice','demo')
+        with patch('os.scandir',side_effect=AssertionError('quota measured project files')):
             result=ops.process('projects.quota',{'userId':'alice','project':'demo'})
-        self.assertEqual(result['projectUsage'],{'project':'demo','ownerId':'alice','size':None,'complete':False})
+        self.assertEqual(set(result),{'volumes'})
         self.assertTrue(all(row['totalBytes'] is not None for row in result['volumes']))
 
     def test_missing_project_status_explains_next_step_instead_of_errno(self):
@@ -110,24 +94,6 @@ class StorageUsage(unittest.TestCase):
         self.assertEqual([(r['dataset'],r['size'],r['complete']) for r in rows],[('images',3,False),('motion',4,True)])
         self.assertTrue(all('uploadedBy' in r and 'modifiedAt' in r for r in rows))
 
-    def test_projects_read_cached_usage_without_scanning_even_when_files_change(self):
-        ops=self.ops();ops.store.create('alice','demo');ops.store.create('bob','demo')
-        path=ops.store._project('alice','demo')[0];(path/'code'/'ok').write_bytes(b'abc');(path/'code'/'partial').mkdir()
-        engine=ops.store.path/'.oci';engine.mkdir();(engine/'partial').mkdir()
-        with patch('os.scandir',side_effect=AssertionError('ordinary project list scanned bytes')):
-            rows=ops.process('projects.list',{'userId':'alice'})['projects']
-        self.assertEqual(len(rows),2);self.assertTrue(all('size' not in row for row in rows))
-        with self.deny('partial'):
-            self.refresh(ops)
-            quota=ops.process('projects.quota',{'userId':'alice','project':'demo'})
-        (path/'code'/'later').write_bytes(b'later bytes')
-        with patch('os.scandir',side_effect=AssertionError('cached project list scanned bytes')),patch('subprocess.run',side_effect=AssertionError('cached project list launched du')):
-            result=ops.process('projects.list',{'userId':'alice','includeUsage':True})
-        rows={r['ownerId']:r for r in result['projects']}
-        self.assertFalse(rows['alice']['complete']);self.assertGreaterEqual(rows['alice']['size'],3);self.assertTrue(rows['bob']['complete'])
-        self.assertEqual(quota['projectUsage'],{'project':'demo','ownerId':'alice','size':rows['alice']['size'],'complete':False})
-        self.assertTrue(all(r['usedBytes'] is not None for r in quota['volumes']))
-
     def test_unreadable_list_root_is_unknown_instead_of_an_empty_success(self):
         original=Path.iterdir
         def listed(path):
@@ -136,217 +102,194 @@ class StorageUsage(unittest.TestCase):
         with patch.object(Path,'iterdir',listed):
             with self.assertRaises(PermissionError):self.files.datasets(self.config)
 
-    def test_unreadable_container_remains_in_project_list_with_unknown_size(self):
-        ops=self.ops();ops.store.create('alice','unreadable');ops.store.create('bob','healthy')
-        (ops.store.dev_paths('bob','healthy')['code']/'file').write_bytes(b'abc')
-        with self.deny('unreadable'):
-            self.refresh(ops);result=ops.process('projects.list',{'userId':'alice','includeUsage':True})
-        rows={row['project']:row for row in result['projects']}
-        self.assertEqual(rows['unreadable'],{'project':'unreadable','ownerId':'alice','size':None,'complete':False,'outputs':{'size':0,'complete':True,'count':0},'environment':{'size':0,'complete':True}})
-        self.assertFalse(result['complete']);self.assertGreaterEqual(rows['healthy']['size'],3)
+    def write_sample(self,ops,filesystems,keys=(),checked='2026-11-07T00:00:00+00:00',migrated=True,next_id=None):
+        """The root sampler's file plus registry keys allocated in order (IDs from 1000)."""
+        q=f.module('quota-ids');folder=q.folder(self.config)
+        if keys:q.allocate(folder,list(keys))
+        if migrated:(folder/'migrated.json').write_text('{}')
+        samples=ops.store.root/'samples';samples.mkdir(mode=0o700,exist_ok=True)
+        (samples/'quota.json').write_text(json.dumps({'checkedAt':checked,'filesystems':filesystems,'next':next_id}))
+        return q.read(folder)['ids']
 
-    def test_scan_accounts_for_project_outputs_orphans_environments_trash_and_copy_staging(self):
-        ops=self.ops();ops.store.create('alice','demo');ops.store.create('bob','demo')
-        root=ops.store.root;records=root/'jobs';records.mkdir()
-        for owner,actor,size in [('alice','bob',3),('bob','alice',5),(None,None,7)]:
-            key=str(uuid.uuid4());folder=root/'outputs'/key;folder.mkdir(parents=True);(folder/'out').write_bytes(b'x'*size)
-            if owner:(records/(key+'.json')).write_text(json.dumps({'ownerId':owner,'userId':actor,'project':'demo'}))
-        engines=[]
-        for owner in ('alice','bob'):(ops.store.path/'.oci'/owner/'graph').mkdir(parents=True)
-        def unshare(argv,**kwargs):
-            if 'ps' in argv:return subprocess.CompletedProcess(argv,0,'','')
-            if Path(argv[-1]).name=='demo':return subprocess.CompletedProcess(argv,0,'100 project','')
-            owner=Path(argv[-1]).name;engines.append((owner,argv,kwargs))
-            return subprocess.CompletedProcess(argv,0,str({'alice':11,'bob':13}[owner])+'\tgraph','')
-        for base in (root,ops.store.path):
-            (base/'.trash').mkdir();(base/'.trash'/'payload').write_bytes(b'xx')
-        for name in ('.copies','.copy-exports'):
-            (ops.store.path/name).mkdir();(ops.store.path/name/'payload').write_bytes(b'xxx')
-        with patch.object(ops,'oci',side_effect=AssertionError('usage must not initialize OCI')),patch('subprocess.run',unshare):
-            self.refresh(ops)
-        with patch('os.scandir',side_effect=AssertionError('cached query must not scan outputs')),patch('subprocess.run',side_effect=AssertionError('cached query must not run podman')):
+    def fs(self,ids,used,mounts=None,quota=True):
+        return {'mountPoints':mounts or [str(self.base)],'device':'/dev/fixture','quota':quota,'ids':ids if quota else {},
+                'totalBytes':10**6,'usedBytes':used,'availableBytes':10**6-used}
+
+    def test_projects_read_the_quota_sample_and_registry_without_scanning(self):
+        ops=self.ops();q=f.module('quota-ids')
+        for owner in ('alice','bob'):ops.store.create(owner,'demo')
+        keys=[q.outputs_key('alice','demo'),q.env_key('alice','demo'),q.images_key('alice'),q.dataset_key('images'),
+              q.PLATFORM,q.external_key('/data1/cyx'),q.UNASSIGNED]
+        ids=self.write_sample(ops,[],keys)
+        usage={ids[q.files_key('alice','demo')]:100,ids[q.outputs_key('alice','demo')]:30,ids[q.env_key('alice','demo')]:50,
+               ids[q.files_key('bob','demo')]:5,ids[q.images_key('alice')]:400,ids[q.dataset_key('images')]:1000,ids[q.PLATFORM]:20,
+               ids[q.external_key('/data1/cyx')]:9,ids[q.UNASSIGNED]:3,0:7,99999:11}
+        used=sum(usage.values())+25
+        self.write_sample(ops,[self.fs({str(k):{'bytes':v,'inodes':1} for k,v in usage.items()},used)])
+        with patch('os.scandir',side_effect=AssertionError('usage scanned files')),patch('subprocess.run',side_effect=AssertionError('usage ran a command')):
             result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual(result['areas'],{name:{'size':size,'complete':True} for name,size in [('outputs',15),('environments',24),('trash',4),('temporary',6)]})
-        self.assertEqual({row['ownerId']:row['outputs'] for row in result['projects']},
-                         {owner:{'size':size,'complete':True,'count':1} for owner,size in [('alice',3),('bob',5)]})
-        self.assertEqual(len(engines),2)
-        for owner,args,kwargs in engines:
-            self.assertEqual(args[-5:],['unshare','/usr/bin/du','-sb','--one-file-system',str(ops.store.path/'.oci'/owner)])
-            self.assertIn('--root='+str(ops.store.path/'.oci'/owner/'graph'),args)
-            self.assertEqual(kwargs['timeout'],3600)
-            self.assertEqual(kwargs['env']['HOME'],str(ops.store.path/'.oci'/owner/'home'))
-            self.assertEqual({path.name for path in (ops.store.path/'.oci'/owner).iterdir()},{'graph','runtime.lock'})
+        self.assertEqual(result['checkedAt'],'2026-11-07T00:00:00+00:00');self.assertNotIn('areas',result)
+        rows={row['ownerId']:row for row in result['projects']}
+        self.assertEqual({k:rows['alice'][k] for k in ('size','complete','outputs','environment')},
+                         {'size':100,'complete':True,'outputs':{'size':30,'complete':True,'count':None},'environment':{'size':50,'complete':True}})
+        self.assertEqual((rows['bob']['size'],rows['bob']['outputs']['size'],rows['bob']['environment']),(5,0,{'size':0,'complete':True}))
+        [disk]=result['disks']
+        self.assertEqual({k:disk[k] for k in ('mountPoint','totalBytes','usedBytes','availableBytes','roles','accounting','trashBytes')},
+                         {'mountPoint':str(self.base),'totalBytes':10**6,'usedBytes':used,'availableBytes':10**6-used,
+                          'roles':['workspace','datasets'],'accounting':'quota','trashBytes':None})
+        self.assertEqual(disk['items'],[
+            {'kind':'project','ownerId':'alice','project':'demo','files':100,'outputs':30,'environment':50},
+            {'kind':'project','ownerId':'bob','project':'demo','files':5,'outputs':0,'environment':0},
+            {'kind':'images','ownerId':'alice','bytes':400},{'kind':'dataset','name':'images','bytes':1000},
+            {'kind':'platform','bytes':20},{'kind':'external','path':'/data1/cyx','bytes':9},
+            {'kind':'unassignedOutputs','bytes':3},{'kind':'untracked','bytes':18},{'kind':'filesystem','bytes':25}])
+        total=sum(row.get('bytes',0)+row.get('files',0)+row.get('outputs',0)+row.get('environment',0) for row in disk['items'])
+        self.assertEqual(total,used)
 
-    def test_partial_areas_and_project_outputs_preserve_known_bytes(self):
-        ops=self.ops();ops.store.create('alice','demo');key=str(uuid.uuid4())
-        jobs=ops.store.root/'jobs';jobs.mkdir();(jobs/(key+'.json')).write_text(json.dumps({'userId':'alice','project':'demo'}))
-        output=ops.store.root/'outputs'/key;output.mkdir(parents=True);(output/'hidden').mkdir()
-        (output/'known').write_bytes(b'abc')
-        (ops.store.path/'.oci'/'alice'/'graph').mkdir(parents=True)
-        with self.deny('hidden'),patch('subprocess.run',side_effect=OSError('unshare unavailable')):
-            self.refresh(ops)
-        result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual(result['areas']['outputs'],{'size':3,'complete':False})
-        self.assertEqual(result['areas']['environments'],{'size':None,'complete':False})
-        self.assertEqual(result['projects'][0]['outputs'],{'size':3,'complete':False,'count':1})
-
-    def test_trash_on_a_separate_dataset_disk_is_not_counted_on_the_workspace_disk(self):
-        ops=self.ops();dataset=Path(self.config['datasetsRoot']);(dataset/'.trash').mkdir();(dataset/'.trash'/'data').write_bytes(b'data')
-        original=Path.stat
-        def separate(path,*args,**kwargs):
-            value=original(path,*args,**kwargs)
-            if path==dataset:value=os.stat_result([value.st_mode,value.st_ino,value.st_dev+2,value.st_nlink,value.st_uid,value.st_gid,value.st_size,value.st_atime,value.st_mtime,value.st_ctime])
-            return value
-        with patch.object(Path,'stat',separate):self.refresh(ops)
-        result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual(result['areas']['trash'],{'size':0,'complete':True})
-
-    def test_unreadable_output_root_does_not_invent_zero_bytes_or_zero_jobs(self):
-        ops=self.ops();ops.store.create('alice','demo');(ops.store.root/'outputs').mkdir()
-        with self.deny('outputs'):self.refresh(ops)
-        result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual(result['projects'][0]['outputs'],{'size':None,'complete':False,'count':None})
-        self.assertEqual(result['areas']['outputs'],{'size':None,'complete':False})
-
-    def test_missing_or_corrupt_samples_keep_project_metadata_and_unknown_usage(self):
+    def test_unavailable_or_missing_quota_is_unknown_not_zero(self):
         ops=self.ops();ops.store.create('alice','demo')
-        for saved in (None,'not json','[]','{"areas":{"outputs":null}}'):
-            file=ops.store.root/'samples'/'storage-areas.json'
-            if saved is not None:
-                file.parent.mkdir(mode=0o700,exist_ok=True);file.write_text(saved)
-            with patch('os.scandir',side_effect=AssertionError('missing cache triggered a scan')),patch('subprocess.run',side_effect=AssertionError('missing cache triggered a worker')):
+        for sample in (None,[self.fs({},500,quota=False)]):
+            with self.subTest(sample=sample):
+                if sample is not None:self.write_sample(ops,sample)
                 result=ops.process('projects.list',{'includeUsage':True})
-            self.assertEqual(result['projects'][0]['project'],'demo');self.assertTrue(result['complete'])
-            self.assertIsNone(result['projects'][0]['size']);self.assertFalse(result['projects'][0]['complete'])
-            self.assertEqual(result['projects'][0]['outputs'],{'size':None,'complete':False,'count':None})
-            self.assertIsNone(result['projects'][0]['environment'])
-            self.assertEqual(result['areas'],{name:{'size':None,'complete':False} for name in ('outputs','environments','trash','temporary')})
-            self.assertIsNone(result['areasCheckedAt'])
+                row=result['projects'][0];[disk]=result['disks']
+                self.assertEqual((row['size'],row['complete']),(None,False))
+                self.assertEqual(row['outputs'],{'size':None,'complete':False,'count':None})
+                self.assertEqual(row['environment'],{'size':None,'complete':False})
+                self.assertEqual((disk['accounting'],disk['items']),('unavailable',[]))
+                self.assertIsNotNone(disk['totalBytes'])
+                self.assertEqual(result['checkedAt'],None if sample is None else '2026-11-07T00:00:00+00:00')
 
-    def test_sample_is_atomic_and_reads_keep_the_actual_sample_time(self):
-        ops=self.ops();ops.store.create('alice','demo');old=self.refresh(ops)
-        file=ops.store.root/'samples'/'storage-areas.json';usage=f.module('storage-usage');replace=os.replace;observed=[]
-        def replacing(source,target,*args,**kwargs):
-            if target==file:observed.append(json.loads(file.read_text()))
-            return replace(source,target,*args,**kwargs)
-        (ops.store.dev_paths('alice','demo')['code']/'new').write_bytes(b'new')
-        with patch('os.replace',replacing):new=usage.refresh(ops)
-        self.assertEqual(observed,[old]);self.assertEqual(json.loads(file.read_text()),new)
-        result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual(result['areasCheckedAt'],new['checkedAt']);self.assertEqual(result['projects'][0]['size'],new['projects'][0]['size'])
+    def test_bind_alias_mount_points_are_one_disk_listed_under_the_first(self):
+        alias=self.base/'alias';alias.mkdir();self.config['dataMountPoints']=[str(self.base),str(alias)]
+        ops=self.ops();self.write_sample(ops,[self.fs({'0':{'bytes':10,'inodes':1}},10,mounts=[str(self.base),str(alias)])])
+        disks=ops.process('projects.list',{'includeUsage':True})['disks']
+        self.assertEqual([d['mountPoint'] for d in disks],[str(self.base)])
+        self.assertEqual(disks[0]['items'],[{'kind':'untracked','bytes':10},{'kind':'filesystem','bytes':0}])
 
-    def test_workspaces_state_outputs_and_sample_use_independently_configured_roots(self):
-        old_root=Path(self.config['root'])
-        self.config.update(workspacesRoot=str(self.base/'projects'),root=str(self.base/'node-state'/'records'))
-        for name in ('root','workspacesRoot'):Path(self.config[name]).mkdir(parents=True,mode=0o700)
-        ops=self.ops();ops.store.create('alice','demo');key=str(uuid.uuid4())
-        jobs=ops.store.root/'jobs';jobs.mkdir();(jobs/(key+'.json')).write_text(json.dumps({'ownerId':'alice','project':'demo'}))
-        output=ops.store.root/'outputs'/key;output.mkdir(parents=True);(output/'result').write_bytes(b'outputs')
-        export=ops.store.path/'.copy-exports';export.mkdir();(export/'archive').write_bytes(b'tmp')
-        self.refresh(ops)
-        with patch('os.scandir',side_effect=AssertionError('cache query scanned the configured roots')):
-            result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual(result['areas']['outputs'],{'size':7,'complete':True})
-        self.assertEqual(result['areas']['temporary'],{'size':3,'complete':True})
-        self.assertEqual(result['projects'][0]['outputs'],{'size':7,'complete':True,'count':1})
-        self.assertTrue((ops.store.root/'samples'/'storage-areas.json').is_file())
-        self.assertFalse((old_root/'samples'/'storage-areas.json').exists())
+    def test_symlinked_configured_mount_reads_the_sample_under_its_real_path(self):
+        alias=self.base/'mount-alias';alias.symlink_to(self.base,target_is_directory=True)
+        self.config['dataMountPoints']=[str(alias)];ops=self.ops()
+        self.write_sample(ops,[self.fs({'0':{'bytes':10,'inodes':1}},10)])
+        [disk]=ops.process('projects.list',{'includeUsage':True})['disks']
+        self.assertEqual((disk['mountPoint'],disk['accounting']),(str(self.base),'quota'))
 
-    def test_partial_du_output_and_readable_users_survive_other_user_errors(self):
-        ops=self.ops()
-        for owner in ('alice','bob','carol'):(ops.store.path/'.oci'/owner/'graph').mkdir(parents=True)
-        def du(argv,**kwargs):
-            owner=Path(argv[-1]).name
-            if owner=='carol':raise OSError('unshare failed')
-            return subprocess.CompletedProcess(argv,0 if owner=='alice' else 1,'7 graph' if owner=='alice' else '11 graph','unreadable child')
-        with patch('subprocess.run',du):self.refresh(ops)
-        self.assertEqual(ops.process('projects.list',{'includeUsage':True})['areas']['environments'],{'size':18,'complete':False})
+    def test_unregistered_project_files_are_unknown_and_filesystem_overhead_may_be_negative(self):
+        ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo')
+        registry=ops.store.root/'quota'/'ids.json';registry.unlink()
+        self.write_sample(ops,[self.fs({'0':{'bytes':30,'inodes':1}},28)])
+        result=ops.process('projects.list',{'includeUsage':True});row=result['projects'][0]
+        self.assertEqual((row['size'],row['complete']),(None,False))
+        self.assertEqual(row['outputs']['size'],0);self.assertEqual(row['environment'],{'size':0,'complete':True})
+        self.assertEqual(result['disks'][0]['items'][-1],{'kind':'filesystem','bytes':-2})
 
-    def test_project_environments_use_labels_then_container_names_and_skip_rootfs(self):
-        ops=self.ops();ops.store.create('alice','demo');ops.store.create('alice','other')
-        folder=ops.store.path/'.oci'/'alice';graph=folder/'graph'
-        (ops.store.path/'alice'/'other'/'oci.json').write_text(json.dumps({'container':'dev-other'}))
-        containers=[{'Name':'recovered','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':str(graph/'one')}}},
-                    {'Name':'dev-other','Config':{},'GraphDriver':{'Data':{'UpperDir':str(graph/'two')}}},
-                    {'Name':'live','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{}}},
-                    {'Name':'unowned','Config':{},'GraphDriver':{'Data':{'UpperDir':str(graph/'unowned')}}},
-                    {'Name':'dev-other','Config':{'Labels':{'io.gpuq.project':'missing'}},'GraphDriver':{'Data':{'UpperDir':str(graph/'unknown-label')}}}]
-        run,calls=self.fake_podman(ops,containers,{graph/'one':11,graph/'two':13})
-        with patch.object(ops,'oci',side_effect=AssertionError('sampling initialized the runtime')),patch('subprocess.run',run):self.refresh(ops)
-        with patch('subprocess.run',side_effect=AssertionError('cached query launched a command')):
-            result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual({row['project']:row['environment'] for row in result['projects']},{'demo':{'size':11,'complete':True},'other':{'size':13,'complete':True}})
-        self.assertEqual(result['areas']['environments'],{'size':1000,'complete':True})
-        self.assertFalse(any(argv[-1] in (str(graph/'unowned'),str(graph/'unknown-label')) for argv,_ in calls))
-        self.assertEqual(sum('inspect' in argv for argv,_ in calls),1)
-
-    def test_project_environment_keeps_known_and_partial_bytes_when_an_upper_dir_fails(self):
-        ops=self.ops();ops.store.create('alice','demo');graph=ops.store.path/'.oci'/'alice'/'graph'
-        containers=[{'Name':name,'Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':str(graph/name)}}} for name in ('good','partial','failed')]
-        run,calls=self.fake_podman(ops,containers,{graph/'good':7,graph/'partial':(1,'11 partial'),graph/'failed':PermissionError('unreadable')})
-        with patch('subprocess.run',run):self.refresh(ops)
-        self.assertEqual(ops.process('projects.list',{'includeUsage':True})['projects'][0]['environment'],{'size':18,'complete':False})
-
-    def test_project_files_are_measured_in_the_owner_namespace(self):
-        ops=self.ops();ops.store.create('alice','demo');path=ops.store.path/'alice'/'demo'
-        (path/'code'/'hidden').mkdir();(path/'code'/'hidden'/'data').write_bytes(b'subuid data')
-        run,calls=self.fake_podman(ops,[],{path:1234})
-        with self.deny('hidden'):
-            self.assertFalse(self.data.size(path,partial=True)['complete'])
-            with patch('subprocess.run',run):self.refresh(ops)
+    def test_registered_ids_newer_than_the_sample_are_unknown_and_new_datasets_are_measured(self):
+        ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo')
+        ids=self.write_sample(ops,[],[q.outputs_key('alice','demo'),q.env_key('alice','demo'),q.dataset_key('fresh')])
+        self.write_sample(ops,[self.fs({'0':{'bytes':5,'inodes':1}},5)])
         row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
-        self.assertEqual((row['size'],row['complete']),(1234,True))
-        argv,kwargs=next((argv,kwargs) for argv,kwargs in calls if argv[-1]==str(path))
-        self.assertIn('--root='+str(ops.store.path/'.oci'/'alice'/'graph'),argv)
-        self.assertEqual(kwargs['env']['HOME'],str(ops.store.path/'.oci'/'alice'/'home'))
+        self.assertEqual((row['size'],row['complete']),(None,False))
+        self.assertEqual((row['outputs']['size'],row['outputs']['complete']),(None,False))
+        self.assertEqual(row['environment'],{'size':None,'complete':False})
+        folder=Path(self.config['datasetsRoot'])/'fresh';folder.mkdir();(folder/'f').write_bytes(b'12345')
+        dataset=self.files.datasets(self.config)['datasets'][0]
+        self.assertEqual((dataset['size'],dataset['complete']),(5,True),'a dataset newer than the sample is measured, not zero')
 
-    def test_same_project_name_uses_each_owners_container_storage(self):
-        ops=self.ops();engines={}
-        for owner,size in (('alice',7),('bob',11)):
-            ops.store.create(owner,'demo');upper=ops.store.path/'.oci'/owner/'graph'/'upper'
-            run,_=self.fake_podman(ops,[{'Name':'dev','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':str(upper)}}}],{upper:size},owner)
-            engines['--root='+str(upper.parent)]=run
-        def run(argv,**kwargs):return engines[next(value for value in argv if value.startswith('--root='))](argv,**kwargs)
-        with patch('subprocess.run',run):self.refresh(ops)
-        rows=ops.process('projects.list',{'includeUsage':True})['projects']
-        self.assertEqual({row['ownerId']:row['environment'] for row in rows},{'alice':{'size':7,'complete':True},'bob':{'size':11,'complete':True}})
+    def test_absent_registered_ids_before_sample_next_are_zero_but_later_ids_are_unknown(self):
+        ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo')
+        keys=[q.outputs_key('alice','demo'),q.env_key('alice','demo'),q.dataset_key('walking')]
+        self.write_sample(ops,[],keys)
+        next_id=q.read(q.folder(self.config))['next']
+        self.write_sample(ops,[self.fs({'0':{'bytes':1,'inodes':1}},1)],next_id=next_id)
+        row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
+        # Outputs and environments can lose their last inode; files and datasets keep a directory, so absent means untagged.
+        self.assertEqual((row['size'],row['outputs']['size'],row['environment']['size']),(None,0,0))
+        sample=f.module('storage-usage').Sample(self.config)
+        self.assertIsNone(sample.size(q.dataset_key('walking'),ops.store.path))
+        self.assertEqual(sample.size(q.dataset_key('walking'),ops.store.path,may_vanish=True),{'size':0,'complete':True})
+        late=q.allocate(q.folder(self.config),['d:late'])['d:late']
+        self.assertEqual(late,next_id)
+        sample=f.module('storage-usage').Sample(self.config)
+        self.assertIsNone(sample.size('d:late',ops.store.path))
 
-    def test_environment_measurement_keeps_the_data_disk_boundary(self):
-        ops=self.ops();ops.store.create('alice','demo')
-        run,calls=self.fake_podman(ops,[{'Name':'dev','Config':{'Labels':{'io.gpuq.project':'demo'}},'GraphDriver':{'Data':{'UpperDir':'/etc'}}}],{})
-        with patch('subprocess.run',run):self.refresh(ops)
-        self.assertEqual(ops.process('projects.list',{'includeUsage':True})['projects'][0]['environment'],{'size':None,'complete':False})
-        self.assertFalse(any(argv[-1]=='/etc' for argv,_ in calls))
+    def test_outputs_and_environment_remain_unknown_until_platform_migration(self):
+        ops=self.ops();ops.store.create('alice','demo');q=f.module('quota-ids')
+        keys=[q.outputs_key('alice','demo'),q.env_key('alice','demo')]
+        ids=self.write_sample(ops,[],keys,migrated=False)
+        self.write_sample(ops,[self.fs({str(value):{'bytes':20,'inodes':1} for value in ids.values()},60)],migrated=False)
+        row=ops.process('projects.list',{'includeUsage':True})['projects'][0]
+        self.assertEqual(row['size'],20)
+        self.assertEqual(row['environment'],{'size':None,'complete':False})
+        self.assertEqual((row['outputs']['size'],row['outputs']['complete']),(None,False))
 
-    def test_readonly_sampling_does_not_publish_a_cache(self):
-        ops=self.ops();ops.store.create('alice','demo')
-        with patch('os.replace',side_effect=AssertionError('read-only sample wrote a file')):
-            result=f.module('storage-usage').scan(ops,ops.store.list(include_usage=True))
-        self.assertEqual(result['projects'][0]['environment'],{'size':0,'complete':True})
-        self.assertFalse((ops.store.root/'samples'/'storage-areas.json').exists())
-
-    def test_older_sample_without_environment_returns_null_and_keeps_the_other_fields(self):
-        ops=self.ops();ops.store.create('alice','demo');saved=self.refresh(ops)
-        saved['projects'][0].pop('environment')
-        file=ops.store.root/'samples'/'storage-areas.json';file.write_text(json.dumps(saved))
-        with patch('os.scandir',side_effect=AssertionError('old cache triggered a scan')),patch('subprocess.run',side_effect=AssertionError('old cache launched a command')):
-            result=ops.process('projects.list',{'includeUsage':True})
-        self.assertIsNone(result['projects'][0]['environment']);self.assertEqual(result['projects'][0]['size'],saved['projects'][0]['size'])
-        self.assertEqual(result['areas'],saved['areas']);self.assertEqual(result['areasCheckedAt'],saved['checkedAt'])
-
-    def test_readable_output_siblings_survive_an_unreadable_output_and_bad_job_record(self):
+    def test_hourly_collect_measures_trash_and_counts_outputs_but_never_sizes_projects(self):
         ops=self.ops();ops.store.create('alice','demo');jobs=ops.store.root/'jobs';jobs.mkdir()
-        for name,raw in [('good',b'good'),('blocked',b'hidden')]:
-            key=str(uuid.uuid4());path=ops.store.root/'outputs'/key;path.mkdir(parents=True)
-            if name=='blocked':(path/name).mkdir();(path/name/'bytes').write_bytes(raw)
-            else:(path/name).write_bytes(raw)
-            (jobs/(key+'.json')).write_text(json.dumps({'ownerId':'alice','project':'demo'}))
-        (jobs/(str(uuid.uuid4())+'.json')).write_text('bad json')
-        with self.deny('blocked'):self.refresh(ops)
+        (ops.store.dev_paths('alice','demo')['code']/'big').write_bytes(b'x'*4096)
+        for owner in ('alice','alice',None):
+            key=str(uuid.uuid4());folder=ops.store.root/'outputs'/key;folder.mkdir(parents=True);(folder/'out').write_bytes(b'y'*999)
+            if owner:(jobs/(key+'.json')).write_text(json.dumps({'ownerId':owner,'userId':'bob','project':'demo'}))
+        for base in (ops.store.root,ops.store.path):(base/'.trash').mkdir();(base/'.trash'/'payload').write_bytes(b'zz')
+        old=ops.store.root/'samples'/'storage-areas.json';old.parent.mkdir(mode=0o700,exist_ok=True);old.write_text('{}')
+        saved=self.refresh(ops)
+        self.assertEqual(saved['trash'],{str(self.base):{'size':4,'complete':True}})
+        self.assertEqual(saved['outputs'],{'alice/demo':2});self.assertFalse(old.exists())
+        self.write_sample(ops,[self.fs({},0)])
         result=ops.process('projects.list',{'includeUsage':True})
-        self.assertEqual(result['areas']['outputs'],{'size':4,'complete':False})
-        self.assertEqual(result['projects'][0]['outputs'],{'size':4,'complete':False,'count':2})
+        self.assertEqual(result['projects'][0]['outputs']['count'],2);self.assertEqual(result['disks'][0]['trashBytes'],4)
 
+    def test_tagged_datasets_read_the_sample_and_untagged_ones_are_measured(self):
+        ops=self.ops();q=f.module('quota-ids');root=Path(self.config['datasetsRoot'])
+        for name in ('tagged','plain'):(root/name).mkdir();(root/name/'f').write_bytes(b'abc')
+        ids=self.write_sample(ops,[],[q.dataset_key('tagged')])
+        self.write_sample(ops,[self.fs({str(ids[q.dataset_key('tagged')]):{'bytes':12345,'inodes':2}},12345)])
+        rows={row['dataset']:row for row in self.files.datasets(self.config)['datasets']}
+        self.assertEqual((rows['tagged']['size'],rows['tagged']['complete']),(12345,True))
+        self.assertEqual((rows['plain']['size'],rows['plain']['complete']),(3,True))
+
+    def test_expired_trash_with_container_user_files_is_removed_in_the_rootless_namespace(self):
+        purge=f.module('project-purge');trash=purge.Trash(self.config);calls=[];original=purge.module;rmtree=shutil.rmtree
+        class Engine:
+            def __init__(self,config,owner):calls.append(('engine',owner))
+            def run(self,*args,timeout=30):
+                calls.append(args)
+                if rows[1]['key'] in args[-1]:raise ValueError('rm failed')
+                rmtree(args[-1])
+        (Path(self.config['workspacesRoot'])/'.oci'/'alice').mkdir(parents=True)
+        rows=[]
+        for name in ('subuid','blocked','plain'):
+            folder=Path(self.config['datasetsRoot'])/name;(folder/'inner').mkdir(parents=True);(folder/'inner'/'f').write_bytes(b'x')
+            rows.append(trash.delete(folder,str(uuid.uuid4()),'dataset',{'userId':'alice'},dataset=name,retainUntil=0))
+        def denied(path,*args,**kwargs):
+            if not str(path).endswith(rows[2]['key']+'.data'):raise PermissionError(13,'Permission denied')
+            # The real call is anchored at /proc/self/fd (Linux); remove the same entry by name here.
+            return rmtree(Path(self.config['datasetsRoot'])/'.trash'/Path(path).name,*args,**kwargs)
+        with patch.object(purge,'module',side_effect=lambda name:SimpleNamespace(PersonalOCI=Engine) if name=='personal-oci' else original(name)),\
+             patch.object(purge.shutil,'rmtree',side_effect=denied),patch.object(trash,'namespace_owner',return_value='alice'):
+            result={row['key']:row for row in trash.collect()}
+        self.assertEqual(result[rows[0]['key']]['state'],'PURGED');self.assertEqual(result[rows[2]['key']]['state'],'PURGED')
+        self.assertEqual((result[rows[1]['key']]['state'],result[rows[1]['key']]['error']),('UNKNOWN','rm failed'))
+        unshare=[c for c in calls if c[0]=='unshare']
+        self.assertEqual([c[:5] for c in unshare],[('unshare','/usr/bin/rm','-rf','--one-file-system','--')]*2)
+        self.assertFalse((Path(self.config['datasetsRoot'])/'.trash'/(rows[0]['key']+'.data')).exists())
+
+    def test_namespace_owner_reuses_an_existing_engine_without_creating_one(self):
+        trash=f.module('project-purge').Trash(self.config);oci=Path(self.config['workspacesRoot'])/'.oci'
+        row={'kind':'dataset','originalPath':str(Path(self.config['datasetsRoot'])/'d')}
+        with self.assertRaises(FileNotFoundError):trash.namespace_owner(row)
+        self.assertFalse(oci.exists())
+        (oci/'bob').mkdir(parents=True);self.assertEqual(trash.namespace_owner(row),'bob')
+        (oci/'alice').mkdir();self.assertEqual(trash.namespace_owner({**row,'kind':'project','originalPath':str(Path(self.config['workspacesRoot'])/'alice'/'p')}),'alice')
+
+    def test_storage_collect_still_samples_when_trash_cleanup_fails(self):
+        spec=importlib.util.spec_from_file_location('security_fixture',Path(__file__).with_name('project-security.test.py'))
+        security=importlib.util.module_from_spec(spec);spec.loader.exec_module(security);node=security.ProjectContract.node(self)
+        broken=SimpleNamespace(Trash=lambda config:SimpleNamespace(collect=Mock(side_effect=OSError('trash unreadable'))))
+        original=node.module
+        with patch.object(node,'module',side_effect=lambda name:broken if name=='project-purge' else original(name)),\
+             patch.object(node,'transfers',return_value=SimpleNamespace(collect=Mock(return_value=[]))),patch.object(node,'low_priority_scan'):
+            result=node.storage_collect()
+        self.assertEqual(result,[{'kind':'trash','state':'UNKNOWN','error':'trash unreadable'}])
+        self.assertTrue((Path(self.config['root'])/'samples'/'storage-usage.json').is_file())
     def test_installed_collect_service_calls_the_common_collector(self):
         spec=importlib.util.spec_from_file_location('security_fixture',Path(__file__).with_name('project-security.test.py'))
         security=importlib.util.module_from_spec(spec);spec.loader.exec_module(security);node=security.ProjectContract.node(self)
@@ -356,7 +299,7 @@ class StorageUsage(unittest.TestCase):
             result=service.main(['core-service.py','--profile','7IM','--storage-collect'])
         self.assertEqual(result,[{'kind':'copy-export','state':'COMPLETE'}]);transfers.collect.assert_called_once()
         nice.assert_called_once_with(os.PRIO_PROCESS,0,19);self.assertEqual(io.call_args.args[0][:2],['/usr/bin/ionice','-c3'])
-        self.assertTrue(json.loads((Path(self.config['root'])/'samples'/'storage-areas.json').read_text())['checkedAt'])
+        self.assertTrue(json.loads((Path(self.config['root'])/'samples'/'storage-usage.json').read_text())['checkedAt'])
 
     def test_collect_and_dataset_scan_use_idle_io_but_cached_project_requests_do_not(self):
         import json,subprocess,sys
@@ -372,7 +315,7 @@ try:
     except SystemExit as error:
         if error.code:raise
     print(json.dumps({'nice':os.getpriority(os.PRIO_PROCESS,0),'io':subprocess.run(['/usr/bin/ionice','-p',str(os.getpid())],capture_output=True,text=True,check=True).stdout.strip(),
-                      'sample':(node.ROOT/'samples'/'storage-areas.json').exists()}))
+                      'sample':(node.ROOT/'samples'/'storage-usage.json').exists()}))
 finally:case.doCleanups()
 '''
         for operation,args,scan in [('datasets.list',{},True),('projects.list',{'includeUsage':True},False),('projects.list',{},False),('collect',{},True)]:

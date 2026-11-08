@@ -73,8 +73,16 @@ def data_path(path, mounts):
     return target
 
 
+ROOT_PROGRAMS = ('node/quota-sample.py', 'node/quota-ids.py')
+
+
 def unpack(package, destination):
-    """Accept a build-node-release directory or a single-node tar archive."""
+    """Accept a build-node-release directory or a single-node tar archive.
+
+    Returns the bytes of ROOT_PROGRAMS as read from the root-owned package,
+    never from the staging tree the service account will own.
+    """
+    programs = {}
     if package.is_dir():
         for source in package.rglob('*'):
             target = destination / source.relative_to(package)
@@ -82,7 +90,10 @@ def unpack(package, destination):
             if stat.S_ISDIR(info.st_mode):
                 target.mkdir(parents=True, exist_ok=True)
             elif stat.S_ISREG(info.st_mode):
-                atomic(target, source.read_bytes(), stat.S_IMODE(info.st_mode))
+                data = source.read_bytes()
+                if source.relative_to(package).as_posix() in ROOT_PROGRAMS:
+                    programs[source.name] = data
+                atomic(target, data, stat.S_IMODE(info.st_mode))
             else:
                 raise ValueError('节点包只接受普通文件和目录，不能包含链接。')
     else:
@@ -102,11 +113,16 @@ def unpack(package, destination):
                     target.mkdir(parents=True, exist_ok=True)
                 else:
                     with archive.extractfile(member) as source:
-                        atomic(target, source.read(), member.mode)
+                        data = source.read()
+                    if relative.as_posix() in ROOT_PROGRAMS:
+                        programs[relative.name] = data
+                    atomic(target, data, member.mode)
+    return programs
 
 
 class Installer:
     system_units = Path('/etc/systemd/system')
+    libexec = Path('/usr/local/libexec/stargate')
     policy = Path('/etc/containers/policy.json')
     health_attempts = 30
     health_delay = 1
@@ -180,7 +196,7 @@ class Installer:
         staging = self.root / ('.stage-' + uuid.uuid4().hex)
         staging.mkdir(mode=0o700)
         try:
-            unpack(Path(package), staging)
+            programs = unpack(Path(package), staging)
             manifest = json.loads((staging / 'manifest.json').read_text())
             scheduler = {**self.config['gpuq'], 'allowed_uid': self.owner[0],
                          'archive_path': str(release / 'gpuq.pyz')}
@@ -199,6 +215,11 @@ class Installer:
             if self.config.get('hamiLibrary'):
                 source = data_path(self.config['hamiLibrary'], mounts)
                 atomic(staging / 'hami/libvgpu.so', source.read_bytes(), 0o444)
+            # Root-executed code comes from the package itself, not from staging.
+            missing = [name for name in ROOT_PROGRAMS if PurePosixPath(name).name not in programs]
+            if missing:
+                raise ValueError('节点包缺少 ' + '、'.join(missing))
+            self.quota_programs = programs
             for path in [staging, *staging.rglob('*')]:
                 os.chown(path, *self.owner)
                 if path.is_dir():
@@ -214,7 +235,26 @@ class Installer:
     def unit_word(value):
         return json.dumps(str(value)).replace('%', '%%').replace('$', '$$')
 
-    def bindings(self, manifest):
+    def quota_sampler(self, release):
+        """The one root service: read-only project-quota sampling every minute.
+
+        It runs a root-owned copy of the sampler, never the service-owned
+        release; quota-ids.py sits beside it for the maintenance migration.
+        """
+        files = {str(self.libexec/name): (data, 0o644, (0, 0))
+                 for name, data in self.quota_programs.items()}
+        roots = list(dict.fromkeys(str(Path(profile['root']).resolve(strict=True)) for profile in self.config['profiles'].values()))
+        command = ['/usr/bin/python3', '-I', '-B', str(self.libexec/'quota-sample.py'), '--account', self.account.pw_name,
+                   *[word for root in roots for word in ('--root', root)], *self.config['dataMountPoints']]
+        service = ('[Unit]\nDescription=STARGATE project-quota sampler (read-only)\n[Service]\nType=oneshot\n'
+                   'Nice=19\nIOSchedulingClass=idle\nUMask=0077\nExecStart=' + ' '.join(map(self.unit_word, command)) + '\n')
+        timer = ('[Unit]\nDescription=STARGATE project-quota sampler\n[Timer]\nOnBootSec=30\nOnUnitActiveSec=60\n'
+                 'Unit=stargate-quota-sample.service\n[Install]\nWantedBy=timers.target\n')
+        files[str(self.system_units/'stargate-quota-sample.service')] = (service.encode(), 0o644, (0, 0))
+        files[str(self.system_units/'stargate-quota-sample.timer')] = (timer.encode(), 0o644, (0, 0))
+        return files, dict(scope='system', name='stargate-quota-sample.timer', service='stargate-quota-sample.service')
+
+    def bindings(self, manifest, release=None):
         delegation = self.system_units / f'user@{self.owner[0]}.service.d/50-stargate-cpuset.conf'
         files = {str(delegation): (b'[Service]\nDelegate=cpu cpuset io memory pids\n', 0o644, (0, 0))}
         unit_dir = self.home / '.config/systemd/user'
@@ -263,6 +303,9 @@ class Installer:
                 timer = f'[Timer]\nOnBootSec=15\nOnUnitActiveSec={seconds}\nUnit={name}\n[Install]\nWantedBy=timers.target\n'
                 files[str(directory / target)] = (timer.encode(), 0o644, owner)
             units.append(dict(scope=scope, name=target, service=name if seconds else None))
+        sampler, unit = self.quota_sampler(release or self.current)
+        files.update(sampler)
+        units.append(unit)
         gpu_command = Path(self.config.get('gpuCommand', self.home / 'bin/gpu'))
         files[str(gpu_command)] = (('#!/bin/sh\nexec ' + shlex.quote(str(self.current / 'gpu')) + ' "$@"\n').encode(), 0o700, self.owner)
         if 'authorizedKeys' in self.config:
@@ -361,7 +404,7 @@ class Installer:
 
     def install(self, package):
         release, manifest = self.stage(package)
-        files, units = self.bindings(manifest)
+        files, units = self.bindings(manifest, release)
         self.run(['/usr/bin/loginctl', 'enable-linger', self.account.pw_name])
         self.run(['/usr/bin/systemctl', 'start', f'user@{self.owner[0]}.service'])
         record = self.capture(files, units)

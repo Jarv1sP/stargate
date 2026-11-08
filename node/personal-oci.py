@@ -43,27 +43,6 @@ def recover_runtime(folder,*,initialize=False):
                 store.private_dir(folder/name,create=True)
     finally:os.close(lock)
 
-def storage_size(config,folder,path=None):
-    # Recover only a previous boot's volatile state: it cannot contain live
-    # processes after reboot. Counting never initializes an owner's library.
-    recover_runtime(folder)
-    target=folder if path is None else module('local-data').require_data_path(config,path)
-    result=subprocess.run(engine_command(config,folder,'unshare','/usr/bin/du','-sb','--one-file-system',str(target)),
-                          env=engine_environment(folder),capture_output=True,text=True,timeout=3600)
-    try:size=int(result.stdout.split()[0])
-    except (ValueError,IndexError):size=None
-    return {'size':size,'complete':result.returncode==0 and size is not None}
-
-def storage_containers(config,folder):
-    recover_runtime(folder)
-    def read(*args):
-        result=subprocess.run(engine_command(config,folder,*args),env=engine_environment(folder),
-                              capture_output=True,text=True,timeout=30)
-        if result.returncode:raise ValueError('容器用量列表暂时读不到。')
-        return result.stdout
-    ids=read('ps','--all','--quiet','--no-trunc').split()
-    return json.loads(read('container','inspect',*ids)) if ids else []
-
 def translate_control(arguments, sources=None):
     """Translate only the trusted training-control module's narrow bwrap DSL."""
     result, i = [], 0
@@ -105,7 +84,9 @@ class PersonalOCI:
         self.config,self.user=config,user;self.s=module('project-store');self.d=module('local-data')
         self.root=self.d.root(config,'root');self.owner=self.d.name(user)
         self.policy=config['personalOci'];self.folder=self.s.private_dir(self.d.root(config,'workspacesRoot')/'.oci',create=True)
-        self.folder=self.s.private_dir(self.folder/self.owner,create=True)
+        self.folder=self.folder/self.owner
+        if self.s.created_dir(self.folder):
+            q=module('quota-ids');q.assign(config,q.images_key(self.owner),self.folder)
         recover_runtime(self.folder,initialize=True)
         self.runtime_tmp=self.folder/'run'
         self.env=engine_environment(self.folder)
@@ -166,9 +147,34 @@ class PersonalOCI:
             if head.get('container') is None:
                 self.run('pull','--tls-verify=true',head['image'],timeout=1800)
                 head['container']='gpuq-dev-'+uuid.uuid4().hex
-                self.run('create','--name',head['container'],'--network=none','--entrypoint','/bin/sh',head['image'])
+                head.update(self.create_container(head['container'],head['image'],slug))
                 self.s.atomic_json(self.state_path(slug),head)
             return head
+
+    def create_container(self,name,image,project):
+        """Create a development container and put its layer on the project's env ID before first start."""
+        self.run('create','--name',name,'--network=none','--entrypoint','/bin/sh',image)
+        q=module('quota-ids');key=project
+        try:
+            key=q.env_key(self.owner,project)
+            layer=Path(self.run('container','inspect','--format','{{.GraphDriver.Data.UpperDir}}',name)).parent
+            ids=q.allocate(q.folder(self.config),[key,q.images_key(self.owner)])
+            counts=q.tag_layer(self.d.require_data_path(self.config,layer),ids[key],ids[q.images_key(self.owner)])
+            if counts['errors']:q.note(key,layer,counts['errors'])
+            return {'layer':str(layer)}
+        except Exception as error:
+            q.note(key,name,error);return {}
+
+    def heal_layer(self,head,project):
+        """Self-repair only: if diff or work lost the layer's env ID, put it back. Never refuses."""
+        q=module('quota-ids');key=project
+        try:
+            key=q.env_key(self.owner,project)
+            value=q.read(q.folder(self.config))['ids'].get(key)
+            if value is None:return
+            layer=head.get('layer') or str(Path(self.run('container','inspect','--format','{{.GraphDriver.Data.UpperDir}}',head['container'])).parent)
+            q.heal_layer(self.d.require_data_path(self.config,layer),value)
+        except Exception as error:q.note(key,head.get('container'),error)
 
     def execute(self,spec,project,terminal,uuids,mounts,*,control=(),pass_fds=()):
         if os.getuid()==0:raise ValueError('容器只能以非宿主root身份运行。')
@@ -188,7 +194,7 @@ class PersonalOCI:
                 *['--env='+k+'='+v for k,v in self.proxy.items()]]
             if archive is not None:flags+=['--volume',str(self.d.require_data_path(self.config,archive))+':/run/gpuq/project-copy.tar:ro']
             # Git executes in the same writable project rootfs, never as a host command.
-            head=self.workspace_container(project)
+            head=self.workspace_container(project);self.heal_layer(head,project)
             request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
                      'container':head['container'],'execution':'gpuq-git-'+uuid.uuid4().hex,
                      'workspaceLock':str(self.folder/('use-'+self.d.name(project)+'.lock')),
@@ -417,7 +423,7 @@ print(json.dumps(result))
                 for fd in reversed(held): os.close(fd)
 
     def execute_workspace(self, spec, flags, registry_env):
-        head=self.workspace_container(spec['project'])
+        head=self.workspace_container(spec['project']);self.heal_layer(head,spec['project'])
         request={'engine':self.command(),'graph':str(self.folder/'graph'),'hostUid':os.getuid(),
                  'container':head['container'],'owner':self.owner,'project':spec['project'],
                  'workspaceLock':str(self.folder/('use-'+('copy-'+spec['projectCopy'] if spec.get('projectCopy') else self.d.name(spec['project']))+'.lock')),

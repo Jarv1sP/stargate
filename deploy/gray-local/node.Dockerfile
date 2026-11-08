@@ -1,6 +1,6 @@
 FROM fedora:42
 ENV container=docker
-RUN dnf -y -q install systemd openssh-server openssh-clients python3 python3.10 bubblewrap slirp4netns podman crun shadow-utils skopeo procps-ng psmisc iproute util-linux findutils git e2fsprogs \
+RUN dnf -y -q install systemd openssh-server openssh-clients python3 python3.10 bubblewrap slirp4netns podman crun shadow-utils skopeo procps-ng psmisc iproute util-linux findutils git e2fsprogs xfsprogs \
  && dnf clean all \
  && systemctl mask systemd-firstboot.service console-getty.service getty.target systemd-udevd.service \
  && useradd --create-home --shell /bin/bash --uid 1001 gpuops \
