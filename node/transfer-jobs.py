@@ -99,8 +99,8 @@ class TransferJobs:
         finally:os.close(fd)
 
     def root(self,ref):
+        if 'project' in ref:raise ValueError('项目目录不能复制到工作区；批量数据请存为数据集，复制整个项目请使用项目复制。')
         if ref.get('dataset'):return self.d.dataset_root(self.config,ref['dataset'])
-        if ref.get('project'):return self.e.projects().store.dev_paths(ref.get('ownerId') or ref.get('userId','team'),ref['project'])['code']
         raise ValueError('请选择配置数据盘上的数据集目录。')
 
     def entries(self,row):
@@ -276,7 +276,12 @@ class TransferJobs:
         row=self.s.read_json(self.path(key))
         if row.get('runtime'):self.cleanup_copy(row)
 
+    def dataset_target(self,target):
+        if target.get('environment') is not True and ('project' in target or not target.get('dataset')):
+            raise ValueError('项目目录不能复制到工作区；批量数据请存为数据集，复制整个项目请使用项目复制。')
+
     def start(self,args):
+        self.dataset_target(args['target'])
         key=args.get('key',args.get('id'));request={k:args.get(k) for k in ('source','target','ticket','sourceMachine','route')}
         with self.lock(key,control=True):
             with self.lock(key):
@@ -284,6 +289,7 @@ class TransferJobs:
                 if file.exists():
                     row=self.s.read_json(file)
                     if row['state']=='CANCELED':return self.view(row)
+                    self.dataset_target(row['target'])
                     if row['request']!=request:raise ValueError('原传输编号已用于不同请求。')
                     return self.view(row)
                 row={**request,'request':request,'actor':args.get('actor',{'userId':args.get('userId')}),'id':key,'key':key,'state':'PENDING','bytes':0,'totalBytes':None,'createdAt':time.time()}
@@ -315,6 +321,7 @@ class TransferJobs:
         with self.lock(key,control=True):
             row=self.s.read_json(self.path(key))
             if row['state'] in ('SUCCEEDED','CANCELED'):return self.view(row)
+            self.dataset_target(row['target'])
             copy=module('project-copy').ProjectCopy(self) if row['target'].get('environment') else None
             with copy.restartable(row) if copy else contextlib.nullcontext(True) as ready:
                 if not ready:return self.status({'key':key})
@@ -384,6 +391,7 @@ class TransferJobs:
         row=self.s.read_json(self.path(key))
         peer=None
         try:
+            self.dataset_target(row['target'])
             peer=self.peer_client(row)
             self.phase(key,'等待源项目导出' if row['target'].get('environment') else '读取源目录')
             target=row['target'];copy=module('project-copy').ProjectCopy(self) if target.get('environment') is True else None

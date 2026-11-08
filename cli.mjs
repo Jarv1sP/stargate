@@ -69,7 +69,7 @@ gpuctl run --machine auto --after JOB_ID[,JOB_ID] [--after JOB_ID] -g 1 -- pytho
 --after 等全部依赖成功后在同一台机器排队；依赖失败或取消则不运行。已派发的依赖作业占额度；额度不足的后继先在平台等待，前驱结束后再派发。
 gpuctl run -g 1 --interactive / ssh --job JOB_ID
 gpuctl run --gpu 0 -g 1 --memory-limit-gib 60 -- python train.py
-工作区 /workspace，数据集 /datasets；任务输出 /outputs。
+工作区 /workspace 放代码和小文件；批量数据存 /datasets，直接读取，不复制进工作区；任务输出 /outputs。
 未选项目使用默认 OCI 容器。Ctrl+] 只断开终端；exit 结束，GPU 终端结束后释放卡。
 gpuctl logs JOB / watch JOB / diagnostics JOB / cancel JOB
 gpuctl logs JOB --output ./job.log （完整日志，断线后原命令续传）
@@ -86,9 +86,9 @@ gpuctl data delete DATASET [--key UUID]
 gpuctl transfer copy DATASET --from SOURCE --to TARGET [--name DATASET]
 gpuctl transfer list / status|watch|cancel|resume ID
 gpuctl data import HTTPS_LINK REMOTE_FILE --dataset NAME
-也可 --project NAME 导入到 /workspace；阿里分享可加 --file-id。
+链接导入只支持 --dataset NAME；--project 会报错。阿里分享可加 --file-id。
 gpuctl data imports / import-status|import-resume|import-cancel|import-discard ID
-gpuctl data cloud list / download FILE_ID REMOTE_PATH --dataset NAME
+gpuctl data cloud list / download FILE_ID REMOTE_PATH --dataset NAME（下载不支持 --project）
 gpuctl data cloud upload REMOTE_PATH --dataset NAME|--project NAME [--key UUID]
 删除后 7 天内所有成员均可从 project trash 恢复，可能影响正在运行的任务。
 

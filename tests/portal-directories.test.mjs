@@ -232,3 +232,46 @@ test('cloud.info exposes disconnected, connected and reconnect states throughout
  }
  assert.equal(scans,2);
 });
+
+test('link imports reject every project target before new, replayed or resumed node writes',async t=>{
+ const f=await fixture(t),before=f.calls.length;
+ for(const kind of ['https','aliyun'])for(const target of [{area:'code',project:'sample'},{area:'dataset',dataset:'shared',project:'sample'},{area:'dataset',dataset:'shared',project:''},{area:'dataset',dataset:'shared',project:null},{area:'code',dataset:'shared'},{}]){
+  await assert.rejects(f.call('cloud.import.start',{key:randomUUID(),path:'file',url:'https://example.invalid/file',...(kind==='aliyun'?{inspectionId:'not-needed'}:{}),...target}),/数据集.*重新导入/);
+ }
+ const seed=(key,target,kind='https')=>{
+  const source={kind,target,path:'file',url:'https://example.invalid/file'},identity=JSON.stringify([f.aliceUser.id,machine,key]);
+  f.service.db.prepare('INSERT INTO cloud_downloads VALUES(?,?,?,?,?)').run(f.aliceUser.id,machine,key,f.service.cloudSeal(identity,source),Date.now());
+ };
+ for(const kind of ['https','aliyun']){
+  const key=randomUUID();seed(key,{area:'dataset',dataset:'shared',project:'sample'},kind);
+  await assert.rejects(f.call('cloud.import.start',{key,area:'dataset',dataset:'shared'}),/数据集.*重新导入/);
+  await assert.rejects(f.call('cloud.import.resume',{operationId:key}),/数据集.*重新导入/);
+ }
+ const key=randomUUID();seed(key,{area:'dataset',dataset:'shared'});
+ await assert.rejects(f.call('cloud.import.start',{key,project:'sample'}),/数据集.*重新导入/);
+ await assert.rejects(f.call('cloud.import.resume',{operationId:key,project:'sample'}),/数据集.*重新导入/);
+ assert.equal(f.calls.length,before);
+});
+test('cloud download requires a dataset while upload from a project stays available',async t=>{
+ const f=await fixture(t),before=f.calls.length;
+ for(const target of [{area:'code',project:'sample'},{area:'dataset',dataset:'shared',project:'sample'},{area:'dataset',dataset:'shared',project:null},{area:'code',dataset:'shared'},{}]){
+  await assert.rejects(f.call('cloud.files.download',{key:randomUUID(),fileId:'file',path:'file',size:3,...target}),/数据集/);
+ }
+ assert.equal(f.calls.length,before);
+ f.setHandler((_host,op,args)=>{if(op==='datasets.cloud.upload')return {operationId:args.key,state:'PENDING'};if(op==='datasets.cloud.download')return {operationId:args.key,state:'PENDING'};});
+ await f.call('cloud.files.upload',{key:randomUUID(),area:'code',project:'sample',path:'file'});
+ assert.equal(f.calls.at(-1).args.project,'sample');
+ await f.call('cloud.files.download',{key:randomUUID(),area:'dataset',dataset:'shared',fileId:'file',path:'file',size:3});
+ assert.equal(f.calls.at(-1).args.dataset,'shared');
+});
+test('plain project directory copy rejects new and saved requests without changing project uploads or downloads',async t=>{
+ const f=await fixture(t),before=f.calls.length;
+ for(const reference of [{project:'sample'},{project:'sample',environment:false},{project:'sample',dataset:'shared'},{project:null,dataset:'shared'}]){
+  await assert.rejects(f.call('transfers.create',{key:randomUUID(),kind:'copy',from:machine,reference}),/项目复制/);
+ }
+ const key=randomUUID();f.service.db.prepare('INSERT INTO directory_transfers VALUES(?,?)').run(key,JSON.stringify({id:key,key,kind:'copy',machine,from:machine,reference:{project:'sample'},state:'PAUSED'}));
+ await assert.rejects(f.call('transfers.create',{key,kind:'copy'}),/项目复制/);
+ await assert.rejects(f.call('transfers.resume',{id:key}),/项目复制/);
+ assert.equal(f.calls.length,before);
+ for(const kind of ['upload','download'])assert.equal((await f.call('transfers.create',{key:randomUUID(),kind,reference:{project:'sample'}})).state,'WAITING_CLIENT');
+});

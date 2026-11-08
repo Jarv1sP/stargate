@@ -1,4 +1,4 @@
-"""HTTPS imports into datasets or project workspaces, using the same upload primitive."""
+"""HTTPS imports into datasets, using the same upload primitive."""
 import base64,concurrent.futures,contextlib,fcntl,http.client,importlib.util,ipaddress,json,os,re,socket,ssl,stat,subprocess,time,uuid
 from pathlib import Path
 from urllib.parse import urljoin,urlsplit
@@ -135,6 +135,10 @@ def read_range(url,offset,end,total,source_kind,download_headers):
         return raw
     finally:connection.close()
 
+def dataset_target(target,*,stored=False):
+    if ('project' in target if not stored else target.get('project') is not None) or target.get('area') not in (None,'dataset') or not target.get('dataset'):
+        raise ValueError('批量数据只能导入为数据集；请用数据集名称重新导入，不能保存到项目工作区。')
+
 class DataImports:
     def __init__(self,executor):
         self.e=executor;self.s=module('project-store');self.d=module('local-data')
@@ -164,10 +168,13 @@ class DataImports:
         action=operation.removeprefix('datasets.import.');key=args.get('operationId',args.get('key'))
         if action=='list':return {'imports':[self.view(self.s.read_json(p)) for p in self.folder.glob('*.json')]}
         file=self.path(key)
+        if action in ('start','resume','continue') and 'project' in args:dataset_target(args)
         if action=='start':
+            dataset_target(args)
             checked_url(args['url']);request={k:args.get(k) for k in ('url','sourceKind','downloadHeaders','expectedBytes','dataset','project','ownerId','path')}
             if file.exists():
                 row=self.s.read_json(file)
+                dataset_target(row,stored=True)
                 if row['request']!=request:raise ValueError('原导入编号已用于不同请求。')
                 return self.view(row)
             self.d.relative(args['path']);row={**request,'request':request,'userId':args['userId'],'operationId':key,
@@ -178,6 +185,7 @@ class DataImports:
         elif action in ('resume','continue'):
             with self.locked(key):
                 row=self.s.read_json(file)
+                dataset_target(row,stored=True)
                 if row['state'] in ('PENDING','RUNNING','SUCCEEDED'):return self.view(row)
                 if 'url' in args:checked_url(args['url'])
                 for name in ('url','downloadHeaders'):
@@ -194,8 +202,8 @@ class DataImports:
     def worker(self,key):
         row=self.s.read_json(self.path(key));connection=None
         try:
-            if row.get('project'):root=self.e.projects().store.dev_paths(row.get('ownerId') or row['userId'],row['project'])['code']
-            else:root=self.d.dataset_root(self.e.CONFIG,row['dataset'],create=True)
+            dataset_target(row,stored=True)
+            root=self.d.dataset_root(self.e.CONFIG,row['dataset'],create=True)
             uploads=module('data-uploads').Uploads(self.e.CONFIG,row['userId'],root=root)
             # Offset and key remain fixed across failed HTTPS requests.
             try:status=uploads.process('status',{'key':key});offset=status['offset'] or 0

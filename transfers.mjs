@@ -45,6 +45,7 @@ export async function transferCall(service,principal,operation,input,check=()=>{
   if(action==='create'&&!row){
     if(!['upload','copy','download'].includes(args.kind))fail('请选择上传、下载或服务器间复制。');
     const ref=selectFields(args.reference,['dataset','project','ownerId','path','environment','jobId']);
+    if(args.kind==='copy'&&Object.hasOwn(ref,'project')&&ref.environment!==true)fail('项目目录不能复制到工作区；批量数据请存为数据集，复制整个项目请使用项目复制。');
     if(!ref.dataset&&!ref.project)fail('请选择来源数据集或项目目录。');
     row={id,key:id,kind:args.kind,machine:args.machine,from:args.from??args.machine,reference:ref,name:args.name??ref.dataset,
       state:args.kind==='copy'?'CREATED':'WAITING_CLIENT',actor:userId,createdAt:new Date().toISOString()};save(service,row);fresh=true;
@@ -81,6 +82,7 @@ export async function transferCall(service,principal,operation,input,check=()=>{
   }
   if(action==='cancel')return finish(await call(row.machine,'transfers.cancel',{id}));
   if(!['create','resume'].includes(action))fail('未知传输操作。');
+  if(Object.hasOwn(row.reference,'project')&&row.reference.environment!==true)fail('项目目录不能复制到工作区；批量数据请存为数据集，复制整个项目请使用项目复制。');
   if(service.transferWrites.has(id))return service.transferWrites.get(id);
   const write=(async()=>{
     if(!fresh){

@@ -8,6 +8,8 @@ function httpsURL(value){
 export async function runCloudImport({action,positionals,options,machine,call,stderr=process.stderr}){
   const allowed=['machines','url','session-file','json','key','file-id','password-code','source-url','dataset','project','owner'];
   if(Object.keys(options).some(k=>!allowed.includes(k)))throw Error('导入参数无效。');
+  if(Object.hasOwn(options,'project'))throw Error('链接导入不支持 --project；请用 --dataset NAME 导入为数据集。');
+  if(action==='import'&&!options.dataset)throw Error('用 --dataset NAME 选择数据集；批量数据不能导入到项目工作区。');
   if(options['source-url']!==undefined&&action!=='import-resume')throw Error('--source-url 仅用于 data import-resume ID，更新同一文件的过期链接。');
   if(action!=='import'&&['key','file-id','password-code'].some(k=>options[k]!==undefined))throw Error('新建导入参数不能用于查询、取消或继续。');
   if(action==='imports'){if(positionals.length!==2)throw Error('Usage: data imports');return (await call('cloud.import.list',{machine})).result;}
@@ -35,8 +37,7 @@ export async function runCloudImport({action,positionals,options,machine,call,st
     if(!positionals[3])throw Error('HTTPS 下载需指定保存文件名：data import LINK incoming/data.zip');
     args={machine,url,path:positionals[3]};
   }
-  if(!options.dataset&&!options.project)throw Error('用 --dataset NAME 或 --project NAME 选择目标。');
-  Object.assign(args,options.dataset?{area:'dataset',dataset:options.dataset}:{area:'code',project:options.project});
+  Object.assign(args,{area:'dataset',dataset:options.dataset});
   args.key=options.key||randomUUID();stderr.write('导入标识：'+args.key+'（响应不明时先用 data import-status 查询，再以 --key 沿用此标识重试；不要创建新标识）\n');
   try{return (await call('cloud.import.start',args)).result;}
   catch(error){
