@@ -117,26 +117,12 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     ctx.check('首轮 platform 仅跳过共享项目仍挂载的层',mounted(first)===1&&skipped.length===1&&skipped[0].endsWith(facts.oci.dev.layer),{skipped,mounted:mounted(first)});
     const unknown=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.size===null&&p?.environment?.size===null;});
     ctx.check('跳过活层时输出与环境仍未知',unknown.projects.some(p=>p.project===name&&p.outputs.size===null&&p.environment.size===null));
-    // 隔离灰度节点：结束持有 OCI overlay 的服务账户运行时进程；故障步骤可留下失效 conmon 状态。
-    await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',`import contextlib,errno,json,os,pwd,signal,sys,time
-from pathlib import Path
-uid=pwd.getpwnam('gpuops').pw_uid;engine=str(Path(sys.argv[1])/'.oci')+'/';init=os.stat('/proc/1/ns/mnt').st_ino;victims=[]
-for process in Path('/proc').iterdir():
-    if not process.name.isdigit():continue
-    try:
-        owner=next((line.split()[1] for line in (process/'status').read_text().splitlines() if line.startswith('Uid:')),None)
-        if owner!=str(uid) or os.stat(process/'ns/mnt').st_ino==init:continue
-        if not any(' - overlay ' in line and engine in line for line in (process/'mountinfo').read_text().splitlines()):continue
-        victims.append((int(process.name),(process/'comm').read_text().strip()))
-    except OSError as error:
-        if error.errno not in (errno.ENOENT,errno.ESRCH,errno.EINVAL):raise
-for pid,_ in victims:
-    with contextlib.suppress(ProcessLookupError):os.kill(pid,signal.SIGKILL)
-(Path('/run/user')/str(uid)/'libpod/tmp/pause.pid').unlink(missing_ok=True);deadline=time.monotonic()+15
-while any((Path('/proc')/str(pid)/'ns/mnt').exists() for pid,_ in victims):
-    if time.monotonic()>deadline:raise TimeoutError('OCI mount namespace holders did not exit: '+str(victims))
-    time.sleep(.05)
-print(json.dumps({'stopped':victims}))`,facts.config.workspacesRoot);
+    // 直接执行维护文档：先尝试 system migrate，再完整结束 OCI 挂载空间持有者。
+    const guide=await readFile(resolve(dirname(ctx.stack.file),'src/docs/NODE_RELEASE_BUILD.md'),'utf8');
+    const stop=guide.match(/python3 -I -B - \/etc\/gpuq-console\/node-install.json <<'PY'\n([\s\S]*?)\nPY\n/);
+    if(!stop)throw Error('维护文档缺少停止 OCI 挂载空间的脚本');
+    const stopped=await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',stop[1],'/etc/gpuq-console/node-install.json');
+    ctx.note(stopped.stdout);
     const done=await migrate('--only','platform');ctx.note(done.split('\n').slice(-40).join('\n'));
     ctx.check('停止 podman 后 platform 不再跳过活层',mounted(done)===0,done.slice(-5000));
     const completed=await node('python3','-I','-B','-c',`import json,os,sys;print(json.dumps(os.path.isfile(sys.argv[1]+'/quota/migrated.json')))`,facts.config.root);

@@ -169,6 +169,85 @@ class Tagging(unittest.TestCase):
             with patch.object(q,'setx',side_effect=setx):q.tag_tree(top,1001)
         self.assertEqual(visited,set(children))  # No assumption about readdir order.
 
+    def test_rerun_preserves_inheritance_on_unvisited_siblings_and_on_interrupt(self):
+        top=self.base/'online'
+        for name in ('train','val'):
+            (top/name).mkdir(parents=True);(top/name/'file').write_text('data')
+        directories=(top,top/'train',top/'val')
+        with Kernel() as kernel:
+            q.tag_tree(top,1001);original=q.setx;seen=[]
+            def setx(fd,value,inherit=None):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    self.assertIsNot(inherit,False)
+                    for path in directories:self.assertEqual(kernel.of(path),(1001,True))
+                    seen.append(True)
+                return original(fd,value,inherit)
+            with patch.object(q,'setx',side_effect=setx):q.tag_tree(top,1001)
+            self.assertTrue(seen)
+            with patch.object(q,'open_file',side_effect=SystemExit(143)),self.assertRaises(SystemExit):q.tag_tree(top,1001)
+        for path in directories:self.assertEqual(kernel.of(path),(1001,True))
+
+    def test_second_pass_retags_a_recreated_file_even_if_its_inode_number_is_reused(self):
+        top=self.base/'online';top.mkdir();target=top/'reused';target.write_text('old');old=target.stat();lstat=os.stat
+        with Kernel() as kernel:
+            original=q.setx;replaced=[]
+            def setx(fd,value,inherit=None):
+                if inherit is True and not replaced:
+                    target.unlink();target.write_text('new');kernel.forget(target);replaced.append(True)
+                return original(fd,value,inherit)
+            def aliased(name,*args,**kwargs):
+                info=lstat(name,*args,**kwargs)
+                if name=='reused' and kwargs.get('dir_fd') is not None and replaced:
+                    attrs={key:getattr(info,key) for key in dir(info) if key.startswith('st_')}
+                    attrs.update(st_ino=old.st_ino,st_ctime_ns=max(info.st_ctime_ns,old.st_ctime_ns+1))
+                    return SimpleNamespace(**attrs)
+                return info
+            with patch.object(q,'setx',side_effect=setx),patch.object(q.os,'stat',side_effect=aliased):counts=q.tag_tree(top,1001)
+        self.assertEqual(kernel.of(target),(1001,False));self.assertEqual(counts['errors'],{})
+
+    def test_second_pass_retries_a_name_that_disappeared_in_pass_one(self):
+        top=self.base/'online';top.mkdir();target=top/'image';target.write_text('old');lstat=os.stat;gone=[]
+        with Kernel() as kernel:
+            original=q.setx
+            def disappear(name,*args,**kwargs):
+                if name=='image' and kwargs.get('dir_fd') is not None and not gone:
+                    target.unlink();gone.append(True);raise FileNotFoundError(errno.ENOENT,'gone')
+                return lstat(name,*args,**kwargs)
+            def setx(fd,value,inherit=None):
+                if inherit is True and gone and not target.exists():target.write_text('uploaded');kernel.forget(target)
+                return original(fd,value,inherit)
+            with patch.object(q.os,'stat',side_effect=disappear),patch.object(q,'setx',side_effect=setx):counts=q.tag_tree(top,1001)
+        self.assertEqual(kernel.of(target),(1001,False));self.assertEqual(counts['errors'],{})
+
+    def test_upload_finish_during_second_pass_does_not_report_a_missing_file(self):
+        top=self.base/'online';top.mkdir();(top/'old').write_text('old');temporary=top/'.upload-test';injected=[];finished=[]
+        with Kernel() as kernel:
+            original=q.setx
+            def setx(fd,value,inherit=None):
+                if inherit is True and not injected:temporary.write_text('uploaded');injected.append(temporary.stat().st_ino)
+                result=original(fd,value,inherit)
+                if injected and not finished and os.fstat(fd).st_ino==injected[0]:
+                    os.replace(temporary,top/'finished');finished.append(True)
+                return result
+            with patch.object(q,'setx',side_effect=setx):counts=q.tag_tree(top,1001)
+        self.assertEqual(kernel.of(top/'finished'),(1001,False));self.assertEqual(counts['errors'],{})
+
+    def test_renamed_pending_directory_is_reported_separately_from_file_deletions(self):
+        top=self.base/'online'
+        for name in ('one','two'):
+            (top/name).mkdir(parents=True);(top/name/'file').write_text('old')
+        children={path.stat().st_ino:path for path in (top/'one',top/'two')};moved=top/'renamed';renamed=[]
+        with Kernel() as kernel:
+            original=q.setx
+            def setx(fd,value,inherit=None):
+                inode=os.fstat(fd).st_ino
+                if inherit is True and inode in children and not renamed:
+                    source=next(path for key,path in children.items() if key!=inode);source.rename(moved);renamed.append(True)
+                return original(fd,value,inherit)
+            with patch.object(q,'setx',side_effect=setx):counts=q.tag_tree(top,1001)
+        self.assertEqual(kernel.of(moved),(1001,False));self.assertEqual(kernel.of(moved/'file'),(0,False))
+        self.assertEqual(counts['moved'],1);self.assertEqual(counts['errors'],{})
+
     def test_directory_created_during_pass_one_is_discovered_and_walked(self):
         top=self.base/'online';top.mkdir();old=top/'old';old.write_text('old')
         with Kernel() as kernel:

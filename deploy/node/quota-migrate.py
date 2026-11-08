@@ -89,6 +89,7 @@ class Migration:
     # -- inventory (read-only) -------------------------------------------------
     def add(self,phase,key,path,kind='tree',group=None,**extra):
         group=group or ('datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform')
+        if key.startswith('d:'):group='datasets';extra['linked']=True
         if self.only is not None and group!=self.only:return
         self.plan.append(dict(group=group,phase=phase,key=key,path=Path(path),kind=kind,**extra))
 
@@ -355,6 +356,7 @@ class Migration:
                 if row['group']!='platform':ids.update(self.q.allocate(folder,[row['key']]))
                 linked=row.get('linked',False)
                 reclaim={value for key,value in self.q.read(folder)['ids'].items() if key.startswith('x:')} if row['group']=='datasets' else set()
+                moved=total['moved']
                 if row['kind']=='layer':
                     self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']],rebuild=True,cleanup=True))
                 elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=linked,reclaim=reclaim)
@@ -362,6 +364,8 @@ class Migration:
                     self.q.tag_tree(row['path'],ids[row['key']],prune=protected|layers,
                                     linked=linked,reclaim=reclaim,counts=total,
                                     inherit=row['group']!='external',rebuild=row['group']!='external',cleanup=row['group']!='external')
+                if total['moved']>moved:
+                    self.notes.append(f'目录在打标时被改名或移走（也可能已删除），需重跑 --only {row["group"]}：{row["path"]}')
             except OSError as error:
                 if row['kind']=='layer' and error.errno==errno.ENOENT:total['skipped']+=1
                 else:self.q.failed(total,error)
@@ -372,9 +376,9 @@ class Migration:
             c=counts[group,phase]
             self.out(f'[{group}] {phase}：目录 {c["directories"]}，文件 {c["files"]}，跳过 {c["skipped"]}，'
                      f'重建符号链接 {c["symlinks"]}，whiteout {c["whiteouts"]}，FIFO {c["fifos"]}，socket 保留 {c["sockets"]}，'
-                     f'清理中断残留 {c["cleaned"]}，活 overlay 层跳过 {c["mounted"]}，原项已变化而跳过 {c["changed"]}，硬链接跳过 {c["linked"]}，错误 {sum(c["errors"].values())} {c["errors"] or ""}')
+                     f'目录改名/移走待重跑 {c["moved"]}，清理中断残留 {c["cleaned"]}，活 overlay 层跳过 {c["mounted"]}，原项已变化而跳过 {c["changed"]}，硬链接跳过 {c["linked"]}，错误 {sum(c["errors"].values())} {c["errors"] or ""}')
         for line in self.notes:self.out('  注意：'+line)
-        if self.only in (None,'platform') and not any(c['errors'] or c['mounted'] or c['changed'] for (group,phase),c in counts.items() if group=='platform'):
+        if self.only in (None,'platform') and not any(c['errors'] or c['mounted'] or c['changed'] or c['moved'] for (group,phase),c in counts.items() if group=='platform'):
             self.mark_migrated(folder)
         self.usage('完成后')
         self.leftovers(protected)
@@ -382,7 +386,7 @@ class Migration:
 
     @staticmethod
     def merge(total,counts):
-        for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets','changed','cleaned','mounted'):total[key]+=counts[key]
+        for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets','changed','cleaned','mounted','moved'):total[key]+=counts[key]
         for key,value in counts['errors'].items():total['errors'][key]=total['errors'].get(key,0)+value
 
     def tag_file(self,path,value,total,linked=False,reclaim=()):
@@ -415,15 +419,21 @@ class Migration:
             os.close(fd)
 
     def leftovers(self,protected,limit=20):
-        """Largest directory trees still on ID 0; container-type folders are walked, not listed."""
-        sizes={}
+        """Largest ID-0 trees and registered project/dataset trees without inherit."""
+        registry=self.q.read(self.root/'quota')['ids']
+        inheriting={value:key for key,value in registry.items() if key.startswith(('d:','p:'))}
+        sizes={};incomplete={}
         for mount in self.mounts:
             device=os.stat(mount).st_dev;roots={}
             for top,dirs,files,fd in os.fwalk(mount,follow_symlinks=False):
                 info=os.fstat(fd)
-                try:value=self.q.projid(fd)
-                except OSError:value=0
+                try:flags,_,_,value,_=self.q.getx(fd)
+                except OSError:flags=value=0
                 if (info.st_dev,info.st_ino) in protected:root=None
+                elif value in inheriting:
+                    # Traverse tagged ancestors too: a pending child can have moved here.
+                    root=None if flags&self.q.FS_XFLAG_PROJINHERIT else top
+                    if root is not None:incomplete[root]=inheriting[value];sizes.setdefault(root,0)
                 elif value:dirs[:]=[];continue
                 else:root=roots.get(os.path.dirname(top)) or top
                 roots[top]=root;kept=[]
@@ -438,8 +448,11 @@ class Migration:
                     except OSError:continue
                     if stat.S_ISREG(child.st_mode):sizes[root]=sizes.get(root,0)+child.st_blocks*512
         rows=sorted(sizes.items(),key=lambda row:-row[1])[:limit]
-        self.out(f'仍为编号 0 的最大目录（前 {limit}，按块计）：' if rows else '没有仍为编号 0 的目录。')
-        for path,size in rows:self.out(f'    {size:>18,}  {path}')
+        self.out(f'仍为编号 0 或未完成继承的最大目录（前 {limit}，按块计）：' if rows else '没有仍为编号 0 或未完成继承的目录。')
+        for path,size in rows:
+            key=incomplete.get(path);group='datasets' if key and key.startswith('d:') else 'platform'
+            note=f'（未完成继承，需重跑 --only {group}）' if key else ''
+            self.out(f'    {size:>18,}  {path}{note}')
 
 
 def terminate(signum,frame):raise SystemExit(128+signum)

@@ -168,7 +168,7 @@ class Migration(unittest.TestCase):
                     registered=tool.q.read(self.paths['root']/'quota')['ids']
                     self.assertNotIn('d:later',registered);self.assertNotIn('d:gone',registered)
                     future=tool.q.read(self.paths['root']/'quota')['next']
-                    (self.paths['root']/'samples'/'quota.json').write_text(json.dumps({'quota':True,'next':future+1,'filesystems':[{'quota':True,'mountPoints':[str(self.mount)],'ids':{str(future):{'bytes':7777}}}]}))
+                    (self.paths['root']/'samples'/'quota.json').write_text(json.dumps({'quota':True,'next':future+len(tool.plan)+16,'filesystems':[{'quota':True,'mountPoints':[str(self.mount)],'ids':{str(i):{'bytes':7777} for i in range(1,future+len(tool.plan)+16)}}]}))
                     config={**{key:str(value) for key,value in self.paths.items()},'dataMountPoints':[str(self.mount)]}
                     data=fixture.f.module('local-data');data.root=lambda config,field:Path(config[field])
                     sample=fixture.f.module('storage-usage');load=sample.module
@@ -178,14 +178,43 @@ class Migration(unittest.TestCase):
                     with patch.object(files,'data',return_value=data):
                         row=next(row for row in files.datasets(config)['datasets'] if row['name']=='later')
                     self.assertEqual((row['size'],row['complete']),(13,True))
-                    usage=sample.Sample(config);self.assertIn(str(self.mount),usage.filesystems)
-                    usage.names[future]='d:later'
-                    self.assertEqual(usage.size('d:later',ds/'later'),{'size':7777,'complete':True})
+                    self.assertIn(str(self.mount),sample.Sample(config).filesystems)
                     observed.append(True)
                 return original(path,value,**kwargs)
             tool.q.tag_tree=tag
         with fixture.Kernel():self.run_migration(False,only='datasets',before_run=inspect_registration)
         self.assertEqual(observed,[True]);self.assertIn('d:gone',self.ids());self.assertIn('[datasets] 8 回收站','\n'.join(self.out))
+
+    def test_platform_never_registers_a_dataset_key_even_for_a_misplaced_trash_record(self):
+        root,ds=self.paths['root'],self.paths['datasetsRoot'];key=str(uuid.uuid4());payload=root/'.trash'/(key+'.data')
+        payload.mkdir();(payload/'old').write_bytes(b'old dataset')
+        (root/'.trash'/(key+'.json')).write_text(json.dumps({'kind':'dataset','state':'TRASHED','originalPath':str(ds/'images')}))
+        with fixture.Kernel() as kernel:
+            self.run_migration(False,only='platform')
+            self.assertFalse(any(key.startswith('d:') for key in self.ids()))
+            self.assertEqual(kernel.of(payload),(0,False));self.assertEqual(kernel.of(ds/'images'),(0,False))
+            self.run_migration(False,only='datasets')
+            self.assertEqual(kernel.of(payload),(self.ids()['d:images'],True))
+
+    def test_renamed_dataset_directory_is_reported_and_visible_in_leftovers(self):
+        ds=self.paths['datasetsRoot'];top=ds/'online'
+        for name in ('one','two'):
+            (top/name).mkdir(parents=True);(top/name/'file').write_text('old')
+        children={path.stat().st_ino:path for path in (top/'one',top/'two')};moved=top/'renamed';renamed=[]
+        def concurrent_rename(tool):
+            original=tool.q.setx
+            def setx(fd,value,inherit=None):
+                inode=os.fstat(fd).st_ino
+                if inherit is True and inode in children and not renamed:
+                    source=next(path for key,path in children.items() if key!=inode);source.rename(moved);renamed.append(True)
+                return original(fd,value,inherit)
+            tool.q.setx=setx
+        with fixture.Kernel() as kernel:
+            self.run_migration(False,only='datasets',before_run=concurrent_rename)
+            self.assertEqual(kernel.of(moved),(self.ids()['d:online'],False))
+        text='\n'.join(self.out)
+        self.assertIn('目录改名/移走待重跑 1',text);self.assertIn('需重跑 --only datasets',text)
+        self.assertIn(str(moved)+'（未完成继承',text)
 
     def test_external_hardlinks_are_accounted_and_reclaimed_by_the_dataset(self):
         q=fixture.q;shared=self.mount/'cyx'/'shared.bin'

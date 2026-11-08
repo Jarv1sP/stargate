@@ -114,7 +114,7 @@ def tag_dir(path,value,inherit=True):
     try:return setx(fd,value,inherit)
     finally:os.close(fd)
 
-def counter():return {'directories':0,'files':0,'skipped':0,'linked':0,'symlinks':0,'whiteouts':0,'fifos':0,'sockets':0,'changed':0,'cleaned':0,'mounted':0,'errors':{}}
+def counter():return {'directories':0,'files':0,'skipped':0,'linked':0,'symlinks':0,'whiteouts':0,'fifos':0,'sockets':0,'changed':0,'cleaned':0,'mounted':0,'moved':0,'errors':{}}
 
 def failed(counts,error):
     name=errno.errorcode.get(error.errno,str(error.errno));counts['errors'][name]=counts['errors'].get(name,0)+1
@@ -200,87 +200,95 @@ def rebuild_special(name,parent,counts,*,staging=None):
 
 
 def tag_tree(path,value,*,top=True,prune=(),linked=False,reclaim=(),counts=None,inherit=True,rebuild=False,cleanup=False):
-    """Tag files before enabling inheritance in each directory, then catch arrivals.
+    """Tag files before enabling inheritance; preserve already-correct directories.
 
-    Child directories first receive only the ID; inheritance waits for their own
-    files. Never follows symlinks or leaves the top device. `top=False` keeps the
-    top ID without inheritance. `prune` contains directory (dev, ino) pairs.
-    `linked=True` preserves nonzero hardlink IDs except those in `reclaim` (an
-    external ID may be reclaimed by the first dataset that reaches the inode).
+    Retagged children first receive only the ID. `top=False` keeps the top ID
+    without inheritance. Never follows links or leaves the top device. `prune`
+    holds directory (dev, ino) pairs. Hardlinks with a nonzero owner stay there,
+    except IDs in `reclaim`. Pending directories that escape fwalk are reported.
     """
     counts=counter() if counts is None else counts
+    def walk_error(error):
+        # Missing pending directories are reported together at the end.
+        if error.errno!=errno.ENOENT:failed(counts,error)
+    def token(info):return info.st_dev,info.st_ino,info.st_ctime_ns
     fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
     try:
-        device=os.fstat(fd).st_dev
-        for folder,dirnames,filenames,dirfd in os.fwalk('.',dir_fd=fd,follow_symlinks=False,onerror=lambda error:failed(counts,error)):
+        device=os.fstat(fd).st_dev;pending=set()
+        for folder,dirnames,filenames,dirfd in os.fwalk('.',dir_fd=fd,follow_symlinks=False,onerror=walk_error):
+            info=os.fstat(dirfd);pending.discard((info.st_dev,info.st_ino))
             removed=cleanup_temporary(dirfd,counts) if cleanup else set()
-            try:setx(dirfd,value if folder!='.' or top else projid(dirfd),False)
+            container=folder=='.' and not top
+            try:
+                current=projid(dirfd);target=current if container else value
+                if container or not inherit or current!=target:setx(dirfd,target,False)
             except OSError as error:
                 if folder=='.':raise
                 failed(counts,error);dirnames[:]=[];continue
-            blocked=set();excluded=set()
-            def directories(names):
-                kept=[]
-                for name in names:
-                    token=None
-                    try:
-                        info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
-                        if not stat.S_ISDIR(info.st_mode):continue
-                        token=(info.st_dev,info.st_ino)
-                        if token in blocked:continue
-                        if info.st_dev!=device or token in prune:
-                            if token not in excluded:counts['skipped']+=1;excluded.add(token)
-                            continue
-                        child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=dirfd)
-                        try:setx(child,value,False)
-                        finally:os.close(child)
-                        kept.append(name)
-                    except OSError as error:
-                        if token is not None:blocked.add(token)
-                        failed(counts,error)
-                return kept
-            dirnames[:]=directories(name for name in dirnames if name not in removed)
-            handled={}
-            def files(names,second=False):
-                for name in names:
-                    try:
-                        info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
-                        token=(info.st_dev,info.st_ino)
-                        if second and name in handled and handled[name] in (None,token):continue
-                        handled[name]=token
-                        if info.st_dev!=device or not stat.S_ISREG(info.st_mode):continue
-                        child=open_file(name,dirfd)
-                        try:
-                            info=os.fstat(child);handled[name]=(info.st_dev,info.st_ino)
-                            current=projid(child)
-                            if linked and info.st_nlink>1 and current!=0 and current not in reclaim:
-                                counts['linked']+=1;continue
-                            setx(child,value);counts['files']+=1
-                        finally:os.close(child)
-                    except OSError as error:
-                        handled.setdefault(name,None);failed(counts,error)
-            files(name for name in filenames if name not in removed)
+            originals=set(filenames)|set(dirnames);excluded=set();reported=set()
+            def error_once(name,error):
+                if error.errno==errno.ENOENT:return
+                key=(name,error.errno)
+                if key not in reported:failed(counts,error);reported.add(key)
+            def directory(name,info):
+                if not stat.S_ISDIR(info.st_mode):return False
+                child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=dirfd)
+                try:
+                    info=os.fstat(child);identity=(info.st_dev,info.st_ino)
+                    if info.st_dev!=device or identity in prune:
+                        if identity not in excluded:counts['skipped']+=1;excluded.add(identity)
+                        return False
+                    if not inherit or projid(child)!=value:setx(child,value,False)
+                    pending.add(identity);return True
+                finally:os.close(child)
+            kept=[]
+            for name in dirnames:
+                if name in removed:continue
+                try:
+                    if directory(name,os.stat(name,dir_fd=dirfd,follow_symlinks=False)):kept.append(name)
+                except OSError as error:error_once(name,error)
+            dirnames[:]=kept;handled={}
+            def file(name,info,second=False):
+                if info.st_dev!=device or not stat.S_ISREG(info.st_mode):return
+                if second and handled.get(name)==token(info):return
+                child=open_file(name,dirfd)
+                try:
+                    info=os.fstat(child);current=projid(child)
+                    if linked and info.st_nlink>1 and current!=0 and current not in reclaim:counts['linked']+=1
+                    else:setx(child,value);counts['files']+=1
+                    # FSSETXATTR changes ctime; record it after the successful operation.
+                    handled[name]=token(os.fstat(child))
+                finally:os.close(child)
+            for name in filenames:
+                if name in removed:continue
+                try:file(name,os.stat(name,dir_fd=dirfd,follow_symlinks=False))
+                except OSError as error:error_once(name,error)
             try:
-                setx(dirfd,value if folder!='.' or top else projid(dirfd),inherit if folder!='.' or top else False)
+                setx(dirfd,target,inherit if not container else False)
                 names=os.listdir(dirfd)
             except OSError as error:
                 if folder=='.':raise
                 failed(counts,error);dirnames[:]=[];continue
-            counts['directories']+=1
-            # New names have the shortest rename window; unchanged inodes need no reopen.
-            originals=set(filenames)
-            files((name for name in names if name not in originals),second=True)
-            files((name for name in names if name in originals),second=True)
-            # Recompute after pass 1 without delaying the new-file catch-up.
-            dirnames[:]=directories(names)
-            for name in os.listdir(dirfd):
+            counts['directories']+=1;kept=[];specials=[]
+            # Handle arrivals (including directories) before scanning old names.
+            for batch in ((name for name in names if name not in originals),(name for name in names if name in originals)):
+                for name in batch:
+                    try:
+                        info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode):
+                            if directory(name,info):kept.append(name)
+                        elif stat.S_ISREG(info.st_mode):file(name,info,second=True)
+                        else:specials.append((name,info))
+                    except OSError as error:error_once(name,error)
+            dirnames[:]=kept
+            for name,info in specials:
                 try:
-                    info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
-                    if info.st_dev!=device or stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):continue
+                    if info.st_dev!=device:continue
                     if rebuild and inherit:rebuild_special(name,dirfd,counts)
                     elif stat.S_ISSOCK(info.st_mode):counts['sockets']+=1
                     else:counts['skipped']+=1
-                except OSError as error:failed(counts,error)
+                except OSError as error:error_once(name,error)
+        counts['moved']+=len(pending)
     finally:os.close(fd)
     return counts
 
