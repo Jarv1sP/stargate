@@ -425,28 +425,34 @@ class Migration:
         sizes={};incomplete={}
         for mount in self.mounts:
             device=os.stat(mount).st_dev;roots={}
-            for top,dirs,files,fd in os.fwalk(mount,follow_symlinks=False):
-                info=os.fstat(fd)
-                try:flags,_,_,value,_=self.q.getx(fd)
-                except OSError:flags=value=0
-                if (info.st_dev,info.st_ino) in protected:root=None
-                elif value in inheriting:
-                    # Traverse tagged ancestors too: a pending child can have moved here.
-                    root=None if flags&self.q.FS_XFLAG_PROJINHERIT else top
-                    if root is not None:incomplete[root]=inheriting[value];sizes.setdefault(root,0)
-                elif value:dirs[:]=[];continue
-                else:root=roots.get(os.path.dirname(top)) or top
-                roots[top]=root;kept=[]
-                for name in dirs:
-                    try:
-                        if os.stat(name,dir_fd=fd,follow_symlinks=False).st_dev==device:kept.append(name)
-                    except OSError:pass
-                dirs[:]=kept
-                if root is None:continue
-                for name in files:
-                    try:child=os.stat(name,dir_fd=fd,follow_symlinks=False)
-                    except OSError:continue
-                    if stat.S_ISREG(child.st_mode):sizes[root]=sizes.get(root,0)+child.st_blocks*512
+            rootfd=os.open(mount,self.q.DIR_FLAGS)
+            walker=self.q.walk_dirs(rootfd,str(mount),onerror=lambda error:self.out(f'余留目录诊断跳过无法读取的目录：{error}'))
+            try:
+                for top,dirs,files,fd in walker:
+                    info=os.fstat(fd)
+                    try:flags,_,_,value,_=self.q.getx(fd)
+                    except OSError:flags=value=0
+                    if (info.st_dev,info.st_ino) in protected:root=None
+                    elif value in inheriting:
+                        # Traverse tagged ancestors too: a pending child can have moved here.
+                        root=None if flags&self.q.FS_XFLAG_PROJINHERIT else top
+                        if root is not None:incomplete[root]=inheriting[value];sizes.setdefault(root,0)
+                    elif value:dirs.clear();continue
+                    else:root=roots.get(os.path.dirname(top)) or top
+                    roots[top]=root;kept={}
+                    for name in dirs:
+                        try:
+                            if os.stat(name,dir_fd=fd,follow_symlinks=False).st_dev==device:kept[name]=dirs[name]
+                        except OSError:pass
+                    dirs.clear();dirs.update(kept)
+                    if root is None:continue
+                    for name in files:
+                        try:child=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                        except OSError:continue
+                        if stat.S_ISREG(child.st_mode):sizes[root]=sizes.get(root,0)+child.st_blocks*512
+            finally:
+                try:walker.close()
+                finally:os.close(rootfd)
         rows=sorted(sizes.items(),key=lambda row:-row[1])[:limit]
         self.out(f'仍为编号 0 或未完成继承的最大目录（前 {limit}，按块计）：' if rows else '没有仍为编号 0 或未完成继承的目录。')
         for path,size in rows:

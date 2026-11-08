@@ -17,6 +17,7 @@ FIRST_ID=1000
 PLATFORM='a:platform'
 UNASSIGNED='o:unassigned'
 UNSUPPORTED=(errno.EOPNOTSUPP,errno.ENOTTY,errno.ENOSYS)
+DIR_FLAGS=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC
 FILE_FLAGS=os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC|os.O_NOCTTY
 
 def module(name):
@@ -199,23 +200,52 @@ def rebuild_special(name,parent,counts,*,staging=None):
         with contextlib.suppress(FileNotFoundError):os.unlink(temporary,dir_fd=target_parent)
 
 
+def walk_dirs(fd,top='.',onerror=None):
+    """Top-down FD walk; callers may prune or replace the child identity map.
+
+    A changed child is skipped before descent. Directory-only nonblocking opens
+    cannot wait on a FIFO or follow a replacement symlink.
+    """
+    def report(error):
+        if error.errno not in (errno.ENOENT,errno.ENOTDIR,errno.ELOOP) and onerror:onerror(error)
+    directories={};files=[]
+    try:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                try:
+                    info=entry.stat(follow_symlinks=False) if entry.is_dir(follow_symlinks=False) else None
+                    if info is not None and stat.S_ISDIR(info.st_mode):directories[entry.name]=(info.st_dev,info.st_ino)
+                    else:files.append(entry.name)
+                except OSError as error:report(error)
+    except OSError as error:report(error);return
+    yield top,directories,files,fd
+    for name,expected in directories.items():
+        try:child=os.open(name,DIR_FLAGS,dir_fd=fd)
+        except OSError as error:report(error);continue
+        try:
+            info=os.fstat(child)
+            if (info.st_dev,info.st_ino)!=expected:continue
+            yield from walk_dirs(child,os.path.join(top,name),onerror)
+        finally:os.close(child)
+
+
 def tag_tree(path,value,*,top=True,prune=(),linked=False,reclaim=(),counts=None,inherit=True,rebuild=False,cleanup=False):
     """Tag files before enabling inheritance; preserve already-correct directories.
 
     Retagged children first receive only the ID. `top=False` keeps the top ID
     without inheritance. Never follows links or leaves the top device. `prune`
     holds directory (dev, ino) pairs. Hardlinks with a nonzero owner stay there,
-    except IDs in `reclaim`. Pending directories that escape fwalk are reported.
+    except IDs in `reclaim`. Pending directories that escape the walk are reported.
     """
     counts=counter() if counts is None else counts
     def walk_error(error):
         # Missing pending directories are reported together at the end.
         if error.errno!=errno.ENOENT:failed(counts,error)
     def token(info):return info.st_dev,info.st_ino,info.st_ctime_ns
-    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    fd=os.open(path,DIR_FLAGS);walker=walk_dirs(fd,onerror=walk_error)
     try:
         device=os.fstat(fd).st_dev;pending=set()
-        for folder,dirnames,filenames,dirfd in os.fwalk('.',dir_fd=fd,follow_symlinks=False,onerror=walk_error):
+        for folder,dirnames,filenames,dirfd in walker:
             info=os.fstat(dirfd);pending.discard((info.st_dev,info.st_ino))
             removed=cleanup_temporary(dirfd,counts) if cleanup else set()
             container=folder=='.' and not top
@@ -224,30 +254,31 @@ def tag_tree(path,value,*,top=True,prune=(),linked=False,reclaim=(),counts=None,
                 if container or not inherit or current!=target:setx(dirfd,target,False)
             except OSError as error:
                 if folder=='.':raise
-                failed(counts,error);dirnames[:]=[];continue
+                failed(counts,error);dirnames.clear();continue
             originals=set(filenames)|set(dirnames);excluded=set();reported=set()
             def error_once(name,error):
                 if error.errno==errno.ENOENT:return
                 key=(name,error.errno)
                 if key not in reported:failed(counts,error);reported.add(key)
             def directory(name,info):
-                if not stat.S_ISDIR(info.st_mode):return False
-                child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=dirfd)
+                if not stat.S_ISDIR(info.st_mode):return None
+                child=os.open(name,DIR_FLAGS,dir_fd=dirfd)
                 try:
                     info=os.fstat(child);identity=(info.st_dev,info.st_ino)
                     if info.st_dev!=device or identity in prune:
                         if identity not in excluded:counts['skipped']+=1;excluded.add(identity)
-                        return False
+                        return None
                     if not inherit or projid(child)!=value:setx(child,value,False)
-                    pending.add(identity);return True
+                    pending.add(identity);return identity
                 finally:os.close(child)
-            kept=[]
+            kept={}
             for name in dirnames:
                 if name in removed:continue
                 try:
-                    if directory(name,os.stat(name,dir_fd=dirfd,follow_symlinks=False)):kept.append(name)
+                    identity=directory(name,os.stat(name,dir_fd=dirfd,follow_symlinks=False))
+                    if identity is not None:kept[name]=identity
                 except OSError as error:error_once(name,error)
-            dirnames[:]=kept;handled={}
+            dirnames.clear();dirnames.update(kept);handled={}
             def file(name,info,second=False):
                 if info.st_dev!=device or not stat.S_ISREG(info.st_mode):return
                 if second and handled.get(name)==token(info):return
@@ -268,19 +299,20 @@ def tag_tree(path,value,*,top=True,prune=(),linked=False,reclaim=(),counts=None,
                 names=os.listdir(dirfd)
             except OSError as error:
                 if folder=='.':raise
-                failed(counts,error);dirnames[:]=[];continue
-            counts['directories']+=1;kept=[];specials=[]
+                failed(counts,error);dirnames.clear();continue
+            counts['directories']+=1;kept={};specials=[]
             # Handle arrivals (including directories) before scanning old names.
             for batch in ((name for name in names if name not in originals),(name for name in names if name in originals)):
                 for name in batch:
                     try:
                         info=os.stat(name,dir_fd=dirfd,follow_symlinks=False)
                         if stat.S_ISDIR(info.st_mode):
-                            if directory(name,info):kept.append(name)
+                            identity=directory(name,info)
+                            if identity is not None:kept[name]=identity
                         elif stat.S_ISREG(info.st_mode):file(name,info,second=True)
                         else:specials.append((name,info))
                     except OSError as error:error_once(name,error)
-            dirnames[:]=kept
+            dirnames.clear();dirnames.update(kept)
             for name,info in specials:
                 try:
                     if info.st_dev!=device:continue
@@ -289,7 +321,9 @@ def tag_tree(path,value,*,top=True,prune=(),linked=False,reclaim=(),counts=None,
                     else:counts['skipped']+=1
                 except OSError as error:error_once(name,error)
         counts['moved']+=len(pending)
-    finally:os.close(fd)
+    finally:
+        try:walker.close()
+        finally:os.close(fd)
     return counts
 
 

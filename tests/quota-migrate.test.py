@@ -216,6 +216,36 @@ class Migration(unittest.TestCase):
         self.assertIn('目录改名/移走待重跑 1',text);self.assertIn('需重跑 --only datasets',text)
         self.assertIn(str(moved)+'（未完成继承',text)
 
+    def test_leftovers_skips_pending_entries_replaced_by_files_fifos_or_directories(self):
+        account=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())
+        for kind in ('file','fifo','fifo-link','directory'):
+            with self.subTest(kind=kind):
+                top=self.mount/('diagnose-'+kind)
+                for name in ('one','two','three'):(top/name).mkdir(parents=True)
+                children={path.stat().st_ino:path for path in top.iterdir()};changed=[];stable=[];visited=[];guarded=[]
+                with patch.object(migrate.pwd,'getpwnam',return_value=account):tool=migrate.Migration(self.config,ROOT/'node',out=self.out.append)
+                tool.mounts=[top];root_inode=top.stat().st_ino;original_open=os.open;original_getx=tool.q.getx
+                def getx(fd):
+                    inode=os.fstat(fd).st_ino;visited.append(inode)
+                    if inode in children and not changed:
+                        others=[path for key,path in children.items() if key!=inode];source=others[0];stable.append(others[1])
+                        source.rename(self.mount/('diag-old-'+kind));changed.append(source)
+                        if kind=='file':source.write_text('replacement')
+                        elif kind=='fifo':os.mkfifo(source)
+                        elif kind=='fifo-link':
+                            target=self.mount/('diag-fifo-'+kind);os.mkfifo(target);source.symlink_to(target)
+                        else:source.mkdir();(source/'new').mkdir()
+                    return original_getx(fd)
+                def open_dir(name,flags,*args,**kwargs):
+                    parent=kwargs.get('dir_fd')
+                    if changed and name==changed[0].name and parent is not None and os.fstat(parent).st_ino==root_inode:
+                        required=os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK
+                        self.assertEqual(flags&required,required);guarded.append(True)
+                    return original_open(name,flags,*args,**kwargs)
+                with fixture.Kernel(),patch.object(tool.q,'getx',side_effect=getx),patch.object(tool.q.os,'open',side_effect=open_dir):tool.leftovers(set())
+                self.assertTrue(guarded);self.assertIn(stable[0].stat().st_ino,visited)
+                self.assertNotIn(changed[0].lstat().st_ino,visited,'a different directory inode must be skipped')
+
     def test_external_hardlinks_are_accounted_and_reclaimed_by_the_dataset(self):
         q=fixture.q;shared=self.mount/'cyx'/'shared.bin'
         with fixture.Kernel() as kernel:

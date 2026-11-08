@@ -248,6 +248,38 @@ class Tagging(unittest.TestCase):
         self.assertEqual(kernel.of(moved),(1001,False));self.assertEqual(kernel.of(moved/'file'),(0,False))
         self.assertEqual(counts['moved'],1);self.assertEqual(counts['errors'],{})
 
+    def test_pending_directory_replacement_is_nonblocking_and_reported_as_moved(self):
+        for kind in ('file','fifo','fifo-link','directory'):
+            with self.subTest(kind=kind):
+                top=self.base/('replace-'+kind)
+                for name in ('one','two','three'):
+                    (top/name).mkdir(parents=True);(top/name/'data').write_text('old')
+                children={path.stat().st_ino:path for path in top.iterdir()};changed=[];stable=[];guarded=[]
+                original_open=os.open;root_inode=top.stat().st_ino
+                with Kernel() as kernel:
+                    original_setx=q.setx
+                    def setx(fd,value,inherit=None):
+                        inode=os.fstat(fd).st_ino
+                        if inherit is True and inode in children and not changed:
+                            others=[path for key,path in children.items() if key!=inode];source=others[0];stable.append(others[1])
+                            source.rename(self.base/('old-'+kind));changed.append(source)
+                            if kind=='file':source.write_text('replacement')
+                            elif kind=='fifo':os.mkfifo(source)
+                            elif kind=='fifo-link':
+                                target=self.base/('fifo-'+kind);os.mkfifo(target);source.symlink_to(target)
+                            else:source.mkdir();(source/'new').write_text('replacement')
+                        return original_setx(fd,value,inherit)
+                    def open_dir(name,flags,*args,**kwargs):
+                        parent=kwargs.get('dir_fd')
+                        if changed and name==changed[0].name and parent is not None and os.fstat(parent).st_ino==root_inode:
+                            required=os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK
+                            self.assertEqual(flags&required,required,'reject a FIFO before any blocking open');guarded.append(True)
+                        return original_open(name,flags,*args,**kwargs)
+                    with patch.object(q,'setx',side_effect=setx),patch.object(q.os,'open',side_effect=open_dir):counts=q.tag_tree(top,1001)
+                self.assertTrue(guarded);self.assertEqual(counts['moved'],1);self.assertEqual(counts['errors'],{})
+                self.assertEqual(kernel.of(stable[0]),(1001,True),'later siblings must still be visited')
+                self.assertEqual(kernel.of(changed[0]),(0,False),'a different inode must not be walked or tagged')
+
     def test_directory_created_during_pass_one_is_discovered_and_walked(self):
         top=self.base/'online';top.mkdir();old=top/'old';old.write_text('old')
         with Kernel() as kernel:
