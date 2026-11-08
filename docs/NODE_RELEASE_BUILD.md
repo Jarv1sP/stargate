@@ -45,11 +45,62 @@ python3 -I -B deploy/node/quota-migrate.py --config /etc/gpuq-console/node-insta
 
 `--dry-run` 只打印计划、各盘当前未登记字节和无法判断归属的回收站条目。默认执行全部，也可分组：
 
-- 维护窗口内无任务、终端或 Git 命令时运行 `--only platform`：平台运行数据、个人镜像与容器层、项目、输出、复制暂存和项目/输出回收站。成功后写服务账户所有的 `quota/migrated.json`。
-- 恢复平台后运行 `--only datasets`，给活数据集及数据集回收站条目打标，逐条登记编号。每个目录先只设编号、关闭继承，给子目录只设编号，处理普通文件后再设目录继承，重新发现期间新建的子目录，优先补打新文件并复查被替换的文件，最后重建特殊 inode；子目录只在遍历到时才设置继承，避免尚未访问的目录长期拒绝既有上传提交。数据集之间、项目之间跨编号移动时，`mv` / `shutil.move` 会变为复制后删除，大文件需要额外时间与空间；打标期间，从未走到的目录往已走过的目录移动，可能暂时 EXDEV；设置目录继承与第二遍补打之间也有 EXDEV 窗口，可沿原上传编号重试。
+- 维护窗口内无任务、终端或 Git 命令时运行 `--only platform`：平台运行数据、个人镜像与容器层、项目、输出、复制暂存和项目/输出回收站，不登记数据集编号。成功后写服务账户所有的 `quota/migrated.json`。
+- 恢复平台后运行 `--only datasets`，给活数据集及数据集回收站条目打标，逐条登记编号。编号不同的目录先只设编号、关闭继承；已经是目标编号且继承的目录始终保留继承。处理普通文件后设目录继承，重新发现期间新建的子目录，优先处理新名字并复查被替换的文件，最后重建特殊 inode；首次打标时，子目录只在遍历到时才设置继承，避免尚未访问的目录长期拒绝既有上传提交。数据集之间、项目之间跨编号移动时，`mv` / `shutil.move` 会变为复制后删除，大文件需要额外时间与空间；打标期间，从未走到的目录往已走过的目录移动，可能暂时 EXDEV；设置目录继承与第二遍补打之间也有 EXDEV 窗口，可沿原上传编号重试。
 - `--only external` 可在后台运行：外部目录整棵树只设编号、清除继承标志，之后新建文件计入“未登记”，不会给移入外部目录的操作增加编号限制。
 
-路径启动时全部解析为已存在的真实路径；计划若要给受保护根设置继承，工具提示调整配置并拒绝执行。外部目录是不属于平台的数据盘目录与文件（`lost+found`、符号链接和挂载别名除外）。外部阶段给编号 0 的硬链接打号，外部目录之间共享的硬链接归先到的外部编号；数据集可收回登记为外部编号的 nlink>1 inode，对其他数据集、项目等非 0 编号仍跳过并计数，所以 external 和 datasets 的运行顺序不影响数据集归属。datasets/external 都在每条打标前才分配编号，未走到的活数据集继续现场测量；正在 walk 的数据集暂时显示部分大小，遍历完成后才是完整占用。项目、输出、容器层子项、数据集和回收站树里的符号链接、0:0 whiteout、FIFO 以新 inode 原位重建，保留属主、时间和全部 xattr（包括 overlay 属性）；socket 保留并报告数量。替换特殊 inode 前复读 inode/device/ctime；原名已变化就跳过并计数。重跑仅在平台和数据集树内清理 `.quota-<32 hex>` 特殊临时 inode（符号链接、FIFO、0:0 字符设备），层根和回收站等工具暂存位置的目录还须为 root 所有、权限 0700 且只含特殊 inode；同名普通文件及用户目录保留，外部树不清理。SIGTERM/SIGHUP 通过正常退出展开 finally 清理。层根始终保持镜像编号、不继承，根下的特殊项只通过临时继承子目录重建。单个容器层在清单生成后消失会跳过并计数。平台迁移前应停止服务账户的 podman 进程，确保各挂载空间都没有活 overlay。工具每次运行只扫描一次服务账户的非 init 挂载空间，匹配绝对或相对 upperdir 及 merged 挂载点；所有活层都在引擎树中剪枝并计数，归属无法识别或容器列表失败也一样。有活 overlay 就跳过并报告，暂不发布平台迁移标记；停止相关 podman 后可重跑。报告按组列计数，选中而没有条目的组也打印“无条目”。最后输出各盘未登记字节和前 20 个仍为编号 0 的大目录。默认从 `/usr/local/libexec/stargate/` 读取 root 所有的辅助文件，可用 `--node-dir` 指定。
+路径启动时全部解析为已存在的真实路径；计划若要给受保护根设置继承，工具提示调整配置并拒绝执行。外部目录是不属于平台的数据盘目录与文件（`lost+found`、符号链接和挂载别名除外）。外部阶段给编号 0 的硬链接打号，外部目录之间共享的硬链接归先到的外部编号；数据集可收回登记为外部编号的 nlink>1 inode，对其他数据集、项目等非 0 编号仍跳过并计数，所以 external 和 datasets 的运行顺序不影响数据集归属。datasets/external 都在每条打标前才分配编号，未走到的活数据集继续现场测量；正在 walk 的数据集暂时显示部分大小，遍历完成后才是完整占用。项目、输出、容器层子项、数据集和回收站树里的符号链接、0:0 whiteout、FIFO 以新 inode 原位重建，保留属主、时间和全部 xattr（包括 overlay 属性）；socket 保留并报告数量。替换特殊 inode 前复读 inode/device/ctime；原名已变化就跳过并计数。重跑仅在平台和数据集树内清理 `.quota-<32 hex>` 特殊临时 inode（符号链接、FIFO、0:0 字符设备），层根和回收站等工具暂存位置的目录还须为 root 所有、权限 0700 且只含特殊 inode；同名普通文件及用户目录保留，外部树不清理。SIGTERM/SIGHUP 通过正常退出展开 finally 清理。层根始终保持镜像编号、不继承，根下的特殊项只通过临时继承子目录重建。单个容器层在清单生成后消失会跳过并计数。平台迁移前应停止服务账户的 podman 进程，确保各挂载空间都没有活 overlay。工具每次运行只扫描一次服务账户的非 init 挂载空间，匹配绝对或相对 upperdir 及 merged 挂载点；所有活层都在引擎树中剪枝并计数，归属无法识别或容器列表失败也一样。有活 overlay 就跳过并报告，暂不发布平台迁移标记；停止相关 podman 后可重跑。报告按组列计数，选中而没有条目的组也打印“无条目”。未访问目录在遍历中被改名或移走时，单独报告并提示重跑相应组；最后输出各盘未登记字节，以及前 20 个仍为编号 0 或未完成继承的大目录，已打号的项目/数据集祖先也会继续检查。默认从 `/usr/local/libexec/stargate/` 读取 root 所有的辅助文件，可用 `--node-dir` 指定。
+
+
+**platform 前停止 OCI 挂载空间（仅维护窗口，无任务、终端或 Git 命令）：**
+
+先以服务账户、各个人引擎已有的参数和环境运行 `podman system migrate`。任务取消后可能留下失效的 conmon 状态，使 `podman stop --all`、`podman system migrate` 报 `conmon exited prematurely`；仅结束 pause 也可能留下其他挂载空间持有者。下面的 root 本机命令先尝试各引擎的 `system migrate`，再结束服务账户中持有该 OCI overlay 的非 init 进程（包括 pause），清理 pause.pid 并等待挂载空间退出。它不清空容器或用户数据：
+
+```sh
+python3 -I -B - /etc/gpuq-console/node-install.json <<'PY'
+import contextlib, errno, json, os, pwd, signal, subprocess, sys, time
+from pathlib import Path
+cfg=json.loads(Path(sys.argv[1]).resolve(strict=True).read_text())
+account=pwd.getpwnam(cfg['account']);uid=account.pw_uid
+ws=Path(next(iter(cfg['profiles'].values()))['workspacesRoot']).resolve(strict=True)
+program=Path(cfg['releaseRoot']).resolve(strict=True)/'current/node/personal-oci.py'
+stop="""import importlib.util,subprocess,sys
+from pathlib import Path
+s=importlib.util.spec_from_file_location('oci',sys.argv[1]);oci=importlib.util.module_from_spec(s);s.loader.exec_module(oci)
+folder=Path(sys.argv[2])
+raise SystemExit(subprocess.run(oci.engine_command({},folder,'system','migrate'),env=oci.engine_environment(folder)).returncode)
+"""
+for folder in sorted((ws/'.oci').iterdir()) if (ws/'.oci').exists() else []:
+    if not (folder/'graph').is_dir():continue
+    try:result=subprocess.run(['/usr/sbin/runuser','-u',account.pw_name,'--','/usr/bin/env',
+        'HOME='+account.pw_dir,'XDG_RUNTIME_DIR=/run/user/'+str(uid),'PATH=/usr/bin:/bin',
+        '/usr/bin/python3','-I','-B','-c',stop,str(program),str(folder)],timeout=120)
+    except subprocess.TimeoutExpired:
+        print('停止命令超时，继续结束挂载空间持有者：',folder,file=sys.stderr);continue
+    if result.returncode:print('继续结束挂载空间持有者：',folder,file=sys.stderr)
+init=os.stat('/proc/1/ns/mnt').st_ino;engine=str(ws/'.oci')+'/';victims=[]
+for process in Path('/proc').iterdir():
+    if not process.name.isdigit():continue
+    try:
+        owner=next((line.split()[1] for line in (process/'status').read_text().splitlines() if line.startswith('Uid:')),None)
+        if owner!=str(uid) or os.stat(process/'ns/mnt').st_ino==init:continue
+        if not any(' - overlay ' in line and engine in line for line in (process/'mountinfo').read_text().splitlines()):continue
+        victims.append((int(process.name),(process/'comm').read_text().strip()))
+    except OSError as error:
+        if error.errno not in (errno.ENOENT,errno.ESRCH,errno.EINVAL):raise
+for pid,_ in victims:
+    with contextlib.suppress(ProcessLookupError):os.kill(pid,signal.SIGKILL)
+(Path('/run/user')/str(uid)/'libpod/tmp/pause.pid').unlink(missing_ok=True)
+deadline=time.monotonic()+15
+while any((Path('/proc')/str(pid)/'ns/mnt').exists() for pid,_ in victims):
+    if time.monotonic()>deadline:raise TimeoutError('挂载空间持有者尚未退出：'+str(victims))
+    time.sleep(.05)
+print('已结束：',victims)
+PY
+python3 -I -B deploy/node/quota-migrate.py --config /etc/gpuq-console/node-install.json --only platform
+```
+
+重跑报告须为“活 overlay 层跳过 0”，且无平台错误或待重跑目录，才会写出 `quota/migrated.json`；仍有活层时按报告继续结束持有者，再重跑 platform。恢复平台后再在线运行 datasets、external 两组。
 
 任务启动前，宿主 runner 在 attempt 控制目录的同级私有文件中保存该次 payload 的确切删除命令，不放进容器可写挂载。正常结束、被杀、启动失败都由 GPUQ 现有 attempt 清理动作按原名字删除容器记录；不扫描其他容器，开发容器和项目文件保留。清理失败沿既有动作重试，单元已卸载也继续清理。
 
