@@ -52,6 +52,14 @@ class ImportTargets(unittest.TestCase):
             jobs.process('datasets.cloud.download',{'key':key,'dataset':'shared','fileId':'file','path':'file','size':6,'userId':'alice'})
         self.assertEqual(jobs.worker(key),1);saved=jobs.s.read_json(jobs.path(key));self.assertEqual(saved['bytes'],3);self.assertIn('数据集',saved['error'])
 
+    def test_environment_project_prepare_keeps_its_project_directory(self):
+        jobs=f.module('transfer-jobs').TransferJobs(self.executor());key=self.key();code=self.base/'project-code';code.mkdir()
+        jobs.e.projects=lambda:SimpleNamespace(store=SimpleNamespace(dev_paths=lambda *a:{'code':code}))
+        row={'id':key,'token':'original-token','state':'PREPARING'}
+        jobs.s.atomic_json(jobs.path(key,'.source.json'),row)
+        result=jobs.prepare({'id':key,'source':{'project':'demo','environment':True}})
+        self.assertEqual(result,row)
+
     def test_plain_project_copy_rejects_prepare_start_resume_and_worker(self):
         jobs=f.module('transfer-jobs').TransferJobs(self.executor())
         for target in ({'project':'demo'},{'project':'demo','dataset':'shared'},{'project':'demo','environment':False}):

@@ -99,7 +99,9 @@ class TransferJobs:
         finally:os.close(fd)
 
     def root(self,ref):
-        if 'project' in ref:raise ValueError('项目目录不能复制到工作区；批量数据请存为数据集，复制整个项目请使用项目复制。')
+        if 'project' in ref:
+            if ref.get('environment') is not True:raise ValueError('项目目录不能复制到工作区；批量数据请存为数据集，复制整个项目请使用项目复制。')
+            return self.e.projects().store.dev_paths(ref.get('ownerId') or ref.get('userId','team'),ref['project'])['code']
         if ref.get('dataset'):return self.d.dataset_root(self.config,ref['dataset'])
         raise ValueError('请选择配置数据盘上的数据集目录。')
 
