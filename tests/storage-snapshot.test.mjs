@@ -60,13 +60,13 @@ test('periodic refresh reads disks, datasets and projects together every five mi
  now=start+5*minute;await f.service.refreshStorage(true);for(const operation of ['projects.quota','datasets.list','projects.list'])assert.equal(f.calls.filter(row=>row[0]===machine&&row[1]===operation).length,2,operation);
 });
 
-test('a restarted Portal reuses restored snapshots for a minute, then refreshes one server at a time and saves once per pass',async t=>{
+test('a restarted Portal refreshes restored snapshots one server at a time from a minute after start and saves once per pass',async t=>{
  let now=Date.now();t.mock.method(Date,'now',()=>now);const f=await fixture(t);
  const saves=t.mock.method(f.service,'save');for(const {id} of MACHINES)f.service.scheduleStorageRefresh(id,0);await f.service.refreshStorage();
  assert.equal(f.calls.length,3*MACHINES.length);assert.equal(saves.mock.callCount(),1);
  for(const {id} of MACHINES)f.service.storageSnapshots[id].scannedAt=new Date(now-10*minute).toISOString();f.service.save();
  await f.reopen();f.calls.length=0;
- await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.refreshStorage(true);assert.equal(f.calls.length,0);
+ await f.service.refreshStorage(true);assert.equal(f.calls.length,0);
  now+=minute;await f.service.refreshStorage(true);assert.deepEqual([...new Set(f.calls.map(row=>row[0]))],[machine]);
  await f.service.invoke(f.token(),'storage.refresh',{machine:MACHINES[1].id});await f.service.storageWork;
  assert.deepEqual([...new Set(f.calls.map(row=>row[0]))],[machine,MACHINES[1].id]);

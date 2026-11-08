@@ -90,9 +90,9 @@ export class PortalService extends DemoService{
     service.statusPath=statusPath;await service.refreshGPUQ();installExecution(service,bridge);installMaintenance(service);installJobNotifications(service,notificationConfig);
     maintainTaskNotes(service);
     installTransfers(service);installFileCampus(service);
-    // A restarted Portal sits close to its 512MiB limit; restored snapshots count as fresh for a
-    // minute and then refresh one server at a time, so activation never scans every server at once.
-    const now=Date.now();service.storageQueue=new Map();service.storageOpenedAt=now;
+    // A restarted Portal sits close to its 512MiB limit; restored snapshots refresh one server at a
+    // time starting a minute after start, instead of every server on the first periodic tick.
+    const now=Date.now();service.storageQueue=new Map();
     service.storageDue=new Map(MACHINES.map((machine,index)=>[machine.id,
       service.storageSnapshots[machine.id]?.scannedAt?Math.max(Date.parse(service.storageSnapshots[machine.id].scannedAt)+STORAGE_REFRESH_MS,now+STORAGE_REUSE_MS+index*STORAGE_REFRESH_MS/MACHINES.length):now+index*STORAGE_REFRESH_MS/MACHINES.length]));
     return service;
@@ -126,8 +126,7 @@ export class PortalService extends DemoService{
     this.storageQueue.set(machine,{at:queued?.at<=now?queued.at:now+delay});
   }
   requestStorageRefresh(machine){
-    const scanned=this.storageSnapshots[machine]?.scannedAt;
-    if(this.storageCurrent?.machine!==machine&&!(scanned&&Date.now()-Math.max(Date.parse(scanned),this.storageOpenedAt??0)<STORAGE_REUSE_MS)){
+    if(this.storageCurrent?.machine!==machine&&!(Date.now()-Date.parse(this.storageSnapshots[machine]?.scannedAt)<STORAGE_REUSE_MS)){
       this.scheduleStorageRefresh(machine,0);void this.refreshStorage().catch(()=>{});
     }
     return this.storageSnapshot(machine);
