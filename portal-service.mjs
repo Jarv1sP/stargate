@@ -90,9 +90,11 @@ export class PortalService extends DemoService{
     service.statusPath=statusPath;await service.refreshGPUQ();installExecution(service,bridge);installMaintenance(service);installJobNotifications(service,notificationConfig);
     maintainTaskNotes(service);
     installTransfers(service);installFileCampus(service);
+    // A restarted Portal sits close to its 512MiB limit; restored snapshots refresh one server at a
+    // time starting a minute after start, instead of every server on the first periodic tick.
     const now=Date.now();service.storageQueue=new Map();
     service.storageDue=new Map(MACHINES.map((machine,index)=>[machine.id,
-      service.storageSnapshots[machine.id]?.scannedAt?Date.parse(service.storageSnapshots[machine.id].scannedAt)+STORAGE_REFRESH_MS:now+index*STORAGE_REFRESH_MS/MACHINES.length]));
+      service.storageSnapshots[machine.id]?.scannedAt?Math.max(Date.parse(service.storageSnapshots[machine.id].scannedAt)+STORAGE_REFRESH_MS,now+STORAGE_REUSE_MS+index*STORAGE_REFRESH_MS/MACHINES.length):now+index*STORAGE_REFRESH_MS/MACHINES.length]));
     return service;
   }
   export(){return {schema:2,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),jobs:this.store.jobs,sequence:this.store.sequence,storage:this.storageSnapshots};}
@@ -136,6 +138,7 @@ export class PortalService extends DemoService{
     }
     if(this.storageWork)return this.storageWork;
     this.storageWork=(async()=>{
+      let changed=false;
       while(!this.closing&&this.bridge){
         const next=[...this.storageQueue].find(([,row])=>row.at<=Date.now());if(!next)break;
         const [machine]=next;this.storageQueue.delete(machine);this.storageCurrent={machine};
@@ -150,8 +153,10 @@ export class PortalService extends DemoService{
         const datasets=await read('datasets','datasets.list'),projects=await read('projects','projects.list',{includeUsage:true});
         if(!this.closing){row.scannedAt=new Date(Date.now()).toISOString();if(datasets&&projects)row.checkedAt=row.scannedAt;}
         this.storageDue.set(machine,Date.now()+STORAGE_REFRESH_MS);
-        if(!this.closing)this.save();this.storageCurrent=null;
+        changed=true;this.storageCurrent=null;
       }
+      // One save per pass: each save serializes the whole Portal state.
+      if(changed&&!this.closing)this.save();
     })().finally(()=>{this.storageCurrent=null;this.storageWork=null;});
     return this.storageWork;
   }

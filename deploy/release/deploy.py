@@ -56,6 +56,7 @@ def switch(backend, resources, prepare_nodes=lambda: None):
         prepare_nodes()
         old=backend.preflight()
         new=backend.create_stopped(MAX_CONTAINER)
+        backend.cli_check(MAX_CONTAINER)
         hold=backend.hold()
         backend.drain(old,hold)
         before=resources.checkpoint('old-before-stop')['available']
@@ -64,7 +65,7 @@ def switch(backend, resources, prepare_nodes=lambda: None):
             available_before_stop=before,running_portals=backend.running_portals())
         backend.start(new,hold)
         backend.healthy(new,hold)
-        backend.command(['docker','exec',new,'node','build/gpuctl.mjs','--help'])
+        resources.checkpoint('new-healthy')
         backend.release(hold,new)
         return new
     except BaseException:

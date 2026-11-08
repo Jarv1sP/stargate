@@ -58,6 +58,8 @@ class Containers:
         self.log('cli-help')
         self.resources.checkpoint('CLI help')
         if self.failure=='cli':raise RuntimeError('CLI failed')
+    def cli_check(self,limit):
+        assert limit==512*MIB;self.command(['cli'])
     def release(self,hold,identity):
         self.log('release-'+identity);hold['released']=True;self.active_hold=None
     def stop_budget(self,hold):self.log('stop-budget')
@@ -163,8 +165,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(backend.live,{'new'})
         self.assertLess(backend.calls.index('hold'),backend.calls.index('stop-old'))
         self.assertLess(backend.calls.index('stop-old'),backend.calls.index('start-new'))
-        self.assertLess(backend.calls.index('healthy-new'),backend.calls.index('cli-help'))
-        self.assertLess(backend.calls.index('cli-help'),backend.calls.index('release-new'))
+        self.assertLess(backend.calls.index('create-stopped'),backend.calls.index('cli-help'))
+        self.assertLess(backend.calls.index('cli-help'),backend.calls.index('hold'))
 
     def test_unhealthy_candidate_restores_old_before_releasing_requests(self):
         backend=self.switch('health');self.assertEqual(backend.live,{'old'})
@@ -174,7 +176,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_bad_cli_keeps_previous_portal(self):
         backend=self.switch('cli');self.assertEqual(backend.live,{'old'})
-        self.assertNotIn('release-new',backend.calls)
+        self.assertNotIn('release-new',backend.calls);self.assertNotIn('stop-old',backend.calls);self.assertNotIn('hold',backend.calls)
 
     def drain_backend(self):
         (self.root/'manifest.json').write_text(json.dumps({'revision':'a'*40}))

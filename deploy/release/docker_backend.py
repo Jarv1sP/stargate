@@ -103,6 +103,13 @@ class DockerBackend:
         self.origin=urlsplit(dict(item.split('=',1) for item in self.old['Config']['Env'])['PUBLIC_ORIGIN'])
         return self.old['Id']
 
+    def cli_check(self, limit):
+        # The CLI bundle needs about 350MB, which no longer fits beside a running Portal in one
+        # 512MiB container; check it in its own short-lived container before the old Portal stops.
+        self.command(['docker','run','--rm','--network','none','--memory',str(limit),'--read-only','--cap-drop','ALL',
+                      '--security-opt','no-new-privileges:true','--user',self.old['Config'].get('User') or '1000:1000',
+                      '--entrypoint','node',self.manifest['tag'],'build/gpuctl.mjs','--help'],timeout=60)
+
     def create_stopped(self, limit):
         command=['node','portal-rollout.mjs','http://127.0.0.1:9',uuid.uuid4().hex]
         name='amax-console-staged-'+self.manifest['revision'][:12]
