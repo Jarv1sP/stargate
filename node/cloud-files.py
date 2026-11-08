@@ -17,7 +17,11 @@ class CloudFiles:
         try:self.s.wait_project_lock(fd,fcntl.LOCK_EX,'云传输忙，请按原编号查询。');yield
         finally:os.close(fd)
     def view(self,row):return {k:row.get(k) for k in ('operationId','state','bytes','size','path','remotePath','action','fileId','error')}
+    def download_target(self,args,*,stored=False):
+        if ('project' in args if not stored else args.get('project') is not None) or args.get('area') not in (None,'dataset') or not args.get('dataset'):
+            raise ValueError('云盘下载只能保存为数据集；请用数据集名称重新下载，不能保存到项目工作区。')
     def root(self,args,create=False):
+        if args.get('action')=='download':self.download_target(args,stored=True)
         if args.get('project'):return self.n.projects().store.dev_paths(args.get('ownerId') or args['userId'],args['project'])['code']
         return self.d.dataset_root(self.n.CONFIG,args['dataset'],create=create)
     def command(self):
@@ -37,6 +41,7 @@ class CloudFiles:
                 frame=json.loads(line)
                 if frame.get('kind')=='result':return frame['result']
             raise ValueError('云文件列表暂时未知，请稍后刷新。')
+        if action=='download':self.download_target(args)
         key=args.get('operationId',args.get('key'));file=self.path(key)
         with self.locked(key):
             if action in ('upload','download'):
@@ -52,6 +57,7 @@ class CloudFiles:
                 if not isinstance(request['size'],int) or isinstance(request['size'],bool) or request['size']<0:raise ValueError('请选择云文件及其大小。')
                 if file.exists():
                     row=self.s.read_json(file)
+                    if action=='download':self.download_target(row,stored=True)
                     if row['request']!=request:raise ValueError('原云传输编号已用于不同请求。')
                     if row['state'] not in ('PAUSED','UNKNOWN'):return self.view(row)
                 else:row={**request,'request':request,'operationId':key,'userId':args['userId'],'state':'PENDING','bytes':0}

@@ -5,6 +5,8 @@ export async function runCloudFiles({positionals,options,machine,call,stderr=pro
   const action=positionals[2]||'list',expected={info:3,list:3,status:4,cancel:4,download:5,upload:4};
   if(!Object.hasOwn(expected,action)||positionals.length!==expected[action])fail('Usage: data cloud info|list | download FILE_ID PATH | upload PATH | status|cancel OPERATION_ID');
   if(Object.keys(options).some(k=>!['machines','url','session-file','json','key','dataset','project'].includes(k)))fail('云文件参数无效，请运行 gpuctl help。');
+  if(action==='download'&&Object.hasOwn(options,'project'))fail('云盘下载不支持 --project；请用 --dataset NAME 保存为数据集。');
+  if(action==='download'&&!options.dataset)fail('用 --dataset NAME 选择数据集；云盘下载不能保存到项目工作区。');
   const args={machine};
   if(['download','upload'].includes(action)){
     args.key=options.key||randomUUID();if(!UUID.test(args.key))fail('Use a complete UUID --key');
@@ -14,7 +16,7 @@ export async function runCloudFiles({positionals,options,machine,call,stderr=pro
   if(['status','cancel'].includes(action)){if(!UUID.test(positionals[3]))fail('Use the complete cloud operation UUID');args.operationId=positionals[3];}
   if(['download','upload'].includes(action)){
     args.path=positionals[action==='download'?4:3];
-    if(!args.path||/[\\\x00-\x1f\x7f]/.test(args.path)||args.path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255)||Buffer.byteLength(args.path)>1024)fail('Use a relative filename within the dataset or /workspace');
+    if(!args.path||/[\\\x00-\x1f\x7f]/.test(args.path)||args.path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255)||Buffer.byteLength(args.path)>1024)fail(action==='download'?'请填写所选数据集内的相对文件名。':'请填写所选数据集或工作区内的相对文件名。');
   }
   if(['download','upload'].includes(action)){if(!options.dataset&&!options.project)fail('用 --dataset NAME 或 --project NAME 选择服务器上的目录。');Object.assign(args,options.dataset?{area:'dataset',dataset:options.dataset}:{area:'code',project:options.project});}
   return {...(await call('cloud.files.'+action,args)).result,machine};

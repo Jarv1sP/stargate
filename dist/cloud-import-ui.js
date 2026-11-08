@@ -11,7 +11,7 @@ export function checkedImportURL(value){
 }
 export function importRows(rows=[]){return rows.map(r=>{
   const stopped=['PAUSED','FAILED','CANCELED','READY'].includes(r.state);
-  const hint=r.state==='READY'?copyHelp('已下载','已保存到所选数据集或 /workspace，可在项目终端中使用。'):r.state==='CANCELING'?copyHelp('正在取消','等待下载进程停止；临时文件仍保留，请稍后刷新确认。'):r.state==='CANCELED'?copyHelp('已取消','临时文件仍占用空间；可继续同一任务，取消不会删除已下载内容。'):'';
+  const hint=r.state==='READY'?copyHelp('已下载','文件已下载，可在项目终端中使用。'):r.state==='CANCELING'?copyHelp('正在取消','等待下载进程停止；临时文件仍保留，请稍后刷新确认。'):r.state==='CANCELED'?copyHelp('已取消','临时文件仍占用空间；可继续同一任务，取消不会删除已下载内容。'):'';
   return `<li><div><strong>${esc(r.path)}</strong><p>${esc(labels[r.state]||'状态未确认')}${hint} · ${size(r.bytes)}${r.totalBytes!==undefined?' / '+size(r.totalBytes):''}</p>
     ${r.error?`<p class="form-error">${esc(r.error)}</p>`:''}
     ${stopped&&r.canResume&&r.sourceKind==='https'?`<details data-import-replace-panel="${esc(r.operationId)}"><summary>链接过期？换链接继续</summary><form data-import-replace="${esc(r.operationId)}"><label class="field">同一文件的新 HTTPS 链接<input name="cloud-resume-url" type="url" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="https://…" required></label><p class="muted">只更新下载地址；仍保存到原位置。</p><button class="button" type="submit">换链接并继续</button></form></details>`:''}
@@ -21,13 +21,13 @@ export function importRows(rows=[]){return rows.map(r=>{
     ${stopped?`<button class="button" type="button" data-import-discard="${esc(r.operationId)}">清理记录</button>`:''}
     </div></li>`;
 }).join('')||'<li class="muted">暂无导入任务。</li>';}
-export function cloudImportHTML(users=[]){return `<section class="data-workspace-card cloud-import" aria-labelledby="cloud-import-title">
+export function cloudImportHTML(){return `<section class="data-workspace-card cloud-import" aria-labelledby="cloud-import-title">
   <header><div><p class="data-workspace-eyebrow">大文件推荐</p><h3 id="cloud-import-title">从链接导入</h3></div><span class="data-workspace-badge">服务器直下</span></header>
-  <form id="cloud-import-form"><div class="data-workspace-fields"><label class="field"><span>来源${copyHelp('链接导入','文件保存到所选数据集或 /workspace，关闭网页后继续下载。')}</span><select name="cloud-source"><option value="https">HTTPS 下载链接</option><option value="aliyun">阿里云盘分享</option></select></label><label class="field">链接<input name="cloud-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" required></label></div>
+  <form id="cloud-import-form"><div class="data-workspace-fields"><label class="field"><span>来源${copyHelp('链接导入','文件只保存为数据集，关闭网页后继续下载。')}</span><select name="cloud-source"><option value="https">HTTPS 下载链接</option><option value="aliyun">阿里云盘分享</option></select></label><label class="field">链接<input name="cloud-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" required></label></div>
   <div id="cloud-share-availability" hidden><span>阿里云盘分享暂不可用</span><button class="button" id="cloud-share-refresh" type="button">重新查询</button></div>
   <div id="cloud-share-fields" class="data-workspace-fields"><label class="field">提取码（可选）<input name="cloud-password" autocomplete="off" maxlength="16"></label><div class="field"><span>分享文件</span><button class="button" id="cloud-inspect" type="button">读取文件</button><select name="cloud-file" aria-label="选择分享文件"><option value="">先读取分享文件</option></select></div></div>
-  <div class="data-workspace-fields"><label>目标<select name="cloud-target-area"><option value="dataset">数据集目录</option><option value="code">项目工作区</option></select></label><label>数据集 / 项目名称<input name="cloud-target-name" required></label><label>项目所属成员（可选）<select name="cloud-target-owner"><option value="">当前账号</option>${users.map(user=>`<option value="${esc(user.id)}">${esc(user.name||user.username)}</option>`).join('')}</select></label></div>
-  <label class="field"><span>保存为${copyHelp('保存位置','填写目标数据集或 /workspace 内的相对文件路径。')}</span><input name="cloud-path" placeholder="incoming/dataset.zip" required></label>
+  <label class="field">数据集名称<input name="cloud-target-name" required></label>
+  <label class="field"><span>保存为${copyHelp('保存位置','填写所选数据集内的相对文件路径。')}</span><input name="cloud-path" placeholder="incoming/dataset.zip" required></label>
 
   <div class="file-actions"><button class="button primary" type="submit">开始导入</button><button class="button" id="cloud-import-refresh" type="button">刷新进度</button></div></form>
   <aside id="cloud-import-pending" hidden><p>导入结果未确认。</p><details><summary>操作编号</summary><code id="cloud-import-pending-key"></code></details><button class="button" id="cloud-import-retry" type="button">用同一请求重试</button></aside>
@@ -92,7 +92,7 @@ export function cloudImportUI(store,section,toast){
     if(event.target.dataset.importReplace){event.preventDefault();return run(async call=>{const args={machine:machine(),operationId:event.target.dataset.importReplace,url:checkedImportURL(event.target.elements['cloud-resume-url'].value.trim())};await call('cloud.import.resume',args);report('已请求用新链接继续同一任务；仍保存到原位置。');await list(call);});}
     if(event.target.id!=='cloud-import-form')return;event.preventDefault();run(async call=>{
       if(pending.has(scope())){await start(call,pending.get(scope()));return;}
-      const area=$('[name=cloud-target-area]').value,name=$('[name=cloud-target-name]').value.trim(),ownerId=$('[name=cloud-target-owner]').value.trim();const args={machine:machine(),area,...(area==='dataset'?{dataset:name}:{project:name,...(ownerId?{ownerId}:{})}),key:crypto.randomUUID(),path:$('[name=cloud-path]').value.trim()};
+      const args={machine:machine(),area:'dataset',dataset:$('[name=cloud-target-name]').value.trim(),key:crypto.randomUUID(),path:$('[name=cloud-path]').value.trim()};
       if($('[name=cloud-source]').value==='aliyun'){if(!inspection)throw Error('请先读取分享文件。');args.inspectionId=inspection.inspectionId;args.fileId=$('[name=cloud-file]').value;if(!args.fileId)throw Error('请选择分享文件。');}
       else{args.url=checkedImportURL($('[name=cloud-url]').value.trim());}
       await start(call,{args:Object.freeze(args),uncertain:false});

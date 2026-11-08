@@ -105,7 +105,7 @@ gpuctl files
 gpuctl pull train.py ./train.py
 ```
 
-`push` 会替换同路径文件，保留服务器多出的文件；常见环境和秘密目录会跳过，上传者仍需检查材料。输入权重、tokenizer 和配置可放 `/workspace/weights`、`models`、`tokenizers`；新 checkpoint 写本任务 `/outputs`。
+`push` 会替换同路径文件，保留服务器多出的文件；常见环境和秘密目录会跳过，上传者仍需检查材料。工作区只放代码、配置和小文件；输入权重、tokenizer 和批量数据上传为数据集，从 `/datasets/<名称>` 直接读取，不得把数据集库的数据复制进工作区；新 checkpoint 写本任务 `/outputs`。
 
 传输采用 TLS、大小核对和原子提交。中断保留原文件、路径、大小和原 key，按输出的 `--key UUID` 重复原 `push` 从偏移续传；`gpuctl push-status 本机路径 远端路径 --key UUID --json` 只查原上传。不要用新 key 重投未知操作，也不要在续传期间修改同一路径。
 
@@ -183,11 +183,11 @@ gpuctl run -g 1 --name baseline --description "验证新数据集" -- python tra
 gpuctl jobs
 ```
 
-直接使用当前代码和环境，无需关闭开发终端。`--name` 最多 64 个字符，不能含换行或控制字符。`--` 后是程序参数；`--data`、`--output` 按自己的训练程序修改。`-g` 指定卡数，每个任务输出独立；写入共用 `/workspace` 时自行区分结果目录。
+直接使用当前代码和环境，无需关闭开发终端。`--name` 最多 64 个字符，不能含换行或控制字符。`--` 后是程序参数；`--data`、`--output` 按自己的训练程序修改。`-g` 指定卡数，每个任务输出独立；训练结果写本任务 `/outputs`，批量数据存 `/datasets`。
 
 同一容器的后续任务和开发终端可直接读写 `/job-outputs/前序任务ID/相对路径`，支持复制和修改文件，无需下载再上传。例如前序任务写入 `/outputs/maps/map.osa`，后续任务直接以 `/job-outputs/前序任务ID/maps/map.osa` 为输入，也可将它复制到自己的 `/outputs` 后处理；本轮结果默认写自己的 `/outputs`。
 
-跨项目、跨数据集或跨目录移动文件（例如从 `/job-outputs/别的项目的任务ID` 移到 `/workspace`，或在 `/workspace`、`/outputs`、`/datasets` 之间）时，`mv`、`shutil.move` 会自动改为复制后删除原文件，用量随之计入新位置；大文件需要更多时间和临时空间。在同一目录里移动不受影响。
+跨项目、跨数据集或跨目录移动文件（例如在项目终端中从 `/workspace` 或 `/job-outputs/别的项目的任务ID` 移到 `/datasets/<名称>`）时，`mv`、`shutil.move` 会自动改为复制后删除原文件，用量随之计入新位置；大文件需要更多时间和临时空间。在同一目录里移动不受影响。
 
 需要一次申请 GPU 后连续调试：
 
@@ -286,7 +286,7 @@ gpuctl cancel JOB_ID
 
 数据集列表的“大小”表示占用空间（按文件系统块计算，可能大于文件内容字节数）；最新样本尚未覆盖时回退为现场测量的逻辑字节。
 
-数据集是数据盘上的普通目录，团队共用；训练中 `/datasets` 只读，项目终端中可写。上传直接更新该目录，训练直接读取文件。
+数据集是数据盘上的普通目录，团队共用；普通批处理任务中 `/datasets` 只读，项目终端和 `run --interactive` 交互式任务中可写。批量数据只能导入为数据集，数据集库的数据不得复制进项目工作区；代码和小文件照常上传到工作区。上传直接更新数据集目录，训练直接读取文件。
 
 ```sh local
 gpuctl data list
@@ -298,12 +298,14 @@ gpuctl run -g 1 -- python train.py --data /datasets/images --output /outputs
 
 目录上传可新建数据集，也可向已有目录添加文件。中断沿原 key、相对路径、大小和偏移续传，传完原子提交。文件名相同会影响共用内容，处理前与团队协调。
 
-在项目终端处理数据：
+先在数据页或用 `data put/upload` 创建新数据集（例如 `processed`），再在项目终端里将处理后的数据写入它：
 
 ```sh project
 ls /datasets
-python preprocess.py --input /datasets/images --output /workspace/processed
+python preprocess.py --input /datasets/images --output /datasets/processed
 ```
+
+在终端里直接删除 `/datasets` 中的文件不会进平台回收站；需要 7 天恢复入口时，请使用网页或 CLI 的删除操作。
 
 ### 下载与跨服务器复制
 
@@ -338,13 +340,13 @@ gpuctl data import-cancel IMPORT_ID
 gpuctl data import-discard IMPORT_ID
 ```
 
-可用 `--project my-project` 选择工作区目标；分享有多个文件时按返回列表加 `--file-id FILE_ID`，提取码用 `--password-code`。暂停或取消后用 `import-resume IMPORT_ID` 沿原编号和已传偏移继续，运行中或已完成的导入不会重复启动。过期直链可加 `--source-url HTTPS_LINK` 更新同一文件链接。续传后用 `import-status IMPORT_ID` 查看实际状态和已传字节。导入不自动解压或执行文件；取消保留临时文件供继续，discard 清理记录而保留已完成目标。
+链接导入只接受 `--dataset NAME`，`--project` 会报错。旧的项目目标导入不能续传，请重新导入为数据集；分享有多个文件时按返回列表加 `--file-id FILE_ID`，提取码用 `--password-code`。暂停或取消后用 `import-resume IMPORT_ID` 沿原编号和已传偏移继续，运行中或已完成的导入不会重复启动。过期直链可加 `--source-url HTTPS_LINK` 更新同一文件链接。续传后用 `import-status IMPORT_ID` 查看实际状态和已传字节。导入不自动解压或执行文件；取消保留临时文件供继续，discard 清理记录而保留已完成目标。
 
 支持字节范围的下载源使用最多四路、每块 1 MiB 的并发读取，按原偏移顺序落盘；速度仍取决于源站和网络。连接失败只保留已经连续写入的偏移，按原编号续传；不支持字节范围的源保持单连接读取。
 
 ### 云盘文件
 
-管理员在管理台的「云盘连接」扫码连接云盘账号；成员浏览服务器可访问的云文件，下载到数据集或工作区，也可上传服务器上的文件：
+管理员在管理台的「云盘连接」扫码连接云盘账号；成员浏览服务器可访问的云文件，只下载到数据集（不支持 `--project`），也可把服务器上的数据集或项目文件上传到云盘：
 
 ```sh local
 gpuctl data cloud list
@@ -506,7 +508,7 @@ CLI 未读重要公告写入 stderr，`--json` 的 stdout 保持原格式。`gpu
 
 ### 容量、模型和网络问题
 
-上传必须容纳本次字节并留下 64GiB 安全余量；工作区、数据集各看实际目标盘。共用数据可直接读取，工作区不会为读取数据集自动复制缓存；读数未知不填零。模型报错检查 `/workspace` 或 `/datasets` 路径、依赖和文件大小。
+上传必须容纳本次字节并留下 64GiB 安全余量；工作区、数据集各看实际目标盘。共用数据从 `/datasets` 直接读取，不能复制进工作区；读数未知不填零。模型报错检查 `/workspace` 或 `/datasets` 路径、依赖和文件大小。
 
 在项目开发终端诊断网络，代理地址由管理员提供：
 

@@ -4,7 +4,8 @@ import {AliyunShare,shareReference} from './aliyun-share.mjs';
 import {MACHINES} from './dist/model.js';
 import {assertMachineAccess} from './machine-access.mjs';
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
-export function importPath(path){if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))fail('保存位置请填写所选数据集或工作区内的相对文件名。');return path;}
+export function importPath(path){if(typeof path!=='string'||!path||Buffer.byteLength(path)>1024||/[\\\x00-\x1f\x7f]/.test(path)||path.split('/').some(p=>!p||p==='.'||p==='..'||Buffer.byteLength(p)>255))fail('保存位置请填写所选目录内的相对文件名。');return path;}
+function datasetTarget(target){if(Object.hasOwn(target,'project')||target.area!==undefined&&target.area!=='dataset'||!target.dataset)fail('批量数据只能导入为数据集；请用数据集名称重新导入，不能保存到项目工作区。');}
 function directURL(value){let u;try{u=new URL(value);}catch{fail('请输入完整 HTTPS 下载链接。');}if(typeof value!=='string'||value.length>16384||u.protocol!=='https:'||u.username||u.password||u.hash||u.port&&u.port!=='443')fail('仅接受不含账号密码的 HTTPS 下载链接。');return u.href;}
 function downloadDescriptor(value){
   const plain=value=>value&&typeof value==='object'&&!Array.isArray(value);
@@ -38,6 +39,7 @@ export async function cloudImportCall(service,actor,operation,args,assertCurrent
     const action=operation.slice('cloud.files.'.length),allowed={info:[],list:[],status:['operationId'],cancel:['operationId'],upload:['key','path','name','size'],download:['key','fileId','path','size']};
     if(!Object.hasOwn(allowed,action))fail('未知云文件操作。');
     args=selectFields(args,['machine','area','dataset','project','ownerId',...allowed[action]]);authorized(service,actor,args.machine);assertCurrent();
+    if(action==='download')datasetTarget(args);
     for(const key of ['key','operationId'])if(allowed[action].includes(key)&&!UUID.test(args[key]||''))fail('云文件操作需要有效的完整编号。');
     if(allowed[action].includes('path'))importPath(args.path);
     const {machine,...payload}=args;
@@ -91,6 +93,7 @@ export async function cloudImportCall(service,actor,operation,args,assertCurrent
     return result;
   }
   if(!['start','resume'].includes(action))fail('未知导入操作。');
+  if(Object.hasOwn(args,'project'))datasetTarget(args);
   args=selectFields(args,action==='resume'?['machine','operationId','url']:['machine','area','dataset','project','ownerId','key','url','path','expectedBytes','inspectionId','fileId']);
   const key=action==='resume'?args.operationId:args.key;if(!UUID.test(key||''))fail('导入需要有效 UUID 标识。');
   let row=service.db.prepare('SELECT * FROM cloud_downloads WHERE machine=? AND id=?').get(args.machine,key),source;
@@ -101,6 +104,7 @@ export async function cloudImportCall(service,actor,operation,args,assertCurrent
   }else if(row){
     source=service.cloudOpen(identity,row.cipher);
   }else{
+    datasetTarget(args);
     const path=importPath(args.path);
     if(args.inspectionId){
       const inspection=service.cloudInspections.get(args.inspectionId);if(!inspection||inspection.expiresAt<=Date.now())fail('分享列表已过期，请重新读取。',409);
@@ -112,6 +116,7 @@ export async function cloudImportCall(service,actor,operation,args,assertCurrent
     }
     if(!row)service.db.prepare('INSERT INTO cloud_downloads VALUES(?,?,?,?,?)').run(actor.userId,args.machine,key,service.cloudSeal(identity,source),Date.now());
   }
+  datasetTarget(source.target);
   let url=source.url,downloadHeaders;
   if(source.kind==='aliyun'){
     current();

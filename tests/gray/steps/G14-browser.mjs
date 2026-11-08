@@ -52,6 +52,21 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
               const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),visible=await page.locator(button).isVisible();
               await page.screenshot({path:join(screens,role+'-'+width+'-'+label+'.png'),fullPage:true,animations:'disabled'});
               checks.push([title,async()=>{ctx.check(title+' 无横向滚动',!overflow);ctx.check(title+' 主要入口可见',visible);}]);
+              if(label==='datasets'){
+                await page.locator('#dr-import-open').click();
+                const form=page.locator('#cloud-import-form'),datasetOnly=await form.locator('[name=cloud-target-area],[name=cloud-target-owner]').count()===0;
+                await form.locator('[name=cloud-target-name]').fill(ctx.name('import'));
+                await form.locator('[name=cloud-url]').fill('http://example.invalid/data.zip');
+                await form.locator('[name=cloud-path]').fill('data.zip');
+                await page.screenshot({path:join(screens,role+'-'+width+'-import.png'),animations:'disabled'});
+                await form.locator('[type=submit]').click();await page.locator('#cloud-import-status').filter({hasText:'HTTPS'}).waitFor();
+                const importOverflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);
+                await page.screenshot({path:join(screens,role+'-'+width+'-import-rejected.png'),animations:'disabled'});
+                checks.push([title+'/import',async()=>{
+                  ctx.check('链接导入只提供数据集目标',datasetOnly);ctx.check('导入拒绝提示无横向页面滚动',!importOverflow);
+                }]);
+                await page.locator('#dr-import-sheet [data-sheet-close]').click();await page.locator('#dr-import-sheet').waitFor({state:'hidden'});
+              }
               if(label==='resources'){
                 const summaryCount=await page.locator('[data-summary=free],[data-summary=busy],[data-summary=queued]').count(),legacyQueue=await page.locator('.resource-queue details').count();
                 checks.push([title+'/compute-data',async()=>{ctx.check('空闲、使用中、排队汇总已接线',summaryCount===3);ctx.check('本机队列使用简洁列表',legacyQueue===0);}]);
