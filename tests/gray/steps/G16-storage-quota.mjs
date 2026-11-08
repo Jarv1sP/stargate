@@ -126,8 +126,8 @@ def load(name):
 config=json.loads(load('runtime-profile').read_private(node.parent/'profiles'/'7IM'/'node-config.json'));oci=load('personal-oci')
 for folder in sorted((Path(config['workspacesRoot'])/'.oci').iterdir()):
     if not (folder/'graph').is_dir():continue
-    for args in (('stop','--all'),('system','migrate')):
-        subprocess.run(oci.engine_command(config,folder,*args),env=oci.engine_environment(folder),capture_output=True,text=True,timeout=120,check=True)`,facts.release);
+    result=subprocess.run(oci.engine_command(config,folder,'system','migrate'),env=oci.engine_environment(folder),capture_output=True,text=True,timeout=120)
+    if result.returncode:raise RuntimeError(str(folder)+': '+result.stderr+result.stdout)`,facts.release);
     const done=await migrate('--only','platform');ctx.note(done.split('\n').slice(-40).join('\n'));
     ctx.check('停止 podman 后 platform 不再跳过活层',mounted(done)===0,done.slice(-5000));
     const completed=await node('python3','-I','-B','-c',`import json,os,sys;print(json.dumps(os.path.isfile(sys.argv[1]+'/quota/migrated.json')))`,facts.config.root);
