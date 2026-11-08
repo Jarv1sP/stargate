@@ -4,15 +4,16 @@ disks have project quota enabled. Idempotent: rerunning reuses every ID.
 
     quota-migrate.py --config /etc/gpuq-console/node-install.json [--dry-run] [--only platform|datasets|external]
 
-Order (design STOR-001 2.6): registry, platform, images + container layers,
-projects, outputs, copy staging, datasets, trash entries, external
-directories (last, skipping hard-linked inodes that already carry an ID).
-Run the platform group while no task, terminal or Git command is active: a directory tree that
-is half tagged can refuse renames until it is finished. Paths all come from
-the installer config. Reads that need the service account (podman) go through
-runuser. It never sets a limit or relocates data; special inodes are rebuilt in place.
+Platform migration runs without tasks, terminals or Git commands. It scans live
+overlays once, prunes mounted layers, and withholds the completion marker until
+all platform rows finish. Datasets and their trash entries may run online; each
+row is registered just before tagging. External trees get IDs without inheritance.
+Datasets may reclaim hardlinked inodes from external IDs, preserving other owners.
+All paths come from installer config; podman reads run as the service account.
+No limits or data relocation; special inodes are rebuilt in place, and abandoned
+special temporaries / root-owned staging are cleaned only in platform/dataset trees.
 """
-import argparse,contextlib,errno,importlib.util,json,os,pwd,stat,subprocess,sys,uuid
+import argparse,contextlib,errno,importlib.util,json,os,pwd,re,signal,stat,subprocess,sys,uuid
 from datetime import datetime,timezone
 from pathlib import Path
 CONTAINER_TYPE=('.trash','.copies','.copy-exports','.oci')
@@ -83,11 +84,12 @@ class Migration:
             mount=Path(mount).resolve(strict=True)
             device=os.stat(mount).st_dev
             if device not in seen:seen.add(device);self.mounts.append(Path(mount))
-        self.plan=[];self.keys={};self.notes=[];self.totals={}
+        self.plan=[];self.keys={};self.notes=[];self.totals={};self.proc=Path('/proc')
 
     # -- inventory (read-only) -------------------------------------------------
-    def add(self,phase,key,path,kind='tree',**extra):
-        group='datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform'
+    def add(self,phase,key,path,kind='tree',group=None,**extra):
+        group=group or ('datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform')
+        if key.startswith('d:'):group='datasets';extra['linked']=True
         if self.only is not None and group!=self.only:return
         self.plan.append(dict(group=group,phase=phase,key=key,path=Path(path),kind=kind,**extra))
 
@@ -161,7 +163,8 @@ class Migration:
                 if not row or not os.path.lexists(payload) or row.get('state')!='TRASHED':continue
                 key=self.trash_key(row)
                 if key is None:self.notes.append(f'回收站条目无法判断归属，保持编号 0：{payload}（{row.get("originalPath")}）');continue
-                self.add('8 回收站',key,payload,'tree' if payload.is_dir() and not payload.is_symlink() else 'file')
+                self.add('8 回收站',key,payload,'tree' if payload.is_dir() and not payload.is_symlink() else 'file',
+                         group='datasets' if base==self.datasets else 'platform',linked=base==self.datasets)
         self.external()
         for row in self.plan:
             if row['kind']=='tree' and row['group']!='external' and row['path'].exists() and identity(row['path']) in self.protect:
@@ -230,14 +233,67 @@ class Migration:
                 if key in ancestors:pending.append(path);continue
                 self.add('9 外部目录',self.q.external_key(path),path,'tree' if path.is_dir() else 'file',linked=True)
 
+    def active_overlays(self):
+        """Read each service-account mount namespace once, excluding init's."""
+        init=os.stat(self.proc/'1/ns/mnt').st_ino;seen={init};overlays=[]
+        def decode(value):return re.sub(r'\\([0-7]{3})',lambda match:chr(int(match[1],8)),value)
+        for process in self.proc.iterdir():
+            if not process.name.isdigit():continue
+            try:
+                uid=next((line.split()[1] for line in (process/'status').read_text().splitlines() if line.startswith('Uid:')),None)
+                if uid is None or int(uid)!=self.owner[0]:continue
+                namespace=os.stat(process/'ns/mnt').st_ino
+                if namespace in seen:continue
+                text=(process/'mountinfo').read_text();seen.add(namespace)
+            except OSError as error:
+                if error.errno in (errno.ENOENT,errno.ESRCH,errno.EINVAL):continue
+                raise
+            for line in text.splitlines():
+                head,_,tail=line.partition(' - ');fields=tail.split();mount=head.split()
+                if len(fields)<3 or len(mount)<5 or fields[0]!='overlay':continue
+                upper=next((decode(option[9:]) for option in fields[2].split(',') if option.startswith('upperdir=')),None)
+                overlays.append((upper,decode(mount[4])))
+        return overlays
+
+    @staticmethod
+    def layer_mounted(layer,overlays):
+        layer=Path(layer)
+        for upper,mount in overlays:
+            if os.path.normpath(mount)==str(layer/'merged'):return True
+            if upper is not None:
+                path=Path(upper)
+                if not path.is_absolute():path=layer.parent/path
+                if os.path.normpath(path)==str(layer/'diff'):return True
+        return False
+
+    def mounted_layers(self):
+        overlays=self.active_overlays();candidates={row['path'] for row in self.plan if row['kind']=='layer'}
+        for row in self.plan:
+            if row['phase']=='3 镜像与容器引擎':candidates.update(children(row['path']/'graph'/'overlay'))
+        return {path for path in candidates if self.layer_mounted(path,overlays)}
+
+    def cleanup_trash(self,counts):
+        for group,bases in (('platform',(self.root,self.workspaces)),('datasets',(self.datasets,))):
+            if self.only is not None and group!=self.only:continue
+            for base in bases:
+                try:fd=os.open(base/'.trash',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                except FileNotFoundError:continue
+                except OSError as error:
+                    self.q.failed(counts.setdefault((group,'1 中断残留'),self.q.counter()),error);continue
+                try:
+                    total=self.q.counter();self.q.cleanup_temporary(fd,total,staging=True)
+                    if total['cleaned'] or total['errors']:
+                        self.merge(counts.setdefault((group,'1 中断残留'),self.q.counter()),total)
+                finally:os.close(fd)
+
     # -- report and execution ----------------------------------------------------
     def report_plan(self):
         registry=self.q.read(self.root/'quota')['ids'];new=sorted({row['key'] for row in self.plan}-set(registry))
         phases={}
-        for row in self.plan:phases.setdefault(row['phase'],[]).append(row)
+        for row in self.plan:phases.setdefault((row['group'],row['phase']),[]).append(row)
         self.out(f'登记表 {self.root/"quota"/"ids.json"}：已有 {len(registry)} 个编号，本次新增 {len(new)} 个')
-        for phase in sorted(phases):
-            rows=phases[phase];self.out(f'[{rows[0]["group"]}] {phase}：{len(rows)} 处，{len({r["key"] for r in rows})} 个编号')
+        for group,phase in sorted(phases,key=lambda key:(('platform','datasets','external').index(key[0]),key[1])):
+            rows=phases[group,phase];self.out(f'[{rows[0]["group"]}] {phase}：{len(rows)} 处，{len({r["key"] for r in rows})} 个编号')
             if phase.startswith(('9','6','8')) or len(rows)<=12:
                 for row in rows:self.out(f'    {row["path"]} -> {row["key"]}')
         if any(r['group']=='external' for r in self.plan):self.out('外部目录整棵树只设编号、不设继承；之后新建的文件计入未登记。')
@@ -264,43 +320,65 @@ class Migration:
     def run(self,dry_run):
         self.dry_run=dry_run
         self.inventory();self.report_plan()
+        for group in ((self.only,) if self.only else ('platform','datasets','external')):
+            if not any(row['group']==group for row in self.plan):self.out(f'[{group}] 无条目')
         if dry_run:self.out('仅打印计划（--dry-run），未改动。');return 0
         try:os.nice(19);subprocess.run(['/usr/bin/ionice','-c3','-p',str(os.getpid())],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         except OSError:pass
         folder=self.ensure_registry()
-        ids=self.q.allocate(folder,[row['key'] for row in self.plan]+[row['images'] for row in self.plan if row['kind']=='layer'])
+        ids=self.q.allocate(folder,[row['key'] for row in self.plan if row['group']=='platform']+
+                            [row['images'] for row in self.plan if row['kind']=='layer'])
         protected=self.protect;layers=set();counts={}
+        self.cleanup_trash(counts)
+        mounted=set();scan_failed=False
+        if self.only in (None,'platform'):
+            try:mounted=self.mounted_layers()
+            except OSError as error:
+                scan_failed=True;self.q.failed(counts.setdefault(('platform','3 容器层'),self.q.counter()),error)
+                self.notes.append(f'读不到活 overlay 挂载，暂不处理引擎与容器层：{error}')
+            if mounted:counts.setdefault(('platform','3 容器层'),self.q.counter())['mounted']=len(mounted)
+            for path in sorted(mounted):
+                self.notes.append(f'容器层仍有活 overlay，跳过；请停止服务账户的 podman 后重跑：{path}')
+                try:layers.add(identity(path))
+                except FileNotFoundError:pass
         for row in self.plan:
             if row['kind']!='layer':continue
             try:layers.add(identity(row['path']))
             except FileNotFoundError:
                 row['missing']=True
-                counts.setdefault(row['phase'],self.q.counter())['skipped']+=1
+                counts.setdefault((row['group'],row['phase']),self.q.counter())['skipped']+=1
                 self.notes.append(f'容器层已消失，跳过：{row["path"]}')
         for row in self.plan:
-            if row.get('missing'):continue
-            total=counts.setdefault(row['phase'],self.q.counter())
+            if row.get('missing') or row['path'] in mounted:continue
+            if scan_failed and (row['kind']=='layer' or row['phase']=='3 镜像与容器引擎'):continue
+            total=counts.setdefault((row['group'],row['phase']),self.q.counter())
             try:
-                if row['kind']=='layer':self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']],rebuild=True))
-                elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=row.get('linked'))
+                if row['group']!='platform':ids.update(self.q.allocate(folder,[row['key']]))
+                linked=row.get('linked',False)
+                reclaim={value for key,value in self.q.read(folder)['ids'].items() if key.startswith('x:')} if row['group']=='datasets' else set()
+                moved=total['moved']
+                if row['kind']=='layer':
+                    self.merge(total,self.q.tag_layer(row['path'],ids[row['key']],ids[row['images']],rebuild=True,cleanup=True))
+                elif row['kind']=='file':self.tag_file(row['path'],ids[row['key']],total,linked=linked,reclaim=reclaim)
                 else:
                     self.q.tag_tree(row['path'],ids[row['key']],prune=protected|layers,
-                                    linked=row.get('linked',False),counts=total,
-                                    inherit=row['group']!='external',rebuild=row['group']!='external')
+                                    linked=linked,reclaim=reclaim,counts=total,
+                                    inherit=row['group']!='external',rebuild=row['group']!='external',cleanup=row['group']!='external')
+                if total['moved']>moved:
+                    self.notes.append(f'目录在打标时被改名或移走（也可能已删除），需重跑 --only {row["group"]}：{row["path"]}')
             except OSError as error:
                 if row['kind']=='layer' and error.errno==errno.ENOENT:total['skipped']+=1
                 else:self.q.failed(total,error)
                 self.notes.append(f'{row["path"]}：{error}')
         if self.list_failures:  # environments would read as complete zeros: withhold the marker, rerun later
-            counts.setdefault('3 容器层',self.q.counter())['errors']['LIST']=self.list_failures
-        for phase in sorted(counts):
-            c=counts[phase]
-            group='datasets' if phase.startswith('7') else 'external' if phase.startswith('9') else 'platform'
+            counts.setdefault(('platform','3 容器层'),self.q.counter())['errors']['LIST']=self.list_failures
+        for group,phase in sorted(counts,key=lambda key:(('platform','datasets','external').index(key[0]),key[1])):
+            c=counts[group,phase]
             self.out(f'[{group}] {phase}：目录 {c["directories"]}，文件 {c["files"]}，跳过 {c["skipped"]}，'
                      f'重建符号链接 {c["symlinks"]}，whiteout {c["whiteouts"]}，FIFO {c["fifos"]}，socket 保留 {c["sockets"]}，'
-                     f'硬链接且已有编号而跳过 {c["linked"]}，错误 {sum(c["errors"].values())} {c["errors"] or ""}')
+                     f'目录改名/移走待重跑 {c["moved"]}，清理中断残留 {c["cleaned"]}，活 overlay 层跳过 {c["mounted"]}，原项已变化而跳过 {c["changed"]}，硬链接跳过 {c["linked"]}，错误 {sum(c["errors"].values())} {c["errors"] or ""}')
         for line in self.notes:self.out('  注意：'+line)
-        if self.only in (None,'platform') and not any(c['errors'] for phase,c in counts.items() if not phase.startswith(('7','9'))):
+        if self.only in (None,'platform') and not any(c['errors'] or c['mounted'] or c['changed'] or c['moved'] for (group,phase),c in counts.items() if group=='platform'):
             self.mark_migrated(folder)
         self.usage('完成后')
         self.leftovers(protected)
@@ -308,27 +386,20 @@ class Migration:
 
     @staticmethod
     def merge(total,counts):
-        for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets'):total[key]+=counts[key]
+        for key in ('directories','files','skipped','linked','symlinks','whiteouts','fifos','sockets','changed','cleaned','mounted','moved'):total[key]+=counts[key]
         for key,value in counts['errors'].items():total['errors'][key]=total['errors'].get(key,0)+value
 
-    def tag_file(self,path,value,total,linked=False):
+    def tag_file(self,path,value,total,linked=False,reclaim=()):
         info=os.lstat(path)
         if not stat.S_ISREG(info.st_mode):
             if stat.S_ISSOCK(info.st_mode):total['sockets']+=1;return
             parent=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-            temporary='.quota-'+uuid.uuid4().hex
-            try:
-                os.mkdir(temporary,0o700,dir_fd=parent)
-                staging=path.parent/temporary;self.q.tag_dir(staging,value)
-                child=os.open(staging,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-                try:self.q.rebuild_special(path.name,parent,total,staging=child)
-                finally:os.close(child)
-            finally:
-                os.rmdir(temporary,dir_fd=parent);os.close(parent)
+            try:self.q.rebuild_staged(path.name,parent,value,total)
+            finally:os.close(parent)
             return
         fd=os.open(path,self.q.FILE_FLAGS)
         try:
-            if linked and os.fstat(fd).st_nlink>1 and self.q.projid(fd)!=0:total['linked']+=1
+            if linked and os.fstat(fd).st_nlink>1 and self.q.projid(fd) not in {0,*reclaim}:total['linked']+=1
             else:self.q.setx(fd,value);total['files']+=1
         finally:os.close(fd)
 
@@ -348,31 +419,49 @@ class Migration:
             os.close(fd)
 
     def leftovers(self,protected,limit=20):
-        """Largest directory trees still on ID 0; container-type folders are walked, not listed."""
-        sizes={}
+        """Largest ID-0 trees and registered project/dataset trees without inherit."""
+        registry=self.q.read(self.root/'quota')['ids']
+        inheriting={value:key for key,value in registry.items() if key.startswith(('d:','p:'))}
+        sizes={};incomplete={}
         for mount in self.mounts:
             device=os.stat(mount).st_dev;roots={}
-            for top,dirs,files,fd in os.fwalk(mount,follow_symlinks=False):
-                info=os.fstat(fd)
-                try:value=self.q.projid(fd)
-                except OSError:value=0
-                if (info.st_dev,info.st_ino) in protected:root=None
-                elif value:dirs[:]=[];continue
-                else:root=roots.get(os.path.dirname(top)) or top
-                roots[top]=root;kept=[]
-                for name in dirs:
-                    try:
-                        if os.stat(name,dir_fd=fd,follow_symlinks=False).st_dev==device:kept.append(name)
-                    except OSError:pass
-                dirs[:]=kept
-                if root is None:continue
-                for name in files:
-                    try:child=os.stat(name,dir_fd=fd,follow_symlinks=False)
-                    except OSError:continue
-                    if stat.S_ISREG(child.st_mode):sizes[root]=sizes.get(root,0)+child.st_blocks*512
+            rootfd=os.open(mount,self.q.DIR_FLAGS)
+            walker=self.q.walk_dirs(rootfd,str(mount),onerror=lambda error:self.out(f'余留目录诊断跳过无法读取的目录：{error}'))
+            try:
+                for top,dirs,files,fd in walker:
+                    info=os.fstat(fd)
+                    try:flags,_,_,value,_=self.q.getx(fd)
+                    except OSError:flags=value=0
+                    if (info.st_dev,info.st_ino) in protected:root=None
+                    elif value in inheriting:
+                        # Traverse tagged ancestors too: a pending child can have moved here.
+                        root=None if flags&self.q.FS_XFLAG_PROJINHERIT else top
+                        if root is not None:incomplete[root]=inheriting[value];sizes.setdefault(root,0)
+                    elif value:dirs.clear();continue
+                    else:root=roots.get(os.path.dirname(top)) or top
+                    roots[top]=root;kept={}
+                    for name in dirs:
+                        try:
+                            if os.stat(name,dir_fd=fd,follow_symlinks=False).st_dev==device:kept[name]=dirs[name]
+                        except OSError:pass
+                    dirs.clear();dirs.update(kept)
+                    if root is None:continue
+                    for name in files:
+                        try:child=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                        except OSError:continue
+                        if stat.S_ISREG(child.st_mode):sizes[root]=sizes.get(root,0)+child.st_blocks*512
+            finally:
+                try:walker.close()
+                finally:os.close(rootfd)
         rows=sorted(sizes.items(),key=lambda row:-row[1])[:limit]
-        self.out(f'仍为编号 0 的最大目录（前 {limit}，按块计）：' if rows else '没有仍为编号 0 的目录。')
-        for path,size in rows:self.out(f'    {size:>18,}  {path}')
+        self.out(f'仍为编号 0 或未完成继承的最大目录（前 {limit}，按块计）：' if rows else '没有仍为编号 0 或未完成继承的目录。')
+        for path,size in rows:
+            key=incomplete.get(path);group='datasets' if key and key.startswith('d:') else 'platform'
+            note=f'（未完成继承，需重跑 --only {group}）' if key else ''
+            self.out(f'    {size:>18,}  {path}{note}')
+
+
+def terminate(signum,frame):raise SystemExit(128+signum)
 
 
 def main(argv=None):
@@ -385,6 +474,7 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if os.geteuid()!=0:raise SystemExit('请用 root 运行：打标需要改动容器用户的文件。')
     os.umask(0o077)
+    for signum in (signal.SIGTERM,signal.SIGHUP):signal.signal(signum,terminate)
     return Migration(json.loads(args.config.resolve(strict=True).read_text()),args.node_dir,only=args.only).run(args.dry_run)
 
 

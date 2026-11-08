@@ -76,19 +76,25 @@ def dataset_root(config,dataset,create=False):
     fd=open_directory(base)
     try:
         if create:
-            # Serialize publication, including the case of an existing empty dataset.
-            fcntl.flock(fd,fcntl.LOCK_EX)
             try:os.stat(dataset,dir_fd=fd,follow_symlinks=False);exists=True
             except FileNotFoundError:exists=False
             if not exists:
-                temporary='.dataset-'+uuid.uuid4().hex
-                os.mkdir(temporary,0o700,dir_fd=fd)
+                s=module('project-store');folder=s.private_dir(root(config,'root')/'quota',create=True)
+                lock=os.open(folder/'datasets.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
                 try:
-                    q=module('quota-ids');q.assign(config,q.dataset_key(dataset),base/temporary)
-                    os.rename(temporary,dataset,src_dir_fd=fd,dst_dir_fd=fd)
-                finally:
-                    try:os.rmdir(temporary,dir_fd=fd)
-                    except FileNotFoundError:pass
+                    s.wait_project_lock(lock,fcntl.LOCK_EX,'数据集正在创建，请稍后重试')
+                    try:os.stat(dataset,dir_fd=fd,follow_symlinks=False);exists=True
+                    except FileNotFoundError:exists=False
+                    if not exists:
+                        temporary='.dataset-'+uuid.uuid4().hex
+                        os.mkdir(temporary,0o700,dir_fd=fd)
+                        try:
+                            q=module('quota-ids');q.assign(config,q.dataset_key(dataset),base/temporary)
+                            os.rename(temporary,dataset,src_dir_fd=fd,dst_dir_fd=fd)
+                        finally:
+                            try:os.rmdir(temporary,dir_fd=fd)
+                            except FileNotFoundError:pass
+                finally:os.close(lock)
         child=os.open(dataset,DIR_FLAGS,dir_fd=fd)
         try:
             if os.fstat(child).st_dev!=os.fstat(fd).st_dev:raise ValueError('数据集不能跨出配置的数据盘。')

@@ -94,7 +94,7 @@ export default {features:[],id:'G16',title:'项目编号记账：真实配额盘
     const after=await inspect({layer});
     ctx.check('podman rm 已删除该容器层',after.attrs.layer===null,{layer,attrs:after.attrs});
   }],['迁移工具 dry-run 与正式执行',async()=>{
-    // 专用项目：共享项目的容器层可能被别的步骤留下的终端一直挂载着，生产迁移在维护窗口里卸盘后进行，不会有活的 overlay。
+    // 专用项目保留旧特殊 inode；首轮验证共享项目的活层跳过，再停止 podman 完成实际迁移。
     const legacy=ctx.name('legacy');
     await call(ctx,member,'projects.create',{machine:ctx.machine,project:legacy});
     await job(['true'],'专用项目容器已建好',legacy);
@@ -110,7 +110,27 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     const migrate=async(...args)=>(await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',source,'--config','/etc/gpuq-console/node-install.json',...args)).stdout;
     const plan=await migrate('--dry-run');ctx.note(plan.split('\n').slice(0,40).join('\n'));
     ctx.check('dry-run 打印计划且未改动',plan.includes('仅打印计划')&&plan.includes('4 项目文件'),plan.slice(0,2000));
+    const legacyHead=await inspect({},{dev:`{workspacesRoot}/${owner}/${legacy}/oci.json`}),legacyLayer=legacyHead.oci.dev.layer;
+    const first=await migrate('--only','platform');ctx.note(first.split('\n').slice(-40).join('\n'));
+    const mounted=text=>[...text.matchAll(/活 overlay 层跳过 (\d+)/g)].reduce((sum,match)=>sum+Number(match[1]),0);
+    const skipped=first.split('\n').filter(line=>line.includes('注意：容器层仍有活 overlay'));
+    ctx.check('首轮 platform 仅跳过共享项目仍挂载的层',mounted(first)===1&&skipped.length===1&&skipped[0].endsWith(facts.oci.dev.layer),{skipped,mounted:mounted(first)});
+    const unknown=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.size===null&&p?.environment?.size===null;});
+    ctx.check('跳过活层时输出与环境仍未知',unknown.projects.some(p=>p.project===name&&p.outputs.size===null&&p.environment.size===null));
+    // 直接执行维护文档：先尝试 system migrate，再完整结束 OCI 挂载空间持有者。
+    const guide=await readFile(resolve(dirname(ctx.stack.file),'src/docs/NODE_RELEASE_BUILD.md'),'utf8');
+    const stop=guide.match(/python3 -I -B - \/etc\/gpuq-console\/node-install.json <<'PY'\n([\s\S]*?)\nPY\n/);
+    if(!stop)throw Error('维护文档缺少停止 OCI 挂载空间的脚本');
+    const stopped=await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',stop[1],'/etc/gpuq-console/node-install.json');
+    ctx.note(stopped.stdout);
     const done=await migrate('--only','platform');ctx.note(done.split('\n').slice(-40).join('\n'));
+    ctx.check('停止 podman 后 platform 不再跳过活层',mounted(done)===0,done.slice(-5000));
+    const completed=await node('python3','-I','-B','-c',`import json,os,sys;print(json.dumps(os.path.isfile(sys.argv[1]+'/quota/migrated.json')))`,facts.config.root);
+    ctx.check('platform 成功写出 migrated.json',completed);
+    const actual=await inspect({diff:legacyLayer+'/diff',work:legacyLayer+'/work'}),env=actual.ids[`p:${owner}/${legacy}:env`];
+    for(const part of ['diff','work'])ctx.check('旧层 '+part+' 实际迁移到环境号并继承',typeof env==='number'&&JSON.stringify(actual.attrs[part])===JSON.stringify([env,true]),actual.attrs);
+    const known=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.complete&&p?.environment?.complete;});
+    ctx.check('平台迁移标记写入后输出与环境 complete',known.projects.some(p=>p.project===name&&p.outputs.complete&&p.environment.complete));
     const line=done.split('\n').find(l=>l.startsWith('完成后 /data1：'));const match=line?.match(/已用 ([\d,]+) 字节，未登记（编号 0）([\d,]+) 字节/);
     const [used,untracked]=match?match.slice(1).map(v=>Number(v.replaceAll(',',''))):[0,Infinity];
     ctx.check('迁移后 /data1 未登记接近 0',untracked<=Math.max(64*1024**2,used*0.02),{line,used,untracked});
@@ -118,12 +138,54 @@ q.tag_tree(head['layer'],0,inherit=False)`,owner,legacy);
     ctx.check('迁移后工作区盘列出平台运行数据',after.disks.find(d=>d.roles.includes('workspace')).items.some(i=>i.kind==='platform'));
     await job(['sh','-c','mkdir /usr/share/doc && echo restored > /usr/share/doc/gray-quota && echo "# after migration" >> /etc/profile'],'迁移后可在镜像 whiteout 原路径 mkdir 并写文件',legacy);
     await job(['python3','-c',"import os,stat; os.rename('/tmp/gray-quota-legacy-link','/tmp/gray-quota-link-moved'); assert os.readlink('/tmp/gray-quota-link-moved')=='/etc/profile'; assert stat.S_ISFIFO(os.stat('/tmp/gray-quota-legacy-fifo').st_mode)"],'迁移前的符号链接迁移后可在同目录 rename，FIFO 保留',legacy);
-    const known=await usage(v=>{const p=v.projects.find(p=>p.project===name&&(p.ownerId||p.userId)===owner);return p?.outputs?.complete&&p?.environment?.complete;});
-    ctx.check('平台迁移标记写入后输出与环境已知',known.projects.some(p=>p.project===name&&p.outputs.complete&&p.environment.complete));
     // 灰度节点本来没有外部目录：建一个平台外的旧目录，验收整棵树只打编号、不设继承。
     const outside='/data2/gray-quota-external';
     await stackExec(ctx.stack,'gray-node-1','sh','-c',`mkdir -p ${outside}/sub && echo legacy > ${outside}/sub/file && ln -sfn sub ${outside}/link && chown -R gpuops:gpuops ${outside}`);
-    for(const group of ['datasets','external']){const report=await migrate('--only',group);ctx.check(group+' 分组迁移成功',report.includes('['+group+']'),report.slice(-2000));}
+    // 在真实 quota 盘上暂停 train/ 的处理，val/ 的旧上传仍应能提交。
+    const online=ctx.name('online'),base=facts.config.datasetsRoot+'/'+online,barrier='/run/gray-quota-online-'+ctx.key(),key=ctx.key(),bytes=Buffer.from('online upload');
+    await stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',`import os,sys
+from pathlib import Path
+root=Path(sys.argv[1]);outside=Path(sys.argv[2])
+for path in (root,root/'train',root/'val'):path.mkdir(mode=0o700);os.chown(path,1001,1001)
+for path in (root/'train/hold',root/'val/shared'):path.write_bytes(b'legacy');os.chown(path,1001,1001)
+os.link(root/'val/shared',outside/'shared')`,base,outside);
+    const upload={machine:ctx.machine,area:'dataset',dataset:online,path:'val/upload.txt',key,totalSize:bytes.length};
+    await call(ctx,member,'data.upload.begin',upload);
+    await call(ctx,member,'data.upload.chunk',{machine:ctx.machine,key,offset:0,data:bytes.toString('base64')});
+    const externalFirst=await migrate('--only','external');ctx.check('external 可先运行',externalFirst.includes('[external]'));
+    const claimed=await inspect({shared:outside+'/shared'});ctx.check('external 先运行时共享硬链接计入外部编号',typeof claimed.ids['x:'+outside]==='number'&&claimed.attrs.shared?.[0]===claimed.ids['x:'+outside],claimed.attrs);
+    const script=`import json,os,signal,time
+from pathlib import Path
+ns={'__name__':'online_migrate','__file__':'quota-migrate.py'};exec(${JSON.stringify(source)},ns)
+for signum in (signal.SIGTERM,signal.SIGHUP):signal.signal(signum,ns['terminate'])
+config=json.load(open('/etc/gpuq-console/node-install.json'));tool=ns['Migration'](config,'/usr/local/libexec/stargate',only='datasets')
+ready=Path(${JSON.stringify(barrier+'.ready')});resume=Path(${JSON.stringify(barrier+'.resume')});hold=Path(${JSON.stringify(base+'/train/hold')});inode=hold.stat().st_ino
+original=tool.q.setx;paused=False
+def setx(fd,value,inherit=None):
+    global paused
+    if not paused and os.fstat(fd).st_ino==inode:
+        paused=True;ready.touch();deadline=time.monotonic()+60
+        while not resume.exists():
+            if time.monotonic()>deadline:raise TimeoutError('online upload did not release the walker')
+            time.sleep(.02)
+    return original(fd,value,inherit)
+tool.q.setx=setx
+tool.run(False)`;
+    const running=stackExec(ctx.stack,'gray-node-1','python3','-I','-B','-c',script).then(value=>({value}),error=>({error}));
+    let failure;
+    try{
+      await waitFor(()=>node('python3','-I','-B','-c',`import json,os;print(json.dumps(os.path.exists(${JSON.stringify(barrier+'.ready')})))`),Boolean,{timeoutMs:30000,intervalMs:200,what:'datasets walker 到达 train/'});
+      const finished=await call(ctx,member,'data.upload.finish',{machine:ctx.machine,key});
+      ctx.check('在线打标 train/ 时 val/ 的既有上传可原子提交',finished.state==='COMPLETE'&&finished.offset===bytes.length,finished);
+    }catch(error){failure=error;}
+    finally{await stackExec(ctx.stack,'gray-node-1','touch',barrier+'.resume');}
+    const migrated=await running;
+    await stackExec(ctx.stack,'gray-node-1','rm','-f','--',barrier+'.ready',barrier+'.resume');
+    if(failure)throw failure;if(migrated.error)throw migrated.error;
+    ctx.check('datasets 分组迁移成功',migrated.value.stdout.includes('[datasets]'));
+    const onlineAttrs=await inspect({val:base+'/val',uploaded:base+'/val/upload.txt',shared:outside+'/shared'}),datasetId=onlineAttrs.ids['d:'+online];
+    ctx.check('在线上传与硬链接最终归数据集编号',typeof datasetId==='number'&&onlineAttrs.attrs.val?.[0]===datasetId&&onlineAttrs.attrs.uploaded?.[0]===datasetId&&onlineAttrs.attrs.shared?.[0]===datasetId,onlineAttrs.attrs);
+    const externalAfter=await migrate('--only','external');ctx.check('external 可在 datasets 后重跑',externalAfter.includes('[external]'));
     const tagged=await inspect({outside,sub:outside+'/sub',file:outside+'/sub/file'});const external=tagged.ids['x:'+outside];
     for(const key of ['outside','sub','file'])ctx.check('外部目录 '+key+' 只打编号、不设继承',typeof external==='number'&&external>0&&JSON.stringify(tagged.attrs[key])===JSON.stringify([external,false]),{external,attrs:tagged.attrs[key]});
   }]]);
