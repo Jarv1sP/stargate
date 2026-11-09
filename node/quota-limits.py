@@ -120,6 +120,10 @@ def nonfiles_ids(root,workspace):
                 except OSError as error:
                     if error.errno!=errno.ELOOP:raise
         finally:os.close(fd)
+    for path in (root,workspace):
+        fd=s.open_directory(path)
+        try:denied.add(q.projid(fd))
+        finally:os.close(fd)
     children(Path(root)/'outputs');children(Path(workspace)/'.oci')
     return denied
 

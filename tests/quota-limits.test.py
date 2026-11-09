@@ -82,12 +82,23 @@ class Limits(unittest.TestCase):
         kernel.set=set_limit
         args=['--enabled','--account','fixture','--root',str(root),'--workspaces-root',str(workspace),
               '--state-dir',str(state),'--default-bytes','100000','--min-bytes','1000','--max-bytes','1000000','--headroom-bytes','10000',str(self.base)]
-        with patch.object(limits.os,'geteuid',return_value=0),patch.object(limits.os,'fstat',side_effect=fstat),patch.object(Path,'read_text',read),patch.object(limits,'Kernel',return_value=kernel),patch.object(limits.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=123,pw_gid=123)),patch.object(limits,'project_id',return_value=1001),patch.object(limits,'protected_ids',return_value={0}),patch.object(limits.s,'publish') as publish,patch.object(limits.time,'time',return_value=100):
+        with patch.object(limits.os,'geteuid',return_value=0),patch.object(limits.os,'fstat',side_effect=fstat),patch.object(Path,'read_text',read),patch.object(limits,'Kernel',return_value=kernel),patch.object(limits.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=123,pw_gid=123)),patch.object(limits,'project_id',return_value=1001),patch.object(limits,'protected_ids',return_value={0}),patch.object(limits,'nonfiles_ids',return_value={0}),patch.object(limits.s,'publish') as publish,patch.object(limits.time,'time',return_value=100):
             self.assertEqual(limits.main(args),0);self.assertEqual(limits.main(args),0)
             self.assertEqual(publish.call_args.kwargs,{'name':'quota-limits.json'})
         self.assertEqual(events,['enable',160000,'enable',160000])
         value=json.loads((state/'state.json').read_text())
         self.assertEqual(value['roots'][str(root)]['projects']['1001']['graceUntil'],100+7*86400)
+
+    def test_actual_external_and_platform_roots_override_forged_registry_labels(self):
+        root=Path(self.config['root']);workspace=Path(self.config['workspacesRoot'])
+        external=self.base/'external';external.write_text('untouched')
+        outputs=root/'outputs';outputs.mkdir();job=outputs/'job';job.mkdir()
+        images=workspace/'.oci';images.mkdir();engine=images/'alice';engine.mkdir()
+        ids={external.stat().st_ino:1001,root.stat().st_ino:1000,engine.stat().st_ino:1002,job.stat().st_ino:1003}
+        with patch.object(limits.q,'projid',side_effect=lambda fd:ids.get(os.fstat(fd).st_ino,0)):
+            denied=limits.protected_ids([self.base],[root,workspace])|limits.nonfiles_ids(root,workspace)
+        self.assertTrue({0,1000,1001,1002,1003}<=denied)
+        self.assertEqual(self.apply(denied=denied)[0],[])
 
     def test_node_sync_admin_only_replaces_whole_list(self):
         sync=f.module('project-storage-limits').sync;args={'limits':[{'ownerId':'alice','project':'demo','bytes':5_000_000_000}]}
