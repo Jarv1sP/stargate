@@ -54,9 +54,11 @@ for line in kinds:
         if kind=='ext4' and initial is False:
             pre=container(path);assert pre['errno'] is None,pre
         else:pre=None
+        print('quota-limits-lab '+json.dumps({'point':point,'filesystem':kind,'device':device,'initialEnforcement':initial,'before':pre}),file=sys.stderr,flush=True)
         if kind=='ext4':kernel.enable(device);kernel.enable(device)
         assert sampler.enforcement(device) is True,(kind,'enforcement flag')
         post=container(path)
+        print('quota-limits-lab '+json.dumps({'filesystem':kind,'after':post}),file=sys.stderr,flush=True)
         expected=122 if kind=='ext4' else 28
         assert post['errno']==expected,(kind,post)
         assert 0<post['total']<=cap,(kind,post)

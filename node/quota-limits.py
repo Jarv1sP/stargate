@@ -34,7 +34,8 @@ class Kernel:
     def enable(self,device):
         try:self.call(Q_QUOTAON,device)
         except OSError as error:
-            if error.errno!=errno.EBUSY:raise
+            # Kernels return EEXIST or EBUSY when enforcement is already on.
+            if error.errno not in (errno.EBUSY,errno.EEXIST) or s.enforcement(device,self.libc) is not True:raise
 
 
 def read_at(folder,name,missing=None):

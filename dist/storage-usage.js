@@ -10,7 +10,7 @@ export function filesLimitText(row){
   if(row?.desiredLimitBytes==null&&row?.limitBytes==null)return text;
   const applied=row.enforced===true&&row.limitBytes>0?row.limitBytes:null;
   text+=' / 上限 '+storageBytes(applied??row.desiredLimitBytes);
-  if(!applied)text+=' · 上限未生效';
+  if(!applied)text+=row.enforced==null?' · 上限状态未知':' · 上限未生效';
   const expected=row.graceUntil?row.effectiveLimitBytes:row.desiredLimitBytes;
   if(expected!=null&&(!applied||Math.ceil(expected/1024)*1024!==applied))text+=' · 待生效';
   if(row.graceUntil&&row.size>row.desiredLimitBytes)text+=' · 超限，宽限至 '+new Date(row.graceUntil*1000).toLocaleDateString('zh-CN');

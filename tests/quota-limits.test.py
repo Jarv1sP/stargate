@@ -61,7 +61,10 @@ class Limits(unittest.TestCase):
         command,number,row=calls[-1];self.assertEqual((command,number,row.bhardlimit,row.bsoftlimit,row.valid,row.ihardlimit),(limits.Q_SETQUOTA,1000,1,0,1,0))
         with self.assertRaises(ValueError):kernel.set('/dev/test',0,100)
         kernel.enable('/dev/test');kernel.enable('/dev/test');self.assertEqual(len(calls),3)
-        kernel.call=lambda *args:(_ for _ in ()).throw(OSError(errno.EBUSY,'on'));kernel.enable('/dev/test')
+        for code in (errno.EBUSY,errno.EEXIST):
+            kernel.call=lambda *args:(_ for _ in ()).throw(OSError(code,'on'))
+            with patch.object(limits.s,'enforcement',return_value=True):kernel.enable('/dev/test')
+            with patch.object(limits.s,'enforcement',return_value=False),self.assertRaises(OSError):kernel.enable('/dev/test')
     def test_service_input_links_and_nonregular_files_refused(self):
         root=Path(self.config['root']);quota=root/'quota';quota.mkdir();(quota/'ids.json').symlink_to(self.base/'outside')
         with self.assertRaises(OSError):limits.inputs(root)

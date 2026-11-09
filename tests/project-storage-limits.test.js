@@ -36,6 +36,8 @@ test('UI and CLI share applied, pending, disabled, 90 percent and grace states; 
  assert.match(filesLimitText({...base,size:950,desiredLimitBytes:1024}),/≥90%/);
  assert.match(filesLimitText({...base,size:1024,desiredLimitBytes:1024}),/超限/);
  assert.match(filesLimitText({...base,enforced:false}),/上限未生效.*待生效/);
+ assert.match(filesLimitText({...base,enforced:null}),/上限状态未知/);
+ assert.doesNotMatch(filesLimitText({...base,enforced:null}),/上限未生效/);
  assert.match(filesLimitText({...base,desiredLimitBytes:2048}),/待生效/);
  assert.match(filesLimitText({...base,size:120,desiredLimitBytes:100,graceUntil:1800000000,effectiveLimitBytes:1024}),/超限，宽限至/);
  const report=quotaReport({machine,projects:{projects:[{...base,project:'demo',ownerId:'a',outputs:{size:999999,complete:true}}]}},{project:'demo',ownerId:'a'});
