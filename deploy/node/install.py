@@ -412,7 +412,11 @@ class Installer:
         except Exception:
             # Repair files and the selector even if the broken unit cannot stop.
             pass
+        # Kernel limits survive rollback. Keep the trusted root helper bundle
+        # runnable so an operator can still use --clear after restoring an old release.
+        quota_helpers={self.libexec/Path(name).name for name in ROOT_PROGRAMS}
         for item in reversed(record['files']):
+            if Path(item['path']) in quota_helpers:continue
             if item['data'] is None:
                 Path(item['path']).unlink(missing_ok=True)
             else:

@@ -106,7 +106,14 @@ try{
   assert.match(await first.locator('[data-project-row=render]').innerText(),/上限未生效.*待生效/);
   if(width<=390)assert.ok(await first.locator('.dr-ct .dr-main').evaluateAll(nodes=>nodes.every(node=>node.getBoundingClientRect().width>=node.parentElement.clientWidth-20)),'mobile project text keeps the full row width beside administrator actions');
   await page.screenshot({path:join(shots,`limits-${role}-${width}-disabled.png`),fullPage:true,animations:'disabled'});
-  for(const value of fixture)for(const key of ['limitBytes','desiredLimitBytes','effectiveLimitBytes','enforced','graceUntil'])delete value[key];
+  // A processed below-range request reports the actual target instead of waiting forever.
+  Object.assign(fixture[1],{requestedLimitBytes:500_000_000,desiredLimitBytes:1_000_000_000,effectiveLimitBytes:1_000_001_536,limitBytes:1_000_001_536,limitBlockBytes:4096,enforced:true});
+  service.db.prepare('INSERT INTO project_storage_limits_v2(owner_id,machine,project,bytes,updated_by,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,machine,project) DO UPDATE SET bytes=excluded.bytes').run('builtin-admin','gpu-1','render',500_000_000,'admin',new Date().toISOString());
+  service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
+  await first.locator('[data-storage-refresh]').click();await page.waitForFunction(()=>document.querySelector('[data-storage-machine=gpu-1]')?.dataset.loading==='false');
+  const clamped=await first.locator('[data-project-row=render]').innerText();assert.match(clamped,/已按节点范围调整/);assert.doesNotMatch(clamped,/待生效/);
+  await page.screenshot({path:join(shots,`limits-${role}-${width}-clamped.png`),fullPage:true,animations:'disabled'});
+  for(const value of fixture)for(const key of ['limitBytes','requestedLimitBytes','desiredLimitBytes','effectiveLimitBytes','enforced','graceUntil','limitBlockBytes'])delete value[key];
   service.db.prepare('DELETE FROM project_storage_limits_v2').run();service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
   // People: projects (by creator, including the trashed one) plus images.
   assert.equal(await text(first.locator('[data-owner-row=fixture-member] [data-owner-total]')),'912 GiB');assert.equal(await text(first.locator('[data-owner-row=builtin-admin] [data-owner-total]')),'155 GiB');

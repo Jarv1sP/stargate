@@ -81,10 +81,15 @@ class Sample:
         number=next((str(number) for number,name in self.names.items() if name==key),None)
         quota=(fs.get('ids') or {}).get(number,{})
         status=(self.limits.get('projects') or {}).get(key,{})
-        desired=next((row['bytes'] for row in self.desired.get('limits',[]) if module('quota-ids').files_key(row.get('ownerId'),row.get('project'))==key),None)
+        desired=next((row['bytes'] for row in self.desired.get('limits',[]) if isinstance(row,dict) and type(row.get('bytes')) is int and 0<row['bytes']<=2**53-1 and module('quota-ids').files_key(row.get('ownerId'),row.get('project'))==key),None)
+        requested=desired if desired is not None else self.limits.get('defaultLimitBytes',100_000_000_000)
+        # A newer request stays pending until the root applier processes it. Its
+        # clamped target is authoritative only for that same requested value.
+        current=status if status.get('requestedLimitBytes')==requested else {}
         return {'limitBytes':quota.get('limitBytes'), 'enforced':fs.get('enforced'),
-                'desiredLimitBytes':desired if desired is not None else status.get('desiredLimitBytes',self.limits.get('defaultLimitBytes',100_000_000_000)),
-                'effectiveLimitBytes':status.get('effectiveLimitBytes'), 'graceUntil':status.get('graceUntil')}
+                'requestedLimitBytes':requested,'desiredLimitBytes':current.get('desiredLimitBytes',requested),
+                'effectiveLimitBytes':current.get('effectiveLimitBytes'),'graceUntil':current.get('graceUntil'),
+                'limitBlockBytes':fs.get('blockBytes') or current.get('limitBlockBytes')}
 
     def items(self,mount,used):
         q=module('quota-ids');projects={};rows=[];untracked=0

@@ -67,7 +67,7 @@ def filesystems(points,mountinfo,read=None):
         row={'mountPoints':[str(point)],'device':source,'quota':False,'enforced':None,'ids':{}}
         try:
             v=os.statvfs(point)
-            row.update(totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
+            row.update(blockBytes=v.f_frsize or v.f_bsize,totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
             if source is None:raise OSError(errno.ENODEV,'device not found in mountinfo')
             values=usage(source,limits=True) if read is None else read(source)
             row['ids']={str(key):value if isinstance(value,dict) else {'bytes':value[0],'inodes':value[1]} for key,value in sorted(values.items())}

@@ -12,7 +12,8 @@ export function filesLimitText(row){
   text+=' / 上限 '+storageBytes(applied??row.desiredLimitBytes);
   if(!applied)text+=row.enforced==null?' · 上限状态未知':' · 上限未生效';
   const expected=row.graceUntil?row.effectiveLimitBytes:row.desiredLimitBytes;
-  if(expected!=null&&(!applied||Math.ceil(expected/1024)*1024!==applied))text+=' · 待生效';
+  if(expected!=null&&(!applied||Math.ceil(expected/(row.limitBlockBytes||1024))*(row.limitBlockBytes||1024)!==applied))text+=' · 待生效';
+  if(row.requestedLimitBytes!=null&&row.desiredLimitBytes!=null&&row.requestedLimitBytes!==row.desiredLimitBytes)text+=' · 已按节点范围调整（申请 '+storageBytes(row.requestedLimitBytes)+'）';
   if(row.graceUntil&&row.size>row.desiredLimitBytes)text+=' · 超限，宽限至 '+new Date(row.graceUntil*1000).toLocaleDateString('zh-CN');
   else if(applied&&row.size>=applied)text+=' · 超限';
   else if(applied&&row.size>=applied*0.9)text+=' · 已用 ≥90%';
@@ -22,7 +23,7 @@ const part=row=>Number.isFinite(row?.size)?{size:row.size,complete:row.complete!
 // Unknown parts make a total a lower bound; all parts unknown stays unknown.
 const total=parts=>{const known=parts.filter(row=>Number.isFinite(row.size));return {size:known.length?known.reduce((sum,row)=>sum+row.size,0):null,complete:parts.every(row=>Number.isFinite(row.size)&&row.complete)};};
 // A project's files, its job outputs on this server and its own container environment.
-export function projectUsage(row){const files={...part(row),...Object.fromEntries(['limitBytes','enforced','desiredLimitBytes','effectiveLimitBytes','graceUntil'].filter(key=>row?.[key]!==undefined).map(key=>[key,row[key]]))},outputs=part(row?.outputs),environment=part(row?.environment);return {files,outputs,environment,total:total([files,outputs,environment])};}
+export function projectUsage(row){const files={...part(row),...Object.fromEntries(['limitBytes','enforced','requestedLimitBytes','desiredLimitBytes','effectiveLimitBytes','graceUntil','limitBlockBytes'].filter(key=>row?.[key]!==undefined).map(key=>[key,row[key]]))},outputs=part(row?.outputs),environment=part(row?.environment);return {files,outputs,environment,total:total([files,outputs,environment])};}
 export const usagePartsText=usage=>`${filesLimitText(usage.files)} · 输出 ${usageText(usage.outputs)} · 环境 ${usageText(usage.environment)}`;
 // A shared project still names the person who created it.
 export const projectOwnerLabel=row=>{const name=row?.ownerName||row?.ownerId||'未知';return row?.shared?'共用 · 创建人 '+name:name;};

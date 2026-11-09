@@ -133,27 +133,31 @@ def desired_limits(value):
     rows=value['limits'];result={}
     if not isinstance(rows,list):raise ValueError('限额清单必须是列表')
     for row in rows:
-        key=f"p:{row['ownerId']}/{row['project']}:files";amount=row['bytes']
-        if not FILES.fullmatch(key) or type(amount) is not int or amount<=0:raise ValueError('项目限额无效')
+        if not isinstance(row,dict):continue
+        owner,project,amount=row.get('ownerId'),row.get('project'),row.get('bytes')
+        if not isinstance(owner,str) or not isinstance(project,str):continue
+        key=f'p:{owner}/{project}:files'
+        if not FILES.fullmatch(key) or type(amount) is not int or not 0<amount<=2**53-1:continue
         result[key]=amount
     return result
 
 
-def apply(registry,desired,ledger,workspace,device,kernel,*,default,minimum,maximum,headroom,now,denied=(),clear=False):
+def apply(registry,desired,ledger,workspace,device,kernel,*,default,minimum,maximum,headroom,now,denied=(),clear=False,block_bytes=1024):
     """Plan state is persisted by the caller before any kernel write."""
     names=registry['ids'];next_id=registry['next'];kinds=ledger.setdefault('kinds',{});projects=ledger.setdefault('projects',{})
     if clear:
-        names={key:int(number) for number,key in kinds.items() if FILES.fullmatch(key)}
-        next_id=max([1000,*names.values()])+1
+        entries=[(key,int(number)) for number,key in kinds.items() if FILES.fullmatch(key)]
+        next_id=max([1000,*[number for _,number in entries]])+1
+    else:entries=list(names.items())
     counts={}
-    for number in names.values():counts[number]=counts.get(number,0)+1
+    for _,number in entries:counts[number]=counts.get(number,0)+1
     initial=not ledger.get('initialized',False)
     actions=[];status={}
-    for key,number in names.items():
+    for key,number in entries:
         if type(number) is not int or not 1000<=number<min(next_id,2**32):continue
         token=str(number);match=FILES.fullmatch(key);kind=key if match else 'excluded'
         # Once an ID is known as anything else, relabeling it can never cap it.
-        if number in denied or counts[number]!=1:kind='excluded'
+        if not clear and (number in denied or counts[number]!=1):kind='excluded'
         if token not in kinds:
             if match and kind!='excluded':
                 path=Path(workspace)/match[1]/match[2]
@@ -162,7 +166,11 @@ def apply(registry,desired,ledger,workspace,device,kernel,*,default,minimum,maxi
                 except OSError:continue
             kinds[token]=kind
         if not match or kinds[token]!=key or kind=='excluded':continue
-        row=kernel.get(device,number);target=max(minimum,min(maximum,desired.get(key,default)))
+        try:row=kernel.get(device,number)
+        except OSError as error:
+            if error.errno!=errno.ENOENT:raise
+            row=Dquot() # XFS has no dquot for a purged ID with zero usage/limits.
+        requested=desired.get(key,default);target=max(minimum,min(maximum,requested))
         saved=projects.get(token)
         if saved is None:
             saved={'desiredBytes':target,'graceUntil':now+GRACE_SECONDS if initial and row.curspace>target else None,
@@ -170,8 +178,11 @@ def apply(registry,desired,ledger,workspace,device,kernel,*,default,minimum,maxi
         saved['desiredBytes']=target
         grace=saved['graceUntil'] if saved.get('graceUntil') and now<saved['graceUntil'] else None
         effective=0 if clear else max(target,saved['graceBytes']) if grace else target
-        if row.bhardlimit!=(effective+1023)//1024 or row.bsoftlimit:actions.append((device,number,effective))
-        status[key]={'desiredLimitBytes':target,'effectiveLimitBytes':effective,'graceUntil':grace}
+        quantum=max(1024,block_bytes)
+        effective=((effective+quantum-1)//quantum)*quantum
+        if row.bhardlimit!=effective//1024 or row.bsoftlimit:actions.append((device,number,effective))
+        status[key]={'requestedLimitBytes':requested,'desiredLimitBytes':target,'effectiveLimitBytes':effective,
+                     'limitBlockBytes':quantum,'graceUntil':grace}
     if not clear:ledger['initialized']=True
     return actions,status
 
@@ -216,8 +227,9 @@ def main(argv=None):
                 device=next(src for point,dev,src in sorted(table,key=lambda r:-len(r[0])) if dev==number and (workspace==point or workspace.startswith(point.rstrip('/')+'/')))
                 fs=next(line.split(' - ')[1].split()[0] for line in mountinfo.splitlines() if line.split()[2]==number)
                 ledger=state['roots'].setdefault(root,{})
+                volume=os.statvfs(workspace);block_bytes=volume.f_frsize or volume.f_bsize
                 actions,status=apply(registry,desired,ledger,workspace,device,kernel,default=a.default_bytes,minimum=a.min_bytes,
-                    maximum=a.max_bytes,headroom=a.headroom_bytes,now=now,denied=denied|nonfiles_ids(root,workspace),clear=a.clear)
+                    maximum=a.max_bytes,headroom=a.headroom_bytes,now=now,denied=denied|nonfiles_ids(root,workspace),clear=a.clear,block_bytes=block_bytes)
                 write_at(folder,'state.json',state)
                 # Repeat at every invocation/boot, never edit fstab. Clear never enables enforcement.
                 if a.enabled and not a.clear and fs=='ext4':kernel.enable(device)

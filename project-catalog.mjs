@@ -1,4 +1,4 @@
-import {installProjectStorageLimits} from './project-storage-limits.mjs';
+import {installProjectStorageLimits,projectLimitPresentation} from './project-storage-limits.mjs';
 import {UUID,selectFields} from './portal-request-validation.mjs';
 // Owner-scoped presentation only. No filesystem, release or run identities change.
 import {MACHINES} from './dist/model.js';
@@ -17,7 +17,7 @@ export function installProjectCatalog(service){
     const label=service.db.prepare('SELECT name,revision FROM project_labels_v2 WHERE owner_id=? AND machine=? AND project=?').get(owner,machine,row.project);
     const shared=service.db.prepare('SELECT shared FROM project_shared_v2 WHERE owner_id=? AND machine=? AND project=?').get(owner,machine,row.project);
     const group=service.db.prepare('SELECT g.id,g.name,g.revision,g.primary_machine,g.primary_project FROM project_group_members_v2 m JOIN project_groups_v2 g ON g.owner_id=m.owner_id AND g.id=m.group_id WHERE m.owner_id=? AND m.machine=? AND m.project=?').get(owner,machine,row.project);
-    return {...row,desiredLimitBytes:service.projectStorageLimit(owner,machine,row.project)??row.desiredLimitBytes??null,shared:shared?.shared===1,displayName:label?.name||row.project,displayNameRevision:label?.revision||0,
+    return {...row,...projectLimitPresentation(row,service.projectStorageLimit(owner,machine,row.project)),shared:shared?.shared===1,displayName:label?.name||row.project,displayNameRevision:label?.revision||0,
       logicalProjectId:group?.id??null,logicalProjectName:group?.name??null,
       ...(group?{logicalProjectRevision:group.revision,primaryInstance:group.primary_machine?{machine:group.primary_machine,project:group.primary_project}:null}:{})};
   };

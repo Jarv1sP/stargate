@@ -1,5 +1,5 @@
 """G16-only kernel experiment in disposable quota disks; never production."""
-import importlib.util,json,os,subprocess,sys
+import importlib.util,json,os,shutil,subprocess,sys
 from pathlib import Path
 
 def load(name):
@@ -72,8 +72,26 @@ print(json.dumps(m.require_workspace_space(Path(sys.argv[2]),needed=1024)))
 """
         reserve=json.loads(subprocess.check_output(['runuser','-u','gpuops','--','python3','-I','-B','-c',code,cfg['releaseRoot'],str(path)],text=True))
         assert reserve['availableBytes']>=64*1024**3,reserve
+        # Exercise the applier, not only raw Q_SETQUOTA, with values that are
+        # not multiples of the filesystem block size (100 GB is the default).
+        workspace=path/'rounding';project=workspace/'owner'/'decimal'
+        for directory in (project/'code',project/'home'):directory.mkdir(parents=True,exist_ok=True)
+        with (project/'code'/'usage').open('wb') as file:file.write(b'x'*8192);file.flush();os.fsync(file.fileno())
+        key='p:owner/decimal:files';registry={'next':number+1,'ids':{key:number}}
+        block=os.statvfs(point).f_frsize;rounding=[]
+        def applied_twice(desired,ledger):
+            options=dict(default=100_000_000_000,minimum=1,maximum=10**13,headroom=10_000_000_000,now=100,block_bytes=block)
+            actions,status=limits.apply(registry,{key:desired},ledger,workspace,device,kernel,**options)
+            for action in actions:kernel.set(*action)
+            current=kernel.get(device,number).bhardlimit*1024
+            repeated,_=limits.apply(registry,{key:desired},ledger,workspace,device,kernel,**options)
+            assert current==status[key]['effectiveLimitBytes'] and not repeated,(kind,desired,current,status,repeated)
+            return {'requestedBytes':desired,'appliedBytes':current,'blockBytes':block,'repeatWrites':len(repeated),'grace':status[key]['graceUntil'] is not None}
+        for amount in (100_000_000_000,50_000_000_000,1_000_000_001):rounding.append(applied_twice(amount,{'initialized':True}))
+        rounding.append(applied_twice(1,{})) # usage + decimal-GB headroom during grace
+        shutil.rmtree(workspace)
         after=kernel.get(device,0);assert before==(after.bhardlimit,after.bsoftlimit),'ID 0 changed'
-        rows.append({'filesystem':kind,'beforeEnforced':initial,'before':pre,'after':post,'diskReserve':reserve,'idZeroUnchanged':True})
+        rows.append({'filesystem':kind,'beforeEnforced':initial,'before':pre,'after':post,'diskReserve':reserve,'idZeroUnchanged':True,'rounding':rounding})
     finally:
         kernel.set(device,number,0)
         path.rmdir()

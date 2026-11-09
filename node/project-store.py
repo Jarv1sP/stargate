@@ -125,8 +125,8 @@ def storage_error(config,error,path=None):
         if 'Disk quota exceeded' in message:code=errno.EDQUOT
         elif 'No space left on device' in message:code=errno.ENOSPC
         else:return message[:400]
-    used,limit,enforced=quota_usage(config,path or getattr(error,'filename',None) or config.get('workspacesRoot',config['root']))
-    if code==errno.EDQUOT or enforced and limit:
+    used,limit,enforced=quota_usage(config,getattr(error,'filename',None) or path or config.get('workspacesRoot',config['root']))
+    if code==errno.EDQUOT or enforced and limit and used is not None and used>=limit:
         return quota_message(used,limit)
     return '数据盘空间不足（已用 / 上限暂时未知）。请查看数据页，清空不需要的文件或联系管理员。'
 

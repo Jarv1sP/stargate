@@ -42,9 +42,18 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 
 打开后该单元每次启动在线执行 ext4 `Q_QUOTAON(PRJQUOTA)`，XFS 沿用挂载时的强制状态。只对已验证的 `p:<owner>/<project>:files` 编号写 block hard limit，不碰编号 0、任务输出、环境、数据集、镜像或外部目录；XFS 编号 0 会影响默认上限，绝不能设置。root 独占目录 `/var/lib/stargate-quota-limits/` 保存编号的首次类型及宽限期限，不信服务账户重新标注编号；首次接受项目编号前核对项目、code、home 的真实编号，排除平台外目录占用的编号。不要删除该目录来重启宽限。
 
-节点首次启用时已超限的项目，生效值为 `max(设定值, 当前用量 + 余量)`（余量默认 10 GB），7 天后收紧到设定值；宽限日期固定，重启和刷新不延长；之后新建项目不会获得上线宽限。只限制后续写入，程序不删除文件。管理员在数据页“设上限”保存，Portal 新表按 owner/machine/project 留存设定值与审计，每次修改及每轮 5 分钟刷新推送整份清单；节点原子写 `<root>/quota/limits.json`，root 状态原子保存后才应用。节点离线时保留设定值并在下轮重推。root 应用状态写 `samples/quota-limits.json`；只读采样器从内核读实际 block 上限和强制状态，界面分别显示未生效、待生效、≥90%、超限及宽限日期。
+节点首次启用时已超限的项目，生效值为 `max(设定值, 当前用量 + 余量)`（余量默认 10 GB），7 天后收紧到设定值；宽限日期固定，重启和刷新不延长；之后新建项目不会获得上线宽限。只限制后续写入，程序不删除文件。管理员在数据页“设上限”保存，Portal 新表按 owner/machine/project 留存设定值与审计，每次修改及每轮 5 分钟刷新推送整份清单；节点原子写 `<root>/quota/limits.json`，root 状态原子保存后才应用。节点离线时保留设定值并在下轮重推。root 应用状态写 `samples/quota-limits.json`；只读采样器从内核读实际 block 上限和强制状态，界面分别显示未生效、待生效、≥90%、超限及宽限日期。申请值超出安装范围时，显示节点调整后的目标与“已按节点范围调整”，不持续标待生效。限额按文件系统块大小向上取整，采样同时发布块大小，应用器与界面按同一粒度比较。
 
-关闭开关只停止后续修改，已写入的内核上限会保留。需要撤销上限时，管理员在节点本机以相同 unit 参数调用 `quota-limits.py --clear`，仅清零 root 账本认可的项目文件编号，不会开启强制或触碰编号 0；再关闭安装开关。回退旧发布同样不会自动清掉内核上限。
+关闭开关只停止后续修改，已写入的内核上限会保留。撤销时按以下顺序执行，避免 timer 把清掉的限额重新设回：
+
+1. 先停止 timer 和正在执行的 service，并把管理员安装配置里的 `quota.projectFilesEnabled` 改为 false（也可先以 false 正常重装配置，使旧启用单元已停止）。
+   ```sh
+   sudo systemctl stop stargate-quota-limits.timer stargate-quota-limits.service
+   ```
+2. timer/service 停止后，在节点本机以原 unit 的 account、root、workspaces-root、mounts 参数运行 root 副本 `quota-limits.py --clear`。它只清零 root 账本认可的项目文件编号，不开启强制、不碰编号 0；被改名移到平台外的已登记文件编号也会清零。不要在开关仍开、timer 仍运行时先清限额。
+3. 按开关 false 的配置完成正常安装/重装，再确认采样中的文件编号限额为 0；不要重新启动旧的启用单元。
+
+回退旧发布不会自动清掉内核上限，回退前也先停止限额 timer/service。安装器回滚会保留最近安装的 root 所有 `quota-limits.py`、`quota-sample.py`、`quota-ids.py` 工具包和 root 账本；回滚后仍可用同一 root 副本运行 `--clear`，不依赖已回退的服务账户发布目录。
 
 64 GiB 资源底线取数据盘挂载点的余量，项目剩余额度单独按目标目录核对，不另加 64 GiB。复制导出暂存使用平台号；`.copies` 和 `.copy-backups` 继续计入目标项目。`tag_tree` 仅用于平台创建的固定路径，`heal_layer` 仅修复容器环境层；这两条路径没有接受用户指定编号的 RPC。STOR-002c 是仓库外管理员搬迁工具，不是成员可调用的转编号入口，搬迁后仍须按其流程完成数据核对与回收站处理。
 

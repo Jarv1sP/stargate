@@ -173,6 +173,29 @@ class InstallationTests(unittest.TestCase):
         files,_=self.host.quota_limits();service=files[str(self.host.system_units/'stargate-quota-limits.service')][0].decode()
         self.assertIn('"--enabled"',service);self.assertIn('"50000000000"',service)
 
+    def test_rollback_to_pre_limits_release_keeps_clear_tool_and_its_root_helpers(self):
+        bindings=self.host.bindings
+        def before_limits(manifest,release=None):
+            files,units=bindings(manifest,release)
+            for path in (self.host.libexec/'quota-limits.py',self.host.system_units/'stargate-quota-limits.service',self.host.system_units/'stargate-quota-limits.timer'):files.pop(str(path),None)
+            return files,[u for u in units if u['name']!='stargate-quota-limits.timer']
+        with patch.object(self.host,'bindings',side_effect=before_limits):first=self.host.install(self.package)
+        self.assertFalse((self.host.libexec/'quota-limits.py').exists())
+        self.host.install(self.make_package('with-limits'));self.host.rollback()
+        self.assertEqual(str(self.selected()),first['release'])
+        for name in ('quota-limits.py','quota-sample.py','quota-ids.py'):
+            self.assertEqual((self.host.libexec/name).read_bytes(),(ROOT/'node'/name).read_bytes())
+        help=subprocess.run([sys.executable,'-I','-B',str(self.host.libexec/'quota-limits.py'),'--help'],capture_output=True,text=True,check=True)
+        self.assertIn('--clear',help.stdout)
+        self.assertFalse(self.host.states['system','stargate-quota-limits.timer']['active'])
+
+    def test_shutdown_documentation_stops_timer_before_clear(self):
+        guide=(ROOT/'docs/NODE_RELEASE_BUILD.md').read_text()
+        shutdown=guide.split('关闭开关只停止后续修改',1)[1].split('64 GiB 资源底线',1)[0]
+        self.assertLess(shutdown.index('sudo systemctl stop stargate-quota-limits.timer stargate-quota-limits.service'),shutdown.index('quota-limits.py --clear'))
+        self.assertIn('projectFilesEnabled',shutdown)
+        self.assertIn('回滚后仍可',shutdown)
+
     def test_quota_sampler_is_a_root_owned_copy_on_a_minute_timer(self):
         self.host.install(self.package)
         service = (self.host.system_units/'stargate-quota-sample.service').read_text()
