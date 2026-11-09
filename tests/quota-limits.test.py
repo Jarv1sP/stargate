@@ -127,6 +127,22 @@ class Limits(unittest.TestCase):
             with patch.object(store,'quota_usage',return_value=(100,100,True)):
                 message=store.storage_error(self.config,OSError(code,'English','/secret/host'))
             self.assertIn('已用',message);self.assertIn('上限',message);self.assertNotIn('/secret',message)
+    def test_upload_error_wrapper_keeps_timeout_and_only_localizes_quota(self):
+        uploads=f.module('data-uploads').Uploads(self.config,'alice')
+        with patch.object(uploads,'_process',side_effect=TimeoutError('lost reply')):
+            with self.assertRaises(TimeoutError):uploads.process('chunk',{})
+        with patch.object(uploads,'_process',side_effect=OSError(errno.EDQUOT,'Disk quota exceeded','/private/host')):
+            with self.assertRaisesRegex(ValueError,'已用.*上限'):uploads.process('chunk',{})
+
+    def test_node_wrapper_preserves_lost_reply_exception_type(self):
+        spec=importlib.util.spec_from_file_location('security_fixture',Path(__file__).with_name('project-security.test.py'))
+        security=importlib.util.module_from_spec(spec);spec.loader.exec_module(security)
+        case=security.ProjectContract();case.setUp();self.addCleanup(case.doCleanups);node=case.node()
+        with patch.object(node,'process_request',side_effect=TimeoutError('lost reply')):
+            with self.assertRaises(TimeoutError):node.process('sync',{})
+        with patch.object(node,'process_request',side_effect=OSError(errno.ENOSPC,'No space left on device','/host/private')):
+            with self.assertRaisesRegex(ValueError,'空间不足'):node.process('data.upload.chunk',{})
+
     def test_diagnostics_current_floor_and_quota_errors(self):
         store=f.module('project-store');diag=f.module('job-diagnostics')
         error=store.ProjectError('workspace_quota',store.quota_message(100,100),{'usedBytes':100,'limitBytes':100})
