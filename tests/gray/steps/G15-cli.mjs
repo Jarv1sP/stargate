@@ -26,10 +26,9 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
     ctx.check('CLI能取得非空日志',typeof logs.text==='string'&&logs.text.length>0);
     ctx.check('CLI训练执行成功',ended.state==='SUCCEEDED'&&logs.text.includes('GRAY_CLI'),ended);
   }],['同步跳过已迁到数据集的目录',async()=>{
-    const projectName=ctx.name('sync-links'),dataset=ctx.name('sync-data'),local=join(folder,'sync-source');
-    await call(ctx,member,'projects.create',{machine:ctx.machine,project:projectName});
+    const projectName=name,dataset=ctx.name('sync-data'),local=join(folder,'sync-source');
     await upload(ctx,member,{area:'dataset',dataset,path:'train/sentinel.txt',content:Buffer.from('dataset-original')});
-    const setup=await call(ctx,member,'jobs.submit',{machine:ctx.machine,project:projectName,cards:1,key:ctx.key(),argv:['python','-c',`from pathlib import Path; import os; Path('/workspace/data').mkdir(); os.symlink('/datasets/${dataset}/train','/workspace/data/images')`]});
+    const setup=await call(ctx,member,'jobs.submit',{machine:ctx.machine,project:projectName,cards:1,key:ctx.key(),argv:['python','-c',`from pathlib import Path; import os; Path('/workspace/data').mkdir(exist_ok=True); os.symlink('/datasets/${dataset}/train','/workspace/data/images')`]});
     ctx.check('数据集链接准备成功',(await waitJob(ctx,member,setup.id,terminalStates)).state==='SUCCEEDED');
     await mkdir(join(local,'data/images/deep'),{recursive:true});await writeFile(join(local,'data/images/sentinel.txt'),'local must not overwrite');await writeFile(join(local,'data/images/deep/new.txt'),'must not appear');await writeFile(join(local,'sync-code.txt'),'code-uploaded');
     const notice=`已跳过 data/images：服务器上已改为数据集 /datasets/${dataset}/train，本机这份可以删除`;
