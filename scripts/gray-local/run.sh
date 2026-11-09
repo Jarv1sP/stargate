@@ -80,19 +80,24 @@ cp "$run/machines.js" "$run/src/dist/machines.js"
 build_image --build-arg STARGATE_RELEASE_REVISION="$commit" -f "$run/src/deploy/Dockerfile" -t "$GRAY_PORTAL_IMAGE" "$run/src" > "$run/build-portal.log" 2>&1
 # Use a separate disposable Portal, never the gray stack's business database.
 node "$TRUSTED/tests/fixtures/portal-memory.mjs" seed "$run/memory"
-memory_container=$(docker create --memory 512m --memory-swap 512m --network none \
-  --user "$(id -u):$(id -g)" \
-  -v "$TRUSTED/tests/fixtures:/app/tests/fixtures:ro" \
-  -v "$TRUSTED/tests/fixtures/machines.js:/app/dist/machines.js:ro" \
-  -v "$run/memory:/memory" \
-  "$GRAY_PORTAL_IMAGE" node /app/tests/fixtures/portal-memory.mjs measure /memory)
-memory_result=0
-docker start --attach "$memory_container" > "$run/memory.log" 2>&1 || memory_result=$?
-docker inspect --format '{{json .State}}' "$memory_container" >> "$run/memory.log"
-docker rm "$memory_container" >/dev/null
-memory_container=
-cat "$run/memory.log"
-[ "$memory_result" -eq 0 ] || exit "$memory_result"
+measure_memory() {
+  memory_container=$(docker create --memory 512m --memory-swap 512m --network none \
+    --user "$(id -u):$(id -g)" \
+    -e PORTAL_MEMORY_ENFORCE=1 -e PORTAL_MEMORY_PHASE="$1" \
+    -v "$TRUSTED/tests/fixtures:/app/tests/fixtures:ro" \
+    -v "$TRUSTED/tests/fixtures/machines.js:/app/dist/machines.js:ro" \
+    -v "$run/memory:/memory" \
+    "$GRAY_PORTAL_IMAGE" node /app/tests/fixtures/portal-memory.mjs measure /memory)
+  memory_result=0
+  docker start --attach "$memory_container" > "$run/memory-$1.log" 2>&1 || memory_result=$?
+  docker inspect --format '{{json .State}}' "$memory_container" >> "$run/memory-$1.log"
+  docker rm "$memory_container" >/dev/null
+  memory_container=
+  cat "$run/memory-$1.log"
+  [ "$memory_result" -eq 0 ] || exit "$memory_result"
+}
+measure_memory first-open
+measure_memory steady
 build_image -f "$TRUSTED/deploy/gray-local/bridge.Dockerfile" -t "$GRAY_BRIDGE_IMAGE" "$run/src" > "$run/build-bridge.log" 2>&1
 build_image -f "$TRUSTED/deploy/gray-local/node.Dockerfile" -t "$GRAY_NODE_IMAGE" "$run/node-context" > "$run/build-node.log" 2>&1
 docker pull registry:2 > "$run/build-registry.log" 2>&1

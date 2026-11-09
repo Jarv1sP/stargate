@@ -79,8 +79,12 @@ if(mode==='seed'){
     }
     await new Promise(resolveIdle=>setTimeout(resolveIdle,250));sample('settled');
     const fixture=JSON.parse(await readFile(join(root,'fixture.json'),'utf8'));
-    const report={...fixture,node:process.version,platform:process.platform,measurements,peakMiB:mib(process.resourceUsage().maxRSS*1024)};
+    const report={...fixture,phase:process.env.PORTAL_MEMORY_PHASE||'single',node:process.version,platform:process.platform,measurements,peakMiB:mib(process.resourceUsage().maxRSS*1024)};
     console.log('PORTAL_MEMORY '+JSON.stringify(report));
     await writeFile(join(root,'memory-report.json'),JSON.stringify(report,null,2)+'\n');
+    if(process.env.PORTAL_MEMORY_ENFORCE==='1'){
+      assert.ok(report.peakMiB<=300,`Portal peak RSS ${report.peakMiB} MiB exceeds 300 MiB`);
+      if(report.phase==='steady')assert.ok(measurements[0].rssMiB<=200,`Portal idle RSS ${measurements[0].rssMiB} MiB exceeds 200 MiB`);
+    }
   }finally{server.closeAllConnections();await new Promise(resolveClose=>server.close(resolveClose));}
 }else throw Error('Expected seed, measure or profile');

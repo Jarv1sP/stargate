@@ -45,7 +45,7 @@ try{
   await first.locator('[data-dataset-open=images]').waitFor({state:'attached'});await page.waitForFunction(()=>[...document.querySelectorAll('[data-storage-machine]')].every(node=>node.dataset.loading==='false'));
   assert.equal(calls.filter(r=>r.operation==='datasets.list'||r.operation==='projects.list'&&r.args.includeUsage).length,openingScans,'opening the data page only reads cached snapshots');
   // The caption is the node's sample time; a node that reports none stays unknown.
-  assert.match(await first.locator('[data-storage-caption]').innerText(),service.storageSnapshots['gpu-1'].projects.checkedAt?/统计于 \d+ 分钟前/:/^统计时间未知$/);
+  assert.match(await first.locator('[data-storage-caption]').innerText(),service.storageRow('gpu-1').projects.checkedAt?/统计于 \d+ 分钟前/:/^统计时间未知$/);
   assert.doesNotMatch(await first.locator('[data-storage-mix]').textContent(),/其他|基础镜像/);
   if(role==='member'&&width===1440){
    const byMachine=id=>calls.filter(r=>r.machine===id&&(r.operation==='datasets.list'||r.operation==='projects.list'&&r.args.includeUsage)).length;

@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
+import {readStorage} from '../portal-storage.mjs';
 
 const minute=60000,machine=MACHINES[0].id;
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
@@ -95,6 +96,28 @@ test('cache survives Portal restart without node reads and preserves partial and
  const before=await f.snapshot(machine);await f.reopen();f.calls.length=0;
  assert.deepEqual(await f.snapshot(machine),before);assert.equal(f.calls.length,0);
  await f.service.invoke(f.token(),'storage.refresh',{machine});assert.equal(f.calls.length,0);
+});
+
+test('current saved snapshots move out of account/job state without losing readings or unknown fields',async t=>{
+ const f=await fixture(t);await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
+ const reading=readStorage(f.service,machine);reading.projects.extra={futureField:['kept',null]};
+ const state={...f.service.export(),storage:{[machine]:reading}};
+ f.service.db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify(state));
+ f.service.db.exec('DELETE FROM portal_storage');
+ await f.reopen();f.calls.length=0;
+ const before=await f.snapshot(machine);
+ assert.equal(f.calls.length,0);assert.deepEqual(before.machines[0].projects.extra,{futureField:['kept',null]});
+ assert.equal(before.machines[0].datasets.datasets[0].size,null);
+ assert.equal(JSON.parse(f.service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data).storage,undefined);
+ f.service.save();await f.reopen();assert.deepEqual(await f.snapshot(machine),before);
+});
+
+test('editing a returned snapshot cannot change the persisted readings',async t=>{
+ const f=await fixture(t);await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
+ const before=await f.snapshot(machine),changed=await f.snapshot(machine);
+ changed.machines[0].quota.volumes[0].usedBytes=999;
+ changed.machines[0].datasets.datasets[0].dataset='changed';changed.machines[0].projects.projects[0].size=999;
+ assert.deepEqual(await f.snapshot(machine),before);
 });
 
 test('snapshots pass through project parts, every disk composition and the node sample time, with owner names',async t=>{
