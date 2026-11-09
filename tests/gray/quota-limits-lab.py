@@ -44,7 +44,9 @@ table=sampler.mounts(Path('/proc/self/mountinfo').read_text())
 for line in kinds:
     point,kind=line.split();path=Path(point)/'gray-limit-lab';path.mkdir(mode=0o700);os.chown(path,uid,uid)
     registry=Path(profile['root'])/'quota';key='p:gray-limit-lab/'+kind+point[-1]+':files';number=q.allocate(registry,[key])[key]
-    q.tag_dir(path,number);device=next(src for mount,dev,src in table if mount==point)
+    q.tag_dir(path,number)
+    info=os.stat(point);device_number=f'{os.major(info.st_dev)}:{os.minor(info.st_dev)}'
+    device=next(src for mount,dev,src in table if mount==point and dev==device_number)
     zero=kernel.get(device,0);before=(zero.bhardlimit,zero.bsoftlimit)
     try:
         kernel.set(device,number,cap)
