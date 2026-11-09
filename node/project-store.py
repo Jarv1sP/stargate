@@ -119,15 +119,36 @@ def quota_usage(config,path):
     except (OSError,ValueError,KeyError,TypeError):return None,None,None
 
 
+def live_quota_usage(path):
+    """Compare live project statvfs with its disk, including XFS reservations.
+
+    A rejected write may leave several MiB free inside the cap; the sampled
+    byte count cannot distinguish that from a full filesystem.
+    """
+    target=Path(path)
+    while not target.is_dir() and target!=target.parent:target=target.parent
+    project=os.statvfs(target);disk=os.statvfs(data_mount(target))
+    if project.f_blocks*project.f_frsize<disk.f_blocks*disk.f_frsize and project.f_bavail*project.f_frsize<disk.f_bavail*disk.f_frsize:
+        return (project.f_blocks-project.f_bfree)*project.f_frsize,project.f_blocks*project.f_frsize
+    return None
+
+
 def storage_error(config,error,path=None):
     message=str(error);code=getattr(error,'errno',None)
     if code not in (errno.EDQUOT,errno.ENOSPC):
         if 'Disk quota exceeded' in message:code=errno.EDQUOT
         elif 'No space left on device' in message:code=errno.ENOSPC
         else:return message[:400]
-    used,limit,enforced=quota_usage(config,getattr(error,'filename',None) or path or config.get('workspacesRoot',config['root']))
-    if code==errno.EDQUOT or enforced and limit and used is not None and used>=limit:
-        return quota_message(used,limit)
+    filename=getattr(error,'filename',None)
+    target=filename if filename and os.path.isabs(filename) else path or config.get('workspacesRoot',config['root'])
+    used,limit,_=quota_usage(config,target)
+    quota_hit=code==errno.EDQUOT
+    if code==errno.ENOSPC:
+        try:
+            live=live_quota_usage(target)
+            if live is not None:used,limit=live;quota_hit=True
+        except (OSError,ValueError):pass
+    if quota_hit:return quota_message(used,limit)
     return '数据盘空间不足（已用 / 上限暂时未知）。请查看数据页，清空不需要的文件或联系管理员。'
 
 

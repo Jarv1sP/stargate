@@ -22,8 +22,9 @@ try:
  result['errno']=None
 except OSError as e:result.update(errno=e.errno,message=e.strerror)
 finally:
- try:p.unlink()
- except FileNotFoundError:pass
+ if result.get('errno') is None:
+  try:p.unlink()
+  except FileNotFoundError:pass
 v=os.statvfs('/workspace');result.update(total=v.f_blocks*v.f_frsize,available=v.f_bavail*v.f_frsize)
 fields=subprocess.check_output(['df','-Pk','/workspace'],text=True).splitlines()[-1].split()
 result.update(dfTotal=int(fields[1])*1024,dfAvailable=int(fields[3])*1024)
@@ -68,10 +69,14 @@ for line in kinds:
         code="""import importlib.util,json,sys
 from pathlib import Path
 node=Path(sys.argv[1])/'current'/'node';s=importlib.util.spec_from_file_location('store',node/'project-store.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-print(json.dumps(m.require_workspace_space(Path(sys.argv[2]),needed=1024)))
+path=Path(sys.argv[2]);m.quota_usage=lambda *args:(0,8*1024**2,True) # intentionally stale sample
+message=m.storage_error({'root':str(path)},OSError(int(sys.argv[3]),'full','probe'),str(path))
+(path/'probe').unlink(missing_ok=True)
+print(json.dumps(dict(m.require_workspace_space(path,needed=1024),quotaError=message)))
 """
-        reserve=json.loads(subprocess.check_output(['runuser','-u','gpuops','--','python3','-I','-B','-c',code,cfg['releaseRoot'],str(path)],text=True))
+        reserve=json.loads(subprocess.check_output(['runuser','-u','gpuops','--','python3','-I','-B','-c',code,cfg['releaseRoot'],str(path),str(expected)],text=True))
         assert reserve['availableBytes']>=64*1024**3,reserve
+        assert '项目文件空间不足' in reserve['quotaError'] and str(path) not in reserve['quotaError'],reserve
         # Exercise the applier, not only raw Q_SETQUOTA, with values that are
         # not multiples of the filesystem block size (100 GB is the default).
         workspace=path/'rounding';project=workspace/'owner'/'decimal'
@@ -94,7 +99,7 @@ print(json.dumps(m.require_workspace_space(Path(sys.argv[2]),needed=1024)))
         rows.append({'filesystem':kind,'beforeEnforced':initial,'before':pre,'after':post,'diskReserve':reserve,'idZeroUnchanged':True,'rounding':rounding})
     finally:
         kernel.set(device,number,0)
-        path.rmdir()
+        shutil.rmtree(path)
 assert any(row['filesystem']=='ext4' and row['before'] is not None for row in rows),'ext4 quotaon transition not exercised'
 assert any(row['filesystem']=='xfs' for row in rows),'XFS unavailable: this run cannot verify XFS limits'
 print(json.dumps({'defaultOff':True,'cases':rows}))

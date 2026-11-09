@@ -46,14 +46,17 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 
 关闭开关只停止后续修改，已写入的内核上限会保留。撤销时按以下顺序执行，避免 timer 把清掉的限额重新设回：
 
-1. 先停止 timer 和正在执行的 service，并把管理员安装配置里的 `quota.projectFilesEnabled` 改为 false（也可先以 false 正常重装配置，使旧启用单元已停止）。
+1. 先禁用 timer 并停止 timer 和正在执行的 service，并把管理员安装配置里的 `quota.projectFilesEnabled` 改为 false（也可先以 false 正常重装配置，使旧启用单元已停止）。
    ```sh
-   sudo systemctl stop stargate-quota-limits.timer stargate-quota-limits.service
+   sudo systemctl disable --now stargate-quota-limits.timer
+   sudo systemctl stop stargate-quota-limits.service
    ```
 2. timer/service 停止后，在节点本机以原 unit 的 account、root、workspaces-root、mounts 参数运行 root 副本 `quota-limits.py --clear`。它只清零 root 账本认可的项目文件编号，不开启强制、不碰编号 0；被改名移到平台外的已登记文件编号也会清零。不要在开关仍开、timer 仍运行时先清限额。
-3. 按开关 false 的配置完成正常安装/重装，再确认采样中的文件编号限额为 0；不要重新启动旧的启用单元。
+3. 按开关 false 的配置完成正常安装/重装，再确认采样中的文件编号限额为 0；若不为 0，再执行一次 --clear 并重新采样确认。重装失败回滚后也先确认 timer 已禁用/停止，再清除残留限额；不要重新启动旧的启用单元。
 
-回退旧发布不会自动清掉内核上限，回退前也先停止限额 timer/service。安装器回滚会保留最近安装的 root 所有 `quota-limits.py`、`quota-sample.py`、`quota-ids.py` 工具包和 root 账本；回滚后仍可用同一 root 副本运行 `--clear`，不依赖已回退的服务账户发布目录。
+回退旧发布不会自动清掉内核上限，回退前也先禁用并停止限额 timer/service。安装器回滚照常还原 `quota-sample.py`、`quota-ids.py` 及已有的 `quota-limits.py`，旧版 root unit 只运行还原后的旧版代码。仅回退到尚无限额程序的版本时保留 `quota-limits.py` 供手动清除，限额 unit 则移除；该程序的限额状态发布不依赖新版采样器 API。root 账本保留，回滚后仍可运行 `--clear`。
+
+ENOSPC 的提示比较项目目录与数据盘挂载点的实时 statvfs，避免 XFS 分配预留和一分钟采样延迟把额度不足误报成磁盘满；仅绝对的错误文件名优先于调用者项目路径。
 
 64 GiB 资源底线取数据盘挂载点的余量，项目剩余额度单独按目标目录核对，不另加 64 GiB。复制导出暂存使用平台号；`.copies` 和 `.copy-backups` 继续计入目标项目。`tag_tree` 仅用于平台创建的固定路径，`heal_layer` 仅修复容器环境层；这两条路径没有接受用户指定编号的 RPC。STOR-002c 是仓库外管理员搬迁工具，不是成员可调用的转编号入口，搬迁后仍须按其流程完成数据核对与回收站处理。
 

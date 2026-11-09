@@ -47,12 +47,13 @@ class Limits(unittest.TestCase):
             def get(self,device,number):
                 if number==1001:raise OSError(errno.ENOENT,'uninitialized dquot')
                 return super().get(device,number)
+        device=self.base/'quota-device';device.touch()
         for clear in (False,True):
             ledger={'kinds':{str(number):key for key,number in keys.items()},'projects':{}}
-            actions,status=limits.apply({'ids':keys,'next':1003},{},ledger,'/workspace','/dev/test',Missing(hard=200),default=100000,minimum=1,maximum=1000000,headroom=1,now=1,clear=clear)
-            self.assertIn(('/dev/test',1002,0 if clear else rounded(100000)),actions)
+            actions,status=limits.apply({'ids':keys,'next':1003},{},ledger,'/workspace',str(device),Missing(hard=200),default=100000,minimum=1,maximum=1000000,headroom=1,now=1,clear=clear)
+            self.assertIn((str(device),1002,0 if clear else rounded(100000)),actions)
             self.assertEqual(len(status),2)
-            if clear:self.assertNotIn(('/dev/test',1001,0),actions)
+            if clear:self.assertNotIn((str(device),1001,0),actions)
 
     def test_bad_desired_rows_are_ignored_without_losing_valid_siblings(self):
         good={'ownerId':'alice','project':'demo','bytes':100000}
@@ -67,12 +68,69 @@ class Limits(unittest.TestCase):
     def test_enospc_below_cap_reports_disk_full_and_uses_actual_failed_path(self):
         store=f.module('project-store')
         for used,limit,enforced in ((30_000_000_000,100_000_000_000,True),(None,100,True),(100,100,False)):
-            with patch.object(store,'quota_usage',return_value=(used,limit,enforced)):
+            with patch.object(store,'quota_usage',return_value=(used,limit,enforced)),patch.object(store,'live_quota_usage',return_value=None):
                 message=store.storage_error(self.config,OSError(errno.ENOSPC,'full','/actual/datasets/file'),'/project/code')
             self.assertIn('数据盘空间不足',message);self.assertNotIn('调整上限',message);self.assertNotIn('/actual',message)
         with patch.object(store,'quota_usage',return_value=(0,0,True)) as usage:
             store.storage_error(self.config,OSError(errno.ENOSPC,'full','/actual/state/file'),'/project/code')
             usage.assert_called_once_with(self.config,'/actual/state/file')
+
+    def test_xfs_enospc_uses_live_space_with_stale_sample_and_unfilled_reservation(self):
+        store=f.module('project-store');project=Path(self.config['workspacesRoot'])/'alice'/'demo'/'code';project.mkdir(parents=True)
+        limit=100_000_000_000;remaining=2*1024**2
+        capped=SimpleNamespace(f_blocks=limit,f_bfree=remaining,f_bavail=remaining,f_frsize=1)
+        disk=SimpleNamespace(f_blocks=10*limit,f_bfree=3*limit,f_bavail=3*limit,f_frsize=1)
+        # A 4 MiB XFS reservation fails with 2 MiB left; a minute-old sample is below the cap.
+        for sampled in ((99_900_000_000,limit,True),(None,None,None)):
+            with patch.object(store,'quota_usage',return_value=sampled),patch.object(store,'data_mount',return_value=self.base),patch.object(store.os,'statvfs',side_effect=[capped,disk]):
+                message=store.storage_error(self.config,OSError(errno.ENOSPC,'full','temporary'),str(project))
+            self.assertIn('项目文件空间不足',message);self.assertIn('100.00 GB',message);self.assertNotIn(str(project),message)
+        # On a full disk, even an old sample saying "at cap" must not win over live state.
+        full=SimpleNamespace(f_blocks=10*limit,f_bfree=0,f_bavail=0,f_frsize=1)
+        with patch.object(store,'quota_usage',return_value=(limit,limit,True)),patch.object(store,'data_mount',return_value=self.base),patch.object(store.os,'statvfs',side_effect=[capped,full]):
+            self.assertIn('数据盘空间不足',store.storage_error(self.config,OSError(errno.ENOSPC,'full'),str(project)))
+
+    def test_relative_error_filename_uses_callers_project_but_absolute_filename_wins(self):
+        store=f.module('project-store');project=self.config['workspacesRoot']+'/alice/demo/code'
+        for filename,expected in (('tmp',project),('../tmp',project),('/actual/datasets/file','/actual/datasets/file')):
+            with patch.object(store,'quota_usage',return_value=(10,100,True)) as sample,patch.object(store,'live_quota_usage',return_value=(95,100)) as live:
+                self.assertIn('项目文件空间不足',store.storage_error(self.config,OSError(errno.ENOSPC,'full',filename),project))
+            sample.assert_called_once_with(self.config,expected);live.assert_called_once_with(expected)
+        with patch.object(store,'quota_usage',return_value=(10,100,True)) as sample:
+            store.storage_error(self.config,OSError(errno.EDQUOT,'full','tmp'))
+        sample.assert_called_once_with(self.config,self.config['workspacesRoot'])
+
+    def test_limits_publish_is_independent_of_restored_sampler_publish_signature(self):
+        root=Path(self.config['root'])
+        with patch.object(limits.s,'publish',side_effect=AssertionError('old sampler has no name argument')):
+            limits.publish(root,{'enabled':False},(os.geteuid(),os.getegid()))
+        self.assertEqual(json.loads((root/'samples/quota-limits.json').read_text()),{'enabled':False})
+        self.assertFalse((root/'samples/quota.json').exists())
+
+    def test_missing_device_never_persists_rollout_grace_or_initialization(self):
+        root=Path(self.config['root']);workspace=Path(self.config['workspacesRoot'])
+        state=self.base/'root-ledger';state.mkdir(mode=0o700);original=b'{"roots":{}}';(state/'state.json').write_bytes(original)
+        device=self.base/'quota-device';number=f'{os.major(workspace.stat().st_dev)}:{os.minor(workspace.stat().st_dev)}'
+        original_read=Path.read_text;original_fstat=os.fstat;state_inode=state.stat().st_ino
+        def read(path,*args,**kwargs):
+            if str(path)=='/proc/self/mountinfo':return f'1 0 {number} / {self.base} rw - xfs {device} rw\n'
+            return original_read(path,*args,**kwargs)
+        def fstat(fd):
+            info=original_fstat(fd)
+            if info.st_ino==state_inode:
+                values=list(info);values[4]=0;return os.stat_result(values)
+            return info
+        class Vanishing(Kernel):
+            def get(self,*args):
+                device.unlink();raise OSError(errno.ENOENT,'device disappeared')
+        args=['--enabled','--account','fixture','--root',str(root),'--workspaces-root',str(workspace),'--state-dir',str(state),str(self.base)]
+        for stage in ('before-registry','before','during'):
+            if stage=='during':device.touch()
+            kernel=Vanishing(used=150_000_000_000)
+            with patch.object(limits.os,'geteuid',return_value=0),patch.object(limits.os,'fstat',side_effect=fstat),patch.object(Path,'read_text',read),patch.object(limits,'Kernel',return_value=kernel),patch.object(limits.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=123,pw_gid=123)),patch.object(limits,'inputs',side_effect=FileNotFoundError() if stage=='before-registry' else None,return_value=({'ids':{'p:alice/demo:files':1001},'next':1002},{'limits':[]})),patch.object(limits,'project_id',return_value=1001),patch.object(limits,'protected_ids',return_value={0}),patch.object(limits,'nonfiles_ids',return_value={0}),patch.object(limits,'write_at') as write:
+                with self.assertRaises(FileNotFoundError):limits.main(args)
+                write.assert_not_called()
+            self.assertEqual((state/'state.json').read_bytes(),original)
 
     def test_disabled_never_reads_or_calls_kernel(self):
         with patch.object(limits,'Kernel',side_effect=AssertionError('kernel used')),patch.object(limits.s,'open_directory',side_effect=AssertionError('read')):
@@ -131,6 +189,7 @@ class Limits(unittest.TestCase):
         (folder/'ids.json').write_text(json.dumps({'next':1002,'ids':{'p:alice/demo:files':1001}}))
         state=self.base/'root-ledger';state.mkdir(mode=0o700);workspace=Path(self.config['workspacesRoot'])
         number=f'{os.major(workspace.stat().st_dev)}:{os.minor(workspace.stat().st_dev)}'
+        device=self.base/'quota-device';device.touch()
         original_fstat=os.fstat;original_read=Path.read_text;events=[]
         def fstat(fd):
             info=original_fstat(fd)
@@ -138,7 +197,7 @@ class Limits(unittest.TestCase):
                 values=list(info);values[4]=0;return os.stat_result(values)
             return info
         def read(path,*args,**kwargs):
-            if str(path)=='/proc/self/mountinfo':return f'1 0 {number} / {self.base} rw - ext4 /dev/test rw\n'
+            if str(path)=='/proc/self/mountinfo':return f'1 0 {number} / {self.base} rw - ext4 {device} rw\n'
             return original_read(path,*args,**kwargs)
         kernel=Kernel(used=150_000)
         kernel.enable=lambda device:events.append('enable')
@@ -147,9 +206,9 @@ class Limits(unittest.TestCase):
         kernel.set=set_limit
         args=['--enabled','--account','fixture','--root',str(root),'--workspaces-root',str(workspace),
               '--state-dir',str(state),'--default-bytes','100000','--min-bytes','1000','--max-bytes','1000000','--headroom-bytes','10000',str(self.base)]
-        with patch.object(limits.os,'geteuid',return_value=0),patch.object(limits.os,'fstat',side_effect=fstat),patch.object(Path,'read_text',read),patch.object(limits,'Kernel',return_value=kernel),patch.object(limits.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=123,pw_gid=123)),patch.object(limits,'project_id',return_value=1001),patch.object(limits,'protected_ids',return_value={0}),patch.object(limits,'nonfiles_ids',return_value={0}),patch.object(limits.s,'publish') as publish,patch.object(limits.time,'time',return_value=100),patch.object(limits.os,'statvfs',return_value=SimpleNamespace(f_frsize=4096)):
+        with patch.object(limits.os,'geteuid',return_value=0),patch.object(limits.os,'fstat',side_effect=fstat),patch.object(Path,'read_text',read),patch.object(limits,'Kernel',return_value=kernel),patch.object(limits.pwd,'getpwnam',return_value=SimpleNamespace(pw_uid=123,pw_gid=123)),patch.object(limits,'project_id',return_value=1001),patch.object(limits,'protected_ids',return_value={0}),patch.object(limits,'nonfiles_ids',return_value={0}),patch.object(limits,'publish') as publish,patch.object(limits.time,'time',return_value=100),patch.object(limits.os,'statvfs',return_value=SimpleNamespace(f_frsize=4096)):
             self.assertEqual(limits.main(args),0);self.assertEqual(limits.main(args),0)
-            self.assertEqual(publish.call_args.kwargs,{'name':'quota-limits.json'})
+            self.assertTrue(publish.call_args.args[1]['enabled'])
         self.assertEqual(events,['enable',rounded(160000,4096),'enable',rounded(160000,4096)])
         value=json.loads((state/'state.json').read_text())
         self.assertEqual(value['roots'][str(root)]['projects']['1001']['graceUntil'],100+7*86400)
@@ -189,7 +248,7 @@ class Limits(unittest.TestCase):
     def test_edquot_and_xfs_enospc_localized_without_host_path(self):
         store=f.module('project-store')
         for code in (errno.EDQUOT,errno.ENOSPC):
-            with patch.object(store,'quota_usage',return_value=(100,100,True)):
+            with patch.object(store,'quota_usage',return_value=(100,100,True)),patch.object(store,'live_quota_usage',return_value=(100,100)):
                 message=store.storage_error(self.config,OSError(code,'English','/secret/host'))
             self.assertIn('已用',message);self.assertIn('上限',message);self.assertNotIn('/secret',message)
     def test_upload_error_wrapper_keeps_timeout_and_only_localizes_quota(self):

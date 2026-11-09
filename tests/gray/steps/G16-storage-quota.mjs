@@ -196,6 +196,7 @@ tool.run(False)`;
       ctx.check(row.filesystem+' rootless 容器达到硬上限时拒写',row.after.errno===(row.filesystem==='ext4'?122:28),row);
       ctx.check(row.filesystem+' 容器内 df 显示上限',row.after.dfTotal===8*1024**2&&row.after.total<=8*1024**2,row.after);
       ctx.check(row.filesystem+' 64 GiB 检查取数据盘余量',row.diskReserve.availableBytes>=64*1024**3,row.diskReserve);
+      ctx.check(row.filesystem+' 配额报错使用实时空间而非过期样本，支持相对错误文件名',row.diskReserve.quotaError.includes('项目文件空间不足'),row.diskReserve.quotaError);
       ctx.check(row.filesystem+' 编号 0 上限保持原值',row.idZeroUnchanged===true);
       ctx.check(row.filesystem+' 十进制/非对齐/宽限上限经过两轮 apply 无重复写',row.rounding.length===4&&row.rounding.every(item=>item.repeatWrites===0&&item.appliedBytes%item.blockBytes===0)&&row.rounding.some(item=>item.requestedBytes===100_000_000_000)&&row.rounding.some(item=>item.grace),row.rounding);
     }

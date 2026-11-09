@@ -58,15 +58,28 @@ def inputs(root):
     finally:os.close(folder)
 
 
-def write_at(folder,name,value):
+def write_at(folder,name,value,owner=None):
     tmp='.write-'+uuid.uuid4().hex
     fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=folder)
     try:
+        if owner is not None:os.fchown(fd,*owner)
         with os.fdopen(fd,'w') as stream:json.dump(value,stream,separators=(',',':'));stream.flush();os.fsync(stream.fileno())
         os.replace(tmp,name,src_dir_fd=folder,dst_dir_fd=folder);os.fsync(folder)
     finally:
         try:os.unlink(tmp,dir_fd=folder)
         except FileNotFoundError:pass
+
+
+def publish(root,value,owner):
+    """Publish limits independently of the sampler version restored on rollback."""
+    base=s.open_directory(root)
+    try:
+        try:os.mkdir('samples',0o700,dir_fd=base);os.chown('samples',*owner,dir_fd=base,follow_symlinks=False)
+        except FileExistsError:pass
+        folder=os.open('samples',s.DIR_FLAGS,dir_fd=base)
+    finally:os.close(base)
+    try:write_at(folder,'quota-limits.json',value,owner)
+    finally:os.close(folder)
 
 
 def project_id(path):
@@ -169,7 +182,8 @@ def apply(registry,desired,ledger,workspace,device,kernel,*,default,minimum,maxi
         try:row=kernel.get(device,number)
         except OSError as error:
             if error.errno!=errno.ENOENT:raise
-            row=Dquot() # XFS has no dquot for a purged ID with zero usage/limits.
+            os.stat(device) # ENOENT is a zero dquot only while the device still exists.
+            row=Dquot()
         requested=desired.get(key,default);target=max(minimum,min(maximum,requested))
         saved=projects.get(token)
         if saved is None:
@@ -215,6 +229,10 @@ def main(argv=None):
             mountinfo=Path('/proc/self/mountinfo').read_text();table=s.mounts(mountinfo)
             denied=protected_ids(a.mounts,[*a.root,*a.workspaces_root])
             for root,workspace in dict.fromkeys(zip(a.root,a.workspaces_root)):
+                number=f'{os.major(os.stat(workspace).st_dev)}:{os.minor(os.stat(workspace).st_dev)}'
+                device=next(src for point,dev,src in sorted(table,key=lambda r:-len(r[0])) if dev==number and (workspace==point or workspace.startswith(point.rstrip('/')+'/')))
+                fs=next(line.split(' - ')[1].split()[0] for line in mountinfo.splitlines() if line.split()[2]==number)
+                os.stat(device) # Fail before persisting even the no-project rollout state.
                 try:registry,desired=inputs(root)
                 except FileNotFoundError:
                     if not a.clear:
@@ -223,9 +241,6 @@ def main(argv=None):
                         continue # enabled with no projects; later allocations get no rollout grace
                     registry,desired={'ids':{},'next':1000},{'limits':[]}
                 desired=desired_limits(desired)
-                number=f'{os.major(os.stat(workspace).st_dev)}:{os.minor(os.stat(workspace).st_dev)}'
-                device=next(src for point,dev,src in sorted(table,key=lambda r:-len(r[0])) if dev==number and (workspace==point or workspace.startswith(point.rstrip('/')+'/')))
-                fs=next(line.split(' - ')[1].split()[0] for line in mountinfo.splitlines() if line.split()[2]==number)
                 ledger=state['roots'].setdefault(root,{})
                 volume=os.statvfs(workspace);block_bytes=volume.f_frsize or volume.f_bsize
                 actions,status=apply(registry,desired,ledger,workspace,device,kernel,default=a.default_bytes,minimum=a.min_bytes,
@@ -234,8 +249,8 @@ def main(argv=None):
                 # Repeat at every invocation/boot, never edit fstab. Clear never enables enforcement.
                 if a.enabled and not a.clear and fs=='ext4':kernel.enable(device)
                 for device,number,amount in actions:kernel.set(device,number,amount)
-                s.publish(root,{'checkedAt':now,'enabled':not a.clear,'defaultLimitBytes':a.default_bytes,'projects':status},
-                          (account.pw_uid,account.pw_gid),name='quota-limits.json')
+                publish(root,{'checkedAt':now,'enabled':not a.clear,'defaultLimitBytes':a.default_bytes,'projects':status},
+                        (account.pw_uid,account.pw_gid))
         finally:os.close(lock)
     finally:os.close(folder)
     return 0

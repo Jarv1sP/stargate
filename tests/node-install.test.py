@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -173,7 +174,11 @@ class InstallationTests(unittest.TestCase):
         files,_=self.host.quota_limits();service=files[str(self.host.system_units/'stargate-quota-limits.service')][0].decode()
         self.assertIn('"--enabled"',service);self.assertIn('"50000000000"',service)
 
-    def test_rollback_to_pre_limits_release_keeps_clear_tool_and_its_root_helpers(self):
+    def test_rollback_to_pre_limits_release_keeps_clear_but_restores_other_root_helpers(self):
+        for name in ('quota-sample.py','quota-ids.py'):
+            file=self.package/'node'/name;file.write_text('# old release\n'+file.read_text())
+        sampler=self.package/'node/quota-sample.py'
+        sampler.write_text(sampler.read_text().replace("def publish(root,value,owner,*,name='quota.json'):","def publish(root,value,owner):").replace("os.replace(tmp,name,","os.replace(tmp,'quota.json',"))
         bindings=self.host.bindings
         def before_limits(manifest,release=None):
             files,units=bindings(manifest,release)
@@ -183,18 +188,46 @@ class InstallationTests(unittest.TestCase):
         self.assertFalse((self.host.libexec/'quota-limits.py').exists())
         self.host.install(self.make_package('with-limits'));self.host.rollback()
         self.assertEqual(str(self.selected()),first['release'])
-        for name in ('quota-limits.py','quota-sample.py','quota-ids.py'):
-            self.assertEqual((self.host.libexec/name).read_bytes(),(ROOT/'node'/name).read_bytes())
+        self.assertEqual((self.host.libexec/'quota-limits.py').read_bytes(),(ROOT/'node/quota-limits.py').read_bytes())
+        for name in ('quota-sample.py','quota-ids.py'):
+            self.assertEqual((self.host.libexec/name).read_bytes(),(self.package/'node'/name).read_bytes())
         help=subprocess.run([sys.executable,'-I','-B',str(self.host.libexec/'quota-limits.py'),'--help'],capture_output=True,text=True,check=True)
         self.assertIn('--clear',help.stdout)
         self.assertFalse(self.host.states['system','stargate-quota-limits.timer']['active'])
 
+    def test_rollback_restores_all_existing_root_programs_with_their_old_units(self):
+        self.config['quota']={'projectFilesEnabled':True}
+        for name in ('quota-sample.py','quota-ids.py','quota-limits.py'):
+            file=self.package/'node'/name;source=file.read_text()
+            file.write_text(source.replace('"""','"""fixture release A: ',1))
+        first=self.host.install(self.package)
+        names=('quota-sample.py','quota-ids.py','quota-limits.py')
+        old={name:(self.host.libexec/name).read_bytes() for name in names}
+        units={name:(self.host.system_units/name).read_bytes() for name in ('stargate-quota-sample.service','stargate-quota-limits.service')}
+        for failed in (False,True):
+            with self.subTest(failed_install=failed):
+                package=self.make_package('bad' if failed else 'second')
+                if failed:
+                    self.host.fail_start='gpuq.service'
+                    with self.assertRaises(subprocess.CalledProcessError):self.host.install(package)
+                else:self.host.install(package);self.host.rollback()
+                self.assertEqual(str(self.selected()),first['release'])
+                for name in names:self.assertEqual((self.host.libexec/name).read_bytes(),old[name])
+                for name,data in units.items():
+                    self.assertEqual((self.host.system_units/name).read_bytes(),data)
+                    command=shlex.split(next(line[10:] for line in data.decode().splitlines() if line.startswith('ExecStart=')))
+                    help=subprocess.run([sys.executable,*command[1:],'--help'],capture_output=True,text=True,check=True)
+                    self.assertIn('fixture release A',help.stdout)
+
     def test_shutdown_documentation_stops_timer_before_clear(self):
         guide=(ROOT/'docs/NODE_RELEASE_BUILD.md').read_text()
         shutdown=guide.split('关闭开关只停止后续修改',1)[1].split('64 GiB 资源底线',1)[0]
-        self.assertLess(shutdown.index('sudo systemctl stop stargate-quota-limits.timer stargate-quota-limits.service'),shutdown.index('quota-limits.py --clear'))
+        self.assertLess(shutdown.index('sudo systemctl disable --now stargate-quota-limits.timer'),shutdown.index('quota-limits.py --clear'))
+        self.assertLess(shutdown.index('sudo systemctl stop stargate-quota-limits.service'),shutdown.index('quota-limits.py --clear'))
         self.assertIn('projectFilesEnabled',shutdown)
         self.assertIn('回滚后仍可',shutdown)
+        self.assertIn('若不为 0，再执行一次 --clear',shutdown)
+        self.assertIn('旧版 root unit 只运行还原后的旧版代码',shutdown)
 
     def test_quota_sampler_is_a_root_owned_copy_on_a_minute_timer(self):
         self.host.install(self.package)
