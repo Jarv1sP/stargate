@@ -109,7 +109,7 @@ gpuctl pull train.py ./train.py
 
 传输采用 TLS、大小核对和原子提交。中断保留原文件、路径、大小和原 key，按输出的 `--key UUID` 重复原 `push` 从偏移续传；`gpuctl push-status 本机路径 远端路径 --key UUID --json` 只查原上传。不要用新 key 重投未知操作，也不要在续传期间修改同一路径。
 
-目录上传同时保留 `SESSION_FILE.uploads/UUID.json` 文件清单（`SESSION_FILE` 为登录文件路径）。清单缺失或文件没有原编号时，`push-status` 显示 `UNKNOWN`，不新建编号、不改清单；单文件可直接按原 key 查询。
+目录上传同时保留 `SESSION_FILE.uploads/UUID.json` 文件清单和跳过目录（`SESSION_FILE` 为登录文件路径）。`push-status` 将已跳过的整棵子树显示为 `SKIPPED`，不再遍历其中的本机文件或链接；清单缺失或其他文件没有原编号时显示 `UNKNOWN`，不新建编号、不改清单。单文件可直接按原 key 查询；再次上传时重新检查服务器目录。
 
 `gpuctl project quota` 查看工作区盘和数据集盘的已用、可用、总量；加 `--project my-project` 查看该项目合计及文件、输出、环境三项，加 `--all` 列出这台服务器全部项目和按人汇总。数字与网页数据页、项目设置来自同一份门户统计，末行显示统计时间。同名项目用 `--owner USERNAME` 定位。“至少”表示部分读不到，“未知”不表示零。包构建可临时设置 `TMPDIR="$HOME/.cache/build-tmp"`，先创建该目录，完成后清理不用的文件。
 
@@ -218,7 +218,7 @@ gpuctl run --machine auto --candidates SERVER_A,SERVER_B --project my-project -g
 gpuctl run --sync -g 1 -- python train.py --output /outputs
 ```
 
-AUTO 按资源和队列选机，异机执行前自动同步当前项目代码、HOME 和容器依赖文件：目标无变化直接复用，有变化且空闲时增量更新；目标正被任务或终端使用时用独立任务副本，没有容器才首次完整复制。输入仍由目标节点 `/datasets` 提供。`--sync` 先上传本机代码到当前开发项目，再允许跨节点选机；上传失败不提交，远端多余文件保持原样。
+AUTO 按资源和队列选机，异机执行前自动同步当前项目代码、HOME 和容器依赖文件：目标无变化直接复用，有变化且空闲时增量更新；目标正被任务或终端使用时用独立任务副本，没有容器才首次完整复制。输入仍由目标节点 `/datasets` 提供。`--sync` 先上传本机代码到当前开发项目，再允许跨节点选机；上传失败不提交，远端多余文件保持原样。数据迁到数据集区后，本机那份可以删除；`gpuctl push`、`run --sync` 和网页项目上传会自动跳过服务器上已改为 `/datasets/<名>` 链接且目标仍是同一数据集盘上真实目录的子树，每个目录提示一次，其余代码照常上传。目标缺失、路径含链接或跨设备时仍报错；旧客户端遇到此类数据集链接提示时，升级 gpuctl 或把对应本机目录移出同步。
 
 Windows 路径用双引号，无需 WSL 或 rsync：
 

@@ -37,4 +37,4 @@ if __name__=='__main__':
     try:
         value=main()
         if value is not None:print(json.dumps({'ok':True,'result':value}))
-    except Exception as error:print(json.dumps({'ok':False,'error':str(error)[:400]}))
+    except Exception as error:print(json.dumps({'ok':False,'error':str(error)[:400],**({'code':'DATASET_DIRECTORY_LINK','datasetLink':error.dataset_link} if hasattr(error,'dataset_link') else {})}))

@@ -115,7 +115,7 @@ def create_server(node):
                 result.update(protocol=2,path=row['path'],size=result.get('offset'),offset=result.get('offset'))
                 self.response(200,{'ok':True,'result':result})
             except Exception as error:
-                self.close_connection=True;self.response(403 if isinstance(error,PermissionError) else 400,{'ok':False,'error':str(error)[:400]})
+                self.close_connection=True;self.response(403 if isinstance(error,PermissionError) else 400,{'ok':False,'error':str(error)[:400],**({'code':'DATASET_DIRECTORY_LINK','datasetLink':error.dataset_link} if hasattr(error,'dataset_link') else {})})
     server=ThreadingHTTPServer((config['bind'],config['port']),Handler)
     server.daemon_threads=True
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2

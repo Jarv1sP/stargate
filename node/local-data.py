@@ -54,15 +54,47 @@ def relative(value,empty=False):
         raise ValueError('请使用目录内的相对路径，不能越出数据目录。')
     return value
 
+class DatasetDirectoryLink(ValueError):
+    def __init__(self,path,target):
+        super().__init__(f'服务器上 {path} 已改为数据集链接 {target}；请升级 gpuctl，或把该本地目录移出同步。')
+        self.dataset_link={'path':path,'target':target}
+
+def dataset_link(target,base):
+    # STOR-002c writes an absolute container path, never a host path. Keep
+    # its dataset-name and relative-subpath rules without resolving the link.
+    if not target.startswith('/datasets/'):return False
+    dataset,_,subpath=target[len('/datasets/'):].partition('/')
+    try:name(dataset)
+    except ValueError:return False
+    if '/' in target[len('/datasets/'):] and (not subpath or any(p in ('','.','..') or '\\' in p or '\0' in p for p in subpath.split('/'))):return False
+    fd=None
+    try:
+        fd=open_directory(base);device=os.fstat(fd).st_dev
+        for part in target[len('/datasets/'):].split('/'):
+            child=os.open(part,DIR_FLAGS,dir_fd=fd)
+            os.close(fd);fd=child
+            if os.fstat(fd).st_dev!=device:return False
+        return True
+    except OSError:return False
+    finally:
+        if fd is not None:os.close(fd)
+
 @contextlib.contextmanager
-def parent(root,path,create=False):
+def parent(root,path,create=False,*,datasets_root=None):
     path=relative(path);fd=open_directory(root);device=os.fstat(fd).st_dev
     try:
-        for part in path.split('/')[:-1]:
+        for index,part in enumerate(path.split('/')[:-1]):
             if create:
                 try:os.mkdir(part,0o700,dir_fd=fd)
                 except FileExistsError:pass
-            child=os.open(part,DIR_FLAGS,dir_fd=fd)
+            try:child=os.open(part,DIR_FLAGS,dir_fd=fd)
+            except OSError:
+                if datasets_root is not None:
+                    try:target=os.readlink(part,dir_fd=fd)
+                    except OSError:pass
+                    else:
+                        if dataset_link(target,datasets_root):raise DatasetDirectoryLink('/'.join(path.split('/')[:index+1]),target) from None
+                raise
             if os.fstat(child).st_dev!=device:os.close(child);raise ValueError('路径不能跨出此数据盘。')
             os.close(fd);fd=child
         yield fd,path.rsplit('/',1)[-1]

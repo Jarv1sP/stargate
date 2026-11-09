@@ -47,6 +47,7 @@ export function bridgeClient(socketPath){
       // Native domain refusals keep their existing semantics, never become a
       // transient transport error and never trigger an implicit second write.
       if(!data.ok){
+        if(data.code==='DATASET_DIRECTORY_LINK')return finish(Object.assign(Error(data.error),{status:409,code:data.code,datasetLink:data.datasetLink}));
         if(operation==='data.upload.status'&&data.error==='UPLOAD_STATUS_BUSY')
           return finish(Object.assign(Error('上传元数据暂时繁忙；请稍后用原上传编号查询，状态未知，请按原编号查询。'),{status:503,code:'UPLOAD_STATUS_BUSY'}));
         const transports={NODE_TRANSPORT_BUSY:[503,'节点连接查询繁忙；请稍后查询原状态。'],NODE_CONNECT_FAILED:[503,'节点连接暂时失败；结果未知，请查询原状态。'],NODE_RESPONSE_TIMEOUT:[504,'节点处理超时；结果未知，请查询原状态。'],NODE_SSH_AUTH_FAILED:[502,'节点登录失败，请联系管理员；原操作不会自动重派。'],NODE_SSH_HOSTKEY_FAILED:[502,'节点证书校验失败，请联系管理员；原操作不会自动重派。'],NODE_RESPONSE_INVALID:[502,'节点响应协议异常；结果未知，请查询原状态。']};

@@ -1,6 +1,6 @@
 import {projectUsage,usageText,usagePartsText} from './storage-usage.js';
 import {diskLabel} from './disk-media.js';
-import {uploadBrowserFile} from './personal-upload.js';
+import {uploadBrowserFile,datasetDirectorySkip,datasetSkipMessage} from './personal-upload.js';
 import {downloadBrowserPath} from './file-transfer-ui.js';
 import {createJobDiagnostics} from './job-diagnostics-ui.js';
 import {formatTimestamp} from './time-format.js';
@@ -83,15 +83,20 @@ export function projectDiskQuotaHTML(value){
   const usage=value?.projectUsage?projectUsage(value.projectUsage):null,volumes=value?.volumes||[];
   return (usage?`<p>项目用量：${usageText(usage.total)}</p><p class="disk-quota-parts">${usagePartsText(usage)}</p>`:'')+'<ul class="disk-quota-volumes">'+volumes.map(row=>`<li><strong>${diskLabel(row)}</strong><dl><dt>已用 / 总量</dt><dd>${bytes(row.usedBytes)} / ${bytes(row.totalBytes)}</dd><dt>可用</dt><dd>${bytes(row.availableBytes)}</dd></dl></li>`).join('')+'</ul>';
 }
-export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,route,onRoute,current=()=>true,onRecoverySupport=()=>{}}={}){
+export async function uploadProjectFile(file,context,call,progress=()=>{},{signal,key,route,onRoute,current=()=>true,onRecoverySupport=()=>{},skipped=new Map(),onSkip=()=>{}}={}){
   const check=()=>{signal?.throwIfAborted();if(!current())throw new DOMException('项目或账号已改变，上传已暂停。','AbortError');};
   check();
   if(context.area!=='code')throw Error('请选择项目代码目录。');
   if(!Number.isSafeInteger(file.size)||file.size<0)throw Error('文件大小无效。');
+  const previous=[...skipped.values()].find(link=>context.path.startsWith(link.path+'/'));if(previous)return {state:'SKIPPED',datasetLink:previous};
   check();onRecoverySupport(true);
-  return uploadBrowserFile(file,{machine:context.machine,project:context.project,ownerId:context.ownerId,area:'code',path:context.path,key,route,onRoute,
+  try{return await uploadBrowserFile(file,{machine:context.machine,project:context.project,ownerId:context.ownerId,area:'code',path:context.path,key,route,onRoute,
     overwrite:true,signal,call:async(operation,args)=>{check();const result=await call(operation,args);check();return result;},
     onProgress:row=>{check();progress(row.offset,file.size,row);}});
+  }catch(error){
+    check();const link=datasetDirectorySkip(error,context.path);if(!link)throw error;
+    skipped.set(link.path,link);onSkip(datasetSkipMessage(link));return {state:'SKIPPED',datasetLink:link};
+  }
 }
 
 export function executionUI(store,refresh,toast){
@@ -502,12 +507,13 @@ export function executionUI(store,refresh,toast){
       const target=fileContext(),token=currentToken(),dir=query('[name=file-path]').value||'.',files=[...query('[name=files]').files];if(target.area==='output')throw Error('任务输出只支持查看和下载。');if(!files.length)throw Error('先选择文件。');
       query('#workspace-result').textContent='正在上传…';
       const keys=uploadRecovery?.scope===uploadScope()?uploadRecovery.keys||new Map():new Map(),route=uploadRecovery?.scope===uploadScope()?uploadRecovery.route||{}:{};uploadRecovery={scope:uploadScope(),supported:true,keys,route};
+      const skipped=new Map(),notices=[];let uploaded=0;
       for(const file of files){const path=dir==='.'?file.name:dir+'/'+file.name,progress=(offset,total,info)=>{if(info?.key)keys.set(path,info.key);if(token===currentToken())query('#workspace-result').textContent=`${info?.resumed?'接着上传':'正在上传'} ${file.name}：${offset} / ${total??file.size} B`;const bar=query('#pr-upload-bar');if(bar&&token===currentToken()){bar.hidden=false;bar.firstChild.style.width=Math.min(100,offset/((total??file.size)||1)*100)+'%';}};
-          try{await projectActivity.run(signal=>uploadProjectFile(file,{...target,path},(operation,args)=>store.call(operation,{...(projectOwner&&args?.project===project?{ownerId:projectOwner}:{}),...args},{signal}),progress,{signal,key:keys.get(path),route,onRoute:toast,current:()=>token===currentToken(),onRecoverySupport:supported=>{if(token===currentToken()){uploadRecovery={scope:uploadScope(),supported,keys,route};updateControls();}}}));}
+          try{const result=await projectActivity.run(signal=>uploadProjectFile(file,{...target,path},(operation,args)=>store.call(operation,{...(projectOwner&&args?.project===project?{ownerId:projectOwner}:{}),...args},{signal}),progress,{signal,key:keys.get(path),route,skipped,onSkip:message=>{notices.push(message);toast(message);},onRoute:toast,current:()=>token===currentToken(),onRecoverySupport:supported=>{if(token===currentToken()){uploadRecovery={scope:uploadScope(),supported,keys,route};updateControls();}}}));if(result.state!=='SKIPPED')uploaded++;}
           catch(error){if(token===currentToken())query('#workspace-result').textContent=error.message;throw error;}
       }
       if(token!==currentToken())return;
-      keys.clear();query('[name=files]').value='';const bar=query('#pr-upload-bar');if(bar)bar.hidden=true;renderProject();toast('文件上传完成。');await listFiles().catch(()=>{});query('#workspace-result').textContent=`已上传 ${files.length} 个文件，可直接运行。`;
+      keys.clear();query('[name=files]').value='';const bar=query('#pr-upload-bar');if(bar)bar.hidden=true;renderProject();toast('文件上传完成。');await listFiles().catch(()=>{});query('#workspace-result').textContent=[`已上传 ${uploaded} 个文件，可直接运行。`,...notices].join('\n');
     },true);
     if(button.hasAttribute('data-result-delete')||button.id==='workspace-delete-outputs'){
       const job=outputSelectionJob();if(!deletableResultJob(store,job))return;
