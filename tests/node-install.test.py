@@ -128,7 +128,7 @@ class InstallationTests(unittest.TestCase):
     def make_package(self, label):
         package = self.base / label
         (package/'node').mkdir(parents=True)
-        for name in ('core-entry.py', 'core-service.py', 'node-probe.py', 'runtime-profile.py', 'quota-sample.py', 'quota-ids.py'):
+        for name in ('core-entry.py', 'core-service.py', 'node-probe.py', 'runtime-profile.py', 'quota-sample.py', 'quota-ids.py', 'quota-limits.py'):
             (package/'node'/name).write_bytes((ROOT/'node'/name).read_bytes())
         with zipfile.ZipFile(package/'gpuq.pyz', 'w') as archive:
             archive.writestr('__main__.py', 'print("READY", flush=True)\ninput()\nimport late\nprint(late.VALUE)\n')
@@ -162,6 +162,16 @@ class InstallationTests(unittest.TestCase):
             self.assertTrue(self.host.states['user', name]['active'], name)
         self.assertTrue(self.host.states['system', 'node-peer.service']['active'])
         self.assertTrue(self.host.states['system', 'stargate-quota-sample.timer']['active'])
+
+    def test_project_limits_are_off_by_default_and_only_admin_config_enables(self):
+        self.host.install(self.package)
+        service=(self.host.system_units/'stargate-quota-limits.service').read_text()
+        self.assertNotIn('"--enabled"',service)
+        self.assertIn('MemoryMax=512M',service)
+        self.assertEqual((self.host.libexec/'quota-limits.py').read_bytes(),(ROOT/'node/quota-limits.py').read_bytes())
+        self.host.config['quota']={'projectFilesEnabled':True,'projectFilesDefaultBytes':50_000_000_000}
+        files,_=self.host.quota_limits();service=files[str(self.host.system_units/'stargate-quota-limits.service')][0].decode()
+        self.assertIn('"--enabled"',service);self.assertIn('"50000000000"',service)
 
     def test_quota_sampler_is_a_root_owned_copy_on_a_minute_timer(self):
         self.host.install(self.package)

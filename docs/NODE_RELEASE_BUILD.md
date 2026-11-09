@@ -20,15 +20,33 @@ manifest 记录源码提交与 dirty 状态、node 文件路径和大小、pyz �
 
 ## 项目编号记账
 
-数据盘必须开启文件系统的项目配额：ext4 在卸载状态下执行 `tune2fs -O project` 和 `tune2fs -Q prjquota`，挂载选项不变；XFS 用 `prjquota` 挂载。只记账，不设任何限额。未开启的盘在用量里显示“未知”，不显示 0。
+数据盘必须开启文件系统的项目配额：ext4 在卸载状态下执行 `tune2fs -O project` 和 `tune2fs -Q prjquota`，默认只记账；XFS 用 `prjquota` 挂载。项目文件硬上限由独立的 root 单元应用，安装配置默认关闭。未开启的盘在用量里显示“未知”，不显示 0。
 
-每个可记账对象有一个固定编号，登记在 `<root>/quota/ids.json`（服务账户所有，0600，flock 串行分配，从 1000 起只增不复用）。节点在新建时打标（`node/quota-ids.py`，目录设继承标志，文件只设编号）：新项目目录、任务输出目录、个人引擎目录 `.oci/<owner>`、新数据集目录（所有上传、导入、云盘下载、服务器间接收都经 `dataset_root(create=True)`）、复制暂存 `.copies/<key>`（目标项目号）与 `.copy-exports/<key>`（源项目号）。开发容器在 `podman create` 之后、首次启动之前打层：层目录 `graph/overlay/<layerId>/` 本身保留镜像号、不设继承（Podman 删除容器时会把它整体改名进 `overlay/tempdirs`），其下 diff、work、merged 等整层用项目·环境号。每次进入开发容器前读一次 diff/work 的编号，不一致就补打，只修复、不拒绝。打标失败（例如盘未开启）只在 stderr 记一行，用户操作照常完成，相应字节计入“未登记”。
+每个可记账对象有一个固定编号，登记在 `<root>/quota/ids.json`（服务账户所有，0600，flock 串行分配，从 1000 起只增不复用）。节点在新建时打标（`node/quota-ids.py`，目录设继承标志，文件只设编号）：新项目目录、任务输出目录、个人引擎目录 `.oci/<owner>`、新数据集目录（所有上传、导入、云盘下载、服务器间接收都经 `dataset_root(create=True)`）、复制暂存 `.copies/<key>`（目标项目号）与 `.copy-exports/<key>`（平台号，不占源项目额度）。开发容器在 `podman create` 之后、首次启动之前打层：层目录 `graph/overlay/<layerId>/` 本身保留镜像号、不设继承（Podman 删除容器时会把它整体改名进 `overlay/tempdirs`），其下 diff、work、merged 等整层用项目·环境号。每次进入开发容器前读一次 diff/work 的编号，不一致就补打，只修复、不拒绝。打标失败（例如盘未开启）只在 stderr 记一行，用户操作照常完成，相应字节计入“未登记”。
 
 新建数据集的原子发布使用 `<root>/quota/datasets.lock`（容器不可见），沿用项目锁的有界等待；已有数据集不加此锁。容器内对 `/datasets` 的 flock 不影响平台发布新数据集。
 
 继承目录之间改名时编号不同会得到 EXDEV，所以根目录、`workspacesRoot`、`workspacesRoot/<owner>`、`.oci`、各 `.trash`、`root/outputs`、`.copies`、`.copy-exports`、`datasetsRoot`、数据盘挂载点和容器层目录本身都不设继承标志。
 
 安装器把 `node/quota-sample.py` 与 `node/quota-ids.py` 复制为 root 所有的 `/usr/local/libexec/stargate/` 下的副本，并写系统级 `stargate-quota-sample.service`/`.timer`（开机 30 秒后、之后每 60 秒，Nice=19、idle I/O，以 root 只读运行）。它对每块数据盘（同一设备的多个挂载点只算一次）用 `quotactl(Q_GETNEXTQUOTA, PRJQUOTA)` 读出各编号的字节与 inode，原子写入 `<root>/samples/quota.json`（0600，属主为服务账户）。该单元与其他单元一起纳入安装、停止、健康和回退流程，健康判断不变。
+
+### 项目文件上限（STOR-002b，2026-11-08 所有者批准）
+
+独立 `stargate-quota-limits.service`/`.timer` 每分钟运行 root 所有的 `quota-limits.py`。安装配置顶层 `quota` 支持以下字段；缺少整个对象时保持关闭，合并或升级不会自动开启：
+
+```json
+{"quota":{"projectFilesEnabled":false,"projectFilesDefaultBytes":100000000000,"projectFilesMinBytes":1000000000,"projectFilesMaxBytes":10000000000000,"projectFilesGraceHeadroomBytes":10000000000}}
+```
+
+这里 GB 为十进制字节。默认 100 GB，允许管理员单独调低或调高；root 程序按安装配置的最小/最大值收敛。RPC 不能改变开关、默认值、范围、数据盘或 root 状态目录。生产逐台启用由维护负责人在该节点搬迁完成后执行；仓库不修改 fstab。开关关闭时程序直接退出，不设置任何上限，不开启 ext4 强制，也不开始宽限计时。
+
+打开后该单元每次启动在线执行 ext4 `Q_QUOTAON(PRJQUOTA)`，XFS 沿用挂载时的强制状态。只对已验证的 `p:<owner>/<project>:files` 编号写 block hard limit，不碰编号 0、任务输出、环境、数据集、镜像或外部目录；XFS 编号 0 会影响默认上限，绝不能设置。root 独占目录 `/var/lib/stargate-quota-limits/` 保存编号的首次类型及宽限期限，不信服务账户重新标注编号；首次接受项目编号前核对项目、code、home 的真实编号，排除平台外目录占用的编号。不要删除该目录来重启宽限。
+
+首次应用时已超限的项目，生效值为 `max(设定值, 当前用量 + 余量)`（余量默认 10 GB），7 天后收紧到设定值；宽限日期固定，重启和刷新不延长。只限制后续写入，程序不删除文件。管理员在数据页“设上限”保存，Portal 新表按 owner/machine/project 留存设定值与审计，每次修改及每轮 5 分钟刷新推送整份清单；节点原子写 `<root>/quota/limits.json`，root 状态原子保存后才应用。节点离线时保留设定值并在下轮重推。root 应用状态写 `samples/quota-limits.json`；只读采样器从内核读实际 block 上限和强制状态，界面分别显示未生效、待生效、≥90%、超限及宽限日期。
+
+关闭开关只停止后续修改，已写入的内核上限会保留。需要撤销上限时，管理员在节点本机以相同 unit 参数调用 `quota-limits.py --clear`，仅清零 root 账本认可的项目文件编号，不会开启强制或触碰编号 0；再关闭安装开关。回退旧发布同样不会自动清掉内核上限。
+
+64 GiB 资源底线取数据盘挂载点的余量，项目剩余额度单独按目标目录核对，不另加 64 GiB。复制导出暂存使用平台号；`.copies` 和 `.copy-backups` 继续计入目标项目。`tag_tree` 仅用于平台创建的固定路径，`heal_layer` 仅修复容器环境层；这两条路径没有接受用户指定编号的 RPC。STOR-002c 是仓库外管理员搬迁工具，不是成员可调用的转编号入口，搬迁后仍须按其流程完成数据核对与回收站处理。
 
 `projects.list {includeUsage:true}` 只读样本和登记表：项目行的 `size`、`outputs.size`、`environment.size` 来自编号字节，`complete` 表示该盘有样本且开启记账；顶层 `disks` 按盘列出完整构成（项目、个人镜像、数据集、平台运行数据、外部目录、未归属输出、未登记、文件系统开销，相加等于 `usedBytes`），`checkedAt` 为样本时间，无样本为 null。采样前记录登记表的 `next`，输出和环境的编号在样本缺席且小于 `next` 时用量为 0；项目文件和数据集缺席仍为未知，之后新分配的编号也保持未知。没有 `quota/migrated.json` 时，项目输出与环境显示未知。`projects.quota` 只返回盘容量。`datasets.list` 对已登记的数据集读样本，未登记的仍现场测量。
 

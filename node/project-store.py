@@ -1,5 +1,5 @@
 """Mutable SSD project workspaces; no releases, snapshots or migration."""
-import contextlib,fcntl,importlib.util,json,os,re,stat,time,uuid
+import contextlib,errno,fcntl,importlib.util,json,os,re,stat,time,uuid
 from pathlib import Path
 SLUG=re.compile(r'^[a-z][a-z0-9_-]{0,47}$')
 JOB_ID=re.compile(r'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$')
@@ -87,10 +87,63 @@ def workspace_storage_check(available, needed=0):
             'warning': 'LOW_DISK_SPACE' if available < WORKSPACE_WARNING_BYTES else None}
 
 
+def data_mount(path):
+    """Use the data mount, whose statfs is not reduced by a project's quota."""
+    path=Path(path)
+    points=[]
+    for line in Path('/proc/self/mountinfo').read_text().splitlines():
+        raw=line.split(' - ',1)[0].split()[4]
+        point=Path(re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),raw))
+        if point==path or point in path.parents:points.append(point)
+    return max(points,key=lambda p:len(p.parts))
+
+
+def quota_message(used=None,limit=None):
+    size=lambda value:'未知' if value is None else f'{value/10**9:.2f} GB'
+    return f'项目文件空间不足（已用 {size(used)} / 上限 {size(limit)}）。请清理项目文件及 /home 缓存，或联系管理员调整上限；回收站清空后才释放额度。'
+
+
+def quota_usage(config,path):
+    """Look up the current sample for the ID on an existing parent, no file walk."""
+    try:
+        spec=importlib.util.spec_from_file_location('quota_usage',Path(__file__).with_name('storage-usage.py'))
+        m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);sample=m.Sample(config)
+        target=Path(path)
+        while not target.exists() and target!=target.parent:target=target.parent
+        fd=os.open(target,FILE_FLAGS)
+        try:number=str(quota().projid(fd))
+        finally:os.close(fd)
+        fs=sample.filesystems.get(sample.mount(target),{})
+        row=(fs.get('ids') or {}).get(number,{})
+        return row.get('bytes'),row.get('limitBytes'),fs.get('enforced')
+    except (OSError,ValueError,KeyError,TypeError):return None,None,None
+
+
+def storage_error(config,error,path=None):
+    message=str(error);code=getattr(error,'errno',None)
+    if code not in (errno.EDQUOT,errno.ENOSPC):
+        if 'Disk quota exceeded' in message:code=errno.EDQUOT
+        elif 'No space left on device' in message:code=errno.ENOSPC
+        else:return message[:400]
+    used,limit,enforced=quota_usage(config,path or getattr(error,'filename',None) or config.get('workspacesRoot',config['root']))
+    if code==errno.EDQUOT or enforced and limit:
+        return quota_message(used,limit)
+    return '数据盘空间不足（已用 / 上限暂时未知）。请查看数据页，清空不需要的文件或联系管理员。'
+
+
 def require_workspace_space(root,reserve_bytes=None,needed=0,*,target_fd=None):
-    with directory(root) as fd:
-        v=os.fstatvfs(fd if target_fd is None else target_fd)
-        return workspace_storage_check(v.f_bavail*v.f_frsize,needed)
+    with directory(data_mount(root)) as disk:
+        v=os.fstatvfs(disk)
+        result=workspace_storage_check(v.f_bavail*v.f_frsize,needed)
+        if needed:
+            with directory(root) as fd:
+                target=os.fstatvfs(fd if target_fd is None else target_fd)
+                # The target's remaining quota has no additional 64 GiB floor.
+                if target.f_bavail*target.f_frsize<needed:
+                    used=(getattr(target,'f_blocks',0)-getattr(target,'f_bfree',0))*target.f_frsize
+                    limit=getattr(target,'f_blocks',0)*target.f_frsize
+                    raise ProjectError('workspace_quota',quota_message(used,limit),{'usedBytes':used,'limitBytes':limit})
+        return result
 
 
 def private_dir(path, create=False):

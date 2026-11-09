@@ -30,6 +30,10 @@ class Uploads:
         return self.d.dataset_root(self.config,args['dataset'],create=True)
 
     def process(self,action,args):
+        try:return self._process(action,args)
+        except OSError as error:raise ValueError(self.s.storage_error(self.config,error,self.root)) from None
+
+    def _process(self,action,args):
         key=args['key']
         with self.locked(key) as record:
             if action=='begin':

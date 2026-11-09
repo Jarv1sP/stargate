@@ -73,7 +73,7 @@ def data_path(path, mounts):
     return target
 
 
-ROOT_PROGRAMS = ('node/quota-sample.py', 'node/quota-ids.py')
+ROOT_PROGRAMS = ('node/quota-sample.py', 'node/quota-ids.py', 'node/quota-limits.py')
 
 
 def unpack(package, destination):
@@ -236,7 +236,7 @@ class Installer:
         return json.dumps(str(value)).replace('%', '%%').replace('$', '$$')
 
     def quota_sampler(self, release):
-        """The one root service: read-only project-quota sampling every minute.
+        """Read-only project-quota sampling every minute.
 
         It runs a root-owned copy of the sampler, never the service-owned
         release; quota-ids.py sits beside it for the maintenance migration.
@@ -253,6 +253,30 @@ class Installer:
         files[str(self.system_units/'stargate-quota-sample.service')] = (service.encode(), 0o644, (0, 0))
         files[str(self.system_units/'stargate-quota-sample.timer')] = (timer.encode(), 0o644, (0, 0))
         return files, dict(scope='system', name='stargate-quota-sample.timer', service='stargate-quota-sample.service')
+
+    def quota_limits(self):
+        """Owner-approved STOR-002b rule. Off unless admin install config opts in."""
+        policy = self.config.get('quota', {})
+        minimum = policy.get('projectFilesMinBytes', 1_000_000_000)
+        maximum = policy.get('projectFilesMaxBytes', 10_000_000_000_000)
+        default = policy.get('projectFilesDefaultBytes', 100_000_000_000)
+        headroom = policy.get('projectFilesGraceHeadroomBytes', 10_000_000_000)
+        if any(type(n) is not int for n in (minimum, maximum, default, headroom)) or not 0 < minimum <= default <= maximum or headroom < 0:
+            raise ValueError('安装配置中的项目文件上限范围无效。')
+        command = ['/usr/bin/python3', '-I', '-B', str(self.libexec/'quota-limits.py'), '--account', self.account.pw_name,
+                   '--default-bytes', default, '--min-bytes', minimum, '--max-bytes', maximum, '--headroom-bytes', headroom]
+        if policy.get('projectFilesEnabled') is True:
+            command.append('--enabled')
+        for root, workspace in dict.fromkeys((str(Path(p['root']).resolve(strict=True)), str(Path(p.get('workspacesRoot', p['root']+'/workspaces')).resolve(strict=True))) for p in self.config['profiles'].values()):
+            command += ['--root', root, '--workspaces-root', workspace]
+        command += self.config['dataMountPoints']
+        service = ('[Unit]\nDescription=STARGATE project-files limits (off by default)\n[Service]\nType=oneshot\n'
+                   'StateDirectory=stargate-quota-limits\nStateDirectoryMode=0700\nMemoryMax=512M\nNice=19\nUMask=0077\nExecStart=' + ' '.join(map(self.unit_word, command)) + '\n')
+        timer = ('[Unit]\nDescription=STARGATE project-files limits\n[Timer]\nOnBootSec=20\nOnUnitActiveSec=60\n'
+                 'Unit=stargate-quota-limits.service\n[Install]\nWantedBy=timers.target\n')
+        files = {str(self.system_units/'stargate-quota-limits.service'): (service.encode(), 0o644, (0, 0)),
+                 str(self.system_units/'stargate-quota-limits.timer'): (timer.encode(), 0o644, (0, 0))}
+        return files, dict(scope='system', name='stargate-quota-limits.timer', service='stargate-quota-limits.service')
 
     def bindings(self, manifest, release=None):
         delegation = self.system_units / f'user@{self.owner[0]}.service.d/50-stargate-cpuset.conf'
@@ -305,6 +329,9 @@ class Installer:
             units.append(dict(scope=scope, name=target, service=name if seconds else None))
         sampler, unit = self.quota_sampler(release or self.current)
         files.update(sampler)
+        units.append(unit)
+        limits, unit = self.quota_limits()
+        files.update(limits)
         units.append(unit)
         gpu_command = Path(self.config.get('gpuCommand', self.home / 'bin/gpu'))
         files[str(gpu_command)] = (('#!/bin/sh\nexec ' + shlex.quote(str(self.current / 'gpu')) + ' "$@"\n').encode(), 0o700, self.owner)

@@ -293,6 +293,12 @@ def terminal_op(operation,args):
 
 
 def process(operation,args):
+    try:return process_request(operation,args)
+    except OSError as error:
+        path=Path(CONFIG['workspacesRoot'])/(args.get('ownerId') or args.get('userId') or '')/args['project'] if args.get('project') else None
+        raise ValueError(module('project-store').storage_error(CONFIG,error,path)) from None
+
+def process_request(operation,args):
     platform_root_check()
     if operation=='jobs.reconcile-resources':return job_operation('watch',args)
     if operation.startswith('projects.') or operation.startswith('files.') and args.get('project') and args.get('area')!='output':

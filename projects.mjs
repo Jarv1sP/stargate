@@ -1,3 +1,4 @@
+import {projectStorageLimitCall} from './project-storage-limits.mjs';
 import {UUID,selectFields} from './portal-request-validation.mjs';
 import {projectCatalogCall,setProjectShared} from './project-catalog.mjs';
 export {UUID};
@@ -11,6 +12,8 @@ export function projectReference(args,{optional=true}={}){
 export async function projectCall(service,principal,user,operation,args,authorize){
   const ownerId=args.ownerId??user.id;
   const owner=service.store.users.find(row=>row.id===ownerId)||{id:ownerId};
+  const limit=await projectStorageLimitCall(service,principal,owner,operation,args,authorize);
+  if(limit!==undefined)return limit;
   const presentation=await projectCatalogCall(service,principal,owner,operation,args,authorize);
   if(presentation!==undefined)return presentation;
   const names=new Set(['projects.list','projects.quota','projects.create','projects.status','projects.archive','projects.unarchive',

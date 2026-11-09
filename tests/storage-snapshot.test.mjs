@@ -13,7 +13,8 @@ async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'storage-snapshot-')),database=join(root,'portal'),bootstrap=join(root,'bootstrap'),calls=[];
  await writeFile(bootstrap,JSON.stringify({username:'admin',password:'Storage-Cache-Local-Fixture!'}));
  let read=async(_machine,operation)=>operation==='projects.quota'?{volumes:[{kind:'shared',fs:'11',usedBytes:3,availableBytes:9,totalBytes:12}]}:operation==='datasets.list'?{datasets:[{dataset:'images',size:null,complete:false,uploadedBy:'peer'}],complete:true}:operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:false}],complete:true,checkedAt:'2026-11-07T00:00:00.000Z'}:{state:'COMPLETE',project:'vision'};
- const bridge=async(...args)=>{calls.push(structuredClone(args));return read(...args);};
+ // Cap pushes are exercised by project-storage-limits.test.js; these counts describe storage reads.
+ const bridge=async(...args)=>{if(args[1]==='projects.storage.limits.sync')return {synced:true};calls.push(structuredClone(args));return read(...args);};
  let service;
  const open=async()=>{service=await PortalService.open(database,bootstrap,undefined,bridge);clearInterval(service.executionTimer);return service;};
  await open();

@@ -30,6 +30,20 @@ class Sampler(unittest.TestCase):
         with self.assertRaises(OSError) as caught:sampler.usage('/dev/sdb1',Libc({},error=errno.ESRCH))
         self.assertEqual(caught.exception.errno,errno.ESRCH)
 
+    def test_limit_fields_and_enforcement_flag_are_published(self):
+        class WithLimit(Libc):
+            def quotactl(self,*args):
+                result=super().quotactl(*args)
+                if result==0:args[-1]._obj.bhardlimit=100;args[-1]._obj.bsoftlimit=50
+                return result
+        self.assertEqual(sampler.usage('/dev/test',WithLimit({1000:(5,1)}),limits=True)[1000],
+                         {'bytes':5,'inodes':1,'limitBytes':102400,'softLimitBytes':51200})
+        class State:
+            def quotactl(self,command,device,number,row):
+                self.command=command;row._obj[2]=b'\x20';return 0
+        state=State();self.assertTrue(sampler.enforcement('/dev/test',state))
+        self.assertEqual(state.command,(((ord('X')<<8)+8)<<8)|2)
+
     def test_enoent_before_any_id_is_an_error_not_an_empty_quota_enabled_table(self):
         with self.assertRaises(OSError) as caught:sampler.usage('/dev/loop7',Libc({}))
         self.assertEqual(caught.exception.errno,errno.ENOENT)

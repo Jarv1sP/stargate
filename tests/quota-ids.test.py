@@ -520,13 +520,24 @@ class RuntimeEntries(unittest.TestCase):
     upload=f.DirectoryContract.upload
     key=f.DirectoryContract.key
 
-    def test_copy_staging_starts_on_the_target_and_export_on_the_source_files_id(self):
+    def test_copy_staging_stays_on_the_target_files_id(self):
         copy=f.module('project-copy');store=f.module('project-store')
         jobs=SimpleNamespace(s=store,d=f.module('local-data'),config=self.config)
         with Kernel() as kernel:
             staging=copy.ProjectCopy(jobs).target({'id':str(uuid.uuid4()),'target':{'userId':'bob','ownerId':'carol','project':'demo'}})
         self.assertEqual(kernel.of(staging),(self.ids()[q.files_key('carol','demo')],True))
         self.assert_container_type(kernel,staging.parent)
+
+    def test_copy_export_staging_uses_platform_id(self):
+        import contextlib
+        copy=f.module('project-copy');store=f.module('project-store');root=Path(self.config['root'])/'transfers';root.mkdir()
+        jobs=SimpleNamespace(s=store,d=f.module('local-data'),config=self.config,
+            root=lambda ref:None,path=lambda key,suffix:root/(key+suffix),lock=lambda *args,**kw:contextlib.nullcontext())
+        exporter=copy.ProjectCopy(jobs);exporter.launch_export=lambda *args:None
+        key=str(uuid.uuid4())
+        with Kernel() as kernel:exporter.prepare({'key':key,'source':{'userId':'alice','project':'demo'}})
+        staging=Path(self.config['workspacesRoot'])/'.copy-exports'/key
+        self.assertEqual(kernel.of(staging),(self.ids()[q.PLATFORM],True))
 
     def test_engine_folder_and_container_layer(self):
         oci=f.module('personal-oci');engine=oci.PersonalOCI.__new__(oci.PersonalOCI)

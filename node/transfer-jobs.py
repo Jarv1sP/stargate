@@ -300,7 +300,7 @@ class TransferJobs:
             except (ValueError,OSError) as error:
                 with self.lock(key):
                     row=self.s.read_json(file)
-                    if row['state'] not in ('CANCELED','SUCCEEDED'):row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(file,row)
+                    if row['state'] not in ('CANCELED','SUCCEEDED'):row.update(state='FAILED',error=self.s.storage_error(self.config,error));self.s.atomic_json(file,row)
                 if row['target'].get('environment') and row['state']=='FAILED':self.cleanup_copy(row)
             return self.status({'key':key})
 
@@ -352,7 +352,7 @@ class TransferJobs:
                 except Exception as error:
                     with self.lock(key):
                         row=self.s.read_json(self.path(key))
-                        if row['state']!='CANCELED':row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(self.path(key),row)
+                        if row['state']!='CANCELED':row.update(state='FAILED',error=self.s.storage_error(self.config,error));self.s.atomic_json(self.path(key),row)
                     self.cleanup_copy(row);return 1
                 return self.receive_worker(key,independent=not available)
         return self.receive_worker(key)
@@ -454,7 +454,7 @@ class TransferJobs:
             with self.lock(key):
                 row=self.s.read_json(self.path(key))
                 state='PAUSED' if not row['target'].get('environment') or isinstance(error,(ConnectionError,TimeoutError,http.client.HTTPException)) else 'FAILED'
-                if row['state']!='CANCELED':row.update(state=state,error=str(error)[:400]);self.s.atomic_json(self.path(key),row)
+                if row['state']!='CANCELED':row.update(state=state,error=self.s.storage_error(self.config,error));self.s.atomic_json(self.path(key),row)
             return 1
         finally:
             try:

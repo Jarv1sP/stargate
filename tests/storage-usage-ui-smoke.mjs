@@ -35,6 +35,7 @@ const nodes={
 const sampled=new Date(Date.now()-3*60000).toISOString(),calls=[],errors=[],external=[];
 const bridge=async(machine,operation,args)=>{
  calls.push({machine,operation});const node=nodes[machine];
+ if(operation==='projects.storage.limits.sync')return {synced:true};
  if(operation==='transfers.list')return {transfers:[]};
  if(operation==='projects.retire.list')return {items:[]};
  if(!node)throw Object.assign(Error('节点暂未响应，请稍后重试。'),{status:503});
@@ -81,6 +82,31 @@ try{
   assert.equal(await text(render.locator('[data-project-parts]')),'文件 100 GiB · 输出 20 GiB · 环境 10 GiB');assert.equal(await text(render.locator('[data-project-total]')),'130 GiB');
   assert.equal(await text(first.locator('[data-project-row=vision] [data-project-total]')),'840 GiB');
   assert.ok((await first.locator('[data-storage-projects]').innerText()).indexOf('vision')<(await first.locator('[data-storage-projects]').innerText()).indexOf('render'),'sorted by total');
+  // Quota states and administrator editor at every required viewport.
+  const fixture=nodes['gpu-1'].projects;
+  Object.assign(fixture[0],{limitBytes:400*G,desiredLimitBytes:100*G,effectiveLimitBytes:400*G,enforced:true,graceUntil:1800000000});
+  Object.assign(fixture[1],{limitBytes:110*G,desiredLimitBytes:110*G,enforced:true});
+  service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
+  await first.locator('[data-storage-refresh]').click();await page.waitForFunction(()=>document.querySelector('[data-storage-machine=gpu-1]')?.dataset.loading==='false');
+  assert.match(await first.locator('[data-project-row=vision]').innerText(),/超限，宽限至/);
+  assert.match(await first.locator('[data-project-row=render]').innerText(),/≥90%/);
+  assert.equal(await first.locator('[data-storage-limit]').count(),role==='admin'?2:0);
+  if(role==='admin'){
+   await first.locator('[data-storage-limit=render]').click();const editor=page.locator('dialog[aria-label="项目文件上限"]');await editor.waitFor({state:'visible'});
+   await editor.locator('input').fill('200');await page.screenshot({path:join(shots,`limit-admin-${width}-edit.png`),fullPage:true,animations:'disabled'});
+   await editor.getByRole('button',{name:'保存',exact:true}).click();
+   await page.waitForFunction(()=>{const d=document.querySelector('dialog[aria-label="项目文件上限"]');return !d.open||d.querySelector('[data-limit-status]').textContent;});
+   assert.equal(await editor.locator('[data-limit-status]').textContent(),'');await editor.waitFor({state:'hidden'});
+   assert.equal(service.projectStorageLimit('builtin-admin','gpu-1','render'),200_000_000_000);
+   assert.match(await first.locator('[data-project-row=render]').innerText(),/待生效/);
+  }
+  await page.screenshot({path:join(shots,`limits-${role}-${width}-states.png`),fullPage:true,animations:'disabled'});
+  fixture[1].enforced=false;service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
+  await first.locator('[data-storage-refresh]').click();await page.waitForFunction(()=>document.querySelector('[data-storage-machine=gpu-1]')?.dataset.loading==='false');
+  assert.match(await first.locator('[data-project-row=render]').innerText(),/上限未生效.*待生效/);
+  await page.screenshot({path:join(shots,`limits-${role}-${width}-disabled.png`),fullPage:true,animations:'disabled'});
+  for(const value of fixture)for(const key of ['limitBytes','desiredLimitBytes','effectiveLimitBytes','enforced','graceUntil'])delete value[key];
+  service.db.prepare('DELETE FROM project_storage_limits_v2').run();service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
   // People: projects (by creator, including the trashed one) plus images.
   assert.equal(await text(first.locator('[data-owner-row=fixture-member] [data-owner-total]')),'912 GiB');assert.equal(await text(first.locator('[data-owner-row=builtin-admin] [data-owner-total]')),'155 GiB');
   assert.match(await text(first.locator('[data-owner-row=fixture-member] .dr-s').first()),/项目 852 GiB · 镜像与容器引擎 60 GiB/);

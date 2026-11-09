@@ -56,8 +56,8 @@ class ProjectCopy:
             if row and row['state'] not in ('FAILED','COMPLETE'):return {k:row[k] for k in ('id','token','state')}
             exports=self.s.private_dir(self.d.root(self.j.config,'workspacesRoot')/'.copy-exports',create=True)
             folder=exports/key
-            if self.s.created_dir(folder):
-                q=self.s.quota();q.assign(self.j.config,q.files_key(ref.get('ownerId') or ref['userId'],ref['project']),folder)
+            fresh=self.s.created_dir(folder)
+            q=self.s.quota();q.assign(self.j.config,q.PLATFORM,folder,tree=not fresh)
             bundle=self.s.private_dir(folder/'bundle',create=True)
             row={**(row or {}),'id':key,'token':row['token'] if row else uuid.uuid4().hex,'request':{'source':ref},
                  'root':str(bundle),'state':'PREPARING','environment':True,'fullImage':False,'mode':row.get('mode','full') if row else args.get('mode','full')}
@@ -71,7 +71,7 @@ class ProjectCopy:
                 '--property=KillMode=control-group','--property=MemoryMax=1G','--property=TasksMax=2048',
                 '/usr/bin/python3',str(Path(__file__).with_name('node-executor.py')),'--project-copy-export-worker',key])
         except Exception as error:
-            with self.j.lock(key,source=True):row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(self.j.path(key,'.source.json'),row)
+            with self.j.lock(key,source=True):row.update(state='FAILED',error=self.s.storage_error(self.j.config,error));self.s.atomic_json(self.j.path(key,'.source.json'),row)
             raise
 
     def full(self,row):
@@ -115,7 +115,7 @@ class ProjectCopy:
                 self.s.atomic_json(folder/'manifest.json',{'image':tag,'rootfsBytes':rootfs})
                 if row['mode']=='incremental' and not image_only:self.sync().index(folder,rootfs=True)
             except Exception as error:
-                row.update(state='FAILED',error=str(error)[:400]);self.s.atomic_json(file,row);return 1
+                row.update(state='FAILED',error=self.s.storage_error(self.j.config,error));self.s.atomic_json(file,row);return 1
             finally:
                 if row['mode']=='full' or image_only:
                     try:engine.run('rmi',tag)
