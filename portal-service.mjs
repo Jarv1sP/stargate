@@ -18,7 +18,7 @@ import {installCloudImports,cloudImportCall} from './cloud-import.mjs';
 import {installTeamAccounts,accountOperation} from './accounts/portal.mjs';
 import {installProjectCatalog} from './project-catalog.mjs';
 import {installTaskDisplay,taskDisplayCall} from './task-display.mjs';
-import {openStorage,readStorage,writeStorage,saveStorageTimes} from './portal-storage.mjs';
+import {openStorage,readStorage,writeStorage,mergeStorage,saveStorageTimes} from './portal-storage.mjs';
 import {JSONItems} from './json-stream.mjs';
 
 // Aggregate history is a presentation view; point queries use durable jobs.
@@ -86,7 +86,7 @@ export class PortalService extends DemoService{
       if(data.storage){
         service.db.exec('BEGIN IMMEDIATE');
         try{
-          for(const [machine,row] of Object.entries(data.storage))writeStorage(service,machine,row);
+          for(const [machine,row] of Object.entries(data.storage))writeStorage(service,machine,mergeStorage(readStorage(service,machine),row));
           delete data.storage;
           service.db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify(data));
           service.db.exec('COMMIT');

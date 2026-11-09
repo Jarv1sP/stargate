@@ -20,6 +20,19 @@ export function readStorage(service,machine){
   return row?{...JSON.parse(gunzipSync(row.data).toString('utf8')),...service.storageSnapshots[machine]}:{};
 }
 
+// A rolled-back release may leave inline failures next to good stored readings.
+// Merge those failures as refresh does, without replacing newer samples.
+export function mergeStorage(stored,incoming){
+  if(Date.parse(incoming.checkedAt)<Date.parse(stored.checkedAt))return stored;
+  const merged={...stored,...incoming,checkedAt:incoming.checkedAt??stored.checkedAt};
+  for(const part of ['quota','datasets','projects']){
+    const value=incoming[part],previous=stored[part];
+    if(Date.parse(value?.checkedAt)<Date.parse(previous?.checkedAt))merged[part]=previous;
+    else if(value?.error)merged[part]={...previous,...value,checkedAt:value.checkedAt??previous?.checkedAt};
+  }
+  return merged;
+}
+
 export function saveStorageTimes(service){
   const update=service.db.prepare('UPDATE portal_storage SET checked_at=?,scanned_at=? WHERE machine=?');
   for(const [machine,row] of Object.entries(service.storageSnapshots))update.run(row.checkedAt??null,row.scannedAt??null,machine);
