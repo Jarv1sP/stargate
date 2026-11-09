@@ -39,6 +39,7 @@ class DirectoryContract(unittest.TestCase):
 
     def test_project_upload_reports_dataset_ancestor_without_writing_through(self):
         code=self.base/'workspaces'/'code';code.mkdir()
+        (self.base/'datasets/images/train').mkdir(parents=True)
         (code/'data').mkdir();(code/'data'/'images').symlink_to('/datasets/images/train')
         uploads=module('data-uploads').Uploads(self.config,'alice',root=code)
         key=self.key()
@@ -54,6 +55,59 @@ class DirectoryContract(unittest.TestCase):
             uploads.process('begin',{'project':'demo','path':'other/new.bin','key':self.key(),'totalSize':3})
         self.assertEqual(sorted(p.name for p in target.iterdir()),['keep'])
         self.assertEqual((target/'keep').read_bytes(),b'original')
+
+    def test_dataset_link_requires_an_existing_directory_without_links_on_the_dataset_device(self):
+        code=self.base/'workspaces'/'code';code.mkdir()
+        images=self.base/'datasets/images';images.mkdir();(images/'train').mkdir()
+        (images/'file').write_bytes(b'not a directory')
+        (self.base/'datasets/alias').symlink_to(images)
+        (images/'alias').symlink_to(images/'train')
+        uploads=module('data-uploads').Uploads(self.config,'alice',root=code)
+        for target in ('/datasets/missing','/datasets/images/missing','/datasets/images/file',
+                       '/datasets/alias/train','/datasets/images/alias'):
+            with self.subTest(target=target):
+                link=code/'link';link.symlink_to(target)
+                try:
+                    with self.assertRaises(OSError) as caught:
+                        uploads.process('begin',{'project':'demo','path':'link/new.bin','key':self.key(),'totalSize':3})
+                    self.assertFalse(hasattr(caught.exception,'dataset_link'))
+                finally:link.unlink()
+        (code/'link').symlink_to('/datasets/images/train')
+        original_fstat=os.fstat;foreign_inode=(images/'train').stat().st_ino
+        def foreign_device(fd):
+            v=original_fstat(fd)
+            if v.st_ino==foreign_inode:
+                return os.stat_result([v.st_mode,v.st_ino,v.st_dev+1,v.st_nlink,v.st_uid,v.st_gid,v.st_size,v.st_atime,v.st_mtime,v.st_ctime])
+            return v
+        with patch('os.fstat',foreign_device),self.assertRaises(OSError) as caught:
+            uploads.process('begin',{'project':'demo','path':'link/new.bin','key':self.key(),'totalSize':3})
+        self.assertFalse(hasattr(caught.exception,'dataset_link'))
+
+    def test_dataset_link_message_is_actionable_for_clients_without_skip_support(self):
+        code=self.base/'workspaces'/'code';code.mkdir()
+        (self.base/'datasets/images/train').mkdir(parents=True)
+        (code/'images').symlink_to('/datasets/images/train')
+        uploads=module('data-uploads').Uploads(self.config,'alice',root=code)
+        with self.assertRaises(ValueError) as caught:
+            uploads.process('begin',{'project':'demo','path':'images/new.bin','key':self.key(),'totalSize':3})
+        message=str(caught.exception)
+        for text in ('images','/datasets/images/train','升级 gpuctl','移出同步'):
+            self.assertIn(text,message)
+        self.assertNotIn('同步会跳过',message)
+
+    def test_dataset_target_walk_failure_preserves_the_original_path_error(self):
+        code=self.base/'workspaces'/'code';code.mkdir()
+        (self.base/'datasets/images/train').mkdir(parents=True)
+        (code/'link').symlink_to('/datasets/images/train')
+        original_open=os.open;original_error=NotADirectoryError('original project path error')
+        def blocked_target(path,*args,**kwargs):
+            if path=='link':raise original_error
+            if path=='images':raise PermissionError('dataset directory is unreadable')
+            return original_open(path,*args,**kwargs)
+        with patch('os.open',blocked_target),self.assertRaises(OSError) as caught:
+            with self.data.parent(code,'link/new.bin',datasets_root=self.config['datasetsRoot']):
+                self.fail('followed dataset link')
+        self.assertIs(caught.exception,original_error)
 
     def test_only_absolute_dataset_links_are_skippable_and_only_for_project_uploads(self):
         code=self.base/'workspaces'/'code';code.mkdir()

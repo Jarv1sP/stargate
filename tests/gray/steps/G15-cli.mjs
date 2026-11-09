@@ -1,4 +1,4 @@
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,writeFile,symlink} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {join,dirname,resolve} from 'node:path';
 import {project,call,waitJob,terminalStates,upload} from '../lib/exec.mjs';
@@ -31,10 +31,13 @@ export default {features:["网页和 CLI 打开项目终端，断开重连、接
     const setup=await call(ctx,member,'jobs.submit',{machine:ctx.machine,project:projectName,cards:1,key:ctx.key(),argv:['python','-c',`from pathlib import Path; import os; Path('/workspace/data').mkdir(exist_ok=True); os.symlink('/datasets/${dataset}/train','/workspace/data/images')`]});
     ctx.check('数据集链接准备成功',(await waitJob(ctx,member,setup.id,terminalStates)).state==='SUCCEEDED');
     await mkdir(join(local,'data/images/deep'),{recursive:true});await writeFile(join(local,'data/images/sentinel.txt'),'local must not overwrite');await writeFile(join(local,'data/images/deep/new.txt'),'must not appear');await writeFile(join(local,'sync-code.txt'),'code-uploaded');
+    await symlink('deep/new.txt',join(local,'data/images/0-link'));
     const notice=`已跳过 data/images：服务器上已改为数据集 /datasets/${dataset}/train，本机这份可以删除`;
     const pushed=await cli(['push',local,'--machine',ctx.machine,'--project',projectName,'--via','relay']);
     ctx.check('push 完成并只上传代码',pushed.state==='COMPLETE'&&pushed.uploaded===1,pushed);
     ctx.check('push 每个跳过目录提示一次',lastCLI.stderr.split(notice).length===2,lastCLI.stderr);
+    const status=await cli(['push-status',local,'--machine',ctx.machine,'--project',projectName,'--key',pushed.key]);
+    ctx.check('push-status 报告整棵子树已跳过',status.files.some(row=>row.path==='data/images'&&row.state==='SKIPPED')&&status.files.some(row=>row.path==='sync-code.txt'&&row.state==='COMPLETE')&&status.files.every(row=>!row.path.startsWith('data/images/')),status);
     const sent=await cli(['run','--sync','--sync-dir',local,'--machine',ctx.machine,'--project',projectName,'--via','relay','--cards','1','--key',ctx.key(),'--','python','-c',`from pathlib import Path; import os; assert os.readlink('/workspace/data/images')=='/datasets/${dataset}/train'; assert Path('/workspace/sync-code.txt').read_text()=='code-uploaded'; assert Path('/datasets/${dataset}/train/sentinel.txt').read_text()=='dataset-original'; assert not Path('/datasets/${dataset}/train/deep/new.txt').exists(); print('GRAY_SYNC_DATASET_SKIPPED')`]);
     ctx.check('run --sync 每个跳过目录提示一次',lastCLI.stderr.split(notice).length===2,lastCLI.stderr);
     const ended=await waitJob(ctx,member,sent.id,terminalStates),logs=await cli(['logs',sent.id]);

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,rm,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,stat,rm,symlink} from 'node:fs/promises';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {uploadLocalTree,uploadLocalFile} from '../client-transfers.mjs';
@@ -28,6 +30,43 @@ for(const via of ['relay','auto'])test(`project sync skips one migrated subtree 
 });
 test('non-dataset symlink errors still stop the upload',async t=>{
  const root=await tree(t);await assert.rejects(uploadLocalTree(async()=>{throw Object.assign(Error('Not a directory'),{status:400,code:'ENOTDIR'});},{machine:'fixture-node',context:{area:'code',project:'demo'},local:root,via:'relay',notify:()=>assert.fail('must not skip')}),/Not a directory/);
+});
+for(const kind of ['link','fifo','nested-link'])test(`a migrated directory discards an earlier local ${kind} error`,async t=>{
+ if(process.platform==='win32')return t.skip('requires POSIX links or FIFO');
+ const root=await tree(t),first=join(root,'data/images/0-first'),attempts=[],notices=[];
+ if(kind==='fifo')await promisify(execFile)('mkfifo',[first]);
+ else if(kind==='nested-link'){await mkdir(first);await symlink('/does-not-exist',join(first,'link'));}
+ else await symlink('/does-not-exist',first);
+ const result=await uploadLocalTree(()=>assert.fail('unexpected RPC'),{machine:'fixture-node',context:{area:'code',project:'demo'},local:root,via:'relay',notify:m=>notices.push(m),uploadFile:async(_call,args)=>{
+  attempts.push(args.path);if(args.path.startsWith('data/images/'))throw refusal();return {state:'COMPLETE'};
+ }});
+ assert.equal(result.state,'COMPLETE');assert.equal(result.uploaded,2);assert.deepEqual(notices,[message]);
+ assert.deepEqual(attempts,['data/images/a','data/images-other/code.py','train.py']);
+});
+for(const kind of ['link','fifo'])test(`a local ${kind} in a directory that is not skipped still fails`,async t=>{
+ if(process.platform==='win32')return t.skip('requires POSIX links or FIFO');
+ const root=await mkdtemp(join(tmpdir(),'sync-local-error-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const first=join(root,'a-first');if(kind==='fifo')await promisify(execFile)('mkfifo',[first]);else await symlink('/does-not-exist',first);
+ await writeFile(join(root,'b-file'),'code');const attempts=[];
+ await assert.rejects(uploadLocalTree(()=>assert.fail('unexpected RPC'),{machine:'fixture-node',context:{area:'code',project:'demo'},local:root,via:'relay',uploadFile:async(_call,args)=>{attempts.push(args.path);return {state:'COMPLETE'};}}),kind==='fifo'?/请选择普通文件或目录/ : /链接不会上传/);
+ assert.deepEqual(attempts,['b-file']);
+});
+test('push-status reports saved skipped subtrees without walking them or changing the journal',async t=>{
+ const root=await tree(t),stateDirectory=await mkdtemp(join(tmpdir(),'sync-skip-status-')),key='11111111-1111-4111-8111-111111111111';t.after(()=>rm(stateDirectory,{recursive:true,force:true}));
+ const options={machine:'fixture-node',context:{area:'code',project:'demo'},local:root,via:'relay',key,stateDirectory,notify:()=>{}};
+ const uploadFile=async(_call,args)=>{if(args.path.startsWith('data/images/'))throw refusal();return {state:'COMPLETE',key:args.key};};
+ await uploadLocalTree(()=>assert.fail('unexpected RPC'),{...options,uploadFile});
+ const journal=join(stateDirectory,key+'.json'),saved=await readFile(journal,'utf8'),before=await stat(journal),queried=[];
+ const result=await uploadLocalTree(async(op,args)=>{assert.equal(op,'data.upload.status');queried.push(args.path);return {result:{state:'COMPLETE',key:args.key}};},{...options,inspectOnly:true});
+ assert.deepEqual(result.files.filter(row=>row.state==='SKIPPED'),[{path:'data/images',state:'SKIPPED',datasetLink:{path:'data/images',target:'/datasets/images/train'}}]);
+ assert.deepEqual(queried,['data/images-other/code.py','train.py']);assert.deepEqual(result.skipped,[{path:'data/images',target:'/datasets/images/train'}]);
+ assert.equal(await readFile(journal,'utf8'),saved);assert.equal((await stat(journal)).mtimeMs,before.mtimeMs);
+ // A fresh upload with the same key must recheck the server, rather than reuse an old skip.
+ await rm(join(root,'data/images'),{recursive:true});await mkdir(join(root,'data/images'));await writeFile(join(root,'data/images/restored'),'restored');
+ const resumed=await uploadLocalTree(()=>assert.fail('unexpected RPC'),{...options,uploadFile:async()=>({state:'COMPLETE'})});
+ assert.equal(resumed.uploaded,3);assert.equal(resumed.skipped,undefined);
+ const checked=[];const status=await uploadLocalTree(async(_op,args)=>{checked.push(args.path);return {result:{state:'COMPLETE'}};},{...options,inspectOnly:true});
+ assert.ok(checked.includes('data/images/restored'));assert.equal(status.files.some(row=>row.state==='SKIPPED'),false);
 });
 test('HTTP preserves the dataset link refusal and directory details',async()=>{
  await assert.rejects(apiPost('https://portal.example.test','call',{operation:'data.upload.begin'},{fetchImpl:async()=>new Response(JSON.stringify({error:'服务器上已改为数据集。',code:'DATASET_DIRECTORY_LINK',datasetLink:refusal().datasetLink}),{status:409})}),e=>e.code==='DATASET_DIRECTORY_LINK'&&e.status===409&&e.datasetLink.path==='data/images');
