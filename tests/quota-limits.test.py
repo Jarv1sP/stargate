@@ -38,6 +38,12 @@ class Limits(unittest.TestCase):
         self.assertEqual(self.apply(used=300_000,ledger=ledger,now=200)[0][0][-1],160_000)
         actions,status=self.apply(used=300_000,ledger=ledger,now=deadline)
         self.assertEqual(actions[0][-1],100_000);self.assertIsNone(status[key]['graceUntil'])
+    def test_rollout_grace_is_not_granted_to_later_project_ids(self):
+        ledger={};self.apply(ids={'a:platform':1000},ledger=ledger)
+        actions,status=self.apply(used=150_000,ledger=ledger)
+        self.assertEqual(actions,[('/dev/test',1001,100_000)])
+        self.assertIsNone(status['p:alice/demo:files']['graceUntil'])
+
     def test_clamps_and_admin_lowering_and_clear(self):
         key='p:alice/demo:files'
         self.assertEqual(self.apply(desired={key:1})[0][0][-1],1000)

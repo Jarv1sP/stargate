@@ -146,6 +146,7 @@ def apply(registry,desired,ledger,workspace,device,kernel,*,default,minimum,maxi
         next_id=max([1000,*names.values()])+1
     counts={}
     for number in names.values():counts[number]=counts.get(number,0)+1
+    initial=not ledger.get('initialized',False)
     actions=[];status={}
     for key,number in names.items():
         if type(number) is not int or not 1000<=number<min(next_id,2**32):continue
@@ -163,13 +164,14 @@ def apply(registry,desired,ledger,workspace,device,kernel,*,default,minimum,maxi
         row=kernel.get(device,number);target=max(minimum,min(maximum,desired.get(key,default)))
         saved=projects.get(token)
         if saved is None:
-            saved={'desiredBytes':target,'graceUntil':now+GRACE_SECONDS if row.curspace>target else None,
+            saved={'desiredBytes':target,'graceUntil':now+GRACE_SECONDS if initial and row.curspace>target else None,
                    'graceBytes':max(target,row.curspace+headroom)};projects[token]=saved
         saved['desiredBytes']=target
         grace=saved['graceUntil'] if saved.get('graceUntil') and now<saved['graceUntil'] else None
         effective=0 if clear else max(target,saved['graceBytes']) if grace else target
         if row.bhardlimit!=(effective+1023)//1024 or row.bsoftlimit:actions.append((device,number,effective))
         status[key]={'desiredLimitBytes':target,'effectiveLimitBytes':effective,'graceUntil':grace}
+    if not clear:ledger['initialized']=True
     return actions,status
 
 
@@ -203,7 +205,10 @@ def main(argv=None):
             for root,workspace in dict.fromkeys(zip(a.root,a.workspaces_root)):
                 try:registry,desired=inputs(root)
                 except FileNotFoundError:
-                    if not a.clear:continue # no registry yet, no IDs to cap
+                    if not a.clear:
+                        state['roots'].setdefault(root,{})['initialized']=True
+                        write_at(folder,'state.json',state)
+                        continue # enabled with no projects; later allocations get no rollout grace
                     registry,desired={'ids':{},'next':1000},{'limits':[]}
                 desired=desired_limits(desired)
                 number=f'{os.major(os.stat(workspace).st_dev)}:{os.minor(os.stat(workspace).st_dev)}'
