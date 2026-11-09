@@ -37,6 +37,42 @@ class DirectoryContract(unittest.TestCase):
         for offset in range(0,len(raw),1024**2):self.uploads.process('chunk',{'key':key,'offset':offset,'data':base64.b64encode(raw[offset:offset+1024**2]).decode()})
         return self.uploads.process('finish',{'key':key})
 
+    def test_project_upload_reports_dataset_ancestor_without_writing_through(self):
+        code=self.base/'workspaces'/'code';code.mkdir()
+        (code/'data').mkdir();(code/'data'/'images').symlink_to('/datasets/images/train')
+        uploads=module('data-uploads').Uploads(self.config,'alice',root=code)
+        key=self.key()
+        with self.assertRaises(ValueError) as caught:
+            uploads.process('begin',{'project':'demo','path':'data/images/nested/new.bin','key':key,'totalSize':3})
+        self.assertEqual(caught.exception.dataset_link,{'path':'data/images','target':'/datasets/images/train'})
+        self.assertFalse(uploads.record(key).exists())
+        self.assertEqual(os.readlink(code/'data/images'),'/datasets/images/train')
+        # A host-resolving link is still refused and its target stays untouched.
+        target=self.base/'datasets'/'real';target.mkdir();(target/'keep').write_bytes(b'original')
+        (code/'other').symlink_to(target)
+        with self.assertRaises(OSError):
+            uploads.process('begin',{'project':'demo','path':'other/new.bin','key':self.key(),'totalSize':3})
+        self.assertEqual(sorted(p.name for p in target.iterdir()),['keep'])
+        self.assertEqual((target/'keep').read_bytes(),b'original')
+
+    def test_only_absolute_dataset_links_are_skippable_and_only_for_project_uploads(self):
+        code=self.base/'workspaces'/'code';code.mkdir()
+        uploads=module('data-uploads').Uploads(self.config,'alice',root=code)
+        for target in ('/datasets','/datasets-else/images','/datasets/images/../else','/datasets//images',
+                       '/datasets/.hidden','../datasets/images','/etc','/datasets/images/'):
+            with self.subTest(target=target):
+                link=code/'link';link.symlink_to(target)
+                try:
+                    with self.assertRaises(OSError):
+                        uploads.process('begin',{'project':'demo','path':'link/new.bin','key':self.key(),'totalSize':3})
+                finally:link.unlink()
+        (code/'link').symlink_to('/datasets/images')
+        with self.assertRaises(OSError):
+            uploads.process('begin',{'path':'link/new.bin','key':self.key(),'totalSize':3})
+        # Downloads and general filesystem operations keep their existing refusal.
+        with self.assertRaises(OSError):
+            with self.data.parent(code,'link/new.bin'):self.fail('followed link')
+
     def test_upload_without_sha_same_size_new_operation_replaces_content(self):
         a=self.upload('a.txt',b'old',sha256='wrong',fingerprint='wrong');b=self.upload('a.txt',b'new')
         self.assertNotEqual(a['key'],b['key']);self.assertEqual(Path(self.config['datasetsRoot'],'shared/a.txt').read_bytes(),b'new')

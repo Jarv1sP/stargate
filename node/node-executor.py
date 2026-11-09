@@ -417,4 +417,4 @@ if __name__=='__main__':
             request=json.loads(reader.rest(first,1600000))
             if request['operation']=='datasets.list':low_priority_scan()
             print(json.dumps({'ok':True,'result':process(request['operation'],request['args'])}))
-    except Exception as error:print(json.dumps({'ok':False,'error':str(error)[:400]}))
+    except Exception as error:print(json.dumps({'ok':False,'error':str(error)[:400],**({'code':'DATASET_DIRECTORY_LINK','datasetLink':error.dataset_link} if hasattr(error,'dataset_link') else {})}))

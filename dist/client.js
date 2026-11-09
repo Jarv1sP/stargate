@@ -17,7 +17,7 @@ export class DemoClient{
         if(controller.signal.aborted)throw cause;
         throw Object.assign(Error([502,503,504].includes(response.status)?'服务暂时不可用，稍后重试':'服务响应无法确认，请稍后重试。'),{status:response.status});
       }
-      if(!response.ok){const e=Error(typeof data?.error==='string'?data.error:[502,503,504].includes(response.status)?'服务暂时不可用，稍后重试':'请求失败');e.status=response.status;if(/^[A-Z][A-Z0-9_]{1,63}$/.test(data?.code||''))e.code=data.code;const retryAfter=response.headers?.get('Retry-After');if(retryAfter&&/^\d+$/.test(retryAfter))e.retryAfterMs=Number(retryAfter)*1000;if([409,503].includes(response.status)&&e.code==='SUBMISSION_REJECTED')e.storage=data.storage;throw e;}
+      if(!response.ok){const e=Error(typeof data?.error==='string'?data.error:[502,503,504].includes(response.status)?'服务暂时不可用，稍后重试':'请求失败');e.status=response.status;if(data?.code==='DATASET_DIRECTORY_LINK')e.datasetLink=data.datasetLink;if(/^[A-Z][A-Z0-9_]{1,63}$/.test(data?.code||''))e.code=data.code;const retryAfter=response.headers?.get('Retry-After');if(retryAfter&&/^\d+$/.test(retryAfter))e.retryAfterMs=Number(retryAfter)*1000;if([409,503].includes(response.status)&&e.code==='SUBMISSION_REJECTED')e.storage=data.storage;throw e;}
       return data;
     })(),timeout,cancelled]);}finally{clearTimeout(timer);if(onAbort)signal.removeEventListener('abort',onAbort);}
   }

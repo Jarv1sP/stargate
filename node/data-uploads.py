@@ -40,17 +40,17 @@ class Uploads:
                     row=self.s.read_json(record)
                     if row['request']!=request:raise ValueError('原上传编号已用于不同请求，请恢复原请求或开始新上传。')
                     return self.view(row)
-                with self.d.parent(root,path,create=True) as (fd,name):
+                with self.d.parent(root,path,create=True,dataset_links=bool(args.get('project'))) as (fd,name):
                     self.s.require_workspace_space(root,needed=size,target_fd=fd)
                     temp='.upload-'+key;part=os.open(temp,os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600,dir_fd=fd);os.close(part);os.fsync(fd)
                 row={**request,'request':request,'key':key,'state':'UPLOADING','offset':0,'temp':temp,
-                     'dataset':args.get('dataset'),'actor':args.get('actor',{'userId':self.user}),'createdAt':time.time()}
+                     'dataset':args.get('dataset'),'project':args.get('project'),'actor':args.get('actor',{'userId':self.user}),'createdAt':time.time()}
                 self.s.atomic_json(record,row);return self.view(row)
             if action=='status' and not record.exists():return {'key':key,'state':'ABSENT','offset':0,'totalSize':None}
             row=self.s.read_json(record);root=self.d.require_data_path(self.config,row['root'])
             if action in ('status','resume','routes'):return self.view(row)
             if row['state'] in ('COMPLETE','CANCELED'):return self.view(row)
-            with self.d.parent(root,row['path']) as (fd,name):
+            with self.d.parent(root,row['path'],dataset_links=bool(row.get('project'))) as (fd,name):
                 if action in ('cancel','discard'):
                     try:os.unlink(row['temp'],dir_fd=fd)
                     except FileNotFoundError:pass

@@ -54,15 +54,37 @@ def relative(value,empty=False):
         raise ValueError('请使用目录内的相对路径，不能越出数据目录。')
     return value
 
+class DatasetDirectoryLink(ValueError):
+    def __init__(self,path,target):
+        super().__init__('服务器上此目录已改为数据集，同步会跳过本机这份。')
+        self.dataset_link={'path':path,'target':target}
+
+def dataset_link(target):
+    # STOR-002c writes an absolute container path, never a host path. Keep
+    # its dataset-name and relative-subpath rules without resolving the link.
+    if not target.startswith('/datasets/'):return False
+    dataset,_,subpath=target[len('/datasets/'):].partition('/')
+    try:name(dataset)
+    except ValueError:return False
+    if '/' in target[len('/datasets/'):] and (not subpath or any(p in ('','.','..') or '\\' in p or '\0' in p for p in subpath.split('/'))):return False
+    return True
+
 @contextlib.contextmanager
-def parent(root,path,create=False):
+def parent(root,path,create=False,*,dataset_links=False):
     path=relative(path);fd=open_directory(root);device=os.fstat(fd).st_dev
     try:
-        for part in path.split('/')[:-1]:
+        for index,part in enumerate(path.split('/')[:-1]):
             if create:
                 try:os.mkdir(part,0o700,dir_fd=fd)
                 except FileExistsError:pass
-            child=os.open(part,DIR_FLAGS,dir_fd=fd)
+            try:child=os.open(part,DIR_FLAGS,dir_fd=fd)
+            except OSError:
+                if dataset_links:
+                    try:target=os.readlink(part,dir_fd=fd)
+                    except OSError:pass
+                    else:
+                        if dataset_link(target):raise DatasetDirectoryLink('/'.join(path.split('/')[:index+1]),target) from None
+                raise
             if os.fstat(child).st_dev!=device:os.close(child);raise ValueError('路径不能跨出此数据盘。')
             os.close(fd);fd=child
         yield fd,path.rsplit('/',1)[-1]
