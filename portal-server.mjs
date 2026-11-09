@@ -8,6 +8,8 @@ import {PortalService} from './portal-service.mjs';
 import {bridgeClient} from './execution.mjs';
 import {standaloneClientStream,standaloneClientInfo,standaloneClientRangeStream,clientByteRange,watchClientDownload} from './client-bundle.mjs';
 import {pipeline} from 'node:stream/promises';
+import {Readable} from 'node:stream';
+import {jsonChunks} from './json-stream.mjs';
 import {loadTelegramNotifications} from './job-notifications.mjs';
 import {guideTarget,guidePage} from './guide.mjs';
 import {LOGIN_POLICY} from './login-sessions.mjs';
@@ -130,8 +132,13 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
             // CLI submissions consume the durable receipt only. Browser writes
             // retain their dashboard; this presentation hint grants nothing.
             const options={...(controller?{signal:controller.signal}:{}),
+              streamStorage:['storage.snapshot','storage.refresh'].includes(data.operation),
               ...(bearer&&!req.headers.origin&&data.operation==='jobs.submit'?{omitResponseState:true}:{})};
             const result=await service.invoke(bearer||fromCookie,data.operation,data.args,options);
+            if(!res.destroyed&&['storage.snapshot','storage.refresh'].includes(data.operation)){
+              res.writeHead(200,{...headers,'Content-Type':'application/json; charset=utf-8'});
+              await pipeline(Readable.from(jsonChunks(result),{objectMode:false,highWaterMark:65536}),res);return;
+            }
             if(!res.destroyed)return json(200,result,data.operation==='logout'?{'Set-Cookie':expiredCookies()}:{});
           }finally{if(controller){req.removeListener('aborted',abort);res.removeListener('close',abort);}}
           return;

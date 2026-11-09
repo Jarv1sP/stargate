@@ -18,6 +18,8 @@ import {installCloudImports,cloudImportCall} from './cloud-import.mjs';
 import {installTeamAccounts,accountOperation} from './accounts/portal.mjs';
 import {installProjectCatalog} from './project-catalog.mjs';
 import {installTaskDisplay,taskDisplayCall} from './task-display.mjs';
+import {openStorage,readStorage,writeStorage,mergeStorage,saveStorageTimes} from './portal-storage.mjs';
+import {JSONItems} from './json-stream.mjs';
 
 // Aggregate history is a presentation view; point queries use durable jobs.
 const STATE_JOBS_BYTES=300000;
@@ -65,6 +67,7 @@ export class PortalService extends DemoService{
     service.db=new DatabaseSync(path);await chmod(path,0o600);
     service.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS portal_state_v2 (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, time TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL, subject TEXT, outcome TEXT NOT NULL);');
     service.db.exec("CREATE TABLE IF NOT EXISTS invites_v2 (role TEXT PRIMARY KEY CHECK(role IN ('admin','member')), digest TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, max_uses INTEGER, created_at TEXT NOT NULL,code_cipher TEXT);");
+    openStorage(service);
     installMaintenanceState(service);installCommunity(service);installWorkshop(service);installProjectCatalog(service);installTaskDisplay(service);
     const keyPath=path+'.invite-key';
     try{service.inviteKey=await readFile(keyPath);}catch(e){
@@ -76,7 +79,21 @@ export class PortalService extends DemoService{
     if(service.inviteKey.length!==32)throw Error('Invalid invitation encryption key');await chmod(keyPath,0o600);
     installCloudImports(service);
     const saved=service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get();
-    if(saved)service.restore(JSON.parse(saved.data));
+    if(saved){
+      const data=JSON.parse(saved.data);
+      // Move current persisted readings out of the monolithic state once.
+      // Keep the old state intact until every reading has been written.
+      if(data.storage){
+        service.db.exec('BEGIN IMMEDIATE');
+        try{
+          for(const [machine,row] of Object.entries(data.storage))writeStorage(service,machine,mergeStorage(readStorage(service,machine),row));
+          delete data.storage;
+          service.db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify(data));
+          service.db.exec('COMMIT');
+        }catch(error){service.db.exec('ROLLBACK');throw error;}
+      }
+      service.restore(data);
+    }
     else{
       const initial=bootstrapPath?JSON.parse(await readFile(bootstrapPath,'utf8')):null;
       if(!initial){service.store.users=[];service.store.jobs=[];service.store.sequence=0;}
@@ -100,14 +117,25 @@ export class PortalService extends DemoService{
   export(){return {schema:2,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),jobs:this.store.jobs,sequence:this.store.sequence,storage:this.storageSnapshots};}
   restore(data){
     this.store.users=data.users;this.store.jobs=data.jobs;this.store.sequence=data.sequence;
-    this.storageSnapshots=data.storage||{};
+    if(data.storage)this.storageSnapshots=data.storage;
     if(data.credentials)this.legacyCredentials=new Map(data.credentials.map(([name,r])=>[name,{salt:new Uint8Array(Buffer.from(r.salt,'base64')),hash:new Uint8Array(Buffer.from(r.hash,'base64')),iterations:r.iterations}]));
     this.refreshAccounts?.();
   }
-  save(){this.db.prepare('INSERT INTO portal_state_v2(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(this.export()));}
-  storageSnapshot(machine){
-    return structuredClone({machines:MACHINES.filter(row=>machine===undefined||row.id===machine).map(({id})=>{
-      const row=this.storageSnapshots[id]||{},name=owner=>this.store.users.find(user=>user.id===owner)?.name??null;
+  save(){
+    const {storage,...state}=this.export();
+    this.db.prepare('INSERT INTO portal_state_v2(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(state));
+    saveStorageTimes(this);
+  }
+  storageSnapshot(machine,{stream=false,visible=()=>true}={}){
+    const service=this;
+    function* rows(){
+      for(const {id} of MACHINES)if((machine===undefined||id===machine)&&visible(id))yield service.storageRow(id);
+    }
+    return {machines:stream?new JSONItems(rows()):[...rows()]};
+  }
+  storageRow(id){
+      // Parsing the stored reading already returns an independent JSON tree.
+      const row=readStorage(this,id),name=owner=>this.store.users.find(user=>user.id===owner)?.name??null;
       return {machine:id,checkedAt:row.checkedAt??null,refreshing:this.storageQueue.has(id)||this.storageCurrent?.machine===id,
         quota:{volumes:[],checkedAt:null,...row.quota},
         datasets:{datasets:[],complete:false,checkedAt:null,...row.datasets,datasets:(row.datasets?.datasets||[]).map(value=>{
@@ -118,18 +146,17 @@ export class PortalService extends DemoService{
           ...this.projectPresentation(value.ownerId,id,value),ownerId:value.ownerId,ownerName:name(value.ownerId)
         })),...Array.isArray(row.projects?.disks)?{disks:row.projects.disks.map(disk=>({...disk,
           items:(Array.isArray(disk?.items)?disk.items:[]).map(item=>item?.ownerId===undefined?item:{...item,ownerName:name(item.ownerId)})}))}:{}}};
-    })});
   }
   scheduleStorageRefresh(machine,delay=30000){
     if(!this.storageDue.has(machine))return;
     const now=Date.now(),queued=this.storageQueue.get(machine);
     this.storageQueue.set(machine,{at:queued?.at<=now?queued.at:now+delay});
   }
-  requestStorageRefresh(machine){
+  requestStorageRefresh(machine,options){
     if(this.storageCurrent?.machine!==machine&&!(Date.now()-Date.parse(this.storageSnapshots[machine]?.scannedAt)<STORAGE_REUSE_MS)){
       this.scheduleStorageRefresh(machine,0);void this.refreshStorage().catch(()=>{});
     }
-    return this.storageSnapshot(machine);
+    return this.storageSnapshot(machine,options);
   }
   refreshStorage(periodic=false){
     const now=Date.now();
@@ -142,20 +169,20 @@ export class PortalService extends DemoService{
       while(!this.closing&&this.bridge){
         const next=[...this.storageQueue].find(([,row])=>row.at<=Date.now());if(!next)break;
         const [machine]=next;this.storageQueue.delete(machine);this.storageCurrent={machine};
-        const row=this.storageSnapshots[machine]??={};
+        const row={...this.storageSnapshots[machine]};let previous;
         // Project sizes keep the node's sample time; other parts record when they were read.
         const read=async(part,operation,args={})=>{
           if(this.closing)return false;
           try{const value=await this.bridge(machine,operation,args);row[part]={...value,checkedAt:part==='projects'?value?.checkedAt??null:new Date(Date.now()).toISOString()};return true;}
-          catch{row[part]={...row[part],error:'暂时读不到，请稍后刷新。'};return false;}
+          catch{previous??=readStorage(this,machine);row[part]={...previous[part],error:'暂时读不到，请稍后刷新。'};return false;}
         };
         await read('quota','projects.quota');
         const datasets=await read('datasets','datasets.list'),projects=await read('projects','projects.list',{includeUsage:true});
-        if(!this.closing){row.scannedAt=new Date(Date.now()).toISOString();if(datasets&&projects)row.checkedAt=row.scannedAt;}
+        if(!this.closing){row.scannedAt=new Date(Date.now()).toISOString();if(datasets&&projects)row.checkedAt=row.scannedAt;writeStorage(this,machine,row);}
         this.storageDue.set(machine,Date.now()+STORAGE_REFRESH_MS);
         changed=true;this.storageCurrent=null;
       }
-      // One save per pass: each save serializes the whole Portal state.
+      // Account/job state is small; readings were persisted one server at a time.
       if(changed&&!this.closing)this.save();
     })().finally(()=>{this.storageCurrent=null;this.storageWork=null;});
     return this.storageWork;
@@ -358,8 +385,8 @@ export class PortalService extends DemoService{
     if(operation==='storage.snapshot'||operation==='storage.refresh'){
       const principal=this.principal(token);
       if(args.machine)this.assertMachineStatusVisible(principal,args.machine);
-      const result=operation==='storage.snapshot'?this.storageSnapshot(args.machine):this.requestStorageRefresh(args.machine);
-      result.machines=result.machines.filter(row=>canUseMachine(this.store.get(principal.userId),row.machine));
+      const presentation={stream:options.streamStorage===true,visible:machine=>canUseMachine(this.store.get(principal.userId),machine)};
+      const result=operation==='storage.snapshot'?this.storageSnapshot(args.machine,presentation):this.requestStorageRefresh(args.machine,presentation);
       return {result,principal};
     }
     if(['jobs.logs','jobs.watch','jobs.completion','jobs.diagnostics'].includes(operation))return this.jobRead(token,operation,args,options);

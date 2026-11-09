@@ -4,8 +4,10 @@ import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
+import {readStorage} from '../portal-storage.mjs';
 
 const minute=60000,machine=MACHINES[0].id;
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
@@ -19,7 +21,7 @@ async function fixture(t){
  await open();
  const token=()=>service.issueSession({userId:'builtin-admin',username:'admin',role:'admin'});
  t.after(async()=>{await service.storageWork;service.close();await rm(root,{recursive:true,force:true});});
- return {get service(){return service;},calls,token,read:value=>read=value,reopen:async()=>{await service.storageWork;service.close();await open();},snapshot:async id=>(await service.invoke(token(),'storage.snapshot',id?{machine:id}:{})).result};
+ return {get service(){return service;},calls,token,read:value=>read=value,reopen:async beforeOpen=>{await service.storageWork;service.close();await beforeOpen?.(database);await open();},snapshot:async id=>(await service.invoke(token(),'storage.snapshot',id?{machine:id}:{})).result};
 }
 
 test('storage.snapshot is local, accepts extra fields, and an empty cache stays unknown',async t=>{
@@ -95,6 +97,72 @@ test('cache survives Portal restart without node reads and preserves partial and
  const before=await f.snapshot(machine);await f.reopen();f.calls.length=0;
  assert.deepEqual(await f.snapshot(machine),before);assert.equal(f.calls.length,0);
  await f.service.invoke(f.token(),'storage.refresh',{machine});assert.equal(f.calls.length,0);
+});
+
+test('current saved snapshots move out of account/job state without losing readings or unknown fields',async t=>{
+ const f=await fixture(t);await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
+ const reading=readStorage(f.service,machine);reading.projects.extra={futureField:['kept',null]};
+ const state={...f.service.export(),storage:{[machine]:reading}};
+ f.service.db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify(state));
+ f.service.db.exec('DELETE FROM portal_storage');
+ await f.reopen();f.calls.length=0;
+ const before=await f.snapshot(machine);
+ assert.equal(f.calls.length,0);assert.deepEqual(before.machines[0].projects.extra,{futureField:['kept',null]});
+ assert.equal(before.machines[0].datasets.datasets[0].size,null);
+ assert.equal(JSON.parse(f.service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data).storage,undefined);
+ f.service.save();await f.reopen();assert.deepEqual(await f.snapshot(machine),before);
+});
+
+test('deploy, rollback with an offline node, and redeploy retain good stored readings with the failure',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);const f=await fixture(t);
+ for(const {id} of MACHINES)f.service.scheduleStorageRefresh(id,0);await f.service.refreshStorage();
+ const readings=Object.fromEntries(MACHINES.map(({id})=>[id,readStorage(f.service,id)]));
+ // Start with the state format written by the release before this PR.
+ f.service.db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify({...f.service.export(),storage:readings}));
+ f.service.db.exec('DELETE FROM portal_storage');await f.reopen();
+ const before=await f.snapshot(),error='暂时读不到，请稍后刷新。';now+=5*minute;
+ // Only the old release's database connection is open during rollback. It
+ // restores no inline readings, then persists a failed refresh for one node.
+ await f.reopen(database=>{
+  const db=new DatabaseSync(database);
+  try{
+   const state=JSON.parse(db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data);
+   assert.equal(state.storage,undefined);state.storage=state.storage||{};
+   state.storage[machine]={quota:{error},datasets:{error},projects:{error},scannedAt:new Date(now).toISOString()};
+   db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify(state));
+  }finally{db.close();}
+ });
+ const restored=(await f.snapshot(machine)).machines[0],saved=before.machines[0];
+ assert.equal(restored.checkedAt,saved.checkedAt);
+ for(const part of ['quota','datasets','projects'])assert.deepEqual(restored[part],{...saved[part],error});
+ assert.deepEqual((await f.snapshot()).machines.slice(1),before.machines.slice(1),'unrefreshed nodes retain their readings');
+ assert.equal(JSON.parse(f.service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data).storage,undefined);
+ f.read(async()=>{throw Error('node remains offline');});f.service.scheduleStorageRefresh(machine,0);await f.service.refreshStorage();
+ await f.reopen();assert.deepEqual((await f.snapshot(machine)).machines[0],restored,'offline refresh and restart keep the recovered readings');
+});
+
+test('redeploy migration merges partial failures and never replaces newer checked readings with older ones',async t=>{
+ const f=await fixture(t);for(const {id} of MACHINES)f.service.scheduleStorageRefresh(id,0);await f.service.refreshStorage();
+ const stored=Object.fromEntries(MACHINES.map(({id})=>[id,readStorage(f.service,id)]));
+ const incoming=structuredClone(stored),older='2026-11-06T00:00:00.000Z',newer='2099-01-01T00:00:00.000Z';
+ incoming[machine].checkedAt=older;incoming[machine].quota.volumes=[];incoming[machine].datasets.datasets=[];incoming[machine].projects.projects=[];
+ const selected=MACHINES[1].id,error='暂时读不到，请稍后刷新。';
+ incoming[selected]={...incoming[selected],checkedAt:newer,quota:{volumes:[],checkedAt:newer},datasets:{error},projects:{projects:[],checkedAt:older}};
+ f.service.db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify({...f.service.export(),storage:incoming}));
+ await f.reopen();
+ assert.deepEqual(readStorage(f.service,machine),stored[machine],'an older row cannot replace a newer reading');
+ const merged=readStorage(f.service,selected);
+ assert.equal(merged.checkedAt,newer);assert.deepEqual(merged.quota,incoming[selected].quota,'a newer empty reading is valid');
+ assert.deepEqual(merged.datasets,{...stored[selected].datasets,error});assert.deepEqual(merged.projects,stored[selected].projects);
+ await f.reopen();assert.deepEqual(readStorage(f.service,selected),merged);
+});
+
+test('editing a returned snapshot cannot change the persisted readings',async t=>{
+ const f=await fixture(t);await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
+ const before=await f.snapshot(machine),changed=await f.snapshot(machine);
+ changed.machines[0].quota.volumes[0].usedBytes=999;
+ changed.machines[0].datasets.datasets[0].dataset='changed';changed.machines[0].projects.projects[0].size=999;
+ assert.deepEqual(await f.snapshot(machine),before);
 });
 
 test('snapshots pass through project parts, every disk composition and the node sample time, with owner names',async t=>{
