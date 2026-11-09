@@ -194,7 +194,7 @@ tool.run(False)`;
     ctx.check('安装后限额默认关闭',result.defaultOff===true);
     for(const row of result.cases){
       ctx.check(row.filesystem+' rootless 容器达到硬上限时拒写',row.after.errno===(row.filesystem==='ext4'?122:28),row);
-      ctx.check(row.filesystem+' 容器内 df 显示上限',row.after.total<=8*1024**2,row.after);
+      ctx.check(row.filesystem+' 容器内 df 显示上限',row.after.dfTotal===8*1024**2&&row.after.total<=8*1024**2,row.after);
       ctx.check(row.filesystem+' 64 GiB 检查取数据盘余量',row.diskReserve.availableBytes>=64*1024**3,row.diskReserve);
       ctx.check(row.filesystem+' 编号 0 上限保持原值',row.idZeroUnchanged===true);
     }

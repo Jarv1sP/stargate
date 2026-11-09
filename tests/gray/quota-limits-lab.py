@@ -13,7 +13,7 @@ rows=[];kinds=Path('/run/gray-node-quota').read_text().splitlines()
 # The program shipped by the installer must remain disabled in the normal stack.
 unit=Path('/etc/systemd/system/stargate-quota-limits.service').read_text()
 assert '"--enabled"' not in unit,unit
-probe="""import errno,json,os
+probe="""import errno,json,os,subprocess
 from pathlib import Path
 p=Path('/workspace/probe');result={}
 try:
@@ -25,6 +25,8 @@ finally:
  try:p.unlink()
  except FileNotFoundError:pass
 v=os.statvfs('/workspace');result.update(total=v.f_blocks*v.f_frsize,available=v.f_bavail*v.f_frsize)
+fields=subprocess.check_output(['df','-Pk','/workspace'],text=True).splitlines()[-1].split()
+result.update(dfTotal=int(fields[1])*1024,dfAvailable=int(fields[3])*1024)
 print(json.dumps(result))
 """
 runner="""import importlib.util,json,sys
@@ -61,7 +63,7 @@ for line in kinds:
         print('quota-limits-lab '+json.dumps({'filesystem':kind,'after':post}),file=sys.stderr,flush=True)
         expected=122 if kind=='ext4' else 28
         assert post['errno']==expected,(kind,post)
-        assert 0<post['total']<=cap,(kind,post)
+        assert 0<post['total']<=cap and 0<post['dfTotal']<=cap,(kind,post)
         # The real target is only 8 MiB, but the disk still has >64 GiB available.
         code="""import importlib.util,json,sys
 from pathlib import Path

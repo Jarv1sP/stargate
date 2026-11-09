@@ -104,6 +104,7 @@ try{
   fixture[1].enforced=false;service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
   await first.locator('[data-storage-refresh]').click();await page.waitForFunction(()=>document.querySelector('[data-storage-machine=gpu-1]')?.dataset.loading==='false');
   assert.match(await first.locator('[data-project-row=render]').innerText(),/上限未生效.*待生效/);
+  if(width<=390)assert.ok(await first.locator('.dr-ct .dr-main').evaluateAll(nodes=>nodes.every(node=>node.getBoundingClientRect().width>=node.parentElement.clientWidth-20)),'mobile project text keeps the full row width beside administrator actions');
   await page.screenshot({path:join(shots,`limits-${role}-${width}-disabled.png`),fullPage:true,animations:'disabled'});
   for(const value of fixture)for(const key of ['limitBytes','desiredLimitBytes','effectiveLimitBytes','enforced','graceUntil'])delete value[key];
   service.db.prepare('DELETE FROM project_storage_limits_v2').run();service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
