@@ -1,4 +1,11 @@
 const CHUNK=1024*1024;
+export function datasetDirectorySkip(error,path){
+  const link=error?.datasetLink;
+  if(error?.code!=='DATASET_DIRECTORY_LINK'||typeof link?.path!=='string'||!path.startsWith(link.path+'/')||typeof link.target!=='string')return;
+  return link;
+}
+export const datasetSkipMessage=link=>`已跳过 ${link.path}：服务器上已改为数据集 ${link.target}，本机这份可以删除`;
+
 export const DATASET_DIRECT_HELP='数据集只走校园网直连，避免挤占 VPS 带宽。请连上校园网后用原命令重试，原 key 会续传。';
 // The web pages keep upload keys themselves, so their advice is to try the same files again.
 export const BROWSER_DATASET_HELP='数据集只走校园网直连，避免挤占 VPS 带宽。连上校园网后再试一次，会从断点继续。';

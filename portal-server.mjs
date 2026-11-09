@@ -8,6 +8,8 @@ import {PortalService} from './portal-service.mjs';
 import {bridgeClient} from './execution.mjs';
 import {standaloneClientStream,standaloneClientInfo,standaloneClientRangeStream,clientByteRange,watchClientDownload} from './client-bundle.mjs';
 import {pipeline} from 'node:stream/promises';
+import {Readable} from 'node:stream';
+import {jsonChunks} from './json-stream.mjs';
 import {loadTelegramNotifications} from './job-notifications.mjs';
 import {guideTarget,guidePage} from './guide.mjs';
 import {LOGIN_POLICY} from './login-sessions.mjs';
@@ -131,8 +133,13 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
             // CLI submissions consume the durable receipt only. Browser writes
             // retain their dashboard; this presentation hint grants nothing.
             const options={...(controller?{signal:controller.signal}:{}),
+              streamStorage:['storage.snapshot','storage.refresh'].includes(data.operation),
               ...(bearer&&!req.headers.origin&&data.operation==='jobs.submit'?{omitResponseState:true}:{})};
             const result=await service.invoke(bearer||fromCookie,data.operation,data.args,options);
+            if(!res.destroyed&&['storage.snapshot','storage.refresh'].includes(data.operation)){
+              res.writeHead(200,{...headers,'Content-Type':'application/json; charset=utf-8'});
+              await pipeline(Readable.from(jsonChunks(result),{objectMode:false,highWaterMark:65536}),res);return;
+            }
             if(!res.destroyed)return json(200,result,data.operation==='logout'?{'Set-Cookie':expiredCookies()}:{});
           }finally{if(controller){req.removeListener('aborted',abort);res.removeListener('close',abort);}}
           return;
@@ -217,7 +224,7 @@ export async function createPortalServer({database,bootstrap,origin,secure=true,
       if(inventoryRequest&&(e.status===401||e.status===403)){res.writeHead(401,{...headers,'Content-Length':'0'});return res.end();}
       // Authentication failure may belong to an older request from another
       // tab. Do not expire its shared cookie; only explicit logout clears it.
-      if(e.status===401)return json(401,{error:e.message});json(e.status||400,{error:e.message?.includes('SQLITE')?'保存失败，请联系管理员。':e.message,...(['TERMINAL_OPEN_REJECTED','MAINTENANCE_ACTIVE','SUBMISSION_REJECTED','TRAINING_ADMISSION_BUSY','CAMPUS_DATA_PLANE_REQUIRED','CAMPUS_FILE_REQUIRED','UPLOAD_STATUS_BUSY','CLIENT_UPGRADE_REQUIRED'].includes(e.code)?{code:e.code}:{})});
+      if(e.status===401)return json(401,{error:e.message});json(e.status||400,{error:e.message?.includes('SQLITE')?'保存失败，请联系管理员。':e.message,...(e.code==='DATASET_DIRECTORY_LINK'?{code:e.code,datasetLink:e.datasetLink}:{}),...(['TERMINAL_OPEN_REJECTED','MAINTENANCE_ACTIVE','SUBMISSION_REJECTED','TRAINING_ADMISSION_BUSY','CAMPUS_DATA_PLANE_REQUIRED','CAMPUS_FILE_REQUIRED','UPLOAD_STATUS_BUSY','CLIENT_UPGRADE_REQUIRED'].includes(e.code)?{code:e.code}:{})});
     }
   });
   server.headersTimeout=10000;server.requestTimeout=45000;server.keepAliveTimeout=5000;server.maxConnections=64;

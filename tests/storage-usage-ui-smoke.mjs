@@ -9,6 +9,7 @@ import {createServer} from 'node:net';
 import {chromium} from 'playwright';
 import {createPortalServer} from '../portal-server.mjs';
 import {setProjectShared} from '../project-catalog.mjs';
+import {readStorage,writeStorage} from '../portal-storage.mjs';
 import {credential} from '../dist/service.js';
 import {MACHINES} from '../dist/model.js';
 const temporary=await mkdtemp(join(tmpdir(),'storage-usage-ui-')),shots=process.env.UI_SCREENSHOTS||temporary;await mkdir(shots,{recursive:true});
@@ -51,6 +52,7 @@ const text=locator=>locator.evaluate(node=>node.textContent.replace(/\s+/g,' ').
 try{
  const reserved=createServer();await new Promise(resolve=>reserved.listen(0,'127.0.0.1',resolve));const port=reserved.address().port;await new Promise(resolve=>reserved.close(resolve));const origin='http://127.0.0.1:'+port;
  const created=await createPortalServer({database:join(temporary,'portal.sqlite'),bootstrap,origin,secure:false,statusPath,bridge,fileLanEndpoints:'{}',directUploadOrigins:'[]'});server=created.server;const service=created.service;clearInterval(service.executionTimer);
+ const saveProjects=fixture=>{const saved=readStorage(service,'gpu-1');writeStorage(service,'gpu-1',{...saved,projects:{...saved.projects,projects:structuredClone(fixture)}});};
  const limits=Object.fromEntries(MACHINES.map(m=>[m.id,m.cards]));Object.assign(service.store.users[0],{name:'管理员乙',limits,total:30,approvedAt:new Date().toISOString()});service.store.users.push({id:'fixture-member',username:'member',name:'成员甲',role:'member',enabled:true,total:8,limits,approvedAt:new Date().toISOString()});service.accounts.insert(service.store.users.at(-1),await credential(password,600000));service.accounts.rename('builtin-admin','管理员乙');service.refreshAccounts();service.save();
  setProjectShared(service,'builtin-admin','gpu-1','render',true);
  for(const machine of MACHINES)service.scheduleStorageRefresh(machine.id,0);await service.refreshStorage();
@@ -86,7 +88,7 @@ try{
   const fixture=nodes['gpu-1'].projects;
   Object.assign(fixture[0],{limitBytes:400*G,desiredLimitBytes:100*G,effectiveLimitBytes:400*G,enforced:true,graceUntil:1800000000});
   Object.assign(fixture[1],{limitBytes:110*G,desiredLimitBytes:110*G,enforced:true});
-  service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
+  saveProjects(fixture);
   await first.locator('[data-storage-refresh]').click();await page.waitForFunction(()=>document.querySelector('[data-storage-machine=gpu-1]')?.dataset.loading==='false');
   assert.match(await first.locator('[data-project-row=vision]').innerText(),/超限，宽限至/);
   assert.match(await first.locator('[data-project-row=render]').innerText(),/≥90%/);
@@ -101,7 +103,7 @@ try{
    assert.match(await first.locator('[data-project-row=render]').innerText(),/待生效/);
   }
   await page.screenshot({path:join(shots,`limits-${role}-${width}-states.png`),fullPage:true,animations:'disabled'});
-  fixture[1].enforced=false;service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
+  fixture[1].enforced=false;saveProjects(fixture);
   await first.locator('[data-storage-refresh]').click();await page.waitForFunction(()=>document.querySelector('[data-storage-machine=gpu-1]')?.dataset.loading==='false');
   assert.match(await first.locator('[data-project-row=render]').innerText(),/上限未生效.*待生效/);
   if(width<=390)assert.ok(await first.locator('.dr-ct .dr-main').evaluateAll(nodes=>nodes.every(node=>node.getBoundingClientRect().width>=node.parentElement.clientWidth-20)),'mobile project text keeps the full row width beside administrator actions');
@@ -109,12 +111,12 @@ try{
   // A processed below-range request reports the actual target instead of waiting forever.
   Object.assign(fixture[1],{requestedLimitBytes:500_000_000,desiredLimitBytes:1_000_000_000,effectiveLimitBytes:1_000_001_536,limitBytes:1_000_001_536,limitBlockBytes:4096,enforced:true});
   service.db.prepare('INSERT INTO project_storage_limits_v2(owner_id,machine,project,bytes,updated_by,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(owner_id,machine,project) DO UPDATE SET bytes=excluded.bytes').run('builtin-admin','gpu-1','render',500_000_000,'admin',new Date().toISOString());
-  service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
+  saveProjects(fixture);
   await first.locator('[data-storage-refresh]').click();await page.waitForFunction(()=>document.querySelector('[data-storage-machine=gpu-1]')?.dataset.loading==='false');
   const clamped=await first.locator('[data-project-row=render]').innerText();assert.match(clamped,/已按节点范围调整/);assert.doesNotMatch(clamped,/待生效/);
   await page.screenshot({path:join(shots,`limits-${role}-${width}-clamped.png`),fullPage:true,animations:'disabled'});
   for(const value of fixture)for(const key of ['limitBytes','requestedLimitBytes','desiredLimitBytes','effectiveLimitBytes','enforced','graceUntil','limitBlockBytes'])delete value[key];
-  service.db.prepare('DELETE FROM project_storage_limits_v2').run();service.storageSnapshots['gpu-1'].projects.projects=structuredClone(fixture);
+  service.db.prepare('DELETE FROM project_storage_limits_v2').run();saveProjects(fixture);
   // People: projects (by creator, including the trashed one) plus images.
   assert.equal(await text(first.locator('[data-owner-row=fixture-member] [data-owner-total]')),'912 GiB');assert.equal(await text(first.locator('[data-owner-row=builtin-admin] [data-owner-total]')),'155 GiB');
   assert.match(await text(first.locator('[data-owner-row=fixture-member] .dr-s').first()),/项目 852 GiB · 镜像与容器引擎 60 GiB/);

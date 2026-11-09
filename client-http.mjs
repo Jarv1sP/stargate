@@ -85,6 +85,7 @@ export async function apiPost(base,path,body,{token,signal,fetchImpl=fetch,sleep
     if(!response.ok){
       const detail=decoded&&typeof data.error==='string'?safe(data.error):TRANSIENT.has(response.status)?'服务暂时不可用或正在更新':response.status===404?'API 路径不存在，请检查服务地址':'服务返回了非 JSON 错误响应';
       const failure=error(`${safe(operation)}：HTTP ${response.status} — ${detail}${!read&&TRANSIENT.has(response.status)?'；操作结果尚未确认，原请求编号保留。':''}`,response.status);
+      if(decoded&&data.code==='DATASET_DIRECTORY_LINK')Object.assign(failure,{code:data.code,datasetLink:data.datasetLink});
       if(operation==='terminal.open'&&response.status===400&&decoded&&data.code==='TERMINAL_OPEN_REJECTED')failure.code=data.code;
       if(response.status===426&&decoded&&data.code==='CLIENT_UPGRADE_REQUIRED'){failure.code=data.code;failure.message=data.error;}
       throw failure;

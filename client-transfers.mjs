@@ -2,7 +2,7 @@ import {lstat,open,readdir,mkdir,readFile,writeFile,rename} from 'node:fs/promis
 import {constants} from 'node:fs';
 import {dirname,join,resolve,basename} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {uploadPersonalFile,campusRetryable} from './dist/personal-upload.js';
+import {uploadPersonalFile,campusRetryable,datasetDirectorySkip,datasetSkipMessage} from './dist/personal-upload.js';
 import {createPersonalFileTransport} from './client-personal-file-campus.mjs';
 import {dataPath,sameDatasetFile} from './client-file-path.mjs';
 import {recoverOriginalWrite,uncertainWrite} from './client-http.mjs';
@@ -51,19 +51,28 @@ export async function uploadLocalFile(call,{machine,context,path,local,key=rando
     return {...result,machine,path,bytes:size};
   }finally{await file.close();await transport?.close();}
 }
-export async function uploadLocalTree(call,{machine,context,local,remote='.',key,stateDirectory,transferId,via,probe,inspectOnly=false,progress=()=>{},uploadFile=uploadLocalFile,exclude=()=>false}){
+export async function uploadLocalTree(call,{machine,context,local,remote='.',key,stateDirectory,transferId,via,probe,inspectOnly=false,progress=()=>{},notify=message=>process.stderr.write(safe(message)+'\n'),uploadFile=uploadLocalFile,exclude=()=>false}){
   if(key===undefined&&!inspectOnly)key=randomUUID();
   if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(key||''))throw Error(inspectOnly?'查询原上传请提供 --key UUID。':'上传编号必须是完整 UUID。');
   const keyFile=stateDirectory?join(stateDirectory,key+'.json'):null;let keys={};
   if(keyFile)try{keys=JSON.parse(await readFile(keyFile,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
   const save=async()=>{if(!keyFile)return;await mkdir(dirname(keyFile),{recursive:true,mode:0o700});const temporary=keyFile+'.'+randomUUID()+'.new';await writeFile(temporary,JSON.stringify(keys),{mode:0o600});await rename(temporary,keyFile);};
-  let count=0,bytes=0,selected;const files=[];
+  // Absolute paths cannot be upload paths, so this journal entry cannot collide with a file key.
+  const skipEntry='/skipped',skipped=inspectOnly&&context.area==='code'&&Array.isArray(keys[skipEntry])?keys[skipEntry]:[];
+  if(!inspectOnly&&keys[skipEntry]){delete keys[skipEntry];await save();}
+  let count=0,bytes=0,selected;const files=skipped.map(link=>({path:link.path,state:'SKIPPED',datasetLink:link}));
+  const isSkipped=path=>skipped.some(link=>path===link.path||path.startsWith(link.path+'/'));
   const single=(await lstat(local)).isFile();
-  async function visit(source,path){
-    if(exclude(basename(source)))return;
-    const info=await lstat(source);if(info.isSymbolicLink())throw Error('链接不会上传：'+source);
-    if(info.isDirectory()){for(const name of (await readdir(source)).sort())await visit(join(source,name),path==='.'?name:path+'/'+name);return;}
-    if(!info.isFile())throw Error('请选择普通文件或目录：'+source);dataPath(path);
+  async function visit(source,path,pending){
+    if(isSkipped(path)||exclude(basename(source)))return;
+    const info=await lstat(source);
+    if(info.isDirectory()){
+      const errors=[];
+      for(const name of (await readdir(source)).sort())await visit(join(source,name),path==='.'?name:path+'/'+name,errors);
+      pending.push(...errors.filter(row=>!isSkipped(row.path)));return;
+    }
+    if(info.isSymbolicLink()||!info.isFile()){pending.push({path,error:Error((info.isSymbolicLink()?'链接不会上传：':'请选择普通文件或目录：')+source)});return;}
+    dataPath(path);
     let result;
     if(inspectOnly){
       const originalKey=keys[path]||(single?key:null);
@@ -71,14 +80,18 @@ export async function uploadLocalTree(call,{machine,context,local,remote='.',key
         {key:null,state:'UNKNOWN',message:'没有该文件的原上传编号，状态未知；请使用原本地上传记录查询。'};
     }else{
       keys[path] ||= single?key:randomUUID();await save();
-      selected??=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{machine,...context,path,action:'put',uploadId:keys[path],totalSize:info.size,overwrite:true})).result});
+      try{selected??=await selectTransferRoute({area:context.area,via,action:'put',stateFile:stateDirectory&&join(stateDirectory,key+'.route.json'),probe,getGrant:async()=>(await call('files.direct-ticket',{machine,...context,path,action:'put',uploadId:keys[path],totalSize:info.size,overwrite:true})).result});
       result=await uploadFile(call,{machine,context,local:source,path,key:keys[path],transferId,via,route:selected,initialGrant:selected.grant,progress});
+      }catch(error){
+        const link=context.area==='code'&&datasetDirectorySkip(error,path);if(!link)throw error;
+        skipped.push(link);keys[skipEntry]=skipped;await save();notify(datasetSkipMessage(link));return;
+      }
     }
     if(selected)delete selected.grant;
     files.push({path,...result});count++;bytes+=info.size;
   }
-  progress({key,state:'STARTING'});try{await visit(resolve(local),remote);}catch(error){error.key=key;error.message+='\n上传编号：'+key+'；用原命令加 --key '+key+' 续传。';throw error;}
-  return {machine,...context,key,uploaded:count,files,bytes,state:inspectOnly?'STATUS':'COMPLETE'};
+  progress({key,state:'STARTING'});try{const pending=[];await visit(resolve(local),remote,pending);if(pending.length)throw pending[0].error;}catch(error){error.key=key;error.message+='\n上传编号：'+key+'；用原命令加 --key '+key+' 续传。';throw error;}
+  return {machine,...context,key,uploaded:count,files,bytes,...(skipped.length?{skipped}:{}),state:inspectOnly?'STATUS':'COMPLETE'};
 }
 export async function uploadTransfer(call,{machine,name,dataset=name,directory,key=randomUUID(),via='auto',stateDirectory,progress=()=>{}}){
   const row=(await call('transfers.create',{key,kind:'upload',machine,reference:{dataset}})).result;
