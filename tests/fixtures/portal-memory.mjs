@@ -8,6 +8,7 @@ import http from 'node:http';
 import {writeHeapSnapshot} from 'node:v8';
 import {pbkdf2Sync} from 'node:crypto';
 import {MACHINES} from './machines.js';
+import {standaloneClientInfo} from '../../client-bundle.mjs';
 
 const [mode,directory]=process.argv.slice(2),root=resolve(directory);
 const database=join(root,'portal.sqlite'),bootstrap=join(root,'bootstrap.json');
@@ -76,7 +77,7 @@ if(mode==='seed'){
       await service.refreshStorage();sample('refresh-'+i);
       const bytes=await drain('/api/call',{operation:'storage.snapshot',args:{}});assert.ok(bytes>35e6);sample('storage-page-'+i);
       assert.ok(await drain('/')>1000);sample('html-'+i);
-      assert.ok(await drain('/gpuctl.mjs')>40e6);sample('cli-download-'+i);
+      assert.equal(await drain('/gpuctl.mjs'),(await standaloneClientInfo(origin)).bytes);sample('cli-download-'+i);
     }
     await new Promise(resolveIdle=>setTimeout(resolveIdle,250));sample('settled');
     const fixture=JSON.parse(await readFile(join(root,'fixture.json'),'utf8'));

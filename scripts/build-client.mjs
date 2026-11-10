@@ -10,7 +10,7 @@ import {gzipSync} from 'node:zlib';
 // Compile the actual import graph. Shared CLI modules need no special export
 // registry, runtime compiler, text inlining, or hand-maintained dependency list.
 export async function buildClient({root=fileURLToPath(new URL('..',import.meta.url)),outfile=resolve(root,'build/gpuctl.mjs'),revision=process.env.STARGATE_RELEASE_REVISION}={}){
-  // Release builds regenerate all four helpers with build:release. A plain
+  // Release builds regenerate all six platform helpers with build:release. A plain
   // bundle would silently lose Windows control and campus transfer support.
   const artifacts=JSON.parse(await readFile(resolve(root,'build/campus-native/embedded-artifacts.private.json'),'utf8'));
   if(!revision)try{revision=(await promisify(execFile)('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true})).stdout.trim();}catch{}
