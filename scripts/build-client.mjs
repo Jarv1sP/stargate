@@ -5,6 +5,7 @@ import {readFile,appendFile} from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {gzipSync} from 'node:zlib';
 
 // Compile the actual import graph. Shared CLI modules need no special export
 // registry, runtime compiler, text inlining, or hand-maintained dependency list.
@@ -13,8 +14,20 @@ export async function buildClient({root=fileURLToPath(new URL('..',import.meta.u
   // bundle would silently lose Windows control and campus transfer support.
   const artifacts=JSON.parse(await readFile(resolve(root,'build/campus-native/embedded-artifacts.private.json'),'utf8'));
   if(!revision)try{revision=(await promisify(execFile)('git',['rev-parse','HEAD'],{cwd:root,windowsHide:true})).stdout.trim();}catch{}
+  // Keep the standalone client portable. Only extraction of a selected helper
+  // inflates it; help and cached-helper reuse never allocate the original bytes.
+  const helpers=Object.entries(artifacts.artifacts).map(([platform,item])=>{
+    const packed=gzipSync(Buffer.from(item.base64,'base64'),{level:9}).toString('base64');
+    return `${JSON.stringify(platform)}:{bytes:${JSON.stringify(item.bytes)},get base64(){return gunzipSync(Buffer.from(${JSON.stringify(packed)},'base64')).toString('base64');}}`;
+  });
+  const nativeSource=`import {gunzipSync} from 'node:zlib';
+    const bundle={version:${JSON.stringify(revision||artifacts.version)},artifacts:{${helpers.join(',')}}};
+    export {bundle as STARGATE_CAMPUS_NATIVE_BUNDLE};`;
   await build({absWorkingDir:root,entryPoints:['cli.mjs'],outfile,bundle:true,
-    define:{STARGATE_CAMPUS_NATIVE_BUNDLE:JSON.stringify({...artifacts,version:revision||artifacts.version})},
+    inject:['stargate-native-bundle'],plugins:[{name:'packed-native-helpers',setup(build){
+      build.onResolve({filter:/^stargate-native-bundle$/},()=>({path:'helpers',namespace:'native-bundle'}));
+      build.onLoad({filter:/.*/,namespace:'native-bundle'},()=>({contents:nativeSource,loader:'js'}));
+    }}],
     platform:'node',format:'esm',target:'node22.13',charset:'utf8',sourcemap:false,
     legalComments:'inline',logLevel:'silent'});
   // Count origin substitutions once while building. At runtime a bounded
