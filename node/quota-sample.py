@@ -6,7 +6,7 @@ with quotactl(Q_GETNEXTQUOTA, PRJQUOTA) and writes <root>/samples/quota.json,
 owned by the service account. It never sets a limit. Self-contained: the
 installer runs a root-owned copy of this file, not the service-owned release.
 """
-import argparse,ctypes,ctypes.util,errno,json,os,pwd,re,stat,uuid
+import argparse,ctypes,ctypes.util,errno,json,os,pwd,re,stat,struct,uuid
 from datetime import datetime,timezone
 from pathlib import Path
 Q_GETNEXTQUOTA=0x800009
@@ -20,7 +20,7 @@ class NextDquot(ctypes.Structure):
               ('btime',ctypes.c_uint64),('itime',ctypes.c_uint64),('valid',ctypes.c_uint32),('id',ctypes.c_uint32)]
 
 
-def usage(device,libc=None):
+def usage(device,libc=None,*,limits=False):
     """{id: (bytes, inodes)} for every project ID with usage; OSError(ESRCH) when quota is off."""
     libc=libc or ctypes.CDLL(ctypes.util.find_library('c'),use_errno=True)
     command=(Q_GETNEXTQUOTA<<8)|PRJQUOTA;result={};current=0
@@ -30,9 +30,17 @@ def usage(device,libc=None):
             code=ctypes.get_errno()
             if code==errno.ENOENT and result:return result
             raise OSError(code,os.strerror(code))
-        result[row.id]=(row.curspace,row.curinodes)
+        result[row.id]=({'bytes':row.curspace,'inodes':row.curinodes,'limitBytes':row.bhardlimit*1024,'softLimitBytes':row.bsoftlimit*1024} if limits else (row.curspace,row.curinodes))
         if row.id==0xFFFFFFFF:return result
         current=row.id+1
+
+
+def enforcement(device,libc=None):
+    """Linux Q_XGETQSTATV works on both ext4 and XFS; unknown stays null."""
+    libc=libc or ctypes.CDLL(ctypes.util.find_library('c'),use_errno=True)
+    raw=ctypes.create_string_buffer(256);raw[0]=b'\x01' # fs_quota_statv v1
+    if libc.quotactl((((ord('X')<<8)+8)<<8)|PRJQUOTA,os.fsencode(device),0,ctypes.byref(raw))!=0:return None
+    return bool(struct.unpack_from('H',raw.raw,2)[0] & (1<<5)) # FS_QUOTA_PDQ_ENFD
 
 
 def mounts(text):
@@ -46,7 +54,7 @@ def mounts(text):
     return rows
 
 
-def filesystems(points,mountinfo,read=usage):
+def filesystems(points,mountinfo,read=None):
     """One row per device in configuration order; aliases share the row."""
     table=mounts(mountinfo);result=[];by_device={}
     for point in points:
@@ -56,12 +64,14 @@ def filesystems(points,mountinfo,read=usage):
         if info.st_dev in by_device:by_device[info.st_dev]['mountPoints'].append(str(point));continue
         number=f'{os.major(info.st_dev)}:{os.minor(info.st_dev)}'
         source=next((src for mount,dev,src in sorted(table,key=lambda r:-len(r[0])) if dev==number and (str(point)==mount or str(point).startswith(mount.rstrip('/')+'/'))),None)
-        row={'mountPoints':[str(point)],'device':source,'quota':False,'ids':{}}
+        row={'mountPoints':[str(point)],'device':source,'quota':False,'enforced':None,'ids':{}}
         try:
             v=os.statvfs(point)
-            row.update(totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
+            row.update(blockBytes=v.f_frsize or v.f_bsize,totalBytes=v.f_blocks*v.f_frsize,usedBytes=(v.f_blocks-v.f_bfree)*v.f_frsize,availableBytes=v.f_bavail*v.f_frsize)
             if source is None:raise OSError(errno.ENODEV,'device not found in mountinfo')
-            row['ids']={str(key):{'bytes':space,'inodes':inodes} for key,(space,inodes) in sorted(read(source).items())}
+            values=usage(source,limits=True) if read is None else read(source)
+            row['ids']={str(key):value if isinstance(value,dict) else {'bytes':value[0],'inodes':value[1]} for key,value in sorted(values.items())}
+            row['enforced']=enforcement(source)
             row['quota']=True
         except OSError as error:
             # ESRCH: project quota not enabled on this filesystem; usage shows unknown.
@@ -79,7 +89,7 @@ def open_directory(path):
     except BaseException:os.close(fd);raise
 
 
-def publish(root,value,owner):
+def publish(root,value,owner,*,name='quota.json'):
     """Atomic write into a service-owned directory without following links."""
     base=open_directory(root)
     try:
@@ -93,7 +103,7 @@ def publish(root,value,owner):
         try:
             os.fchown(fd,*owner);os.write(fd,json.dumps(value,sort_keys=True,separators=(',',':')).encode());os.fsync(fd)
         finally:os.close(fd)
-        os.replace(tmp,'quota.json',src_dir_fd=folder,dst_dir_fd=folder);os.fsync(folder)
+        os.replace(tmp,name,src_dir_fd=folder,dst_dir_fd=folder);os.fsync(folder)
     finally:
         try:os.unlink(tmp,dir_fd=folder)
         except FileNotFoundError:pass

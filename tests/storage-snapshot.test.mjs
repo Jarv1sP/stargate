@@ -8,6 +8,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
 import {readStorage} from '../portal-storage.mjs';
+import {jsonChunks,JSONItems} from '../json-stream.mjs';
 
 const minute=60000,machine=MACHINES[0].id;
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
@@ -15,7 +16,8 @@ async function fixture(t){
  const root=await mkdtemp(join(tmpdir(),'storage-snapshot-')),database=join(root,'portal'),bootstrap=join(root,'bootstrap'),calls=[];
  await writeFile(bootstrap,JSON.stringify({username:'admin',password:'Storage-Cache-Local-Fixture!'}));
  let read=async(_machine,operation)=>operation==='projects.quota'?{volumes:[{kind:'shared',fs:'11',usedBytes:3,availableBytes:9,totalBytes:12}]}:operation==='datasets.list'?{datasets:[{dataset:'images',size:null,complete:false,uploadedBy:'peer'}],complete:true}:operation==='projects.list'?{projects:[{project:'vision',ownerId:'peer',size:3,complete:false}],complete:true,checkedAt:'2026-11-07T00:00:00.000Z'}:{state:'COMPLETE',project:'vision'};
- const bridge=async(...args)=>{calls.push(structuredClone(args));return read(...args);};
+ // Cap pushes are exercised by project-storage-limits.test.js; these counts describe storage reads.
+ const bridge=async(...args)=>{if(args[1]==='projects.storage.limits.sync')return {synced:true};calls.push(structuredClone(args));return read(...args);};
  let service;
  const open=async()=>{service=await PortalService.open(database,bootstrap,undefined,bridge);clearInterval(service.executionTimer);return service;};
  await open();
@@ -40,6 +42,21 @@ test('refresh scans only the requested server once and reuses its cache for one 
  for(const part of ['quota','datasets','projects'])assert.ok(saved[part].checkedAt);assert.ok(saved.checkedAt);
  now+=minute-1;const cached=(await f.service.invoke(f.token(),'storage.refresh',{machine:selected})).result;assert.equal(cached.machines[0].refreshing,false);assert.equal(f.calls.length,3);
  now++;await f.service.invoke(f.token(),'storage.refresh',{machine:selected});await f.service.storageWork;assert.equal(f.calls.length,6);
+});
+
+test('a queued cap change refreshes a fresh cache while preserving streamed storage and separate persistence',async t=>{
+ const f=await fixture(t);await f.service.invoke(f.token(),'storage.refresh',{machine});await f.service.storageWork;
+ const sync=t.mock.method(f.service,'syncStorageLimits',f.service.syncStorageLimits);
+ await f.service.invoke(f.token(),'projects.storage.limit.set',{machine,ownerId:'peer',project:'vision',bytes:500_000_000});
+ const reply=await f.service.invoke(f.token(),'storage.refresh',{machine},{streamStorage:true});
+ assert.ok(reply.result.machines instanceof JSONItems,'HTTP storage options remain lazy');
+ await f.service.storageWork;
+ assert.equal(sync.mock.callCount(),2,'save and requested refresh both push the complete cap list');
+ assert.equal(f.calls.length,6,'the queued refresh runs even inside the one-minute cache reuse window');
+ const streamed=JSON.parse([...jsonChunks(reply.result)].join(''));
+ assert.equal(streamed.machines[0].projects.projects[0].desiredLimitBytes,500_000_000);
+ assert.deepEqual(Object.keys(f.service.storageSnapshots[machine]).sort(),['checkedAt','scannedAt']);
+ assert.equal(JSON.parse(f.service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data).storage,undefined);
 });
 
 test('queued and concurrent refresh requests scan one server at a time without duplicates',async t=>{

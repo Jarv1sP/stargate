@@ -115,6 +115,20 @@ class StorageUsage(unittest.TestCase):
         return {'mountPoints':mounts or [str(self.base)],'device':'/dev/fixture','quota':quota,'ids':ids if quota else {},
                 'totalBytes':10**6,'usedBytes':used,'availableBytes':10**6-used}
 
+    def test_limits_publish_processed_clamp_and_block_size_but_newer_request_is_pending(self):
+        ops=self.ops();q=f.module('quota-ids');ops.store.create('alice','demo');key=q.files_key('alice','demo')
+        raw=500_000_000;target=1_000_000_000;applied=((target+4095)//4096)*4096
+        number=q.read(ops.store.root/'quota')['ids'][key]
+        fs=self.fs({str(number):{'bytes':1024,'limitBytes':applied}},1024);fs.update(enforced=True,blockBytes=4096)
+        self.write_sample(ops,[fs]);folder=ops.store.root/'quota'
+        (folder/'limits.json').write_text(json.dumps({'limits':[{'ownerId':'alice','project':'demo','bytes':raw}]}))
+        (ops.store.root/'samples/quota-limits.json').write_text(json.dumps({'defaultLimitBytes':100_000_000_000,'projects':{key:{'requestedLimitBytes':raw,'desiredLimitBytes':target,'effectiveLimitBytes':applied,'graceUntil':None}}}))
+        sample=f.module('storage-usage').Sample(self.config);row=sample.limit(key,ops.store.path)
+        self.assertEqual((row['requestedLimitBytes'],row['desiredLimitBytes'],row['limitBytes'],row['limitBlockBytes']),(raw,target,applied,4096))
+        (folder/'limits.json').write_text(json.dumps({'limits':[None,{'ownerId':'alice','project':'demo','bytes':2_000_000_000}]}))
+        row=f.module('storage-usage').Sample(self.config).limit(key,ops.store.path)
+        self.assertEqual(row['desiredLimitBytes'],2_000_000_000);self.assertIsNone(row['effectiveLimitBytes'])
+
     def test_projects_read_the_quota_sample_and_registry_without_scanning(self):
         ops=self.ops();q=f.module('quota-ids')
         for owner in ('alice','bob'):ops.store.create(owner,'demo')

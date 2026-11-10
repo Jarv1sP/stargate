@@ -123,7 +123,8 @@
   .sb .dr-ct .dr-main .dr-s,.sb .dr-ow .dr-main .dr-s{white-space:normal}
   .sb .dr-nm{font-size:17px}
   .sb .dr-row{grid-template-columns:minmax(0,1fr) auto;gap:12px}
-  .sb .dr-ct{grid-template-columns:minmax(0,1fr) auto auto;gap:12px}
+  .sb .dr-ct{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px}
+  .sb .dr-ct .dr-main{grid-column:1/-1}
   .sb .dr-hide-m{display:none}
   .sb .dr-acts{opacity:1;transform:none}
   .sb .heading-actions .dr-action{flex:1;justify-content:center;height:44px}

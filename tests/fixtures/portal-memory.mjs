@@ -50,7 +50,8 @@ if(mode==='seed'){
     console.log('PORTAL_MEMORY_STAGE '+JSON.stringify(measurements.at(-1)));
   };
   // The bridge creates one fresh node response at a time, as JSON RPC does.
-  const bridge=async(machine,operation)=>{
+  const bridge=async(machine,operation,args)=>{
+    if(operation==='projects.storage.limits.sync')return {synced:true,count:args.limits.length};
     return storageFixture(MACHINES.findIndex(value=>value.id===machine),operation==='projects.quota'?'quota':operation==='datasets.list'?'datasets':'projects');
   };
   const port=await new Promise(resolvePort=>{const server=http.createServer();server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolvePort(port));});});

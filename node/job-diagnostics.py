@@ -50,7 +50,7 @@ FINAL = {'COMPLETE', 'PARTIAL', 'UNAVAILABLE'}
 RUNNER_PHASES = {'IDENTITY','WORKSPACE_ADMISSION','GPU_ALLOCATION','RESOURCE_BUDGET',
                  'PROJECT_PREPARATION','OCI_EXECUTION','SANDBOX_PREPARATION',
                  'SANDBOX_NETWORK','PAYLOAD_EXECUTION','OCI_PREPARATION','OCI_ENGINE'}
-ERROR_PATTERN = re.compile(r'Traceback|\b[A-Za-z_]*(?:Error|Exception)\b|\bSIG(?:ABRT|SEGV|KILL|BUS)\b|CUDA out of memory|pthread_create|Resource temporarily unavailable|\bFATAL\b', re.I)
+ERROR_PATTERN = re.compile(r'Traceback|\b[A-Za-z_]*(?:Error|Exception)\b|\bSIG(?:ABRT|SEGV|KILL|BUS)\b|CUDA out of memory|pthread_create|Resource temporarily unavailable|Disk quota exceeded|No space left on device|\bFATAL\b', re.I)
 
 
 def redact(text):
@@ -306,10 +306,12 @@ def _runner_error(error, phase):
         message=str(error)
         if message=='OCI registry drop-in directories changed during operation':
             result.update(reason='OCI_REGISTRY_INTEGRITY_CHANGED',message=message)
-        space=re.fullmatch(r'Personal workspace free-space reserve reached: availableBytes=([0-9]+), reserveBytes=([0-9]+), requestedBytes=([0-9]+)\.',message)
+        space=re.fullmatch(r'Personal workspace hard floor reached: availableBytes=([0-9]+), requestedBytes=([0-9]+), hardFloorBytes=([0-9]+)\.',message)
         if space:
-            result.update(reason='WORKSPACE_RESERVE',message='Personal workspace free-space reserve reached',
-                          **dict(zip(('availableBytes','reserveBytes','requestedBytes'),map(int,space.groups()))))
+            result.update(reason='WORKSPACE_RESERVE',message='数据盘可用空间触及 64 GiB 下限',
+                          **dict(zip(('availableBytes','requestedBytes','hardFloorBytes'),map(int,space.groups()))))
+        if getattr(error,'code',None)=='workspace_quota':
+            result.update(reason='WORKSPACE_QUOTA',message=message,**getattr(error,'details',{}))
     return result
 
 
@@ -473,6 +475,17 @@ def bundle(root, spec, scheduler):
             report = {**report, 'state': 'PARTIAL', 'error': 'Observer heartbeat is stale; completion is 暂未取得完整结果，请查询原任务编号'}
         _runner_records(report,_folder(root,spec,report['captureId']))
         result.update(state=report['state'], captures=[report], workerErrorEvidence=report.get('workerErrorEvidence', False))
+    text='\n'.join(log.get('text','') for capture in result.get('captures',[]) for log in capture.get('logs',[]))
+    text+='\n'.join(capture.get('runnerStderr',{}).get('text','') for capture in result.get('captures',[]))
+    if re.search(r'Disk quota exceeded|No space left on device',text,re.I) and spec.get('project'):
+        try:
+            cfg=json.loads(CONFIG_PATH.read_text());owner=spec.get('ownerId') or spec.get('userId')
+            path=Path(cfg['workspacesRoot'])/owner/spec['project']
+            modspec=importlib.util.spec_from_file_location('quota_store',HERE/'project-store.py');store=importlib.util.module_from_spec(modspec);modspec.loader.exec_module(store)
+            used,limit,enforced=store.quota_usage(cfg,path)
+            if enforced and limit and used is not None and used>=limit:
+                result.update(reason='WORKSPACE_QUOTA',usedBytes=used,limitBytes=limit,message=store.quota_message(used,limit))
+        except (OSError,ValueError,TypeError,KeyError):pass
     result['note'] = 'Worker log errors are evidence, not scheduler exit status. Missing counters are unknown, never zero.'
     # Include escaped JSON size (outer bridge uses ensure_ascii=True) in cap.
     while len(json.dumps(result).encode()) > BUNDLE_LIMIT and result.get('captures', [{}])[0].get('logs'):

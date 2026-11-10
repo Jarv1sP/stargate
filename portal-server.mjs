@@ -40,6 +40,7 @@ files['/datasets-ui.js']='datasets-ui.js';
 files['/data-route.js']='data-route.js';
 files['/disk-media.js']='disk-media.js';
 files['/storage-usage.js']='storage-usage.js';
+files['/storage-limit-ui.js']='storage-limit-ui.js';
 files['/personal-upload.js']='personal-upload.js';
 files['/datasets.css']='datasets.css';
 files['/dataset-upload.js']='dataset-upload.js';

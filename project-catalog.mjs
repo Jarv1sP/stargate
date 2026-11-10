@@ -1,3 +1,4 @@
+import {installProjectStorageLimits,projectLimitPresentation} from './project-storage-limits.mjs';
 import {UUID,selectFields} from './portal-request-validation.mjs';
 // Owner-scoped presentation only. No filesystem, release or run identities change.
 import {MACHINES} from './dist/model.js';
@@ -7,6 +8,7 @@ const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});}
 function name(value){if(typeof value!=='string'||/[\p{Cc}\p{Cf}]/u.test(value))fail('名称不能包含控制或不可见字符。');const text=value.normalize('NFC').trim();if([...text].length<1||[...text].length>80)fail('显示名称需为 1–80 个字符。');return text;}
 function instance(value){if(!value||typeof value!=='object'||Array.isArray(value)||!MACHINES.some(m=>m.id===value.machine)||typeof value.project!=='string'||!PROJECT.test(value.project))fail('项目实例须指定服务器和内部项目 ID。');return {machine:value.machine,project:value.project};}
 export function installProjectCatalog(service){
+  installProjectStorageLimits(service);
   service.db.exec(`CREATE TABLE IF NOT EXISTS project_labels_v2(owner_id TEXT NOT NULL,machine TEXT NOT NULL,project TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(owner_id,machine,project));
     CREATE TABLE IF NOT EXISTS project_shared_v2(owner_id TEXT NOT NULL,machine TEXT NOT NULL,project TEXT NOT NULL,shared INTEGER NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(owner_id,machine,project));
     CREATE TABLE IF NOT EXISTS project_groups_v2(owner_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,revision INTEGER NOT NULL,primary_machine TEXT,primary_project TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(owner_id,id));
@@ -15,7 +17,7 @@ export function installProjectCatalog(service){
     const label=service.db.prepare('SELECT name,revision FROM project_labels_v2 WHERE owner_id=? AND machine=? AND project=?').get(owner,machine,row.project);
     const shared=service.db.prepare('SELECT shared FROM project_shared_v2 WHERE owner_id=? AND machine=? AND project=?').get(owner,machine,row.project);
     const group=service.db.prepare('SELECT g.id,g.name,g.revision,g.primary_machine,g.primary_project FROM project_group_members_v2 m JOIN project_groups_v2 g ON g.owner_id=m.owner_id AND g.id=m.group_id WHERE m.owner_id=? AND m.machine=? AND m.project=?').get(owner,machine,row.project);
-    return {...row,shared:shared?.shared===1,displayName:label?.name||row.project,displayNameRevision:label?.revision||0,
+    return {...row,...projectLimitPresentation(row,service.projectStorageLimit(owner,machine,row.project)),shared:shared?.shared===1,displayName:label?.name||row.project,displayNameRevision:label?.revision||0,
       logicalProjectId:group?.id??null,logicalProjectName:group?.name??null,
       ...(group?{logicalProjectRevision:group.revision,primaryInstance:group.primary_machine?{machine:group.primary_machine,project:group.primary_project}:null}:{})};
   };

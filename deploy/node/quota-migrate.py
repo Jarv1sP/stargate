@@ -153,8 +153,7 @@ class Migration:
             row=record(path/'project.json') or (record(self.root/'transfers'/(path.name+'.json')) or {}).get('target') or {}
             self.add('6 复制暂存',self.project_key(row),path)
         for path in children(self.workspaces/'.copy-exports'):
-            row=((record(self.root/'transfers'/(path.name+'.source.json')) or {}).get('request') or {}).get('source') or {}
-            self.add('6 复制暂存',self.project_key(row),path)
+            self.add('6 复制暂存',q.PLATFORM,path)
         for path in children(self.datasets):
             if not path.name.startswith('.'):self.add('7 数据集',q.dataset_key(path.name),path,linked=True)
         for base in (self.datasets,self.workspaces,self.root):

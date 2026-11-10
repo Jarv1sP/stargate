@@ -154,8 +154,9 @@ export class PortalService extends DemoService{
   }
   requestStorageRefresh(machine,options){
     if(this.storageCurrent?.machine!==machine&&!(Date.now()-Date.parse(this.storageSnapshots[machine]?.scannedAt)<STORAGE_REUSE_MS)){
-      this.scheduleStorageRefresh(machine,0);void this.refreshStorage().catch(()=>{});
+      this.scheduleStorageRefresh(machine,0);
     }
+    if(this.storageQueue.get(machine)?.at<=Date.now())void this.refreshStorage().catch(()=>{});
     return this.storageSnapshot(machine,options);
   }
   refreshStorage(periodic=false){
@@ -176,6 +177,7 @@ export class PortalService extends DemoService{
           try{const value=await this.bridge(machine,operation,args);row[part]={...value,checkedAt:part==='projects'?value?.checkedAt??null:new Date(Date.now()).toISOString()};return true;}
           catch{previous??=readStorage(this,machine);row[part]={...previous[part],error:'暂时读不到，请稍后刷新。'};return false;}
         };
+        try{await this.syncStorageLimits(machine);}catch{row.limitsSyncError='项目上限待推送，节点恢复后自动重试。';}
         await read('quota','projects.quota');
         const datasets=await read('datasets','datasets.list'),projects=await read('projects','projects.list',{includeUsage:true});
         if(!this.closing){row.scannedAt=new Date(Date.now()).toISOString();if(datasets&&projects)row.checkedAt=row.scannedAt;writeStorage(this,machine,row);}

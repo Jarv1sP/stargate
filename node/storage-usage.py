@@ -24,6 +24,8 @@ class Sample:
     def __init__(self,config):
         self.config=config;self.d=module('local-data');root=self.d.root(config,'root')
         self.quota=saved(root/'samples'/'quota.json')
+        self.limits=saved(root/'samples'/'quota-limits.json') or {}
+        self.desired=saved(root/'quota'/'limits.json') or {}
         self.migrated=saved(root/'quota'/'migrated.json') is not None
         try:self.names={value:key for key,value in module('quota-ids').read(root/'quota')['ids'].items()}
         except (OSError,ValueError,TypeError,AttributeError):self.names={}
@@ -73,6 +75,22 @@ class Sample:
             return {'size':0,'complete':True}
         return None
 
+    def limit(self,key,path):
+        mount=self.mount(path);fs=self.filesystems.get(mount,{})
+        if not self.limits and not self.desired.get('limits') and not any('enforced' in row for row in (self.quota or {}).get('filesystems',[])):return {}
+        number=next((str(number) for number,name in self.names.items() if name==key),None)
+        quota=(fs.get('ids') or {}).get(number,{})
+        status=(self.limits.get('projects') or {}).get(key,{})
+        desired=next((row['bytes'] for row in self.desired.get('limits',[]) if isinstance(row,dict) and type(row.get('bytes')) is int and 0<row['bytes']<=2**53-1 and module('quota-ids').files_key(row.get('ownerId'),row.get('project'))==key),None)
+        requested=desired if desired is not None else self.limits.get('defaultLimitBytes',100_000_000_000)
+        # A newer request stays pending until the root applier processes it. Its
+        # clamped target is authoritative only for that same requested value.
+        current=status if status.get('requestedLimitBytes')==requested else {}
+        return {'limitBytes':quota.get('limitBytes'), 'enforced':fs.get('enforced'),
+                'requestedLimitBytes':requested,'desiredLimitBytes':current.get('desiredLimitBytes',requested),
+                'effectiveLimitBytes':current.get('effectiveLimitBytes'),'graceUntil':current.get('graceUntil'),
+                'limitBlockBytes':fs.get('blockBytes') or current.get('limitBlockBytes')}
+
     def items(self,mount,used):
         q=module('quota-ids');projects={};rows=[];untracked=0
         totals=self.bytes(mount)
@@ -82,6 +100,7 @@ class Sample:
             if kind[0]=='project':
                 row=projects.setdefault(kind[1:3],{'kind':'project','ownerId':kind[1],'project':kind[2],'files':0,'outputs':0,'environment':0})
                 row[{'files':'files','outputs':'outputs','env':'environment'}[kind[3]]]+=value
+                if kind[3]=='files':row.update(self.limit(key,mount))
             elif kind[0]=='images':rows.append({'kind':'images','ownerId':kind[1],'bytes':value})
             elif kind[0]=='dataset':rows.append({'kind':'dataset','name':kind[1],'bytes':value})
             elif kind[0]=='external':rows.append({'kind':'external','path':kind[1],'bytes':value})
@@ -130,6 +149,7 @@ def cached(ops,result):
         outputs=sample.size(q.outputs_key(owner,project),ops.store.root,may_vanish=True) if sample.migrated else None
         environment=sample.size(q.env_key(owner,project),ops.store.path,may_vanish=True) if sample.migrated else None
         row.update(files or {'size':None,'complete':False})
+        row.update(sample.limit(q.files_key(owner,project),ops.store.path))
         count=counts.get(owner+'/'+project,0) if isinstance(counts,dict) else None
         row['outputs']={**(outputs or {'size':None,'complete':False}),'count':count}
         row['environment']=environment or {'size':None,'complete':False}

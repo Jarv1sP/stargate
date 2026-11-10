@@ -188,5 +188,19 @@ tool.run(False)`;
     const externalAfter=await migrate('--only','external');ctx.check('external 可在 datasets 后重跑',externalAfter.includes('[external]'));
     const tagged=await inspect({outside,sub:outside+'/sub',file:outside+'/sub/file'});const external=tagged.ids['x:'+outside];
     for(const key of ['outside','sub','file'])ctx.check('外部目录 '+key+' 只打编号、不设继承',typeof external==='number'&&external>0&&JSON.stringify(tagged.attrs[key])===JSON.stringify([external,false]),{external,attrs:tagged.attrs[key]});
+  }],['默认关闭与项目文件硬上限（STOR-002b）',async()=>{
+    const source=await readFile(resolve(dirname(ctx.stack.file),'src/tests/gray/quota-limits-lab.py'),'utf8');
+    const result=await node('python3','-I','-B','-c',source);
+    ctx.check('安装后限额默认关闭',result.defaultOff===true);
+    for(const row of result.cases){
+      ctx.check(row.filesystem+' rootless 容器达到硬上限时拒写',row.after.errno===(row.filesystem==='ext4'?122:28),row);
+      ctx.check(row.filesystem+' 容器内 df 显示上限',row.after.dfTotal===8*1024**2&&row.after.total<=8*1024**2,row.after);
+      ctx.check(row.filesystem+' 64 GiB 检查取数据盘余量',row.diskReserve.availableBytes>=64*1024**3,row.diskReserve);
+      ctx.check(row.filesystem+' 配额报错使用实时空间而非过期样本，支持相对错误文件名',row.diskReserve.quotaError.includes('项目文件空间不足'),row.diskReserve.quotaError);
+      ctx.check(row.filesystem+' 编号 0 上限保持原值',row.idZeroUnchanged===true);
+      ctx.check(row.filesystem+' 十进制/非对齐/宽限上限经过两轮 apply 无重复写',row.rounding.length===4&&row.rounding.every(item=>item.repeatWrites===0&&item.appliedBytes%item.blockBytes===0)&&row.rounding.some(item=>item.requestedBytes===100_000_000_000)&&row.rounding.some(item=>item.grace),row.rounding);
+    }
+    ctx.check('ext4 Q_QUOTAON 前允许超额、之后拒写',result.cases.some(row=>row.filesystem==='ext4'&&row.before?.errno===null&&row.after.errno===122),result);
+    ctx.check('实际 XFS 已验证',result.cases.some(row=>row.filesystem==='xfs'),result);
   }]]);
 }};

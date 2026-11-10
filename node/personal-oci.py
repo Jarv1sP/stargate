@@ -217,7 +217,7 @@ class PersonalOCI:
         try:
             try:result=subprocess.run(self.command('unshare','/usr/bin/python3','-I','-B',str(HERE/'workspace-rootfs.py'),str(path)),env=self.env,capture_output=True,text=True,timeout=3600)
             except subprocess.TimeoutExpired:raise ValueError('项目文件同步超时（3600 秒未完成），请稍后按原编号重试。') from None
-            if result.returncode:raise ValueError('项目文件同步失败：'+result.stderr[-1200:])
+            if result.returncode:raise ValueError(self.s.storage_error(self.config,ValueError('项目文件同步失败：'+result.stderr[-1200:]),paths.get('code'))) from None
             return json.loads(result.stdout)
         finally:path.unlink(missing_ok=True)
 

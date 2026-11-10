@@ -80,7 +80,7 @@ class Migration(unittest.TestCase):
             expect(self.layer/'work'/'work',q.env_key('alice','demo'))
             expect(ws/'alice'/'demo',q.files_key('alice','demo'));expect(ws/'alice'/'demo'/'code'/'train.py',q.files_key('alice','demo'),False)
             expect(root/'outputs'/self.job,q.outputs_key('alice','demo'));expect(root/'outputs'/self.orphan,q.UNASSIGNED)
-            expect(ws/'.copies'/self.copy,q.files_key('carol','p2'));expect(ws/'.copy-exports'/self.export,q.files_key('dave','p3'))
+            expect(ws/'.copies'/self.copy,q.files_key('carol','p2'));expect(ws/'.copy-exports'/self.export,q.PLATFORM)
             expect(ds/'images',q.dataset_key('images'));expect(ds/'images'/'shared.bin',q.dataset_key('images'),False)
             expect(self.trash[('project','old')],q.files_key('alice','old'));expect(self.trash[('output','x')],q.outputs_key('alice','demo'))
             expect(self.trash[('dataset','f')],q.dataset_key('gone'));self.assertEqual(kernel.of(self.trash[('output','nowhere')]),(0,False))

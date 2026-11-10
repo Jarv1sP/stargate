@@ -1,3 +1,4 @@
+import {storageLimitUI} from './storage-limit-ui.js';
 import {uploadBrowserFile} from './personal-upload.js';
 import {downloadBrowserPath,filePath} from './file-transfer-ui.js';
 import {createTrashUI} from './trash-ui.js';
@@ -55,10 +56,10 @@ const sizeCell=(total,largest)=>`<div class="dr-hide-m">${Number.isFinite(total.
 const largestOf=totals=>Math.max(1,...totals.map(total=>Number.isFinite(total.size)?total.size:0));
 // A project's total is its files, its job outputs and its own container
 // environment; the parts are listed under it.
-export function projectStorageRows(rows){
+export function projectStorageRows(rows,{admin=false}={}){
   rows=rows.map(row=>({row,usage:projectUsage(row)})).sort((a,b)=>(Number.isFinite(b.usage.total.size)?b.usage.total.size:-1)-(Number.isFinite(a.usage.total.size)?a.usage.total.size:-1));
   const largest=largestOf(rows.map(({usage})=>usage.total));
-  return rows.map(({row,usage})=>`<div class="dr-row dr-ct" data-project-row="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(projectOwnerLabel(row))}${row.shared?'':' 的项目'}</div><div class="dr-s" data-project-parts>${usagePartsText(usage)}</div></div>${sizeCell(usage.total,largest)}<div class="dr-s" data-project-total>${usageText(usage.total)}</div><div class="dr-acts dr-acts-on"><button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`).join('');
+  return rows.map(({row,usage})=>`<div class="dr-row dr-ct" data-project-row="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}"><div class="dr-main"><div class="dr-t mono">${esc(row.displayName||row.name||row.project)}</div><div class="dr-s">${esc(projectOwnerLabel(row))}${row.shared?'':' 的项目'}</div><div class="dr-s" data-project-parts>${usagePartsText(usage)}</div></div>${row.enforced===true&&row.limitBytes>0&&Number.isFinite(row.size)?`<div class="storage-bar dr-hide-m" aria-label="项目文件用量"><i data-fill="${Math.min(100,Math.max(0,row.size/row.limitBytes*100))}"></i></div>`:sizeCell(usage.total,largest)}<div class="dr-s" data-project-total>${usageText(usage.total)}</div><div class="dr-acts dr-acts-on">${admin?`<button type="button" class="jr-link" data-storage-limit="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}" data-desired-bytes="${esc(row.requestedLimitBytes??row.desiredLimitBytes??100_000_000_000)}">设上限</button>`:''}<button type="button" class="jr-link" data-storage-project="${esc(row.project)}" data-owner-id="${esc(row.ownerId)}">打开</button></div></div>`).join('');
 }
 export function ownerStorageRows(owners){
   if(!owners)return '<p class="storage-empty">未知：这台服务器还没有项目记账数据。</p>';
@@ -107,7 +108,7 @@ export function datasetsUI(store,toast){
             if(result.error){place.innerHTML='<p class="storage-empty">项目未知，请刷新重试。</p>';owners.innerHTML='<p class="storage-empty">按人汇总未知，请刷新重试。</p>';}
             else{
               owners.innerHTML=ownerStorageRows(ownerUsage(result.disks));fills(owners);
-              place.innerHTML=projectStorageRows(result.projects||[])||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
+              place.innerHTML=projectStorageRows(result.projects||[],{admin:store.principal?.role==='admin'})||(result.complete===false?'<p class="storage-empty">项目未知，请刷新重试。</p>':'<p class="storage-empty">还没有项目。</p>');
               if(result.complete===false)place.insertAdjacentHTML('beforeend','<p class="storage-empty">部分目录暂时读不到，列表可能不全。</p>');fills(place);
             }
           }
@@ -170,6 +171,7 @@ export function datasetsUI(store,toast){
           <div class="jr-actions"><button type="button" class="jr-btn ghost" data-sheet-close>取消</button><button type="submit" class="jr-btn primary">上传</button></div></form></div></dialog>
       <dialog class="pr-sheet dr-wide" id="dr-import-sheet" aria-label="导入"><div class="pr-sheet-in">${sheetHead('导入','从链接或云盘拿数据')}<div class="storage-import">${cloudImportHTML(store.users||store.data?.users||[])}</div></div></dialog>
       <dialog class="pr-sheet" id="dr-trash-sheet" aria-label="回收站"><div class="pr-sheet-in">${sheetHead('回收站','7 天内可恢复')}</div></dialog>`;
+    storageLimitUI(section,store,id=>loadCard(id,true),toast);
     trash=createTrashUI({call:(...args)=>store.call(...args),getContext:()=>({owner:store.principal?.userId,machine:machine(),enabled:!!store.principal&&!!machine(),isAdmin:store.principal?.role==='admin'}),changed:(row,result)=>{if(row.kind==='dataset'&&result.state==='RESTORED')showDataset(row.dataset||row.originalPath.split('/').pop());status(result.state==='RESTORED'?'已恢复，统计将在后台更新。':result.state==='PURGED'?'已彻底删除。':'结果未知，请按原编号查询：'+row.key);},toast});
     q('#dr-trash-sheet .pr-sheet-in').append(trash.element);trash.element.querySelector('summary').hidden=true;cloud ||= cloudImportUI(store,section,toast);
     q('[name=dataset-machine]').addEventListener('change',()=>{operationTurn++;busy=false;selected='';q('[data-dataset-files]').hidden=true;q('[data-dataset-file-list]').replaceChildren();status('');showMachine();controls();});

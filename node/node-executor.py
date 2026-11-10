@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """Authenticated node operations; all user commands execute in project OCI containers."""
-import base64,contextlib,fcntl,importlib.util,json,os,re,select,sqlite3,socket,subprocess,sys,time,uuid
+import base64,contextlib,errno,fcntl,importlib.util,json,os,re,select,sqlite3,socket,subprocess,sys,time,uuid
 from pathlib import Path
 from contextlib import closing
 sys.dont_write_bytecode=True
@@ -293,6 +293,13 @@ def terminal_op(operation,args):
 
 
 def process(operation,args):
+    try:return process_request(operation,args)
+    except OSError as error:
+        if error.errno not in (errno.EDQUOT,errno.ENOSPC):raise
+        path=Path(CONFIG['workspacesRoot'])/(args.get('ownerId') or args.get('userId') or '')/args['project'] if args.get('project') else None
+        raise ValueError(module('project-store').storage_error(CONFIG,error,path)) from None
+
+def process_request(operation,args):
     platform_root_check()
     if operation=='jobs.reconcile-resources':return job_operation('watch',args)
     if operation.startswith('projects.') or operation.startswith('files.') and args.get('project') and args.get('area')!='output':
