@@ -58,3 +58,28 @@ test('separate bundled CLI invocations reuse the build revision and a new releas
   await buildClient({root,outfile,revision:'release-b'});const next=await invoke();
   assert.equal(next,join(directory,`stargate-campus-${process.getuid?.()??'user'}`,'release-b','campus-http'));assert.notEqual(next,first);assert.equal(await readFile(next,'utf8'),'synthetic helper');
 });
+
+test('the standalone bundle packs every platform helper and help does not decompress them',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'native-packed-build-')),outfile=join(root,'build/gpuctl.mjs');
+ t.after(()=>rm(root,{recursive:true,force:true}));await mkdir(join(root,'build/campus-native'),{recursive:true});
+ const platforms=['linux-x64','linux-arm64','darwin-x64','darwin-arm64','windows-x64','windows-arm64'];
+ const originals=new Map(platforms.map((platform,index)=>[platform,Buffer.concat([Buffer.from(platform+'\0'),Buffer.alloc(256*1024,index+1)])]));
+ const artifacts=Object.fromEntries([...originals].map(([platform,bytes])=>[platform,{bytes:bytes.length,base64:bytes.toString('base64')}]));
+ await writeFile(join(root,'build/campus-native/embedded-artifacts.private.json'),JSON.stringify({version:'input',artifacts}));
+ await writeFile(join(root,'cli.mjs'),`import {extractCampusNative} from ${JSON.stringify(fileURLToPath(new URL('../client-campus-native.mjs',import.meta.url)))};
+ if(process.argv.includes('--help'))console.log('fixture help');else{
+  const [platform,arch]=process.argv[2].split('-'),directory=${JSON.stringify(join(root,'temporary'))}+'/'+process.argv[2];
+  const helper=await extractCampusNative(undefined,{directory,resolveRuntime:async()=>({platform,arch,interop:false}),prepareWindows:async()=>({folder:directory,arch})});
+  console.log(helper.path);await helper.cleanup();
+ }`);
+ await buildClient({root,outfile,revision:'packed-release'});
+ const bundle=await readFile(outfile);
+ assert.ok(bundle.length<[...originals.values()].reduce((sum,bytes)=>sum+bytes.length,0),'native payload should be compressed in the standalone build');
+ // Startup must not inflate any payload, including helpers for unused platforms.
+ const guard='data:text/javascript,'+encodeURIComponent(`import zlib from 'node:zlib';import {syncBuiltinESMExports} from 'node:module';zlib.gunzipSync=()=>{throw Error('help decompressed a native helper');};syncBuiltinESMExports();`);
+ const help=await promisify(execFile)(process.execPath,['--import',guard,outfile,'--help']);assert.equal(help.stdout,'fixture help\n');
+ for(const platform of platforms){
+  const {stdout}=await promisify(execFile)(process.execPath,[outfile,platform]);
+  assert.deepEqual(await readFile(stdout.trim()),originals.get(platform),platform+' bytes must be preserved');
+ }
+});
