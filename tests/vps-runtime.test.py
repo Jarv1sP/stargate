@@ -49,6 +49,29 @@ class RuntimeTests(unittest.TestCase):
         self.transport = self.bridge.transport
         self.collector = load('vps_collector', ROOT/'deploy/vps/collect-status.py')
 
+    def test_optional_private_ssh_config_is_used_by_transport_and_collector(self):
+        connection = self.transport.SSHConnections()
+        command = connection.command('nodeops@192.0.2.1', self.base/'control')
+        self.assertEqual(command[command.index('-F')+1], '/dev/null')
+        executor_config = str(self.base/'executor-jump.conf')
+        collector_config = str(self.base/'collector-jump.conf')
+        self.config['transport']['sshConfig'] = executor_config
+        self.config['collector']['sshConfig'] = collector_config
+        self.private.write_text(json.dumps(self.config))
+        transport = load('vps_jump_transport', ROOT/'deploy/vps/ssh-transport.py')
+        collector = load('vps_jump_collector', ROOT/'deploy/vps/collect-status.py')
+        connection = transport.SSHConnections()
+        command = connection.command('nodeops@192.0.2.1', self.base/'control')
+        self.assertEqual(command[command.index('-F')+1], executor_config)
+        self.assertIn('StrictHostKeyChecking=yes', command)
+        self.assertIn('ProxyCommand=/usr/bin/false', connection.rpc_command('nodeops@192.0.2.1', self.base/'control'))
+        reply = subprocess.CompletedProcess([], 0, json.dumps({'version':1,'gpus':[]}), '')
+        with patch.object(collector.subprocess, 'run', return_value=reply) as run:
+            self.assertTrue(collector.collect(('node-example', self.host))['reachable'])
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index('-F')+1], collector_config)
+        self.assertIn('StrictHostKeyChecking=yes', command)
+
     def serve(self, call):
         self.bridge.connection.call = call
         server = self.bridge.Server(str(self.base/'bridge.sock'), self.bridge.Handler)

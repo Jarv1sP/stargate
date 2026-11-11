@@ -13,13 +13,14 @@ SETTINGS = json.loads(Path(os.environ.get('STARGATE_VPS_CONFIG', '/etc/stargate/
 ROOT = Path(SETTINGS['credentialDirectory'])
 TARGET = Path(SETTINGS['target'])
 HOSTS = SETTINGS['hosts']
+SSH_CONFIG = SETTINGS.get('sshConfig', '/dev/null')
 
 
 def collect(item):
     name, host = item
     deadline = time.monotonic() + 25
     command = [
-            "/usr/bin/ssh", "-F", "/dev/null", "-T", "-i", str(ROOT / "id_ed25519"),
+            "/usr/bin/ssh", "-F", SSH_CONFIG, "-T", "-i", str(ROOT / "id_ed25519"),
             "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
             "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
             "-o", "ControlMaster=no", "-o", "ControlPath=none",
