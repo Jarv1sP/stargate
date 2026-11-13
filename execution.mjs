@@ -14,6 +14,7 @@ import {personalCardQuotaExempt} from './job-submission.mjs';
 import {assertMachineAccess} from './machine-access.mjs';
 import {gpuCardUsage as usage} from './dist/gpu-allocation.js';
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
+import {beginTransferUpload} from './transfers.mjs';
 
 export const TERMINAL=JOB_TERMINAL;
 const fail=(message,status=400,code)=>{throw Object.assign(Error(message),{status,...(code?{code}:{})});};
@@ -275,12 +276,9 @@ export async function executionCall(service,principal,operation,args,readContext
     if(args.totalSize!==undefined&&(!Number.isSafeInteger(args.totalSize)||args.totalSize<0))fail('文件大小无效。');
     if(args.offset!==undefined&&(!Number.isSafeInteger(args.offset)||args.offset<0))fail('文件偏移无效。');
     if(args.data!==undefined&&(typeof args.data!=='string'||args.data.length>1398104))fail('文件分块不能超过 1 MiB。');
-    if(args.transferId&&action==='begin'){
-      const record=service.db.prepare('SELECT data FROM directory_transfers WHERE id=?').get(args.transferId);
-      if(record){const parent=JSON.parse(record.data);if(parent.state==='CANCELED')fail('原传输已取消，请查询原编号。',409);parent.uploadKeys=[...new Set([...(parent.uploadKeys||[]),args.key])];service.db.prepare('UPDATE directory_transfers SET data=? WHERE id=?').run(JSON.stringify(parent),parent.id);}
-    }
     const {machine,...request}=args;
-    return bridge(machine,operation,{...request,userId:user.id,ownerId:args.ownerId??user.id,actor});
+    const send=()=>bridge(machine,operation,{...request,userId:user.id,ownerId:args.ownerId??user.id,actor});
+    return args.transferId&&action==='begin'?beginTransferUpload(service,args.transferId,args.key,send):send();
   }
   const jobById=(id,detail=true)=>{
     const reference=service.jobReference(id);if(!reference)fail('任务不存在。',404);
