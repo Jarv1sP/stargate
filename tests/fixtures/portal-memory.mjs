@@ -13,8 +13,20 @@ import {standaloneClientInfo} from '../../client-bundle.mjs';
 const [mode,directory]=process.argv.slice(2),root=resolve(directory);
 const database=join(root,'portal.sqlite'),bootstrap=join(root,'bootstrap.json');
 const checkedAt='2026-11-08T00:00:00.000Z';
+const historyCase=process.env.PORTAL_MEMORY_CASE==='history';
+const HISTORY_COUNT=12000,ACTIVE_COUNT=64,ROLLOUT_MARKER='11111111111111111111111111111111';
+function historyJob(index){
+  const id='00000000-0000-4000-8000-'+String(index+1).padStart(12,'0'),finished=index<HISTORY_COUNT;
+  const job={id,key:id,userId:'builtin-admin',ownerId:'builtin-admin',machine:MACHINES[index%MACHINES.length].id,
+    project:'fixture',name:'memory-'+index,cards:1,state:finished?'SUCCEEDED':'RUNNING',
+    createdAt:new Date(Date.now()-2*86400000).toISOString(),
+    ...(finished?{finishedAt:new Date(Date.now()-86400000).toISOString()}:{}),
+    spec:{id,userId:'builtin-admin',project:'fixture',cards:1,argv:['python','-c','pass # '+index]}};
+  job.spec.argv[2]+='x'.repeat(4096-Buffer.byteLength(JSON.stringify(job)));return job;
+}
 const mib=bytes=>Math.round(bytes/1024/1024*10)/10;
 export function storageFixture(index,part){
+  if(historyCase){const row={checkedAt,scannedAt:checkedAt,quota:{volumes:[],checkedAt},datasets:{datasets:[],complete:true,checkedAt},projects:{projects:[],disks:[],complete:true,checkedAt}};return part?row[part]:row;}
   if(part==='quota')return {volumes:[{kind:'shared',usedBytes:1e12,availableBytes:2e12,totalBytes:3e12}],checkedAt};
   if(part==='datasets')return {datasets:Array.from({length:2000},(_,i)=>({dataset:'dataset-'+i,uploadedBy:'builtin-admin',size:i*4096,complete:true,modifiedAt:checkedAt})),complete:true,checkedAt};
   const projects=Array.from({length:1000},(_,i)=>({ownerId:'builtin-admin',project:'project-'+i,size:i*4096,complete:true,
@@ -37,11 +49,14 @@ if(mode==='seed'){
     ['admin',{salt,hash:pbkdf2Sync('Synthetic-Memory-Fixture-Only!',salt,600000,32,'sha256'),iterations:600000}]
   ])});accounts.close();
   const storage=Object.fromEntries(MACHINES.map(({id},i)=>[id,storageFixture(i)]));
-  const data=JSON.stringify({schema:2,users:[{id:'builtin-admin',limits:{},total:0}],jobs:[],sequence:0,storage});
+  const jobs=historyCase?Array.from({length:HISTORY_COUNT+ACTIVE_COUNT},(_,i)=>historyJob(i)):[];
+  const data=JSON.stringify({schema:2,users:[{id:'builtin-admin',limits:{},total:0}],jobs,sequence:jobs.length,storage});
   const db=new DatabaseSync(database);
   db.exec('CREATE TABLE portal_state_v2(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL)');
   db.prepare('INSERT INTO portal_state_v2 VALUES(1,?)').run(data);db.close();
-  await writeFile(join(root,'fixture.json'),JSON.stringify({stateBytes:Buffer.byteLength(data),machines:MACHINES.length}));
+  await writeFile(join(root,'fixture.json'),JSON.stringify({stateBytes:Buffer.byteLength(data),machines:MACHINES.length,
+    historyJobs:historyCase?HISTORY_COUNT:0,activeJobs:historyCase?ACTIVE_COUNT:0,firstJob:jobs[0]?.id}));
+  if(historyCase){await mkdir(join(root,'portal-rollout'));await writeFile(join(root,'portal-rollout/active'),ROLLOUT_MARKER);}
 }else if(mode==='measure'||mode==='profile'){
   const {createPortalServer}=await import('../../portal-server.mjs');
   const measurements=[];
@@ -75,12 +90,18 @@ if(mode==='seed'){
     for(let i=0;i<2;i++){
       for(const {id} of MACHINES)service.scheduleStorageRefresh(id,0);
       await service.refreshStorage();sample('refresh-'+i);
-      const bytes=await drain('/api/call',{operation:'storage.snapshot',args:{}});assert.ok(bytes>35e6);sample('storage-page-'+i);
+      const bytes=await drain('/api/call',{operation:'storage.snapshot',args:{}});assert.ok(bytes>(historyCase?100:35e6));sample('storage-page-'+i);
+      if(historyCase){await drain('/api/call',{operation:'state',args:{}});sample('job-history-'+i);}
       assert.ok(await drain('/')>1000);sample('html-'+i);
       assert.equal(await drain('/gpuctl.mjs'),(await standaloneClientInfo(origin)).bytes);sample('cli-download-'+i);
     }
     await new Promise(resolveIdle=>setTimeout(resolveIdle,250));sample('settled');
     const fixture=JSON.parse(await readFile(join(root,'fixture.json'),'utf8'));
+    if(historyCase){
+      assert.equal(service.store.jobs.length,fixture.activeJobs,'only live work remains resident');
+      assert.equal(service.db.prepare('SELECT count(*) n FROM portal_jobs WHERE data IS NOT NULL').get().n,fixture.historyJobs+fixture.activeJobs,'history retained');
+      assert.equal(service.state({userId:'builtin-admin',username:'admin',role:'admin'}).jobsTotal,fixture.historyJobs+fixture.activeJobs);
+    }
     const report={...fixture,phase:process.env.PORTAL_MEMORY_PHASE||'single',node:process.version,platform:process.platform,measurements,peakMiB:mib(process.resourceUsage().maxRSS*1024)};
     console.log('PORTAL_MEMORY '+JSON.stringify(report));
     await writeFile(join(root,'memory-report.json'),JSON.stringify(report,null,2)+'\n');
@@ -89,4 +110,34 @@ if(mode==='seed'){
       if(report.phase==='steady')assert.ok(measurements[0].rssMiB<=200,`Portal idle RSS ${measurements[0].rssMiB} MiB exceeds 200 MiB`);
     }
   }finally{server.closeAllConnections();await new Promise(resolveClose=>server.close(resolveClose));}
-}else throw Error('Expected seed, measure or profile');
+}else if(mode==='rollout-client'){
+  // Separate cgroup: Portal's limit includes its supervisor and worker, not
+  // this HTTP client or fixture generation.
+  const origin='http://127.0.0.1:8080',fixture=JSON.parse(await readFile(join(root,'fixture.json'),'utf8'));
+  const deadline=Date.now()+20000;
+  for(;;){
+    try{const response=await fetch(origin+'/healthz',{signal:AbortSignal.timeout(1000)});if(response.ok&&(await response.json()).phase==='active')break;}catch{}
+    if(Date.now()>=deadline)throw Error('Rollout Portal did not become active');
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  let token;
+  const post=async(path,data)=>{
+    const response=await fetch(origin+path,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{})},
+      body:JSON.stringify({...data,client:{name:'gpuctl',protocol:2}}),signal:AbortSignal.timeout(15000)});
+    assert.equal(response.status,200);return response.json();
+  };
+  token=(await post('/api/login',{username:'admin',password:'Synthetic-Memory-Fixture-Only!'})).token;
+  const call=(operation,args={})=>post('/api/call',{operation,args});
+  for(let i=0;i<3;i++){
+    await call('profile.update',{name:'fixture-'+i});
+    const {state}=await call('state');assert.equal(state.jobsTotal,fixture.historyJobs+fixture.activeJobs);
+    assert.ok(state.jobs.length<state.jobsTotal);
+  }
+  const keyed=await call('state',{jobKey:fixture.firstJob});assert.equal(keyed.state.jobs[0].id,fixture.firstJob);
+  assert.equal((await call('jobs.history.list')).result.jobs.length,0,'recent history was not removed to pass the budget');
+  for(const path of ['/guide/results','/gpuctl.mjs']){
+    const response=await fetch(origin+path);assert.equal(response.status,200);let bytes=0;
+    for await(const chunk of response.body)bytes+=chunk.length;assert.ok(bytes>1000);
+  }
+  console.log('PORTAL_ROLLOUT_CLIENT '+JSON.stringify({phase:process.env.PORTAL_MEMORY_PHASE,node:process.version,historyJobs:fixture.historyJobs,activeJobs:fixture.activeJobs,passed:true}));
+}else throw Error('Expected seed, measure, profile or rollout-client');

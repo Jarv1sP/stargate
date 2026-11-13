@@ -64,7 +64,7 @@ export function installMaintenance(service){
     // dispatch. Client-supplied role/hostAdmin alone never grants an exemption.
     if(READ_OR_STOP.has(operation)||operation==='terminal.exchange'&&(args.input===undefined||args.input===''))return;
     const machines=[args.machine,args.from,args.sourceMachine,args.targetMachine,args.source?.machine,args.job?.machine].filter(id=>typeof id==='string');
-    if(args.jobId){const job=service.store.jobs.find(job=>job.id===args.jobId);if(job)machines.push(job.machine);}
+    if(args.jobId){const job=service.jobReference(args.jobId);if(job)machines.push(job.machine);}
     const value=maintenanceState(service);
     if(value.global)throw maintenanceError(null,value.global);
     for(const machine of machines)if(value.machines[machine]){

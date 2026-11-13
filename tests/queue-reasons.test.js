@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {memoryJobAccess} from './fixtures/job-access.mjs';
 import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -20,7 +21,7 @@ function fixture(){
   const service={store:{jobs:[job],get:id=>{assert.equal(id,user.id);return user;}},
     gpuq:{stale:false,checkedAt:new Date(now).toISOString(),hosts:[host]},maintenanceFor:()=>null,
     bridge:()=>assert.fail('reason projection must not call a node'),save:()=>assert.fail('reason projection must not write')};
-  return {service,job,user,host,reason:()=>pendingJobReason(service,job,now)};
+  memoryJobAccess(service);return {service,job,user,host,reason:()=>pendingJobReason(service,job,now)};
 }
 const allCards=()=>Array.from({length:MACHINES[0].cards},(_,i)=>i);
 function fill(f){f.host.gpuq.jobs=[{id:'native-running',state:'RUNNING',assigned_gpu_indices:allCards()}];}
@@ -126,7 +127,7 @@ test('jobs and watch API projections agree without persisting the inferred queue
   const admin=await service.login('admin',password),member=(await service.invoke(admin.token,'users.create',{username:'queue-member',password})).result;
   await service.invoke(admin.token,'policy.save',{userId:member.id,policyVersion:0,total:2,limits:{[machine]:2}});
   const login=await service.login(member.username,password),job={...target(),userId:member.id,nodeJobId:'native-pending'};
-  service.store.jobs.push(job);
+  service.store.jobs.push(job);service.save(job);
   const principal={userId:member.id,username:member.username,role:'member'};
   const list=service.state(principal).jobs.find(row=>row.id===job.id);
   const watch=await executionCall(service,principal,'jobs.watch',{jobId:job.id});

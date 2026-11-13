@@ -38,6 +38,10 @@ export class DemoService{
   revokeSession(token){this.sessions.delete(token);}
   principal(token){const session=this.sessions.get(token);if(!session||session.expires<Date.now()){this.revokeSession(token);const e=Error('请先登录，或重新登录。');e.status=401;throw e;}return session;}
   state(principal){const state=this.store.snapshot();return state;}
+  job(id){return this.store.jobs.find(job=>job.id===id);}
+  jobReference(id){return this.job(id);}
+  jobByKey(key){return this.store.jobs.find(job=>job.key===key);}
+  jobByNative(machine,id){return this.store.jobs.find(job=>job.machine===machine&&job.nodeJobId===id);}
   invalidate(username){for(const [token,session] of this.sessions)if(session.username===username)this.sessions.delete(token);}
   async invoke(token,operation,args={}){
     if(!args||typeof args!=='object'||Array.isArray(args))throw Error('参数格式错误。');

@@ -90,7 +90,7 @@ function installNotificationStore(service,config,{clock,timer}){
   service.configureJobNotification=(principal,args)=>{
     args=selectFields(args,['jobId','enabled']);
     if(Object.hasOwn(args,'enabled')&&typeof args.enabled!=='boolean')fail('通知参数无效。');
-    const user=service.store.get(principal.userId),job=service.store.jobs.find(j=>j.id===args.jobId);
+    const user=service.store.get(principal.userId),job=service.job(args.jobId);
     if(!user.enabled)fail('请重新登录。',403);
     if(!job)fail('任务不存在。',404);
     if(job.machine)assertMachineAccess(user,job.machine,MACHINES);
@@ -109,7 +109,7 @@ function installNotificationStore(service,config,{clock,timer}){
     const now=clock();
     db.prepare('DELETE FROM job_notification_outbox_v2 WHERE created_at<?').run(now-RETENTION);
     for(const sub of db.prepare('SELECT * FROM job_notification_subscriptions_v2').all()){
-      const job=service.store.jobs.find(j=>j.id===sub.job_id),user=service.store.users.find(u=>u.id===sub.user_id);
+      const job=service.job(sub.job_id),user=service.store.users.find(u=>u.id===sub.user_id);
       if(!job||!user?.enabled||!visibleTo(user,job)||!config?.chatByUserId?.[sub.user_id]||!sub.enabled){
         db.prepare("DELETE FROM job_notification_outbox_v2 WHERE job_id=? AND state IN ('QUEUED','SENDING')").run(sub.job_id);
         if(!job||!user)db.prepare('DELETE FROM job_notification_subscriptions_v2 WHERE job_id=?').run(sub.job_id);
@@ -149,7 +149,7 @@ function installNotificationStore(service,config,{clock,timer}){
           if(service.closing||service.globalMaintenanceActive?.())return null;
           const candidate=db.prepare("SELECT * FROM job_notification_outbox_v2 WHERE state='QUEUED' AND next_at<=? ORDER BY id LIMIT 1").get(clock());
           if(candidate){
-            const user=service.store.users.find(u=>u.id===candidate.user_id),job=service.store.jobs.find(j=>j.id===candidate.job_id);
+            const user=service.store.users.find(u=>u.id===candidate.user_id),job=service.job(candidate.job_id);
             const subscription=db.prepare('SELECT enabled,generation FROM job_notification_subscriptions_v2 WHERE job_id=? AND user_id=?').get(candidate.job_id,candidate.user_id);
             if(!user?.enabled||!job||!visibleTo(user,job)||subscription?.enabled!==1||subscription.generation!==candidate.generation||!config.chatByUserId[candidate.user_id]){
               db.prepare('DELETE FROM job_notification_outbox_v2 WHERE id=?').run(candidate.id);return {discarded:true};
@@ -163,7 +163,7 @@ function installNotificationStore(service,config,{clock,timer}){
         });
         if(!row)break;
         if(row.discarded)continue;
-        const user=service.store.users.find(user=>user.id===row.user_id),job=service.store.jobs.find(job=>job.id===row.job_id);
+        const user=service.store.users.find(user=>user.id===row.user_id),job=service.job(row.job_id);
         if(!user?.enabled||!job||!visibleTo(user,job)){
           await service.enqueue(()=>db.prepare('DELETE FROM job_notification_outbox_v2 WHERE id=?').run(row.id));continue;
         }

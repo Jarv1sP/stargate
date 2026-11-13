@@ -70,7 +70,7 @@ async function fixture(t){
   service.store.jobs=MACHINES.slice(0,2).map((machine,index)=>({id:'job-'+index,key:'key-'+index,userId:'builtin-admin',
     machine:machine.id,cards:1,name:'private-task-'+index,state:'RUNNING',nodeJobId:'J0123456789ab',
     spec:{id:'job-'+index,userId:'builtin-admin',project:'fixture',argv:['private-command']}}));
-  t.after(async()=>{service.close();await rm(dir,{recursive:true,force:true});});
+  service.save();t.after(async()=>{service.close();await rm(dir,{recursive:true,force:true});});
   return {service,token,identity,user,calls};
 }
 

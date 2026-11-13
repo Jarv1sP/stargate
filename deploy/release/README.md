@@ -33,7 +33,7 @@ VPS 的 `deployed-sha` 仅记录最近一次成功发布的提交，供运维查
 
 entry 只接受一个完整提交参数，接收并解包 stdin，执行 docker load，
 再运行随流带来的发布脚本。入口用文件锁串行处理；不执行调用者的 shell 命令。
-只上线 main 由 Actions 的 workflow_run 条件和 production 的 main 分支规则保证。
+自动上线 main 由 workflow_run 条件和 production 的 main 分支规则保证。手动入口同样要求 main 提交，并核对该提交的 main CI 和 gray 均已成功；操作见维护手册。
 Actions 根据最近成功的发布记录计算节点改动；首次使用 DEPLOY_INITIAL_SHA。
 发布记录使用实际检出的提交，避免 workflow_run 的默认分支指针前进后记错版本。
 文件差异由 `scope.py` 分别选择门户和节点：只有文档、测试或 Markdown 改动时，
@@ -56,6 +56,7 @@ CLI 打包约需 350MB，和运行中的门户放不进同一个 512MiB 容器�
 发布失败后清理本次已停止的候选；不删除正在运行的门户。
 512MiB、200MiB 和持续 swap 上涨底线保留，同一时间只有一个 Portal 容器运行。
 新门户启动或健康失败时停止新版、恢复原容器和入口，job 失败；成功才更新 deployed-sha。
+首次将整块任务历史迁移为逐条存储时，停旧后先用 SQLite 备份接口生成本次私有 `portal-before-job-history.sqlite`，再启动候选；若切换失败，先恢复旧数据库结构和数据，再启动旧门户。备份不含任何节点文件迁移，后续已采用逐条存储时不重复生成。成功上线后的数据回退需要单独安排，不能覆盖上线后新写入的任务。
 日志只报告发布提交、结果、耗时、请求分类计数和最低可用内存，不打印容器环境或凭据。
 
 每次发布成功后，只保留最近两个已停止的 `amax-console-previous-*`，清除更旧的

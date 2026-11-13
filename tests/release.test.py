@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tarfile
 import subprocess
@@ -73,6 +74,59 @@ class Containers:
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
+
+    def history_backend(self, state):
+        data=self.root/'data';data.mkdir()
+        database=data/'portal.sqlite'
+        with sqlite3.connect(database) as db:
+            db.execute('PRAGMA journal_mode=WAL')
+            db.execute('CREATE TABLE portal_state_v2(id INTEGER PRIMARY KEY,data TEXT NOT NULL)')
+            db.execute('INSERT INTO portal_state_v2 VALUES(1,?)',(json.dumps(state),))
+        database.chmod(0o600)
+        (self.root/'manifest.json').write_text('{}')
+        backend=docker_backend.DockerBackend(self.root,Mock())
+        backend.old={'Mounts':[{'Source':str(data),'Destination':'/data'}],'Config':{'Env':[]}}
+        backend.budget=Mock()
+        return backend,database
+
+    def test_history_migration_backup_restores_old_schema_and_data_before_old_owner_restarts(self):
+        state={'schema':2,'users':[],'jobs':[{'id':'fixture','key':'original-key','spec':{'argv':['train']}}]}
+        backend,database=self.history_backend(state);backend.backup_job_history({})
+        backup=backend.database_snapshot[1];self.assertEqual(backup.stat().st_mode&0o777,0o600)
+        with sqlite3.connect(database) as db:
+            db.execute('CREATE TABLE portal_jobs(id TEXT,data TEXT)')
+            db.execute("UPDATE portal_state_v2 SET data='{}'")
+        backend.restore_job_history()
+        with sqlite3.connect(database) as db:
+            self.assertEqual(json.loads(db.execute('SELECT data FROM portal_state_v2').fetchone()[0]),state)
+            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='portal_jobs'").fetchone())
+        self.assertEqual(database.stat().st_mode&0o777,0o600)
+
+    def test_normalized_history_does_not_create_a_backup_on_every_release(self):
+        backend,_=self.history_backend({'schema':3,'users':[],'sequence':0});backend.backup_job_history({})
+        self.assertIsNone(backend.database_snapshot)
+        self.assertFalse((self.root/'portal-before-job-history.sqlite').exists())
+
+    def test_migration_backup_and_restore_run_before_the_next_database_owner_starts(self):
+        backend,database=self.history_backend({'schema':2,'jobs':[]});data=database.parent
+        backend.old.update(Id='previous');backend.old['Config']['Cmd']=['node','portal-rollout.mjs','http://unused.invalid','a'*32]
+        (data/'portal-rollout').mkdir();(data/'portal-rollout/active').write_text('b'*32)
+        backend.new='candidate';backend.running_portals=Mock(return_value=[]);backend.control=Mock(return_value={})
+        events=[];backend.command=Mock(side_effect=lambda args:events.append(args[1]))
+        backend.backup_job_history=Mock(side_effect=lambda hold:events.append('backup'))
+        backend.start('candidate',{})
+        self.assertLess(events.index('backup'),events.index('start'))
+        events.clear();backend.inspect=Mock(side_effect=lambda identity:{'Name':'/amax-console' if identity=='candidate' else '/previous'})
+        backend.restore_job_history=Mock(side_effect=lambda:events.append('restore-database'))
+        backend.restore_old()
+        self.assertLess(events.index('restore-database'),events.index('start'))
+
+    def test_interrupted_history_backup_preserves_source_and_does_not_leave_partial_recovery_data(self):
+        state={'schema':2,'jobs':[{'id':'fixture'}]};backend,database=self.history_backend(state)
+        backend.budget.side_effect=RuntimeError('handoff expired')
+        with self.assertRaisesRegex(RuntimeError,'handoff expired'):backend.backup_job_history({})
+        self.assertIsNone(backend.database_snapshot);self.assertFalse((self.root/'portal-before-job-history.sqlite').exists())
+        with sqlite3.connect(database) as db:self.assertEqual(json.loads(db.execute('SELECT data FROM portal_state_v2').fetchone()[0]),state)
 
     def test_documentation_and_tests_skip_deployment(self):
         self.assertEqual(scope.release_scope(['docs/FEATURES.md', 'README.md', 'tests/release.test.py',

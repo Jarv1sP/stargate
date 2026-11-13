@@ -15,10 +15,10 @@ export const submissionDelay=attempt=>Math.min(60000,15000*2**Math.min(2,attempt
 
 export async function firstDispatch(service,job,{usage,RANKS,fail}){
   if(job.after?.length){
-    const dependencies=job.after.map(item=>service.store.jobs.find(row=>row.id===item.id));
+    const dependencies=job.after.map(item=>service.jobReference(item.id));
     const failed=dependencies.find(row=>row&&(['FAILED','CANCELED'].includes(row.state)||row.schedulerState==='LOST'));
     if(failed){
-      await service.enqueue(()=>{job.state='CANCELED';job.error=`依赖作业 ${failed.name} 失败/已取消，未运行`;job.queueReason=null;job.notSubmitted=true;job.dispatchPending=false;job.finishedAt=new Date().toISOString();service.save();});
+      await service.enqueue(()=>{job.state='CANCELED';job.error=`依赖作业 ${failed.name} 失败/已取消，未运行`;job.queueReason=null;job.notSubmitted=true;job.dispatchPending=false;job.finishedAt=new Date().toISOString();service.save(job);});
       return null;
     }
     if(dependencies.some(row=>!row?.nodeJobId))return null;
@@ -33,14 +33,14 @@ export async function firstDispatch(service,job,{usage,RANKS,fail}){
     await service.enqueue(()=>{
       job.projectPreparation={id:job.id,state:result.state,...(result.error?{error:result.error}:{})};
       job.error=['FAILED','PAUSED'].includes(result.state)?`项目复制已暂停：${result.error||'传输中断'}。续传：gpuctl transfer resume ${job.id}`:null;
-      service.save();
+      service.save(job);
     });
     if(result.state!=='SUCCEEDED')return null;
-    if(result.installed)await service.enqueue(()=>{delete job.spec.projectCopy;service.save();});
+    if(result.installed)await service.enqueue(()=>{delete job.spec.projectCopy;service.save(job);});
   }
   // Node writers retain the live disk guard. Do not repeat remote reads before dispatch.
   return service.enqueue(()=>{
-    const current=service.store.jobs.find(j=>j.id===job.id);
+    const current=service.job(job.id);
     if(!current||service.closing||current.state!=='SUBMITTING'||current.cancelRequested||service.maintenanceFor?.(current.machine))return null;
     current.queueReason=null;
     const user=service.store.get(current.userId),capacity=MACHINES.find(m=>m.id===current.machine)?.cards||0;
@@ -51,11 +51,11 @@ export async function firstDispatch(service,job,{usage,RANKS,fail}){
     if(!personalCardQuotaExempt(user)){
       const local=usage(service.store.jobs,user.id,current.machine,current),total=usage(service.store.jobs,user.id,undefined,current);
       if(local>user.limits[current.machine]||total>user.total){
-        current.error=null;service.save();return null;
+        current.error=null;service.save(current);return null;
       }
     }
     current.dispatchPending=false;current.dispatchStartedAt=new Date().toISOString();delete current.dispatchFinishedAt;
-    try{service.save();}catch(error){current.dispatchPending=true;throw error;}
+    try{service.save(current);}catch(error){current.dispatchPending=true;throw error;}
     // Begin the attempt in the same serialized turn as admission, but return a
     // wrapped promise so slow remote I/O never holds the mutation queue. Persist
     // before sending: a lost reply or restart cannot reinterpret an attempt as
@@ -70,13 +70,13 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
   const rejectSubmission=(message,status)=>fail(message,status,status>=500?'TRAINING_ADMISSION_BUSY':'SUBMISSION_REJECTED');
   const request=normalizeJobSubmission(args,principal);
   const {project,explicit,minVramGiB:min}=request;
-  const previous=service.store.jobs.find(j=>j.key===request.key);
+  const previous=service.jobByKey(request.key);
   if(previous){
     authorizedMachine(previous.machine);
     return jobView(previous);
   }
   if(request.after?.length){
-    const dependencies=request.after.map(id=>service.store.jobs.find(job=>job.id===id));
+    const dependencies=request.after.map(id=>service.jobReference(id));
     if(dependencies.some(job=>!job))rejectSubmission('依赖作业不存在，请使用 gpuctl jobs 中的完整作业编号。',404);
     const machine=dependencies[0].machine;
     if(dependencies.some(job=>job.machine!==machine))rejectSubmission('依赖作业必须都在同一台服务器上。',400);
@@ -118,7 +118,7 @@ export async function submitTask(service,principal,user,args,{fail,authorizedMac
   if(service.maintenanceFor?.(request.machine))rejectSubmission('机器维护状态已改变；未提交训练。',409);
   const job=createSubmittedJob(request,user,prioritySupported),{id}=job;
   service.db.exec('BEGIN IMMEDIATE');
-  try{service.store.jobs.push(job);service.save();service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
+  try{service.store.jobs.push(job);service.save(job);service.audit(principal.username,operation,id,'reserved');service.db.exec('COMMIT');}
   catch(e){service.db.exec('ROLLBACK');service.store.jobs=service.store.jobs.filter(j=>j.id!==id);throw e;}
   setImmediate(()=>service.reconcile().catch(()=>{}));return jobView(job);
 }

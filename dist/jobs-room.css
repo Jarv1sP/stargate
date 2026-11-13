@@ -182,3 +182,12 @@
 .sb .jr-tl .jr-catch{display:block;width:30px;height:30px}
 .sb .jr-more{display:block;width:100%;min-height:52px;background:none;border:0;border-bottom:1px solid var(--line-2);color:var(--ink-3);font:inherit;font-size:13px;cursor:pointer;transition:color .2s,background .25s}
 .sb .jr-more:hover{color:#F2F2EF;background:var(--bg-1)}
+.job-history-dialog{max-width:min(760px,calc(100vw - 20px))}
+.job-history-dialog .modal-head,.job-history-dialog .modal-head>div{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.job-history-dialog .modal-head{justify-content:space-between}
+.job-history-dialog [data-history-list]{max-height:60vh;overflow:auto}
+.job-history-dialog [data-history-error]{color:var(--danger,#b34b45);overflow-wrap:anywhere}
+.job-history-row{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.job-history-row>div{min-width:0;flex:1;overflow-wrap:anywhere}
+.job-history-row strong,.job-history-row small{display:block}
+.job-history-row button{flex:none}

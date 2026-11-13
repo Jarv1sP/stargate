@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {memoryJobAccess} from './fixtures/job-access.mjs';
 import assert from 'node:assert/strict';
 import {executionCall,schedulerResult} from '../execution.mjs';
 import {gpuCardUsage as usage} from '../dist/gpu-allocation.js';
@@ -9,7 +10,7 @@ function fixture(state='FAILED'){
  const user={id:'alice',enabled:true,limits:{[machine]:1},total:0},job={id,key:id,userId:'other-member',machine,nodeJobId,state,cards:1,spec:{id,project:'test'},assignedIndices:[],latestAttempt:null};
  const result={nodeJobId,state:'SUCCEEDED',assignedIndices:[],latestAttempt:{id:'Afinished',ordinal:2,state:'EXITED_SUCCESS',exit_code:0,started_at:10,finished_at:15}},calls=[];
  const service={store:{get:()=>user,jobs:[job]},save(){calls.push(['save']);},audit(){},bridge:async(...args)=>{calls.push(args);return result;}};
- return {user,job,result,calls,service,principal:{userId:user.id,role:'member'}};
+ return {user,job,result,calls,service:memoryJobAccess(service),principal:{userId:user.id,role:'member'}};
 }
 for(const state of ['SUCCEEDED','FAILED','CANCELED'])test('completion reads actual native '+state+' and preserves terminal history',async()=>{
  const f=fixture(),before=structuredClone(f.job);f.result.state=state;const value=await executionCall(f.service,f.principal,'jobs.completion',{jobId:id,ignored:true});

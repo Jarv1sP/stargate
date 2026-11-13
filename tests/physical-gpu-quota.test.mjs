@@ -87,9 +87,10 @@ test('quota two admits ten submissions but dispatches only two node-queued jobs 
   for(const job of active)f.states.set(job.id,'SUCCEEDED');
   await f.settle();await f.settle();
  }
- assert.equal(rows().filter(job=>job.state==='SUCCEEDED').length,10);assert.equal(usage(rows(),f.member.id),0);
+ assert.equal(submitted.filter(job=>f.service.job(job.id).state==='SUCCEEDED').length,10);assert.equal(usage(rows(),f.member.id),0);
+ assert.equal(rows().length,0,'completed history is no longer resident in the quota ledger');
  assert.equal(new Set(f.calls.filter(call=>call.operation==='sync').map(call=>call.args.job.id)).size,10);
- for(const [index,job] of submitted.entries())assert.equal(rows().find(row=>row.id===job.id).key,requests[index].key);
+ for(const [index,job] of submitted.entries())assert.equal(f.service.job(job.id).key,requests[index].key);
 });
 
 test('node-queued fixed shared jobs reuse one card before assignments are reported',async t=>{
@@ -152,7 +153,7 @@ test('quota decreases leave running work alone and derive waiting reasons withou
  const jobs=f.service.store.jobs,row=jobs.find(job=>job.id===waiting.id);
  assert.equal(jobs.filter(job=>job.state==='RUNNING').length,2);assert.equal(usage(jobs,f.member.id),2);
  assert.equal(pendingJobReason(f.service,row),'已占用 2/1 张卡');assert.equal(row.queueReason,null);
- const persisted=JSON.parse(f.service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data);
- assert.equal(persisted.jobs.find(job=>job.id===waiting.id).queueReason,null);
+ const persisted=JSON.parse(f.service.db.prepare('SELECT data FROM portal_jobs WHERE id=?').get(waiting.id).data);
+ assert.equal(persisted.queueReason,null);
  assert.equal((await f.service.invoke(f.actor.token,'state')).state.jobs.find(job=>job.id===waiting.id).queueReason,'已占用 2/1 张卡');
 });
