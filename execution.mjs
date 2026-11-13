@@ -12,7 +12,7 @@ import {maintainTaskNotes} from './community.mjs';
 import {projectCall,projectReference,validateProjectFile,UUID} from './projects.mjs';
 import {personalCardQuotaExempt} from './job-submission.mjs';
 import {assertMachineAccess} from './machine-access.mjs';
-import {gpuCardUsage as usage} from './dist/gpu-allocation.js';
+import {gpuCardUsage as usage,drainingResources} from './dist/gpu-allocation.js';
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 
 export const TERMINAL=JOB_TERMINAL;
@@ -56,14 +56,27 @@ function persistSchedulerResult(service,job,result){
     Object.assign(job,before);throw error;
   }
 }
+function observeTerminalResources(service,job,result){
+  // Keep the historical outcome/attempt intact. Only a terminal node report
+  // with a finished attempt can release the still-draining quota reservation.
+  if(service.closing||!TERMINAL.has(job.state)||!drainingResources(job)||!TERMINAL.has(result?.state)||
+    result.latestAttempt?.state==='DRAINING'||!Number.isFinite(result.latestAttempt?.finished_at))return;
+  job.resourcesReleased=true;
+  try{service.save(job);}catch(error){delete job.resourcesReleased;throw error;}
+}
 export function installExecution(service,bridge){
   service.bridge=bridge;service.executionEnabled=!!bridge;service.reconciling=false;
   let cycle=null;
   const kind=job=>job.cancelRequested&&!TERMINAL.has(job.state)?'cancel':job.state==='SUBMITTING'&&job.dispatchPending===true?'first':'observe';
-  const eligible=(job,maintained)=>!TERMINAL.has(job.state)&&(!maintained||job.cancelRequested)&&(job.cancelRequested||job.state!=='SUBMITTING'||job.dispatchPending===true||!(Date.parse(job.submissionReconciliation?.nextCheckAt)>Date.now()));
+  const eligible=(job,maintained)=>(!TERMINAL.has(job.state)||drainingResources(job))&&(!maintained||kind(job)==='cancel')&&(job.cancelRequested||job.state!=='SUBMITTING'||job.dispatchPending===true||!(Date.parse(job.submissionReconciliation?.nextCheckAt)>Date.now()));
   const step=async job=>{
     let dispatched=false;
     try{
+      if(TERMINAL.has(job.state)){
+        const result=await service.bridge(job.machine,'watch',{job:nativeJobSpec(job)});
+        await service.enqueue(()=>{const current=service.job(job.id);if(current&&!service.closing)observeTerminalResources(service,current,result);});
+        return;
+      }
       if(job.cancelRequested&&job.dispatchPending===true&&job.spec.projectCopy){
         await service.bridge(job.machine,'transfers.cancel',{id:job.id,userId:job.userId});
         try{await service.bridge(job.sourceMachine,'transfers.project.complete',{id:job.id,userId:job.userId});}
@@ -191,7 +204,7 @@ export function pendingJobReason(service,job,now=Date.now()){
     // Low utilization and an empty CUDA process list do not release that lease.
     for(const row of jobs){
       const checked=Date.parse(row.schedulerCheckedAt),elapsed=now-checked;
-      if(row.machine===job.machine&&row.latestAttempt?.state==='DRAINING'&&row.latestAttempt.finishedAt==null&&
+      if(row.machine===job.machine&&drainingResources(row)&&
         Number.isFinite(elapsed)&&elapsed>=-30000&&elapsed<=180000){
         add(row.assignedIndices);add(row.assignedIndices,draining);
       }
@@ -397,7 +410,8 @@ export async function executionCall(service,principal,operation,args,readContext
   if(operation==='jobs.reconcile-resources'){
     const job=jobById(args.jobId);
     service.audit(principal.username,operation,job.id,'requested');
-    return service.bridge(job.machine,operation,{job:nativeJobSpec(job),actor:{userId:principal.userId,isAdmin:principal.role==='admin'}});
+    const result=await service.bridge(job.machine,operation,{job:nativeJobSpec(job),actor:{userId:principal.userId,isAdmin:principal.role==='admin'}});
+    observeTerminalResources(service,job,result);return result;
   }
   if(operation==='jobs.completion'){
     args=selectFields(args,['jobId']);
@@ -407,6 +421,7 @@ export async function executionCall(service,principal,operation,args,readContext
       try{result=await observeJob(job,'watch',{job:nativeJobSpec(job)});}catch(error){if([401,403].includes(error.status))throw error;}
     readContext?.check?.();
     const completion=jobCompletion(job,result);
+    observeTerminalResources(service,job,result);
     if(!TERMINAL.has(job.state)&&result?.nodeJobId&&(completion.completed||
       ['PENDING','STARTING','RUNNING','PREEMPTING'].includes(result.state)))persistSchedulerResult(service,job,result);
     return completion.state==='PENDING'?{...completion,queueReason:pendingJobReason(service,job)}:completion;
@@ -421,7 +436,8 @@ export async function executionCall(service,principal,operation,args,readContext
       if(!job.nodeJobId)return {...original,nativeObservation:unavailableObservation()};
       try{
         const result=await observeJob(job,'watch',{job:nativeJobSpec(job)});
-        return {...original,nativeObservation:terminalNativeObservation(job,result)};
+        observeTerminalResources(service,job,result);
+        return {...jobView(job),nativeObservation:terminalNativeObservation(job,result)};
       }catch(error){if([401,403].includes(error.status))throw error;return {...original,nativeObservation:unavailableObservation()};}
     }
     authorizedMachine(job.machine);
