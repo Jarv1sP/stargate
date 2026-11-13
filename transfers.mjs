@@ -11,6 +11,25 @@ export function installTransfers(service){
 }
 const load=(service,id)=>{const row=service.db.prepare('SELECT data FROM directory_transfers WHERE id=?').get(id);return row&&JSON.parse(row.data);};
 const save=(service,row)=>service.db.prepare('INSERT INTO directory_transfers VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(row.id,JSON.stringify(row));
+function trackTransferWrite(service,id,work){
+  service.transferWrites.set(id,work);
+  const done=()=>{if(service.transferWrites.get(id)===work)service.transferWrites.delete(id);};
+  work.then(done,done);return work;
+}
+function transferWrite(service,id,run){
+  const prior=service.transferWrites.get(id);
+  return trackTransferWrite(service,id,prior?prior.then(run,run):Promise.resolve().then(run));
+}
+export function beginTransferUpload(service,id,key,send){
+  const row=load(service,id);if(!row)return send();
+  if(['CANCELING','CANCELED'].includes(row.state))fail('原传输正在取消或已取消，请查询原编号。',409);
+  row.uploadKeys=[...new Set([...(row.uploadKeys||[]),key])];save(service,row);
+  // Begin is sent immediately under the caller's current authorization. Track
+  // concurrent begins together; cancellation waits for all of them to settle.
+  const prior=service.transferWrites.get(id),work=send();
+  trackTransferWrite(service,id,Promise.allSettled(prior?[prior,work]:[work]));
+  return work;
+}
 export async function transferCall(service,principal,operation,input,check=()=>{}){
   check();if(!service.store.get(principal.userId).enabled)fail('请重新登录。',403);
   const actor={userId:principal.userId,isAdmin:principal.role==='admin'},userId=principal.userId;
@@ -70,10 +89,21 @@ export async function transferCall(service,principal,operation,input,check=()=>{
   if(row.kind!=='copy'){
     if(action==='cancel'||row.state==='CANCELING'&&action==='resume'){
       row.state='CANCELING';save(service,row);
-      try{for(const key of row.uploadKeys||[])await call(row.machine,'data.upload.cancel',{key});row.state='CANCELED';save(service,row);return row;}
-      catch(error){if([401,403].includes(error.status))throw error;return {...row,state:'UNKNOWN',message:'取消结果未知，请按原传输编号继续查询或取消。'};}
+      return transferWrite(service,id,async()=>{
+        // Reload after earlier begins finish; never overwrite their child keys
+        // with the snapshot from before the remote operation.
+        row=load(service,id);if(row.state==='CANCELED')return row;
+        const unknown=()=>({...row,state:'UNKNOWN',message:'取消结果未知，请按原传输编号继续查询或取消。'});
+        try{
+          for(const key of row.uploadKeys||[]){
+            const result=await call(row.machine,'data.upload.cancel',{key});
+            if(!['CANCELED','COMPLETE'].includes(result?.state))return unknown();
+          }
+          row.state='CANCELED';save(service,row);return row;
+        }catch(error){if([401,403].includes(error.status))throw error;return unknown();}
+      });
     }
-    if(action==='progress'&&row.state!=='CANCELED'){if(!Number.isSafeInteger(args.bytes)||args.bytes<0)fail('传输字节数无效。');row.bytes=args.bytes;if(args.complete===true)row.state='SUCCEEDED';save(service,row);return row;}
+    if(action==='progress'&&!['CANCELING','CANCELED'].includes(row.state)){if(!Number.isSafeInteger(args.bytes)||args.bytes<0)fail('传输字节数无效。');row.bytes=args.bytes;if(args.complete===true)row.state='SUCCEEDED';save(service,row);return row;}
     if(['create','status','resume','progress'].includes(action))return row;
   }
   if(action==='status'){

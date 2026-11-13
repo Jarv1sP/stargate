@@ -97,10 +97,10 @@ export async function uploadTransfer(call,{machine,name,dataset=name,directory,k
   const row=(await call('transfers.create',{key,kind:'upload',machine,reference:{dataset}})).result;
   progress('HANDLE',{transferId:row.id,key});
   const result=await uploadLocalTree(call,{machine,context:{area:'dataset',dataset},local:directory,remote:'.',key,via,stateDirectory,transferId:row.id,progress:value=>progress('UPLOADING',value)});
-  await call('transfers.progress',{id:row.id,bytes:result.bytes,complete:true});return {...result,transferId:row.id,state:'SUCCEEDED'};
+  const completed=(await call('transfers.progress',{id:row.id,bytes:result.bytes,complete:true})).result;return {...result,transferId:row.id,state:completed.state};
 }
 export async function downloadTransfer(call,{machine,dataset,destination,path='.',key=randomUUID(),origin,userId,via,progress=()=>{}}){
   const row=(await call('transfers.create',{key,kind:'download',machine,reference:{dataset,path}})).result;progress('HANDLE',{transferId:row.id,key});
-  try{const result=await downloadResultFile(call,{machine,context:{area:'dataset',dataset},path,destination,origin,userId,via,directory:path==='.',onProgress:value=>progress('DOWNLOADING',value)});await call('transfers.progress',{id:row.id,bytes:result.bytes,complete:true});return {...result,key,transferId:row.id,state:'SUCCEEDED'};}
+  try{const result=await downloadResultFile(call,{machine,context:{area:'dataset',dataset},path,destination,origin,userId,via,directory:path==='.',onProgress:value=>progress('DOWNLOADING',value)});const completed=(await call('transfers.progress',{id:row.id,bytes:result.bytes,complete:true})).result;return {...result,key,transferId:row.id,state:completed.state};}
   catch(error){error.message+='\n传输编号：'+row.id+'；重试沿用 --key '+key;throw error;}
 }
