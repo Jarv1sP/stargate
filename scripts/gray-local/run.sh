@@ -89,7 +89,6 @@ measure_memory() {
   memory_container=$(docker create --memory 512m --memory-swap 512m --network none \
     --user "$(id -u):$(id -g)" \
     -e PORTAL_MEMORY_ENFORCE=1 -e PORTAL_MEMORY_PHASE="$1" -e PORTAL_MEMORY_CASE="${memory_case:-storage}" \
-    -e NODE_OPTIONS=--max-old-space-size=384 \
     -v "$TRUSTED/tests/fixtures:/app/tests/fixtures:ro" \
     -v "$TRUSTED/tests/fixtures/machines.js:/app/dist/machines.js:ro" \
     -v "$memory_data:/memory" \
