@@ -481,6 +481,8 @@ P0–P4 越大越优先，团队成员都可使用。低等级不等于同意中
 
 `--rank` 使用显式调度策略；以上预设在首次派发时生效，已有排队或运行作业保持原策略。
 
+同机等待个人额度的任务也按 P4→P0 派发，同等级先来先到。高优先级暂不满足额度时，不阻塞其他可运行任务；已发送给节点的请求不会因此重复提交。
+
 ```sh local
 gpuctl run --rank P1 --yield never -g 1 -- python train.py
 gpuctl run --rank P1 --yield now -g 1 -- python disposable.py
