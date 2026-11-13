@@ -50,7 +50,7 @@ test('a definite pre-dispatch refusal ends the same UUID and releases quota with
   await f.start();assert.equal(job.state,'FAILED');assert.equal(job.notSubmitted,true);
   assert.equal(job.failureCode,'SUBMISSION_AUTH_REVOKED');assert.equal(usage([job],f.user.id),0);
   assert.ok(job.finishedAt);assert.equal(job.submissionReconciliation,undefined);
-  assert.deepEqual(f.calls.map(c=>c.op),['watch']);assert.equal(f.service.store.jobs.length,1);
+  assert.deepEqual(f.calls.map(c=>c.op),['watch']);assert.equal(f.service.store.jobs.length,0);assert.equal(f.service.job(job.id).state,'FAILED');
 });
 test('safe confirmed absence automatically dispatches the original UUID without a user retry',async t=>{
   const f=await fixture(t),job=await f.original(),spec=structuredClone(job.spec),key=job.key,digest=job.digest;

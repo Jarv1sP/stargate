@@ -5,11 +5,14 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
 import uuid
 from pathlib import Path
+from contextlib import closing
 from urllib.parse import quote, urlsplit
 
 HOLD_SECONDS = 15
@@ -29,6 +32,7 @@ class DockerBackend:
         self.manifest=json.loads((self.root/'manifest.json').read_text())
         self.old=None;self.new=None;self.holds=[];self.active_hold=None;self.stop_requests=set()
         self.drain_result=None
+        self.database_snapshot=None
 
     def check(self, name):
         if not self.stopping_after_failure:self.resources.checkpoint(name)
@@ -246,6 +250,7 @@ class DockerBackend:
         self.budget(hold)
         if self.running_portals():raise RuntimeError('another Portal still running')
         if identity==self.new:
+            self.backup_job_history(hold)
             self.command(['docker','rename',self.old['Id'],'amax-console-previous-'+self.old['Id'][:12]])
             self.command(['docker','rename',identity,'amax-console'])
         self.command(['docker','start',identity]);self.stop_requests.discard(identity);self.budget(hold)
@@ -255,6 +260,34 @@ class DockerBackend:
                 try:self.control(identity,'state');break
                 except (OSError,http.client.HTTPException):time.sleep(.1)
             self.control(identity,'hold');self.control(identity,'activate')
+
+    def backup_job_history(self, hold):
+        """One-time schema migration backup, after the old writer has stopped."""
+        data=Path(next(m['Source'] for m in self.old['Mounts'] if m['Destination']=='/data'))
+        env=dict(item.split('=',1) for item in self.old['Config']['Env'])
+        database=data/Path(env.get('DATABASE_PATH','/data/portal.sqlite')).relative_to('/data')
+        with closing(sqlite3.connect(database.resolve().as_uri()+'?mode=ro',uri=True)) as source:
+            row=source.execute("SELECT json_type(data,'$.jobs') FROM portal_state_v2 WHERE id=1").fetchone()
+            if not row or row[0]!='array':return
+            backup=self.root/'portal-before-job-history.sqlite'
+            with backup.open('xb'):pass
+            os.chmod(backup,0o600)
+            try:
+                with closing(sqlite3.connect(backup)) as target:
+                    source.backup(target,pages=256,progress=lambda *_:self.budget(hold),sleep=.01)
+                self.database_snapshot=(database,backup,database.stat())
+            except BaseException:
+                backup.unlink(missing_ok=True)
+                raise
+
+    def restore_job_history(self):
+        if self.database_snapshot is None:return
+        database,backup,owner=self.database_snapshot
+        with closing(sqlite3.connect(backup.resolve().as_uri()+'?mode=ro',uri=True)) as source, closing(sqlite3.connect(database)) as target:
+            source.backup(target,pages=256,progress=lambda *_:self.check('restoring Portal history'),sleep=.01)
+        for path in (database,Path(str(database)+'-wal'),Path(str(database)+'-shm')):
+            if path.exists():
+                os.chown(path,owner.st_uid,owner.st_gid);os.chmod(path,stat.S_IMODE(owner.st_mode))
 
     def healthy(self, identity, hold):
         while True:
@@ -281,6 +314,7 @@ class DockerBackend:
         if item['Name']=='/amax-console':self.command(['docker','rename',self.new,'amax-console-rejected-'+self.new[:12]])
         if self.inspect(self.old['Id'])['Name']!='/amax-console':
             self.command(['docker','rename',self.old['Id'],'amax-console'])
+        self.restore_job_history()
         data=Path(next(m['Source'] for m in self.old['Mounts'] if m['Destination']=='/data'))
         marker=data/'portal-rollout/active';temporary=marker.with_name('active.restore')
         owner=marker.parent.stat()

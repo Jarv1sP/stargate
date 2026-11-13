@@ -8,6 +8,13 @@ export function openStorage(service){
     .map(row=>[row.machine,{checkedAt:row.checked_at,scannedAt:row.scanned_at}]));
 }
 
+export function migrateStorage(service){
+  const {db}=service;
+  // The Portal state migration owns the transaction. Parse one node at a time.
+  for(const row of db.prepare("SELECT key,value FROM portal_state_v2 p,json_each(p.data,'$.storage') WHERE p.id=1").iterate())
+    writeStorage(service,String(row.key),mergeStorage(readStorage(service,String(row.key)),JSON.parse(row.value)));
+}
+
 export function writeStorage(service,machine,row){
   const data=gzipSync(JSON.stringify(row));
   service.db.prepare('INSERT INTO portal_storage(machine,data,checked_at,scanned_at) VALUES(?,?,?,?) ON CONFLICT(machine) DO UPDATE SET data=excluded.data,checked_at=excluded.checked_at,scanned_at=excluded.scanned_at')

@@ -34,11 +34,13 @@ compose() {
 build_image() { DOCKER_BUILDKIT=0 docker build --force-rm --network=host "$@"; }
 extract=
 memory_container=
+memory_client=
 cleanup() {
   result=$?
   trap - EXIT INT TERM
   [ -z "$extract" ] || docker rm -f "$extract" >/dev/null 2>&1 || :
   [ -z "$memory_container" ] || docker rm -f "$memory_container" >/dev/null 2>&1 || :
+  [ -z "$memory_client" ] || docker rm -f "$memory_client" >/dev/null 2>&1 || :
   compose logs --no-color > "$run/compose.log" 2>&1 || :
   compose exec -T gray-node-1 journalctl -b --no-pager > "$run/node-journal.log" 2>&1 || :
   if [ "$result" -ne 0 ]; then
@@ -81,23 +83,60 @@ build_image --build-arg STARGATE_RELEASE_REVISION="$commit" -f "$run/src/deploy/
 # Use a separate disposable Portal, never the gray stack's business database.
 node "$TRUSTED/tests/fixtures/portal-memory.mjs" seed "$run/memory"
 measure_memory() {
+  memory_data=${2:-$run/memory}
+  memory_case=${3:-}
+  memory_log="$run/memory-${memory_case:+$memory_case-}$1.log"
   memory_container=$(docker create --memory 512m --memory-swap 512m --network none \
     --user "$(id -u):$(id -g)" \
-    -e PORTAL_MEMORY_ENFORCE=1 -e PORTAL_MEMORY_PHASE="$1" \
+    -e PORTAL_MEMORY_ENFORCE=1 -e PORTAL_MEMORY_PHASE="$1" -e PORTAL_MEMORY_CASE="${memory_case:-storage}" \
     -v "$TRUSTED/tests/fixtures:/app/tests/fixtures:ro" \
     -v "$TRUSTED/tests/fixtures/machines.js:/app/dist/machines.js:ro" \
-    -v "$run/memory:/memory" \
+    -v "$memory_data:/memory" \
     "$GRAY_PORTAL_IMAGE" node /app/tests/fixtures/portal-memory.mjs measure /memory)
   memory_result=0
-  docker start --attach "$memory_container" > "$run/memory-$1.log" 2>&1 || memory_result=$?
-  docker inspect --format '{{json .State}}' "$memory_container" >> "$run/memory-$1.log"
+  docker start --attach "$memory_container" > "$memory_log" 2>&1 || memory_result=$?
+  docker inspect --format '{{json .State}}' "$memory_container" >> "$memory_log"
   docker rm "$memory_container" >/dev/null
   memory_container=
-  cat "$run/memory-$1.log"
+  cat "$memory_log"
   [ "$memory_result" -eq 0 ] || exit "$memory_result"
 }
 measure_memory first-open
 measure_memory steady
+PORTAL_MEMORY_CASE=history node "$TRUSTED/tests/fixtures/portal-memory.mjs" seed "$run/memory-history"
+measure_memory first-open "$run/memory-history" history
+measure_memory steady "$run/memory-history" history
+
+# Measure the real supervisor and worker together. The HTTP test client is in
+# a separate disposable cgroup and does not inflate Portal's measured usage.
+PORTAL_MEMORY_CASE=history node "$TRUSTED/tests/fixtures/portal-memory.mjs" seed "$run/memory-rollout"
+for memory_phase in first-open steady; do
+  memory_log="$run/memory-rollout-$memory_phase.log"
+  memory_container=$(docker create --memory 512m --memory-swap 512m --network none \
+    --user "$(id -u):$(id -g)" -e NODE_OPTIONS=--max-old-space-size=384 \
+    -e PUBLIC_ORIGIN=http://127.0.0.1:8080 \
+    -v "$TRUSTED/tests/fixtures/machines.js:/app/dist/machines.js:ro" \
+    -v "$run/memory-rollout:/data" \
+    "$GRAY_PORTAL_IMAGE" node portal-rollout.mjs http://127.0.0.1:9 11111111111111111111111111111111)
+  docker start "$memory_container" >/dev/null
+  memory_client=$(docker create --memory 192m --memory-swap 192m --network "container:$memory_container" \
+    --user "$(id -u):$(id -g)" -e PORTAL_MEMORY_PHASE="$memory_phase" \
+    -v "$TRUSTED/tests/fixtures:/app/tests/fixtures:ro" -v "$run/memory-rollout:/memory:ro" \
+    "$GRAY_PORTAL_IMAGE" node /app/tests/fixtures/portal-memory.mjs rollout-client /memory)
+  memory_result=0
+  docker start --attach "$memory_client" > "$memory_log" 2>&1 || memory_result=$?
+  docker rm "$memory_client" >/dev/null;memory_client=
+  if [ "$memory_result" -eq 0 ]; then
+    memory_peak=$(docker exec "$memory_container" cat /sys/fs/cgroup/memory.peak)
+    python3 -c 'import json,sys; peak=int(sys.argv[1]); print("PORTAL_ROLLOUT_MEMORY "+json.dumps({"peakMiB":peak/1048576})); assert peak<=450*1048576, "rollout cgroup peak exceeds 450 MiB"' "$memory_peak" >> "$memory_log" || memory_result=$?
+  fi
+  docker logs "$memory_container" >> "$memory_log" 2>&1
+  docker stop --time 10 "$memory_container" >/dev/null
+  docker inspect --format '{{json .State}}' "$memory_container" >> "$memory_log"
+  docker rm "$memory_container" >/dev/null;memory_container=
+  cat "$memory_log"
+  [ "$memory_result" -eq 0 ] || exit "$memory_result"
+done
 build_image -f "$TRUSTED/deploy/gray-local/bridge.Dockerfile" -t "$GRAY_BRIDGE_IMAGE" "$run/src" > "$run/build-bridge.log" 2>&1
 build_image -f "$TRUSTED/deploy/gray-local/node.Dockerfile" -t "$GRAY_NODE_IMAGE" "$run/node-context" > "$run/build-node.log" 2>&1
 docker pull registry:2 > "$run/build-registry.log" 2>&1

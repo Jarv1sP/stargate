@@ -36,8 +36,7 @@ export async function taskDisplayCall(service,token,operation,args){
     args={...args,description:taskDescription(args.description)};
   }
   const principal=service.principal(token),actor=service.store.get(principal.userId);
-  const matches=service.store.jobs.filter(j=>j.machine===args.machine&&j.nodeJobId===args.nodeJobId);
-  const job=matches[0];
+  const job=service.jobByNative(args.machine,args.nodeJobId);
   const check=()=>{
     const current=service.principal(token);
     if(service.closing)fail('服务正在关闭，请稍后查询。',503);

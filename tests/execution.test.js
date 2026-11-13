@@ -145,8 +145,8 @@ test('delete requires paused idle account, retains history and invalidates login
    await f.s.invoke(f.admin.token,'users.enabled',{userId:f.member.id,enabled:false});
    await assert.rejects(f.s.invoke(f.admin.token,'users.delete',{userId:f.member.id}),/只能删除/);
    f.setState('SUCCEEDED');await f.s.reconcile();await f.s.invoke(f.admin.token,'users.delete',{userId:f.member.id});
-   assert.equal(f.s.store.jobs[0].id,j.id);await assert.rejects(f.s.login('alice',password));
-   await f.reopen();assert.equal(f.s.store.jobs[0].id,j.id);assert.equal(f.s.store.users.some(u=>u.id===f.member.id),false);
+   assert.equal(f.s.job(j.id).id,j.id);await assert.rejects(f.s.login('alice',password));
+   await f.reopen();assert.equal(f.s.job(j.id).id,j.id);assert.equal(f.s.store.users.some(u=>u.id===f.member.id),false);
  }finally{await f.close();}
 });
 test('team terminal targets OCI projects and preserves the input size limit',async()=>{

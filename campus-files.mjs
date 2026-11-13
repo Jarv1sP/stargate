@@ -11,7 +11,7 @@ const denied=(message,status=403)=>{throw Object.assign(Error(message),{status,c
 function assertOutputVisible(service,principal,args){
   assertMachineAccess(service.store.get(principal.userId),args.machine,MACHINES);
   if(args.area!=='output'&&!args.runId)return;
-  const job=service.store.jobs.find(job=>job.id===args.runId);
+  const job=service.jobReference(args.runId);
   if(job)service.assertMachineStatusVisible(principal,job.machine);
 }
 function rememberTicket(service,ticket,entry){

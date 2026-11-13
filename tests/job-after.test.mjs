@@ -60,9 +60,9 @@ test('A B C can be submitted together; dispatch waits only for native IDs, not s
 test('a parent rejected before receiving a node ID cancels its child and releases its reservation',async t=>{
   const f=await fixture(t);f.service.reconciling=true;
   const parent=await f.submit(),child=await f.submit({after:[parent.id]});
-  const row=f.service.store.jobs.find(job=>job.id===parent.id);row.state='FAILED';row.notSubmitted=true;
+  const row=f.service.store.jobs.find(job=>job.id===parent.id);row.state='FAILED';row.notSubmitted=true;f.service.save(row);
   f.service.reconciling=false;await f.service.reconcile();
-  const canceled=f.service.store.jobs.find(job=>job.id===child.id);
+  const canceled=f.service.job(child.id);
   assert.equal(canceled.state,'CANCELED');assert.match(canceled.error,/依赖作业 train.*未运行/);assert.equal(usage(f.service.store.jobs,f.member.id),0);
   assert.equal(f.calls.length,0);
   const shown=(await f.service.invoke(f.user.token,'state')).state.jobs.find(job=>job.id===child.id);
@@ -74,7 +74,7 @@ test('dependency chains, branches and joins wait in the portal until dispatched 
   const a=await f.submit({cards:8}),b=await f.submit({cards:8,after:[a.id]}),c=await f.submit({cards:8,after:[b.id]});
   const left=await f.submit({cards:4,after:[a.id]}),right=await f.submit({cards:4,after:[a.id]}),joined=await f.submit({cards:8,after:[left.id,right.id]});
   const unrelated=await f.submit({machine:'gpu-2'});f.service.reconciling=false;
-  const row=job=>f.service.store.jobs.find(item=>item.id===job.id);
+  const row=job=>f.service.job(job.id);
   for(let wave=0;wave<7;wave++){
     await f.service.reconcile();await f.settle();await f.service.reconcile();await f.settle();
     const active=f.service.store.jobs.filter(job=>job.state==='PENDING');
@@ -87,8 +87,8 @@ test('dependency chains, branches and joins wait in the portal until dispatched 
     if(active.some(job=>job.id===a.id)){assert.equal(row(b).dispatchPending,true);assert.equal(row(b).queueReason,null);assert.match(pendingJobReason(f.service,row(b)),/^等待依赖/);}
     await f.service.reconcile();await f.settle();
   }
-  assert.equal(f.service.store.jobs.length,7);assert.equal(f.service.store.jobs.every(job=>job.state==='SUCCEEDED'),true);
+  assert.equal(f.service.store.jobs.length,0);assert.equal([a,b,c,left,right,joined,unrelated].every(job=>row(job).state==='SUCCEEDED'),true);
   assert.equal(usage(f.service.store.jobs,f.member.id),0);
-  assert.deepEqual(f.calls.find(call=>call.args.job.id===joined.id).args.job.after,[left,right].map(job=>f.service.store.jobs.find(row=>row.id===job.id).nodeJobId));
+  assert.deepEqual(f.calls.find(call=>call.args.job.id===joined.id).args.job.after,[left,right].map(job=>f.service.job(job.id).nodeJobId));
   assert.deepEqual(c.after,[{id:b.id,name:'train'}]);
 });

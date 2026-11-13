@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {memoryJobAccess} from './fixtures/job-access.mjs';
 import assert from 'node:assert/strict';
 import {installExecution,schedulerResult,publicJob} from '../execution.mjs';
 import {gpuMetricsText} from '../cli.mjs';
@@ -45,7 +46,7 @@ test('failed node checks refresh checkedAt without making old GPU samples curren
   const schedulerCheckedAt=job.schedulerCheckedAt;
   const bridge=t.mock.fn(async()=>{throw Error('node unavailable');});
   const service={store:{jobs:[job]},enqueue:async action=>action(),save(){}};
-  installExecution(service,bridge);clearInterval(service.executionTimer);
+  memoryJobAccess(service);installExecution(service,bridge);clearInterval(service.executionTimer);
   for(const elapsed of [15000,31000]){
     t.mock.timers.setTime(200000+elapsed);
     await service.reconcile();

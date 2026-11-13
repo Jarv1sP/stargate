@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {memoryJobAccess} from './fixtures/job-access.mjs';
 import assert from 'node:assert/strict';
 import {MACHINES} from '../dist/model.js';
 import {normalizeJobSubmission,createSubmittedJob} from '../job-submission.mjs';
@@ -25,7 +26,7 @@ function fixture(row,{shared=true}={}){
    if(op==='sync')return {state:'PENDING'};
    throw Error('Unexpected '+op);
   }};
- installTransfers(service);
+ memoryJobAccess(service);installTransfers(service);
  return {service,calls,complete:()=>copied=true};
 }
 

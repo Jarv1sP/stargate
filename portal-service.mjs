@@ -18,8 +18,9 @@ import {installCloudImports,cloudImportCall} from './cloud-import.mjs';
 import {installTeamAccounts,accountOperation} from './accounts/portal.mjs';
 import {installProjectCatalog} from './project-catalog.mjs';
 import {installTaskDisplay,taskDisplayCall} from './task-display.mjs';
-import {openStorage,readStorage,writeStorage,mergeStorage,saveStorageTimes} from './portal-storage.mjs';
+import {openStorage,migrateStorage,readStorage,writeStorage,saveStorageTimes} from './portal-storage.mjs';
 import {JSONItems} from './json-stream.mjs';
+import {PortalJobs,liveJob,JOB_HISTORY_DAYS,JOB_TRASH_DAYS} from './portal-jobs.mjs';
 
 // Aggregate history is a presentation view; point queries use durable jobs.
 const STATE_JOBS_BYTES=300000;
@@ -57,6 +58,22 @@ function compactTerminalStateJob(job,users){
     reason:view.reason??view.latestAttempt?.failureReason??view.error??null};
 }
 
+export function migratePortalState(service,now=Date.now()){
+  const {db}=service,legacy=db.prepare("SELECT json_type(data,'$.jobs') jobs,json_type(data,'$.storage') storage FROM portal_state_v2 WHERE id=1").get();
+  const jobs=legacy?.jobs==='array',storage=['object','array'].includes(legacy?.storage);
+  if(!jobs&&!storage)return;
+  db.exec('BEGIN IMMEDIATE');
+  try{
+    if(jobs)service.jobRows.migrateRows(now);
+    if(storage)migrateStorage(service);
+    // Remove both large fields once, without copying a second large JSON
+    // document between the two conversions. Keep unrelated header fields.
+    const paths=[...(jobs?['$.jobs']:[]),...(storage?['$.storage']:[])];
+    db.prepare(`UPDATE portal_state_v2 SET data=json_set(json_remove(data,${paths.map(()=>'?').join(',')}),'$.schema',3) WHERE id=1`).run(...paths);
+    db.exec('COMMIT');
+  }catch(error){db.exec('ROLLBACK');openStorage(service);throw error;}
+}
+
 // One process owns this database. Serial transactions keep account changes atomic.
 // Reservations are durable before the separate restricted executor dispatches GPUQ.
 export class PortalService extends DemoService{
@@ -67,7 +84,9 @@ export class PortalService extends DemoService{
     service.db=new DatabaseSync(path);await chmod(path,0o600);
     service.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS portal_state_v2 (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, time TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL, subject TEXT, outcome TEXT NOT NULL);');
     service.db.exec("CREATE TABLE IF NOT EXISTS invites_v2 (role TEXT PRIMARY KEY CHECK(role IN ('admin','member')), digest TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, max_uses INTEGER, created_at TEXT NOT NULL,code_cipher TEXT);");
+    service.jobRows=new PortalJobs(service.db,()=>service.store.jobs);
     openStorage(service);
+    migratePortalState(service);
     installMaintenanceState(service);installCommunity(service);installWorkshop(service);installProjectCatalog(service);installTaskDisplay(service);
     const keyPath=path+'.invite-key';
     try{service.inviteKey=await readFile(keyPath);}catch(e){
@@ -81,17 +100,6 @@ export class PortalService extends DemoService{
     const saved=service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get();
     if(saved){
       const data=JSON.parse(saved.data);
-      // Move current persisted readings out of the monolithic state once.
-      // Keep the old state intact until every reading has been written.
-      if(data.storage){
-        service.db.exec('BEGIN IMMEDIATE');
-        try{
-          for(const [machine,row] of Object.entries(data.storage))writeStorage(service,machine,mergeStorage(readStorage(service,machine),row));
-          delete data.storage;
-          service.db.prepare('UPDATE portal_state_v2 SET data=? WHERE id=1').run(JSON.stringify(data));
-          service.db.exec('COMMIT');
-        }catch(error){service.db.exec('ROLLBACK');throw error;}
-      }
       service.restore(data);
     }
     else{
@@ -104,9 +112,11 @@ export class PortalService extends DemoService{
       }
     }
     installTeamAccounts(service,accountsPath);
+    service.store.jobs=service.jobRows.loadLive();
     service.statusPath=statusPath;await service.refreshGPUQ();installExecution(service,bridge);installMaintenance(service);installJobNotifications(service,notificationConfig);
     maintainTaskNotes(service);
     installTransfers(service);installFileCampus(service);
+    service.collectJobHistory();
     // A restarted Portal sits close to its 512MiB limit; restored snapshots refresh one server at a
     // time starting a minute after start, instead of every server on the first periodic tick.
     const now=Date.now();service.storageQueue=new Map();
@@ -114,17 +124,46 @@ export class PortalService extends DemoService{
       service.storageSnapshots[machine.id]?.scannedAt?Math.max(Date.parse(service.storageSnapshots[machine.id].scannedAt)+STORAGE_REFRESH_MS,now+STORAGE_REUSE_MS+index*STORAGE_REFRESH_MS/MACHINES.length):now+index*STORAGE_REFRESH_MS/MACHINES.length]));
     return service;
   }
-  export(){return {schema:2,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),jobs:this.store.jobs,sequence:this.store.sequence,storage:this.storageSnapshots};}
+  export(){return {schema:3,users:this.store.users.map(({id,limits,total,policyVersion,approvedBy,approvedAt})=>({id,limits,total,policyVersion,approvedBy,approvedAt})),sequence:this.store.sequence,storage:this.storageSnapshots};}
   restore(data){
-    this.store.users=data.users;this.store.jobs=data.jobs;this.store.sequence=data.sequence;
+    this.store.users=data.users;this.store.sequence=data.sequence;
     if(data.storage)this.storageSnapshots=data.storage;
     if(data.credentials)this.legacyCredentials=new Map(data.credentials.map(([name,r])=>[name,{salt:new Uint8Array(Buffer.from(r.salt,'base64')),hash:new Uint8Array(Buffer.from(r.hash,'base64')),iterations:r.iterations}]));
     this.refreshAccounts?.();
   }
-  save(){
+  save(job){
     const {storage,...state}=this.export();
-    this.db.prepare('INSERT INTO portal_state_v2(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(state));
-    saveStorageTimes(this);
+    const outer=this.db.isTransaction;
+    if(!outer)this.db.exec('BEGIN IMMEDIATE');
+    try{
+      this.db.prepare('INSERT INTO portal_state_v2(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(JSON.stringify(state));
+      for(const value of job?[job]:this.store.jobs)this.jobRows.put(value);
+      saveStorageTimes(this);
+      if(!outer)this.db.exec('COMMIT');
+    }catch(error){if(!outer)this.db.exec('ROLLBACK');throw error;}
+    if(!outer)this.store.jobs=this.store.jobs.filter(liveJob);
+  }
+  job(id){return this.jobRows.get(id);}
+  jobReference(id){return this.jobRows.locator(id);}
+  jobByKey(key){return this.jobRows.byKey(key);}
+  jobByNative(machine,id){return this.jobRows.byNative(machine,id);}
+  collectJobHistory(now=Date.now()){
+    if(this.closing||this.globalMaintenanceActive()||now<(this.nextHistoryCollection??0))return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try{
+      const result=this.jobRows.collect(now);
+      if(result.trashed||result.purged)this.audit('system','jobs.history.expire',null,JSON.stringify(result));
+      this.db.exec('COMMIT');this.nextHistoryCollection=now+3600000;
+      return result;
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
+  jobHistory(principal,args){
+    const user=this.store.get(principal.userId),machines=MACHINES.filter(m=>canUseMachine(user,m.id)).map(m=>m.id);
+    if(args.machine)this.assertMachineStatusVisible(principal,args.machine);
+    const before=args.cursor===undefined?null:Number(args.cursor);
+    if(before!==null&&(!Number.isSafeInteger(before)||before<1))throw Object.assign(Error('记录页码无效。'),{status:400});
+    const result=this.jobRows.trash(args.machine?[args.machine]:machines,{before});
+    return {...result,jobs:result.jobs.map(job=>({...job,name:this.taskDisplayJob(job).nativeTaskDisplay?.name??job.name})),retentionDays:JOB_HISTORY_DAYS,trashDays:JOB_TRASH_DAYS};
   }
   storageSnapshot(machine,{stream=false,visible=()=>true}={}){
     const service=this;
@@ -249,14 +288,15 @@ export class PortalService extends DemoService{
     const current=check();
     const state=args.view==='summary'||args.jobId!==undefined||args.jobKey!==undefined?this.stateSummary(current):this.state(current);
     if(args.jobId!==undefined){
-      const job=this.store.jobs.find(row=>row.id===args.jobId);
+      const job=this.jobReference(args.jobId);
       if(!job)throw Object.assign(Error('任务不存在。'),{status:404});
       this.assertMachineStatusVisible(current,job.machine);
       state.jobs=[{id:job.id,machine:job.machine,project:job.project??job.spec?.project,ownerId:job.ownerId??job.userId,userId:job.userId}];
     }else if(args.jobKey!==undefined){
-      state.jobs=this.store.jobs.filter(job=>job.key===args.jobKey&&(!job.machine||canUseMachine(this.store.get(current.userId),job.machine))).map(job=>({
-        ...publicJob(this.taskDisplayJob(job),this.store.users),...stateCommand(job.spec.argv)
-      }));
+      state.jobs=[];
+      for(const job of this.jobRows.matchingKey(args.jobKey))if(!job.machine||canUseMachine(this.store.get(current.userId),job.machine))state.jobs.push({
+        ...publicJob(this.taskDisplayJob(job),this.store.users),...(job.historyExpired?{}:stateCommand(job.spec.argv))
+      });
     }
     return {state,principal:{username:current.username,role:current.role,userId:current.userId}};
   }
@@ -270,7 +310,7 @@ export class PortalService extends DemoService{
       if(request.machine)this.assertMachineStatusVisible(current,request.machine);
       if(request.area==='output'||request.runId){
         this.assertMachineStatusVisible(current,request.machine);
-        const job=this.store.jobs.find(job=>job.id===request.runId);
+        const job=this.jobReference(request.runId);
         if(job)this.assertMachineStatusVisible(current,job.machine);
       }
       this.assertMaintenanceAllowed?.(operation,request,current);
@@ -297,7 +337,7 @@ export class PortalService extends DemoService{
     const check=()=>{
       if(this.closing)throw Object.assign(Error('服务正在关闭。'),{status:503});
       const current=this.principal(token);
-      const job=this.store.jobs.find(job=>job.id===request.jobId);
+      const job=this.jobReference(request.jobId);
       if(job)this.assertMachineStatusVisible(current,job.machine);
       this.assertMaintenanceAllowed?.(operation,request,current);
       return current;
@@ -384,6 +424,19 @@ export class PortalService extends DemoService{
   async invoke(token,operation,args={},options={}){
     if(!args||typeof args!=='object'||Array.isArray(args))return Promise.reject(Object.assign(Error('参数格式错误。'),{status:400}));
     if(operation==='state')return this.readState(token,args);
+    if(operation==='jobs.history.list'){
+      const principal=this.principal(token);return {result:this.jobHistory(principal,args),principal};
+    }
+    if(operation==='jobs.history.restore')return this.enqueue(()=>{
+      const principal=this.principal(token),reference=this.jobRows.locator(args.jobId);
+      if(!reference)throw Object.assign(Error('任务记录不存在。'),{status:404});
+      this.assertMachineStatusVisible(principal,reference.machine);
+      this.assertMaintenanceAllowed(operation,{jobId:reference.id},principal);
+      this.db.exec('BEGIN IMMEDIATE');
+      try{this.jobRows.restore(reference.id);this.audit(principal.username,operation,reference.id,'restored');this.db.exec('COMMIT');}
+      catch(error){this.db.exec('ROLLBACK');throw error;}
+      return {result:{id:reference.id,restored:true,state:reference.state,message:'已恢复任务记录，不会重跑训练。'},principal};
+    });
     if(operation==='storage.snapshot'||operation==='storage.refresh'){
       const principal=this.principal(token);
       if(args.machine)this.assertMachineStatusVisible(principal,args.machine);
@@ -422,7 +475,7 @@ export class PortalService extends DemoService{
         const check=()=>{
           const principal=this.principal(token);
           if(args.machine&&args.machine!=='auto')this.assertMachineStatusVisible(principal,args.machine);
-          const job=args.jobId?this.store.jobs.find(job=>job.id===args.jobId):operation==='jobs.submit'&&args.key?this.store.jobs.find(job=>job.key===args.key):null;
+          const job=args.jobId?this.jobReference(args.jobId):operation==='jobs.submit'&&args.key?this.jobByKey(args.key):null;
           if(job)this.assertMachineStatusVisible(principal,job.machine);
           return principal;
         };
@@ -496,24 +549,24 @@ export class PortalService extends DemoService{
     const stale=cached.stale!==false||!Number.isFinite(age)||age>180000||age< -30000;
     const snapshot=this.taskDisplaySnapshot({...cached,stale,hosts:stale?cached.hosts.map(host=>({...host,samplingStale:true})):cached.hosts});
     const user=this.store.get(principal.userId);
-    const visible=this.store.jobs.filter(job=>!job.machine||canUseMachine(user,job.machine)).map(j=>this.taskDisplayJob(j)),jobsTotal=visible.length;
+    const visible=this.store.jobs.filter(job=>liveJob(job)&&(!job.machine||canUseMachine(user,job.machine))).map(j=>this.taskDisplayJob(j));
+    const machines=MACHINES.filter(machine=>canUseMachine(user,machine.id)).map(machine=>machine.id);
+    const jobsTotal=visible.length+this.jobRows.historyCount(machines);
     const gpuq=visibleGPUQStatus(snapshot,user,{jobs:this.store.jobs.map(j=>this.taskDisplayJob(j)),users:this.store.users});
     const capabilities=Object.fromEntries(gpuq.hosts.map(h=>[h.id,h.displayMasked!==true&&!gpuq.stale&&priorityCapable(h)===true]));
     const full=job=>({...publicJob(job,this.store.users),...stateCommand(job.spec.argv),queueReason:pendingJobReason(this,job),notifications:this.jobNotificationState(job,principal.userId),
       canSetPriority:job.state==='PENDING'&&!job.cancelRequested});
-    const selected=new Map(visible.filter(job=>!TERMINAL.has(job.state)).map(job=>[job,full(job)]));
+    const selected=new Map(visible.map(job=>[job.id,full(job)]));
     // Full active records take precedence even when they alone exceed budget.
     let jobsBytes=2;
     for(const view of selected.values())jobsBytes+=Buffer.byteLength(JSON.stringify(view))+(jobsBytes>2?1:0);
-    const terminal=visible.map((job,index)=>({job,index,time:Date.parse(job.finishedAt??job.terminalObservedAt)}))
-      .filter(row=>TERMINAL.has(row.job.state)).sort((a,b)=>(Number.isFinite(b.time)?b.time:0)-(Number.isFinite(a.time)?a.time:0)||b.index-a.index);
-    for(const {job} of terminal){
-      const view=compactTerminalStateJob(job,this.store.users),bytes=Buffer.byteLength(JSON.stringify(view))+(selected.size?1:0);
+    for(const job of this.jobRows.history(machines)){
+      const view=compactTerminalStateJob(this.taskDisplayJob(job),this.store.users),bytes=Buffer.byteLength(JSON.stringify(view))+(selected.size?1:0);
       if(jobsBytes+bytes>STATE_JOBS_BYTES)break;
-      selected.set(job,view);jobsBytes+=bytes;
+      selected.set(job.id,view);jobsBytes+=bytes;
     }
-    // Preserve the legacy append order used by CLI jobs' final-50 display.
-    const jobs=visible.filter(job=>selected.has(job)).map(job=>selected.get(job));
+    // Preserve original append order without fetching unselected payloads.
+    const jobs=this.jobRows.ordered([...selected.keys()]).map(id=>selected.get(id));
     // Clone only the bounded public projection, not every durable job/spec.
     return structuredClone({...state,jobs,jobsTotal,jobsReturned:jobs.length,jobsTruncated:jobs.length<jobsTotal,jobsCompacted:true,
       taskMetadata:{version:1},operationalMaintenance:this.operationalMaintenance?.(principal),

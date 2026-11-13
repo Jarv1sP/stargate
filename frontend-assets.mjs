@@ -9,6 +9,7 @@ export const STARBASE_ASSETS = Object.fromEntries([
   'resource-orbits.js', 'shell-ui.js', 'control-ui.js', 'attention-state.js', 'workbench-ui.js', 'training-storage-ui.js', 'motion-ui.js', 'copy-help-ui.js', 'startup-ui.js', 'sky-ui.js', 'portal-shell.css', 'splash.css', 'navigation.js', 'toast-ui.js',
   'favicon.svg', 'favicon.ico', 'mask-icon.svg',
   'task-display-ui.js',
+  'job-history-ui.js',
   'job-results-ui.js', 'time-format.js', 'trash-ui.js', 'file-transfer-ui.js',
   'maintenance-state.js', 'maintenance-experience.css',
   'admin-ui.js', 'admin.css', 'admin-room.js', 'admin-room.css',

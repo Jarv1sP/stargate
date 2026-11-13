@@ -378,6 +378,15 @@ gpuctl data delete images
 
 ### 日志、进度、诊断与完成情况
 
+任务记录在结束后保留 30 天，再移入「任务 → 记录回收站」保留 7 天。恢复只恢复记录，不重跑训练；恢复后再保留 30 天。运行中、排队、状态未知和资源尚未收尾的任务不自动清理。
+
+```sh local
+gpuctl jobs trash
+gpuctl jobs restore JOB_ID
+```
+
+到期清理的是任务明细，不是文件。输出仍可按原任务 ID 拉取，或在同机容器内读 `/job-outputs/JOB_ID/`；项目和数据集不受影响。已清理明细的任务不能再通过旧任务日志入口查询，原提交 key 也不会因此启动第二次训练。
+
 ```sh local
 gpuctl jobs
 gpuctl queue

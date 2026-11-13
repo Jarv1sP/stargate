@@ -4,6 +4,7 @@ import {campusRetryable,retryCampusRequest} from './dist/personal-upload.js';
 const READS=new Set(['data.upload.status','state','storage.snapshot','datasets.list','projects.list','projects.status','projects.quota','projects.label.get','projects.group.get','projects.catalog','projects.retire.list','files.get','files.list','terminal.status','jobs.logs','jobs.watch','jobs.diagnostics','jobs.completion','transfers.list','transfers.status','cloud.info','cloud.import.list','cloud.import.status','cloud.files.list','cloud.files.status','community.posts.list','community.posts.get','community.comments.list']);
 const TRANSIENT=new Set([502,503,504]);
 READS.add('community.announcements.pending');
+READS.add('jobs.history.list');
 const safe=value=>String(value).replace(/[\p{Cc}\p{Cf}]/gu,' ').slice(0,600);
 const error=(message,status,code)=>Object.assign(Error(message),{status,...(code?{code}:{})});
 const transientRead=(status,data)=>campusRetryable({status,code:data?.code,message:data?.error})||status===400&&

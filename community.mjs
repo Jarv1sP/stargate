@@ -141,12 +141,10 @@ export function pruneTaskNotes(service){
   // and intentionally survive both task cleanup and the public chat's TTL.
   const linked=service.db.prepare('SELECT DISTINCT job_id FROM community_notes_v2 WHERE job_id IS NOT NULL').all();
   if(!linked.length)return 0;
-  // Reconciliation mutates memory before save(). A failed portal_state write
+  // Reconciliation mutates memory before save(). A failed durable job write
   // must not let its finally hook (or a community read) erase durable bodies.
-  const saved=service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get();
-  const ended=new Set((saved?JSON.parse(saved.data).jobs:[]).filter(j=>['SUCCEEDED','FAILED','CANCELED'].includes(j.state)).map(j=>j.id));
-  if(!ended.size)return 0;
-  const ids=linked.map(r=>r.job_id).filter(id=>ended.has(id));
+  const state=service.db.prepare('SELECT state FROM portal_jobs WHERE id=?');
+  const ids=linked.map(r=>r.job_id).filter(id=>['SUCCEEDED','FAILED','CANCELED'].includes(state.get(id)?.state));
   if(!ids.length)return 0;
   const db=service.db;let removed=0;db.exec('SAVEPOINT task_notes_cleanup');
   try{const del=db.prepare('DELETE FROM community_notes_v2 WHERE job_id=?');for(const id of ids)removed+=Number(del.run(id).changes);db.exec('RELEASE task_notes_cleanup');return removed;}
@@ -329,7 +327,7 @@ function dispatch(service,actor,operation,args,now){
   if(operation==='community.notes.create'){
     args=selectFields(args,['key','body','jobId']);const body=text(args.body,COMMUNITY_LIMITS.chatBody,'留言'),jobId=args.jobId??null;
     if(jobId!==null&&(typeof jobId!=='string'||!jobId||jobId.length>128))fail('任务 ID 无效。');
-    const task=jobId===null?null:service.store.jobs.find(j=>j.id===jobId);
+    const task=jobId===null?null:service.job(jobId);
     if(jobId!==null&&!task)fail('任务不存在。',404);
     return create(service,actor,operation,args,'note',now,()=>{
       // Check after deduplication: an uncertain retry after cleanup must return

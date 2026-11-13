@@ -31,8 +31,8 @@ async function fixture(t){
     counts.set(machine,(counts.get(machine)||0)+1);peaks.set(machine,Math.max(peaks.get(machine)||0,counts.get(machine)));
     assert.ok(counts.get(machine)<=2,'at most two reconciliation operations per configured machine');
     if(operation==='sync'&&service.store.jobs.find(j=>j.id===id)?.dispatchPending===false){
-      const persisted=JSON.parse(service.db.prepare('SELECT data FROM portal_state_v2 WHERE id=1').get().data);
-      assert.equal(persisted.jobs.find(j=>j.id===id).dispatchPending,false,'attempt is durable before remote I/O');
+      const persisted=JSON.parse(service.db.prepare('SELECT data FROM portal_jobs WHERE id=?').get(id).data);
+      assert.equal(persisted.dispatchPending,false,'attempt is durable before remote I/O');
     }
     calls.push({machine,operation,args:structuredClone(args)});
     try{
@@ -44,7 +44,7 @@ async function fixture(t){
   service=await PortalService.open(database,bootstrap,status,bridge);clearInterval(service.executionTimer);service.reconciling=true;
   const admin=await service.login('admin',password);
   const submit=async(machine=MACHINES[0].id)=>(await service.invoke(admin.token,'jobs.submit',{machine,project:'sample',cards:1,argv:['true'],key:randomUUID()})).result;
-  const job=id=>service.store.jobs.find(j=>j.id===id);
+  const job=id=>service.job(id);
   const old=async(machine=MACHINES[0].id)=>{const result=await submit(machine);Object.assign(job(result.id),{state:'PENDING',dispatchPending:false,nodeJobId:'J'+result.id});service.save();return result;};
   const block=id=>{const response=deferred();blocks.set(id,response);return response;};
   const start=()=>{service.reconciling=false;const work=service.reconcile();works.push(work);return work;};

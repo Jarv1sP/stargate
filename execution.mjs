@@ -7,7 +7,7 @@ import {setTimeout as readDelay} from 'node:timers/promises';
 import {MACHINES} from './dist/model.js';
 import {taskIdentity,nativeTaskDisplay} from './dist/task-metadata.js';
 import {nativeJobRequest,nativeJobSpec} from './native-task-metadata.mjs';
-import {applyJobFeedback,jobTiming,projectProgress} from './dist/job-progress.js';
+import {applyJobFeedback,jobTiming,projectProgress,JOB_TERMINAL} from './dist/job-progress.js';
 import {maintainTaskNotes} from './community.mjs';
 import {projectCall,projectReference,validateProjectFile,UUID} from './projects.mjs';
 import {personalCardQuotaExempt} from './job-submission.mjs';
@@ -15,7 +15,7 @@ import {assertMachineAccess} from './machine-access.mjs';
 import {gpuCardUsage as usage} from './dist/gpu-allocation.js';
 import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,jobCompletion} from './job-observation.mjs';
 
-export const TERMINAL=new Set(['SUCCEEDED','FAILED','CANCELED']);
+export const TERMINAL=JOB_TERMINAL;
 const fail=(message,status=400,code)=>{throw Object.assign(Error(message),{status,...(code?{code}:{})});};
 const RANKS={idle:0,normal:2,high:4,P0:0,P1:1,P2:2,P3:3,P4:4};
 function rankValue(value){if(typeof value!=='string'||!Object.hasOwn(RANKS,value))fail('排队优先级必须为 P0–P4（或 idle/normal/high）。');return value;}
@@ -50,7 +50,7 @@ export function schedulerResult(job,result){
 }
 function persistSchedulerResult(service,job,result){
   const before=structuredClone(job);
-  try{schedulerResult(job,result);service.save();}
+  try{schedulerResult(job,result);service.save(job);}
   catch(error){
     for(const key of Object.keys(job))if(!Object.hasOwn(before,key))delete job[key];
     Object.assign(job,before);throw error;
@@ -68,19 +68,19 @@ export function installExecution(service,bridge){
         await service.bridge(job.machine,'transfers.cancel',{id:job.id,userId:job.userId});
         try{await service.bridge(job.sourceMachine,'transfers.project.complete',{id:job.id,userId:job.userId});}
         catch{} // The target may never have received its ticket; source expiry also collects this export.
-        await service.enqueue(()=>{job.state='CANCELED';job.finishedAt=new Date().toISOString();job.notSubmitted=true;service.save();});
+        await service.enqueue(()=>{job.state='CANCELED';job.finishedAt=new Date().toISOString();job.notSubmitted=true;service.save(job);});
         return;
       }
       if(job.state==='SUBMITTING'&&job.dispatchPending!==true&&!job.cancelRequested){
         // Watch never submits or releases resources; only definite absence allows dispatch.
         const result=await service.bridge(job.machine,'watch',{job:nativeJobSpec(job)},{rpcTimeoutMs:27000});
         await service.enqueue(()=>{
-          const current=service.store.jobs.find(j=>j.id===job.id);
+          const current=service.job(job.id);
           if(!current||service.closing||current.state!=='SUBMITTING'||current.cancelRequested)return;
           if(result?.state==='FAILED'&&result.notSubmitted===true||
             typeof result?.nodeJobId==='string'&&/^J[a-f0-9]{12}$/.test(result.nodeJobId)&&
             ['PENDING','STARTING','RUNNING','PREEMPTING','LOST','UNKNOWN',...TERMINAL].includes(result.state)){
-            persistSchedulerResult(service,current,result);delete current.submissionReconciliation;service.save();return;
+            persistSchedulerResult(service,current,result);delete current.submissionReconciliation;service.save(current);return;
           }
           const now=Date.now(),old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
           const absent=result?.schedulerState==='NOT_SUBMITTED'&&!result.nodeJobId&&!result.latestAttempt;
@@ -93,7 +93,7 @@ export function installExecution(service,bridge){
             current.dispatchPending=true;current.submissionReconciliation.dispatchRetries=(old.dispatchRetries||0)+1;
             current.error=null;service.audit('system','jobs.submit',current.id,'auto-retry-original-dispatch');
           }else current.error=submissionError(current);
-          current.checkedAt=new Date(now).toISOString();service.save();
+          current.checkedAt=new Date(now).toISOString();service.save(current);
         });
         return;
       }
@@ -103,20 +103,20 @@ export function installExecution(service,bridge){
       dispatched=attempt.dispatched===true;
       const result=await attempt.response;
       await service.enqueue(()=>{
-        const current=service.store.jobs.find(j=>j.id===job.id);if(!current||service.closing||TERMINAL.has(current.state))return;
+        const current=service.job(job.id);if(!current||service.closing||TERMINAL.has(current.state))return;
         // LOST/unknown remains nonterminal: retain quota until confirmed.
         persistSchedulerResult(service,current,result);maintainTaskNotes(service);
       });
-    }catch(e){await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing&&!TERMINAL.has(current.state)){
+    }catch(e){await service.enqueue(()=>{const current=service.job(job.id);if(current&&!service.closing&&!TERMINAL.has(current.state)){
       const pending=current.state==='SUBMITTING'&&current.dispatchPending!==true&&!current.cancelRequested;
       if(pending){const old=current.submissionReconciliation||{},attempts=(old.attempts||0)+1;
         current.submissionReconciliation={...old,state:'CHECKING',attempts,lastReason:e.code||'UNCONFIRMED',nextCheckAt:new Date(Date.now()+submissionDelay(attempts-1)).toISOString()};}
       if(current.state==='SUBMITTING'&&current.dispatchPending===true&&e.status===403){
         current.state='FAILED';current.notSubmitted=true;current.failureCode=e.code||'SUBMISSION_AUTH_REVOKED';current.finishedAt=new Date().toISOString();
       }
-      current.error=pending?submissionError(current):String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save();
+      current.error=pending?submissionError(current):String(e.message).slice(0,200);current.checkedAt=new Date().toISOString();service.save(current);
     }});}
-    finally{if(dispatched)await service.enqueue(()=>{const current=service.store.jobs.find(j=>j.id===job.id);if(current&&!service.closing){current.dispatchFinishedAt=new Date().toISOString();service.save();}});}
+    finally{if(dispatched)await service.enqueue(()=>{const current=service.job(job.id);if(current&&!service.closing){current.dispatchFinishedAt=new Date().toISOString();service.save(current);}});}
   };
   const pump=()=>{
     const current=cycle;if(!current)return;
@@ -161,7 +161,8 @@ export function installExecution(service,bridge){
     current.promise=new Promise((resolve,reject)=>{current.resolve=resolve;current.reject=reject;});
     cycle=current;service.reconciling=true;pump();return current.promise;
   };
-  if(bridge){service.executionTimer=setInterval(()=>{service.reconcile().catch(()=>{});service.refreshStorage?.(true).catch(()=>{});},15000);service.executionTimer.unref();}
+  if(bridge){service.executionTimer=setInterval(()=>{service.reconcile().catch(()=>{});service.refreshStorage?.(true).catch(()=>{});
+    service.enqueue(()=>service.collectJobHistory()).catch(()=>{});},15000);service.executionTimer.unref();}
 }
 // Presentation only: never persist these deductions or use them for admission.
 // A node-supplied reason remains authoritative; missing observations are not
@@ -171,7 +172,7 @@ export function pendingJobReason(service,job,now=Date.now()){
   if(!['PENDING','QUEUED','SUBMITTING'].includes(job.state)||job.cancelRequested)return reported;
   if(reported)return reported;
   if(job.after?.length){
-    const waiting=job.after.filter(item=>service.store.jobs.find(row=>row.id===item.id)?.state!=='SUCCEEDED');
+    const waiting=job.after.filter(item=>service.jobReference(item.id)?.state!=='SUCCEEDED');
     if(waiting.length)return '等待依赖：'+waiting.map(item=>item.name||item.id).join('、');
   }
   const snapshot=service.gpuq,host=snapshot?.hosts?.find(h=>h.id===job.machine);
@@ -227,7 +228,9 @@ function publicGpuMetrics(job){
   const fresh=!TERMINAL.has(job.state)&&job.state!=='UNKNOWN'&&Number.isFinite(receivedAt)&&Date.now()-receivedAt<=30000;
   return {...metrics,gpus:(metrics.gpus||[]).map(gpu=>fresh?{...gpu}:{...gpu,utilization:null,memoryUsedMiB:null})};
 }
-export function publicJob(job,users=[]){const {spec,schedulerPolicy,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,dispatchPending,gpuMetrics:publicGpuMetrics(job),
+export function publicJob(job,users=[]){
+  if(job.historyExpired){const user=users.find(user=>user.id===job.userId);return {...job,submitter:{name:user?.name??null,username:user?.username??null},message:'任务详细记录已按保留期限清理，输出文件仍保留。'};}
+  const {spec,schedulerPolicy,dispatchPending,dispatchStartedAt,dispatchFinishedAt,submissionReconciliation,nativeTaskDisplay:displayCache,...safe}=job;return {...safe,dispatchPending,gpuMetrics:publicGpuMetrics(job),
   ...(job.state==='SUBMITTING'&&dispatchPending!==true?{submissionState:submissionReconciliation?.state||'CHECKING',
     canRetryDispatch:false,error:submissionError(job)}:{}),
   ...projectProgress(job),...jobTiming(job),...taskIdentity(job,users),ownerId:job.ownerId??job.userId,ownerName:users.find(user=>user.id===job.userId)?.name??null,command:spec.argv,
@@ -279,13 +282,18 @@ export async function executionCall(service,principal,operation,args,readContext
     const {machine,...request}=args;
     return bridge(machine,operation,{...request,userId:user.id,ownerId:args.ownerId??user.id,actor});
   }
-  const jobById=id=>{const job=service.store.jobs.find(j=>j.id===id);if(!job)fail('任务不存在。',404);if(job.machine)authorizedMachine(job.machine);return job;};
+  const jobById=(id,detail=true)=>{
+    const reference=service.jobReference(id);if(!reference)fail('任务不存在。',404);
+    if(reference.machine)authorizedMachine(reference.machine);
+    if(!detail)return reference;
+    const job=service.job(id);if(!job)fail('任务详细记录已按保留期限清理，输出文件仍保留。',410,'JOB_HISTORY_EXPIRED');return job;
+  };
   if(operation==='outputs.delete'){
     args=selectFields(args,['jobId','key','path','recursive','dryRun']);
     if(args.key!==undefined&&!UUID.test(args.key))fail('删除输出请使用原 UUID 编号。');
     args.key??=randomUUID();
     if(['recursive','dryRun'].some(key=>args[key]!==undefined&&typeof args[key]!=='boolean'))fail('输出删除参数无效。');
-    const job=jobById(args.jobId);
+    const job=jobById(args.jobId,false);
     const path=args.path??'.';
     if(typeof path!=='string'||!path||path.length>4096||path.includes('\\')||/[\p{Cc}\p{Cf}]/u.test(path)||
       path!=='.'&&path.split('/').some(part=>!part||part==='.'||part==='..'))fail('只能删除本任务 outputs 内的相对路径。');
@@ -355,10 +363,10 @@ export async function executionCall(service,principal,operation,args,readContext
     service.audit(principal.username,operation,job.id,priority);
     try{
       const result=await service.bridge(job.machine,'priority',nativeJobRequest(service,job,{priority,rankOnly:true}));
-      if(!TERMINAL.has(job.state)){schedulerResult(job,result);service.save();maintainTaskNotes(service);}return jobView(job);
+      if(!TERMINAL.has(job.state)){schedulerResult(job,result);service.save(job);maintainTaskNotes(service);}return jobView(job);
     }catch(error){
       if(!TERMINAL.has(job.state)&&(['EXECUTOR_UNAVAILABLE','EXECUTOR_TIMEOUT','EXECUTOR_UNCONFIRMED','NODE_TRANSPORT_BUSY','NODE_CONNECT_FAILED','NODE_RESPONSE_TIMEOUT','NODE_SSH_AUTH_FAILED','NODE_SSH_HOSTKEY_FAILED','NODE_RESPONSE_INVALID'].includes(error.code)||!error.code&&[502,503,504].includes(error.status))){
-        job.priorityMutable=false;job.error='调整结果未知，请按原任务编号查询。';service.save();
+        job.priorityMutable=false;job.error='调整结果未知，请按原任务编号查询。';service.save(job);
         setImmediate(()=>service.reconcile().catch(()=>{}));
       }
       throw error;
@@ -371,7 +379,7 @@ export async function executionCall(service,principal,operation,args,readContext
       try{
         service.db.exec('BEGIN IMMEDIATE');transaction=true;
         job.cancelRequested=true;
-        service.save();service.audit(principal.username,operation,job.id,'requested');
+        service.save(job);service.audit(principal.username,operation,job.id,'requested');
         service.db.exec('COMMIT');transaction=false;
       }catch(error){
         try{if(transaction)service.db.exec('ROLLBACK');}
@@ -443,7 +451,7 @@ export async function executionCall(service,principal,operation,args,readContext
   if(['files.list','files.get'].includes(operation)){
     args=selectFields(args,['machine','ownerId','dataset','project','area','runId','path','offset','cursor','limit']);
     if(args.area==='output'){
-      const job=jobById(args.runId);args={...args,machine:job.machine,project:job.project,ownerId:job.ownerId??job.userId};
+      const job=jobById(args.runId,false);args={...args,machine:job.machine,project:job.project??job.spec?.project,ownerId:job.ownerId??job.userId};
     }
     authorizedMachine(args.machine);const context=validateProjectFile(args);
     if(context.area==='dataset')directoryName(args.dataset);else delete args.dataset;

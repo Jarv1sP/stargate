@@ -39,6 +39,8 @@ var daily = `STARGATE — 团队项目、数据集与训练
 gpuctl login [USERNAME] / register USERNAME / logout
 gpuctl state / use MACHINE_ID / jobs / queue
 gpuctl jobs --key UUID --json （按原提交 key 查询，包括已结束任务）
+gpuctl jobs trash [--machine MACHINE] [--cursor CURSOR] （任务记录回收站）
+gpuctl jobs restore JOB_ID （只恢复记录，不重跑训练）
 
 gpuctl project create NAME [--repo GIT_URL] [--shared]
 gpuctl project list / use NAME / status / quota [--project NAME | --all]
@@ -316,7 +318,8 @@ async function main() {
         command==='transfer'&&['upload','download'].includes(positionals[1])||
         ['run','ssh','shell'].includes(command)&&positionals.length===1&&!(command==='run'&&options.after?.length))||
       command==='run'&&options.sync&&(positionals[1]==='auto'||options.machines[0]==='auto'||options.after?.length));
-    const state = command==='jobs'&&options.key?(await call('state',{jobKey:options.key})).state
+    const state = command==='jobs'&&positionals.length>1?(await call('state',{view:'summary'})).state
+      :command==='jobs'&&options.key?(await call('state',{jobKey:options.key})).state
       :pulling&&options.job?(await call('state',{view:'summary',jobId:options.job})).state
       :ownerUsername!==undefined||options.job&&!outputDelete?(await call('state',pulling?{view:'summary'}:{})).state:outputDelete?{machines:[],users:[]}:await readCLIState(call,command,{selectMachine});
     if(ownerUsername!==undefined){const owner=state.users?.find(user=>user.username===ownerUsername);if(!owner)fail9('没有这个用户名：'+ownerUsername);targetOwnerId=owner.id;}
@@ -655,6 +658,12 @@ ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand
       const submission = await submitJobWithReceipt(call, { machine: positionals[1], ...automatic ? { machineSelection: { mode: "auto", ...candidates ? { candidates } : {} } } : {}, cards, minVramGiB: Number(options["min-vram"] || 0), name: options.name || "train", ...options.description !== void 0 ? { description: taskDescription(options.description) } : {}, argv: training, key, ...options.priority ? { priority: options.priority } : {}, ...scheduling ? { scheduling } : {}, ...elastic ? { elastic } : {}, ...placement ? { placement } : {}, ...context },session.principal);
       result=submission.result;if(submission.receiptRecovered)process.stderr.write("按原 key 找回已登记任务："+result.id+"\n");
     } else if (command === "jobs" && positionals.length === 1) result = targetOwnerId?state.jobs.filter(job=>(job.ownerId||job.userId)===targetOwnerId):state.jobs;
+    else if(command==='jobs'&&positionals[1]==='trash'&&positionals.length===2){
+      result=(await call('jobs.history.list',{...(options.machines.length?{machine:machineName(options.machines[0])}:{}),...(options.cursor?{cursor:options.cursor}:{})})).result;
+      if(targetOwnerId)result.jobs=result.jobs.filter(job=>(job.ownerId||job.userId)===targetOwnerId);
+    }else if(command==='jobs'&&positionals[1]==='restore'&&positionals.length===3){
+      result=(await call('jobs.history.restore',{jobId:positionals[2]})).result;
+    }
     else if (command === "priority" && positionals.length === 3) {
       if (!["idle", "normal", "high", "P0", "P1", "P2", "P3", "P4"].includes(positionals[2])) fail9("Queue rank must be P0..P4 (or idle, normal, high); yielding/restart stay unchanged");
       if (options.key || training.length) fail9("priority does not accept a submission key or command argv");
@@ -841,7 +850,13 @@ ${n.body}
     return;
   }
   if (command === "jobs") {
-    console.log(result.length ? [...result].slice(-50).reverse().map((j) => `${j.id}  ${j.state}${j.preempted ? "（让位中断，不会自动重跑）" : ""}
+    if(positionals[1]==='restore'){console.log(result.message);return;}
+    if(positionals[1]==='trash'){
+      console.log(result.jobs.map(job=>`${job.id}  ${job.state}  ${job.machine}  ${job.name||'未命名任务'}\n  可恢复至 ${job.historyPurgeAt}`).join('\n')||'任务记录回收站为空。');
+      if(result.nextCursor)console.log('下一页：gpuctl jobs trash --cursor '+result.nextCursor+(options.machines.length?' --machine '+options.machines[0]:''));
+      return;
+    }
+    console.log(result.length ? [...result].slice(-50).reverse().map((j) => `${j.id}  ${j.state}${j.historyExpired?"（明细已清理，输出保留）":j.preempted ? "（让位中断，不会自动重跑）" : ""}
   ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${Number.isInteger(j.schedulerPriority) ? 'P'+j.schedulerPriority : ["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}
   ${j.after?.length?'依赖：'+j.after.map(item=>`${item.name} (${item.id})`).join('、')+(j.error||j.reason?' · '+(j.error||j.reason):'')+'\n  ':''}${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}\n  ${gpuMetricsText(j.gpuMetrics)}`).join("\n") : options.key?"当前平台记录中未找到此 key；提交结果仍未知，请保留原 key 继续查询。":"暂无任务。");
     if (result.length > 50) console.log("显示最近 50 条；完整记录：gpuctl jobs --json");

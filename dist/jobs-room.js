@@ -7,6 +7,7 @@ import {diagnosticsHTML,nativeObservationHTML,completionHTML} from './job-diagno
 import {deleteJobOutputs,deletableResultJob,ownResultJob,resultPullCommand} from './job-results-ui.js';
 import {reducedMotion} from './motion-ui.js';
 import {confirmSheet} from './sheet-ui.js';
+import {installJobHistory} from './job-history-ui.js';
 
 const QUEUED=['PENDING','QUEUED','SUBMITTING'],LIVE=['RUNNING','STARTING'];
 const dotClass=job=>job.cancelRequested&&!endedJob(job)?'cancel':LIVE.includes(job.state)?'run':QUEUED.includes(job.state)?'queue':job.state==='FAILED'?'fail':'done';
@@ -31,6 +32,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
   host.innerHTML=`<div class="jr-toolbar"><div class="jr-seg" role="group" aria-label="任务范围"><span class="jr-pill" aria-hidden="true"></span><button type="button" data-scope="mine" aria-pressed="true">我的</button><button type="button" data-scope="project" aria-pressed="false">本项目</button><button type="button" data-scope="all" aria-pressed="false">全部</button></div><input class="jr-search" type="search" placeholder="搜索任务" aria-label="搜索任务"></div><div class="jr-rows" role="list" aria-label="任务列表"></div>`;
   const newButton=document.createElement('button');newButton.type='button';newButton.className='jr-btn primary';newButton.id='jobs-new';newButton.hidden=true;
   newButton.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建任务';actions.prepend(newButton);
+  const history=installJobHistory(store,host,toast);
   const layer=document.createElement('div');layer.className='jr-layer';
   layer.innerHTML='<div class="jr-scrim"></div><aside class="jr-drawer" aria-label="任务详情" role="dialog" aria-modal="true"><div class="jr-dr-h"><div class="jr-dr-title"></div><button type="button" class="jr-x" aria-label="关闭">✕</button></div><div class="jr-dr-b"></div></aside><div class="jr-sheet" role="dialog" aria-modal="true" aria-label="新建任务"><div class="jr-sheet-in"></div></div>';
   document.body.append(layer);
@@ -224,7 +226,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
   document.addEventListener('sg-open-job',event=>{const id=event.detail?.id;if(id){tab='log';openJob(id);}});
 
   function render(){
-    const on=getPage()==='jobs'&&!!store.principal;newButton.hidden=!on;if(!on)return;
+    const on=getPage()==='jobs'&&!!store.principal;newButton.hidden=!on;history.sync(on);if(!on)return;
     renderRows();requestAnimationFrame(placePill);
     if(openId){const job=store.jobs.find(item=>item.id===openId);if(job){const chip=drawer.querySelector('.jr-chip');if(chip&&chip.textContent!==stateWord(job))openJob(openId);}}
   }
