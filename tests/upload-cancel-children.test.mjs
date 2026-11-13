@@ -60,6 +60,18 @@ test('unrelated transfers are not blocked by one slow child begin',async t=>{
   assert.equal((await f.begin(b,randomUUID())).state,'UPLOADING');release.resolve();await slow;
 });
 
+test('same-parent begins dispatch concurrently, and cancel waits for every accepted begin',async t=>{
+  const f=await fixture(t),id=await f.create(),a=randomUUID(),b=randomUUID(),first=f.gate(),second=f.gate(),releaseA=f.gate(),releaseB=f.gate();
+  f.handler(async(op,args)=>{if(op==='data.upload.begin'){
+    (args.key===a?first:second).resolve();await (args.key===a?releaseA:releaseB).promise;
+  }});
+  const beginA=f.begin(id,a);await first.promise;const beginB=f.begin(id,b);await second.promise;
+  const cancel=f.call('transfers.cancel',{id});releaseA.resolve();await beginA;await tick();
+  assert.equal(f.calls.some(c=>c.operation==='data.upload.cancel'),false,'second begin remains in flight');
+  releaseB.resolve();await beginB;assert.equal((await cancel).state,'CANCELED');
+  assert.deepEqual(f.saved(id).uploadKeys,[a,b]);assert.equal(f.uploads.get(a),'CANCELED');assert.equal(f.uploads.get(b),'CANCELED');
+});
+
 test('unknown cancellation keeps original children and remains resumable without accepting new begins',async t=>{
   const f=await fixture(t),id=await f.create(),key=randomUUID();await f.begin(id,key);
   f.handler(async op=>op==='data.upload.cancel'?{state:'UNKNOWN'}:undefined);
@@ -68,6 +80,14 @@ test('unknown cancellation keeps original children and remains resumable without
   // Only durable state is needed after the in-flight map is gone.
   assert.equal(f.service.transferWrites.size,0);f.handler(undefined);
   assert.equal((await f.call('transfers.resume',{id})).state,'CANCELED');assert.equal(f.uploads.get(key),'CANCELED');
+});
+
+test('tracking a lost begin reply preserves its error and original key for cancellation',async t=>{
+  const f=await fixture(t),id=await f.create(),key=randomUUID(),lost=Object.assign(Error('begin reply lost'),{code:'NODE_RESPONSE_TIMEOUT'});
+  f.handler(async(op,args)=>{if(op==='data.upload.begin'){f.uploads.set(args.key,'UPLOADING');throw lost;}});
+  await assert.rejects(f.begin(id,key),error=>error===lost);
+  assert.deepEqual(f.saved(id).uploadKeys,[key]);f.handler(undefined);
+  assert.equal((await f.call('transfers.cancel',{id})).state,'CANCELED');assert.equal(f.uploads.get(key),'CANCELED');
 });
 
 for(const kind of ['upload','download'])test(kind+' client preserves parent cancellation returned at completion',async t=>{

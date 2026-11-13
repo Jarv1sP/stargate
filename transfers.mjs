@@ -11,19 +11,24 @@ export function installTransfers(service){
 }
 const load=(service,id)=>{const row=service.db.prepare('SELECT data FROM directory_transfers WHERE id=?').get(id);return row&&JSON.parse(row.data);};
 const save=(service,row)=>service.db.prepare('INSERT INTO directory_transfers VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data').run(row.id,JSON.stringify(row));
-function transferWrite(service,id,run){
-  const prior=service.transferWrites.get(id),work=prior?prior.then(run,run):Promise.resolve().then(run);
+function trackTransferWrite(service,id,work){
   service.transferWrites.set(id,work);
   const done=()=>{if(service.transferWrites.get(id)===work)service.transferWrites.delete(id);};
   work.then(done,done);return work;
+}
+function transferWrite(service,id,run){
+  const prior=service.transferWrites.get(id);
+  return trackTransferWrite(service,id,prior?prior.then(run,run):Promise.resolve().then(run));
 }
 export function beginTransferUpload(service,id,key,send){
   const row=load(service,id);if(!row)return send();
   if(['CANCELING','CANCELED'].includes(row.state))fail('原传输正在取消或已取消，请查询原编号。',409);
   row.uploadKeys=[...new Set([...(row.uploadKeys||[]),key])];save(service,row);
-  // Registration is synchronous; cancellation blocks later begins and waits
-  // for the already accepted ones before canceling their original keys.
-  return transferWrite(service,id,send);
+  // Begin is sent immediately under the caller's current authorization. Track
+  // concurrent begins together; cancellation waits for all of them to settle.
+  const prior=service.transferWrites.get(id),work=send();
+  trackTransferWrite(service,id,Promise.allSettled(prior?[prior,work]:[work]));
+  return work;
 }
 export async function transferCall(service,principal,operation,input,check=()=>{}){
   check();if(!service.store.get(principal.userId).enabled)fail('请重新登录。',403);
