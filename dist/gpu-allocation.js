@@ -1,10 +1,11 @@
 // One allocation contract shared by browser, CLI and submission service.
 import {schedulingPolicy} from './scheduling-policy.js';
+export const drainingResources=job=>job.latestAttempt?.state==='DRAINING'&&job.latestAttempt.finishedAt==null&&job.resourcesReleased!==true;
 export function occupiesGpu(job){
   if(job.state==='SUBMITTING'&&job.dispatchPending===true)return false;
   return ['STARTING','RUNNING','PREEMPTING','CANCELING','UNKNOWN'].includes(job.state)||
     ['PENDING','QUEUED'].includes(job.state)&&!!job.nodeJobId&&job.dispatchPending!==true||
-    job.state==='SUBMITTING'&&job.dispatchPending!==true||job.latestAttempt?.state==='DRAINING'&&job.latestAttempt.finishedAt==null;
+    job.state==='SUBMITTING'&&job.dispatchPending!==true||drainingResources(job);
 }
 // Dispatched work holds quota even while queued on the node. Only jobs still
 // waiting in the portal are free; use reported cards, fixed cards, then capacity.
