@@ -18,6 +18,8 @@ import {terminalNativeObservation,unavailableObservation,portalTerminalSnapshot,
 export const TERMINAL=JOB_TERMINAL;
 const fail=(message,status=400,code)=>{throw Object.assign(Error(message),{status,...(code?{code}:{})});};
 const RANKS={idle:0,normal:2,high:4,P0:0,P1:1,P2:2,P3:3,P4:4};
+const queueRank=job=>Number.isInteger(job.schedulerPriority)?job.schedulerPriority:
+  Number.isInteger(job.priority)?job.priority:RANKS[job.priority]??RANKS[job.spec?.scheduling?.rank]??2;
 function rankValue(value){if(typeof value!=='string'||!Object.hasOwn(RANKS,value))fail('排队优先级必须为 P0–P4（或 idle/normal/high）。');return value;}
 export function schedulerResult(job,result){
   if(result.displaySync&&['SYNCED','PRESERVED','UNAVAILABLE'].includes(result.displaySync.state))
@@ -68,6 +70,7 @@ export function installExecution(service,bridge){
   service.bridge=bridge;service.executionEnabled=!!bridge;service.reconciling=false;
   let cycle=null;
   const kind=job=>job.cancelRequested&&!TERMINAL.has(job.state)?'cancel':job.state==='SUBMITTING'&&job.dispatchPending===true?'first':'observe';
+  const reconsiderFirst=()=>{if(cycle)for(const job of service.store.jobs)if(kind(job)==='first')cycle.seen.delete(job.id+':first');};
   const eligible=(job,maintained)=>(!TERMINAL.has(job.state)||drainingResources(job))&&(!maintained||kind(job)==='cancel')&&(job.cancelRequested||job.state!=='SUBMITTING'||job.dispatchPending===true||!(Date.parse(job.submissionReconciliation?.nextCheckAt)>Date.now()));
   const step=async job=>{
     let dispatched=false;
@@ -144,8 +147,12 @@ export function installExecution(service,bridge){
       const maintained=service.maintenanceFor?.(machine.id);
       for(const lane of ['urgent','observe']){
       const slot=machine.id+':'+lane;if(current.slots.has(slot))continue;
-      const job=service.store.jobs.find(job=>job.machine===machine.id&&!current.active.has(job.id)&&
+      const candidates=service.store.jobs.filter(job=>job.machine===machine.id&&!current.active.has(job.id)&&
         !current.seen.has(job.id+':'+kind(job))&&(lane==='urgent'?kind(job)!=='observe':kind(job)==='observe')&&eligible(job,maintained));
+      // First dispatch uses the node's rank contract, with append order as
+      // the FIFO tie-breaker. Cancellations keep the urgent lane available.
+      const job=lane==='observe'?candidates[0]:candidates.find(job=>kind(job)==='cancel')??
+        candidates.reduce((best,job)=>!best||queueRank(job)>queueRank(best)?job:best,undefined);
       if(!job)continue;
       const operationKind=kind(job);
       current.seen.add(job.id+':'+operationKind);
@@ -153,7 +160,12 @@ export function installExecution(service,bridge){
       // again in the background lane, including after a lost first reply.
       current.seen.add(job.id+':observe');
       current.active.add(job.id);current.slots.add(slot);
-      step(job).catch(error=>{current.error||=error;}).finally(()=>{
+      const before=usage(service.store.jobs,job.userId);
+      step(job).then(()=>{
+        // A higher rank may already have waited for quota earlier in this
+        // pass. Reconsider unsent work when an observation/cancel frees it.
+        if(usage(service.store.jobs,job.userId)<before)reconsiderFirst();
+      }).catch(error=>{current.error||=error;}).finally(()=>{
         current.active.delete(job.id);current.slots.delete(slot);pump();
       });
     }}}catch(error){current.error||=error;}
@@ -166,6 +178,7 @@ export function installExecution(service,bridge){
     if(!bridge||service.closing)return Promise.resolve();
     if(cycle){
       const promise=cycle.promise;
+      reconsiderFirst();
       pump();return promise;
     }
     // Preserve the explicit pause used by callers while no pass is active.
@@ -213,10 +226,8 @@ export function pendingJobReason(service,job,now=Date.now()){
     // An occupied card can still accept an explicitly shared job. In particular
     // process count is not a lease count or a declared sharing-person limit.
     if(!shared&&occupied.size===machine.cards){
-      const rank=row=>Number.isInteger(row.schedulerPriority)?row.schedulerPriority:
-        Number.isInteger(row.priority)?row.priority:RANKS[row.priority]??RANKS[row.spec?.scheduling?.rank]??2;
       const time=value=>typeof value==='number'?value*(value<1e12?1000:1):Date.parse(value);
-      const before=row=>rank(row)>rank(job)||rank(row)===rank(job)&&time(row.createdAt??row.created_at)<time(job.createdAt);
+      const before=row=>queueRank(row)>queueRank(job)||queueRank(row)===queueRank(job)&&time(row.createdAt??row.created_at)<time(job.createdAt);
       const pending=jobs.filter(row=>row.machine===job.machine&&row.id!==job.id&&row.state==='PENDING'&&!row.cancelRequested);
       const known=new Set(jobs.filter(row=>row.machine===job.machine).map(row=>row.nodeJobId).filter(Boolean));
       const other=[...new Map(native.filter(row=>row.state==='PENDING'&&row.id!==job.nodeJobId&&!known.has(row.id)).map(row=>[row.id,row])).values()];
