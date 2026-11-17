@@ -8,6 +8,7 @@ export function terminalRequestContext(value){
 }
 
 export function terminalExitMessage(result){
+  if(result.closedReason==='idle')return '终端空闲满 24 小时，历史输出可只读查看';
   return Number.isInteger(result.exitCode)?`终端已结束（退出码 ${result.exitCode}）`:'终端已结束（退出码未提供）';
 }
 export function terminalStoppedMessage(result,id){

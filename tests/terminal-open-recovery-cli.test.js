@@ -72,6 +72,29 @@ function errorJSON(result){
   assert.ok(line,'JSON errors remain machine-readable on stderr');return JSON.parse(line);
 }
 
+test('Ctrl+] releases the attachment and prints a usable close command for the same ID',async t=>{
+ const f=await fixture(t,{open:args=>({id:args.id||args.key,writerToken:'test-writer'}),exchange:()=>({data:'',offset:0,exited:false})});
+ const result=await f.cli(['ssh'],'\x1d');assert.equal(result.code,0,result.stderr);
+ const opened=f.calls.find(call=>call.operation==='terminal.open').args;
+ const detached=f.calls.find(call=>call.operation==='terminal.detach');assert.equal(detached.args.id,opened.key);
+ assert.equal(detached.args.writerToken,'test-writer');assert.equal(f.calls.filter(call=>call.operation==='terminal.close').length,0);
+ assert.ok(result.stderr.includes(`gpuctl terminal close ${opened.key} --machine gpu-1 --project alpha`));
+});
+
+test('the terminal limit reports the actual close command and does not attach or retry',async t=>{
+ const reason=`本项目在此节点已有 20 个未结束终端，上限为 20。请先关闭：gpuctl terminal close ${original} --machine gpu-1`;
+ const f=await fixture(t,{openStatus:400,openError:{error:reason,code:'TERMINAL_OPEN_REJECTED'}});
+ const result=await f.cli(['ssh']);assert.equal(result.code,1);assert.match(errorJSON(result).error,/已有 20 个/);
+ assert.ok(result.stderr.includes(`gpuctl terminal close ${original} --machine gpu-1`));
+ assert.deepEqual(f.calls.map(call=>call.operation),['terminal.open']);
+});
+
+test('an idle-closed terminal reconnect reads history and explains why it ended',async t=>{
+ const f=await fixture(t,{open:()=>({id:original,writerToken:'reader',readOnly:true,closedReason:'idle'}),exchange:()=>({data:Buffer.from('old history\n').toString('base64'),offset:12,exited:true,closedReason:'idle'})});
+ const result=await f.cli(['ssh','--reconnect',original]);assert.equal(result.code,0,result.stderr);
+ assert.match(result.stderr,/空闲满 24 小时自动关闭/);assert.match(result.stdout,/old history/);
+});
+
 for(const {name,argv,scope,command} of [
   {name:'project',argv:['ssh'],scope:{machine:'gpu-1',project:'alpha'},command:'--project alpha'},
 ])test(`503 prints the original ${name} UUID and scope before dispatch, without entering interaction`,async t=>{

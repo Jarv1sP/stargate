@@ -11,7 +11,7 @@ try{
   page.on('pageerror',error=>errors.push(error.message));
   await page.route('**/*',async route=>{
    const url=new URL(route.request().url());assert.equal(url.origin,origin);
-   if(url.pathname==='/')return route.fulfill({contentType:'text/html',body:`<!doctype html><html><head><link rel="stylesheet" href="/terminal.css"><link rel="stylesheet" href="/vendor/xterm.css"></head><body>
+   if(url.pathname==='/')return route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/terminal.css"><link rel="stylesheet" href="/vendor/xterm.css"></head><body>
     <select name="terminal-machine"><option>fixture-node</option></select><select name="workspace-project"><option>demo</option></select>
     <button id="terminal-open">新建终端</button><button id="terminal-reconnect">重连</button><output id="notice"></output>
     <script src="/vendor/xterm.js"></script><script src="/vendor/addon-fit.js"></script>
@@ -19,16 +19,20 @@ try{
     import {terminalUI,projectTerminalStorage} from '/terminal-ui.js';
     const record={userId:'member-a',machine:'fixture-node',project:'demo',id:'${id}'};
     window.calls=[];window.directory=[];window.statusState='UNKNOWN';window.openMissing=true;window.exchangeMissing=false;window.detachMissing=false;
+    window.openRejected=false;window.idleClosed=false;window.closeMissing=true;
     window.seed=()=>projectTerminalStorage(localStorage).remember(record);seed();
     document.addEventListener('gpuq-terminal-state',event=>window.directory=event.detail.sessions);
     const store={principal:{userId:'member-a',role:'member'},authGeneration:1,users:[{id:'member-a',enabled:true,limits:{'fixture-node':1}}],data:{machines:[{id:'fixture-node'}]},async call(op,args,options={}){
       calls.push({op,args});let result;
       const missing={id:args.id||args.key,state:'NOT_FOUND',canCreate:true,created:false};
       if(op==='terminal.status')result={id:args.id,state:statusState,...(statusState==='NOT_FOUND'?missing:{})};
-      else if(op==='terminal.open')result=openMissing?missing:{id:args.key,writerToken:'fixture-writer',state:'OPEN'};
-      else if(op==='terminal.exchange')result=exchangeMissing?missing:{offset:0,data:'',exited:false};
+      else if(op==='terminal.open'){
+        if(openRejected)throw Object.assign(Error('本项目已有 20 个未结束终端。gpuctl terminal close '+record.id+' --machine fixture-node'),{status:400,code:'TERMINAL_OPEN_REJECTED'});
+        result=openMissing?missing:{id:args.id||args.key,writerToken:'fixture-writer',state:idleClosed?'STOPPED':'OPEN'};
+      }
+      else if(op==='terminal.exchange')result=exchangeMissing?missing:idleClosed?{offset:12,data:btoa('old history'),exited:true,closedReason:'idle'}:{offset:0,data:'',exited:false};
       else if(op==='terminal.detach')result=detachMissing?missing:{detached:true};
-      else if(op==='terminal.close')result=missing;
+      else if(op==='terminal.close')result=closeMissing?missing:{id:args.id,state:'STOPPED'};
       else throw Error('Unexpected RPC '+op);
       options.accept?.(result);return result;
     }};
@@ -81,6 +85,17 @@ try{
   assert.match(await page.locator('#notice').textContent(),/原终端没有创建，可以新建/);
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.op==='terminal.open').length),5);
   assert.equal(await page.evaluate(()=>localStorage.length),0);
-  assert.deepEqual(errors,[]);await context.close();console.log('PASS terminal NOT_FOUND recovery '+width);
+  await page.evaluate(()=>{openRejected=true;});await page.locator('#terminal-open').click();
+  await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('已有 20 个'));
+  assert.equal(await page.evaluate(()=>directory.length),0);
+  await page.evaluate(()=>{openRejected=false;idleClosed=true;detachMissing=false;closeMissing=false;});
+  await page.locator('#terminal-reconnect').click();
+  await page.waitForFunction(()=>document.querySelector('#terminal-connection-note').textContent.includes('空闲满 24 小时'));
+  await page.waitForFunction(()=>document.querySelector('#terminal-screen .xterm-rows')?.textContent.includes('old history'));
+  const historyId=await page.evaluate(()=>calls.filter(c=>c.op==='terminal.open').at(-1).args.id);assert.equal(historyId,id);
+  await page.locator('#terminal-stop').click();await page.waitForFunction(()=>!document.querySelector('.terminal-dialog').open);
+  const closed=await page.evaluate(()=>calls.filter(c=>c.op==='terminal.close').at(-1).args);
+  assert.equal(closed.id,id);assert.equal(closed.writerToken,undefined);
+  assert.deepEqual(errors,[]);await context.close();console.log('PASS terminal recovery, limit, idle history and close '+width);
  }
 }finally{await browser.close();}

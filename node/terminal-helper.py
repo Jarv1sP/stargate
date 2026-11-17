@@ -17,10 +17,22 @@ guard=importlib.util.module_from_spec(guard_spec);guard_spec.loader.exec_module(
 guard.require_data_path(configuration,platform_root)
 output_spec=importlib.util.spec_from_file_location('gpuq_terminal_output',HERE/'terminal-output.py')
 output=importlib.util.module_from_spec(output_spec);output_spec.loader.exec_module(output)
+store_spec=importlib.util.spec_from_file_location('terminal_store',HERE/'project-store.py')
+store=importlib.util.module_from_spec(store_spec);store_spec.loader.exec_module(store)
 root=platform_root/'terminals'
 jid=sys.argv[1];sock=root/(jid+'.sock')
 os.umask(0o077)
 history=output.output_fd(root,jid,create=True)
+activity={};activity_written=0
+def record_activity(field):
+ global activity_written
+ now=time.time();activity[field]=now
+ if field=='lastInputAt' or now-activity_written>=1:
+  try:
+   guard.require_data_path(configuration,platform_root)
+   store.atomic_json(root/(jid+'.activity.json'),activity)
+  except (OSError,ValueError):pass  # Output/session mtimes remain the fallback.
+  activity_written=now
 master,slave=pty.openpty()
 fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',32,110,0,0))
 def session():os.setsid();fcntl.ioctl(0,termios.TIOCSCTTY,0)
@@ -47,6 +59,7 @@ def transfer(ready,writable):
   if data:
    view=memoryview(data)
    while view:view=view[os.write(history,view):]
+   record_activity('lastOutputAt')
 
 try:
  while True:
@@ -70,7 +83,7 @@ try:
     if len(data)>8192:raise ValueError('Input too large')
     if data and not ended:
      if len(pending)+len(data)>65536:raise ValueError('Terminal input buffer full; retry')
-     pending+=data;last_input=time.monotonic()
+     pending+=data;last_input=time.monotonic();record_activity('lastInputAt')
     rows=max(8,min(100,int(req.get('rows',size[0]))));cols=max(20,min(250,int(req.get('cols',size[1]))))
     if (rows,cols)!=size:fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',rows,cols,0,0));size=(rows,cols)
     if data and not ended:
