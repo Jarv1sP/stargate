@@ -16,6 +16,22 @@ for(const state of ['SUCCEEDED','FAILED','CANCELED'])test('completion reads actu
  const f=fixture(),before=structuredClone(f.job);f.result.state=state;const value=await executionCall(f.service,f.principal,'jobs.completion',{jobId:id,ignored:true});
  assert.equal(value.completed,true);assert.equal(value.state,state);assert.equal(value.nativeObservation.status,'CONFIRMED');assert.equal(value.completedAttempt.ordinal,2);assert.equal(value.submission.key,id);assert.deepEqual(f.job,before);assert.equal(usage([f.job],f.job.userId),0);assert.deepEqual(f.calls,[[machine,'watch',{job:f.job.spec}]]);
 });
+for(const [capture,state] of [['COMPLETE','SUCCEEDED'],['PARTIAL','FAILED'],['UNAVAILABLE','PENDING']])test('diagnostics separates capture '+capture+' from native '+state,async()=>{
+ const f=fixture('CANCELED'),before=structuredClone(f.job);
+ Object.assign(f.result,{state:capture,schedulerState:state,captures:[],attempts:[]});delete f.result.latestAttempt;delete f.result.nodeJobId;
+ const value=await executionCall(f.service,f.principal,'jobs.diagnostics',{jobId:id});
+ assert.equal(value.state,capture);assert.equal(value.schedulerState,state);
+ assert.equal(value.nativeObservation.status,'CONFIRMED');assert.equal(value.nativeObservation.state,state);
+ assert.equal(value.nativeObservation.nodeJobId,nodeJobId);assert.equal(value.nativeObservation.manualRecovery.required,false);
+ assert.deepEqual(f.job,before);assert.equal(value.portalTerminal.state,'CANCELED');
+ assert.deepEqual(f.calls,[[machine,'diagnostics',{job:f.job.spec}]]);
+});
+test('a completed diagnostic capture does not invent an unavailable native state',async()=>{
+ const f=fixture(),before=structuredClone(f.job);Object.assign(f.result,{state:'COMPLETE',schedulerState:'UNKNOWN'});
+ const value=await executionCall(f.service,f.principal,'jobs.diagnostics',{jobId:id});
+ assert.equal(value.state,'COMPLETE');assert.equal(value.nativeObservation.status,'UNKNOWN');
+ assert.equal(value.nativeObservation.manualRecovery.required,true);assert.deepEqual(f.job,before);
+});
 for(const state of ['PENDING','RUNNING','UNKNOWN'])test('native '+state+' is not fabricated as complete and keeps unfinished job quota',()=>{
  const f=fixture('RUNNING');f.result.state=state;assert.equal(jobCompletion(f.job,f.result).completed,false);assert.equal(usage([f.job],f.job.userId),1);
 });

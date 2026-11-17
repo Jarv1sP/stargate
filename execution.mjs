@@ -469,7 +469,7 @@ export async function executionCall(service,principal,operation,args,readContext
     if(!TERMINAL.has(job.state))return {...await observeJob(job,'diagnostics',{job:nativeJobSpec(job)}),...dependencies};
     try{
       const result=await observeJob(job,'diagnostics',{job:nativeJobSpec(job)});
-      const nativeObservation=terminalNativeObservation(job,result);
+      const nativeObservation=terminalNativeObservation(job,{...result,state:result.schedulerState});
       return {...result,...dependencies,portalTerminal:portalTerminalSnapshot(job),nativeObservation};
     }catch(error){if([401,403].includes(error.status))throw error;return {jobId:job.id,state:'UNAVAILABLE',...dependencies,portalTerminal:portalTerminalSnapshot(job),nativeObservation:unavailableObservation()};}
   }
