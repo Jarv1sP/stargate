@@ -122,7 +122,7 @@ def job_operation(operation,args):
                 return {'state':'CANCELED' if state=='CANCELED' else 'UNKNOWN','error':'未知，请按原编号查询。' if state!='CANCELED' else None}
             if job.get('interactive'):
                 terminal_folder=module('project-store').private_dir(ROOT/'terminals',create=True)
-                with projects().store.locked(job.get('ownerId') or job['userId'],job['project']):
+                with module('terminal-lifecycle').Terminals(sys.modules[__name__]).locked(job):
                     if not (terminal_folder/(jid+'.json')).exists():
                         rejected=module('terminal-lifecycle').Terminals(sys.modules[__name__]).admission({**job,'key':jid,'machine':CONFIG['machine']})
                         if rejected:raise ValueError(rejected['reason'])
@@ -259,7 +259,8 @@ def terminal_op(operation,args):
         if opening:
             if not file.exists():
                 # User-approved keyring ceiling; serialize different new IDs in a project.
-                with projects().store.locked(args.get('ownerId') or args['userId'],args['project']):
+                projects().store.admit(args.get('ownerId') or args['userId'],args['project'])
+                with module('terminal-lifecycle').Terminals(sys.modules[__name__]).locked(args):
                     rejected=module('terminal-lifecycle').Terminals(sys.modules[__name__]).admission(args)
                     if rejected:return rejected
                     spec={'id':jid,'userId':args['userId'],'ownerId':args.get('ownerId') or args['userId'],'username':args.get('username'),'project':args['project'],

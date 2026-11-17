@@ -127,6 +127,18 @@ class TerminalLifecycle(unittest.TestCase):
             node.job_operation('sync',{'job':job})
         self.assertFalse((folder/(job['id']+'.json')).exists());node.gpu.assert_not_called()
 
+    def test_runtime_gpu_copy_admission_does_not_depend_on_original_project_directory(self):
+        node,folder,life,terminals=self.fixture()
+        for _ in range(20):self.terminal(node,folder,life)
+        copy_id=self.key();store=node.module('project-store')
+        copy=store.private_dir(node.module('project-copy').runtime_folder(node.CONFIG,copy_id),create=True)
+        node.atomic_json(copy/'project.json',{})
+        Path(node.CONFIG['workspacesRoot'],'alice','demo').rename(Path(node.CONFIG['workspacesRoot'],'alice','retired-demo'))
+        job={'id':self.key(),'userId':'alice','project':'demo','cards':1,'argv':life.SHELL,'interactive':True,'projectCopy':copy_id}
+        node.gpu=Mock()
+        with self.assertRaisesRegex(ValueError,'已有 20 个'):node.job_operation('sync',{'job':job})
+        node.gpu.assert_not_called()
+
     def test_simultaneous_new_ids_share_the_project_limit(self):
         node,folder,life,terminals=self.fixture()
         for _ in range(19):self.terminal(node,folder,life)

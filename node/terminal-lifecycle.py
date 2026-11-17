@@ -1,5 +1,5 @@
 """Bound terminal keyring use and reclaim only detached, shell-only terminals."""
-import fcntl,os,time
+import contextlib,fcntl,os,time
 from pathlib import Path
 
 IDLE_SECONDS=24*60*60
@@ -16,6 +16,16 @@ class Terminals:
     def specs(self):
         for path in self.folder.glob('*.json'):
             if self.node.UUID.fullmatch(path.stem):yield self.store.read_json(path)
+
+    @contextlib.contextmanager
+    def locked(self,args):
+        # Runtime project copies can outlive the original project's directory.
+        data=self.node.module('local-data');owner=data.name(args.get('ownerId') or args['userId']);project=data.name(args['project'])
+        locks=self.store.private_dir(self.folder/'.admission',create=True)
+        locks=self.store.private_dir(locks/owner,create=True)
+        fd=os.open(locks/(project+'.lock'),os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+        try:self.store.wait_project_lock(fd,fcntl.LOCK_EX,'终端新建繁忙，请沿原编号稍后重试。');yield
+        finally:os.close(fd)
 
     def admission(self,args):
         owner=args.get('ownerId') or args['userId']
