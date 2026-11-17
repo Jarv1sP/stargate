@@ -23,7 +23,6 @@ for jid in ids:
  session=node.module('project-store').read_json(folder/(jid+'.session.json'));session['lastInteractionAt']=old
  if jid==ids[-1]:session['leaseExpiresAt']=time.time()+300
  node.atomic_json(folder/(jid+'.session.json'),session)
- node.atomic_json(folder/(jid+'.activity.json'),{'lastOutputAt':old,'lastInputAt':old})
  for suffix in ('.json','.session.json','.output'):os.utime(folder/(jid+suffix),(old,old))
 node.storage_collect()
 print(json.dumps([node.terminal_status({'id':jid}) for jid in ids]))`;

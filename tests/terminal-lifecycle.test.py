@@ -1,5 +1,5 @@
 """Idle reclaim, historical output and per-project concurrent terminal admission."""
-import base64,fcntl,importlib.util,os,tempfile,threading,time,unittest
+import base64,fcntl,importlib.util,os,sqlite3,tempfile,threading,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
@@ -16,16 +16,18 @@ class TerminalLifecycle(unittest.TestCase):
 
     def fixture(self):
         node=self.node();folder=node.module('project-store').private_dir(node.ROOT/'terminals',create=True)
+        with sqlite3.connect(node.CONFIG['database']) as db:db.execute('ALTER TABLE jobs ADD COLUMN state TEXT')
         node.projects().store.create('alice','demo')
         node.projects().store.create('bob','demo')
         life=node.module('terminal-lifecycle');life.CGROUP_ROOT=self.base/'cgroups';life.PROC_ROOT=self.base/'proc'
         self.live=set()
         def run(argv,timeout=18):
+            if 'list-units' in argv:return '\n'.join('amax-term-'+jid+'.service loaded active running shell' for jid in self.live)
             if argv[0].endswith('systemd-run'):
                 self.live.add(next(arg.split('amax-term-')[1] for arg in argv if arg.startswith('--unit=')))
             elif 'stop' in argv:self.live.discard(argv[-1][len('amax-term-'):-len('.service')])
             return ''
-        node.run=Mock(side_effect=run);node.terminal_alive=lambda folder,jid:jid in self.live
+        node.run=Mock(side_effect=run);node.real_terminal_alive=node.terminal_alive;node.terminal_alive=lambda folder,jid:jid in self.live
         node.terminal_unit_observation=lambda jid:{'ActiveState':'active','ControlGroup':'/term-'+jid}
         original=node.module
         node.module=lambda name:life if name=='terminal-lifecycle' else SimpleNamespace(requested_limits=lambda *a:{'memory':1024**3,'cpu':2}) if name=='job-resources' else original(name)
@@ -79,8 +81,6 @@ class TerminalLifecycle(unittest.TestCase):
             os.utime(folder/(jid+suffix),None)
         self.assertEqual(terminals.collect(),[]);node.run.assert_not_called()
         jid,_=self.terminal(node,folder,life,session={'state':'DETACHED','leaseExpiresAt':0,'lastInteractionAt':time.time()})
-        jid,_=self.terminal(node,folder,life)
-        node.atomic_json(folder/(jid+'.activity.json'),{'lastOutputAt':time.time()})
         self.assertEqual(terminals.collect(),[]);node.run.assert_not_called()
 
     def test_missing_or_unreadable_process_observation_and_busy_id_are_skipped(self):
@@ -115,7 +115,7 @@ class TerminalLifecycle(unittest.TestCase):
         for request in ({'id':ids[0],'mode':'reconnect'},{'id':ids[0],'mode':'reconnect','takeover':True},{'key':ids[1]}):
             args=dict(key=self.key(),clientId=self.key(),userId='alice',project='demo',**request) if 'key' not in request else dict(clientId=self.key(),userId='alice',project='demo',**request)
             self.assertEqual(node.terminal_op('terminal.open',args)['state'],'OPEN')
-        node.run.assert_not_called()
+        self.assertTrue(all('list-units' in call.args[0] for call in node.run.call_args_list))
         other=self.open(node,ownerId='bob');self.assertEqual(other['state'],'OPEN')
 
     def test_new_gpu_terminal_also_shares_the_cap(self):
@@ -123,8 +123,11 @@ class TerminalLifecycle(unittest.TestCase):
         for _ in range(20):self.terminal(node,folder,life)
         job={'id':self.key(),'userId':'alice','project':'demo','cards':1,'argv':life.SHELL,'interactive':True}
         node.gpu=Mock()
-        with self.assertRaisesRegex(ValueError,'已有 20 个'):
-            node.job_operation('sync',{'job':job})
+        refused=node.job_operation('sync',{'job':job})
+        self.assertEqual(refused['state'],'FAILED');self.assertTrue(refused['notSubmitted']);self.assertIn('已有 20 个',refused['error'])
+        self.live.clear()  # A freed slot must not silently dispatch this rejected job later.
+        for operation in ('watch','sync'):
+            self.assertEqual(node.job_operation(operation,{'job':job}),refused)
         self.assertFalse((folder/(job['id']+'.json')).exists());node.gpu.assert_not_called()
 
     def test_runtime_gpu_copy_admission_does_not_depend_on_original_project_directory(self):
@@ -135,8 +138,9 @@ class TerminalLifecycle(unittest.TestCase):
         node.atomic_json(copy/'project.json',{})
         Path(node.CONFIG['workspacesRoot'],'alice','demo').rename(Path(node.CONFIG['workspacesRoot'],'alice','retired-demo'))
         job={'id':self.key(),'userId':'alice','project':'demo','cards':1,'argv':life.SHELL,'interactive':True,'projectCopy':copy_id}
-        node.gpu=Mock()
-        with self.assertRaisesRegex(ValueError,'已有 20 个'):node.job_operation('sync',{'job':job})
+        node.gpu=Mock();node.transfers=Mock(return_value=SimpleNamespace(finish_runtime=Mock()))
+        refused=node.job_operation('sync',{'job':job})
+        self.assertEqual(refused['state'],'FAILED');self.assertTrue(refused['notSubmitted']);self.assertIn('已有 20 个',refused['error'])
         node.gpu.assert_not_called()
 
     def test_simultaneous_new_ids_share_the_project_limit(self):
@@ -151,6 +155,54 @@ class TerminalLifecycle(unittest.TestCase):
         start.wait()
         for thread in threads:thread.join(10);self.assertFalse(thread.is_alive())
         self.assertEqual(errors,[]);self.assertCountEqual([row['state'] for row in results],['OPEN','REJECTED'])
+
+    def test_thousands_of_history_records_use_one_unit_snapshot_and_one_database_read(self):
+        node,folder,life,terminals=self.fixture();rows=[]
+        for index in range(2400):
+            jid=self.key();spec={'id':jid,'userId':'alice','project':'demo'}
+            kind=index%4
+            if kind==3:spec['interactive']=True;rows.append(('J'+format(index,'012x'),jid,'SUCCEEDED'))
+            node.atomic_json(folder/(jid+'.json'),spec)
+            if kind<2:node.atomic_json(folder/(jid+('.exit.json' if kind==0 else '.void.json')),{'exitCode':0})
+            else:node.atomic_json(folder/(jid+'.session.json'),{'state':'CLOSED' if kind==2 else 'DETACHED'})
+        with sqlite3.connect(node.CONFIG['database']) as db:db.executemany('INSERT INTO jobs VALUES(?,?,?)',rows)
+        for _ in range(20):self.terminal(node,folder,life)
+        node.terminal_alive=Mock(side_effect=AssertionError('per-record liveness probe'));node.gpu=Mock()
+        args={'userId':'alice','project':'demo','key':self.key(),'machine':'node-a'}
+        connect=life.sqlite3.connect;began=time.perf_counter()
+        with patch.object(life.sqlite3,'connect',wraps=connect) as database:
+            with terminals.locked(args):refused=terminals.admission(args)
+        elapsed=time.perf_counter()-began
+        self.assertEqual(refused['openCount'],20);self.assertEqual(node.run.call_count,1);self.assertEqual(database.call_count,1)
+        node.gpu.assert_not_called();node.terminal_alive.assert_not_called()
+        self.assertLess(elapsed,node.module('project-store').PROJECT_LOCK_WAIT_SECONDS)
+        print(f'2400 historical terminals: {elapsed:.3f}s, 1 systemctl, 1 SQLite snapshot')
+
+    def test_closing_a_never_submitted_gpu_terminal_frees_its_slot_and_unknown_is_not_suggested(self):
+        node,folder,life,terminals=self.fixture();known=[self.terminal(node,folder,life)[0] for _ in range(20)]
+        jid,_=self.terminal(node,folder,life,interactive=True)
+        spec={'id':jid,'userId':'alice','project':'demo','interactive':True,'cards':1,'argv':life.SHELL}
+        node.atomic_json(folder/(jid+'.json'),spec)
+        os.utime(folder/(jid+'.json'),(1,1))  # Even the oldest unknown record must not be suggested.
+        jobs=node.module('project-store').private_dir(node.ROOT/'jobs',create=True)
+        node.atomic_json(jobs/(jid+'.dispatch.json'),{'state':'SUBMITTING'})
+        refused=self.open(node);self.assertEqual(refused['openCount'],21);self.assertNotIn(jid,refused['oldestIds'])
+        node.terminal_alive=node.real_terminal_alive
+        closed=node.terminal_op('terminal.close',{'id':jid});self.assertEqual(closed['state'],'STOPPED')
+        self.assertEqual(self.open(node)['openCount'],20)
+        self.live.remove(known[0]);node.terminal_alive=lambda folder,jid:jid in self.live
+        self.assertEqual(self.open(node)['state'],'OPEN')
+
+    def test_canceled_and_closed_gpu_orphans_do_not_count_and_unavailable_inventory_has_no_close_hints(self):
+        node,folder,life,terminals=self.fixture();jobs=node.module('project-store').private_dir(node.ROOT/'jobs',create=True)
+        for index in range(25):
+            jid,_=self.terminal(node,folder,life,interactive=True,session={'state':'CLOSED' if index%2 else 'DETACHED'})
+            if index%2==0:node.atomic_json(jobs/(jid+'.canceled.json'),{'state':'CANCELED' if index%4 else 'CANCEL_REQUESTED'})
+        self.assertEqual(self.open(node)['state'],'OPEN')
+        for _ in range(19):self.terminal(node,folder,life)
+        node.run.side_effect=ValueError('systemd unavailable')
+        refused=self.open(node);self.assertEqual(refused['openCount'],20);self.assertEqual(refused['oldestIds'],[])
+        self.assertNotIn('gpuctl terminal close',refused['reason'])
 
 
 if __name__=='__main__':unittest.main()

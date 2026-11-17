@@ -61,6 +61,7 @@ def enable_runtime():
      connection.sendall((json.dumps({'data':base64.b64encode(data).decode(),'offset':len(value['history']),'exited':False})+'\n').encode())
   thread=threading.Thread(target=serve,daemon=True);thread.start();value['thread']=thread
  def transport(argv,timeout=18):
+  if 'list-units' in argv:return '\n'.join('amax-term-'+jid+'.service loaded active running shell' for jid,row in sessions.items() if row['alive'])
   if '--project-init-worker' in argv:
    at=argv.index('--project-init-worker');assert ops.initialize(argv[at+1],argv[at+2])==0;return ''
   unit=next((a.split('=',1)[1] for a in argv if a.startswith('--unit=amax-term-')),None)

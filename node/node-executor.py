@@ -108,6 +108,8 @@ def job_operation(operation,args):
                 if job.get('projectCopy'):module('project-store').read_json(module('project-copy').runtime_folder(CONFIG,job['projectCopy'])/'project.json')
                 else:projects().store.admit(job.get('ownerId') or job['userId'],job['project'])
             if operation in ('sync','cancel'):atomic_json(file,job)
+        rejected=folder/(jid+'.rejected.json')
+        if rejected.exists():return module('project-store').read_json(rejected)
         node_id=native(job)
         dispatched=folder/(jid+'.dispatch.json');canceled=folder/(jid+'.canceled.json')
         if node_id is None and operation=='cancel':
@@ -125,7 +127,11 @@ def job_operation(operation,args):
                 with module('terminal-lifecycle').Terminals(sys.modules[__name__]).locked(job):
                     if not (terminal_folder/(jid+'.json')).exists():
                         rejected=module('terminal-lifecycle').Terminals(sys.modules[__name__]).admission({**job,'key':jid,'machine':CONFIG['machine']})
-                        if rejected:raise ValueError(rejected['reason'])
+                        if rejected:
+                            result={'state':'FAILED','notSubmitted':True,'error':rejected['reason'],'failureCode':'TERMINAL_LIMIT','assignedIndices':[]}
+                            atomic_json(folder/(jid+'.rejected.json'),result)
+                            if job.get('projectCopy'):transfers().finish_runtime(job['projectCopy'])
+                            return result
                         atomic_json(terminal_folder/(jid+'.json'),job)
                     if not (terminal_folder/(jid+'.session.json')).exists():atomic_json(terminal_folder/(jid+'.session.json'),{'state':'DETACHED','clientId':None,'leaseExpiresAt':0,'lastInteractionAt':time.time()})
             policy=SCHEDULING.normalize_job_policy(args['job'])
@@ -174,7 +180,11 @@ def terminal_alive(folder,jid):
             spec=module('project-store').read_json(spec_file)
             if spec.get('interactive'):
                 node_id=native(spec)
-                if node_id is None:return None
+                if node_id is None:
+                    if (ROOT/'jobs'/(jid+'.canceled.json')).exists():return False
+                    try:session=module('project-store').read_json(folder/(jid+'.session.json'))
+                    except FileNotFoundError:session={}
+                    return False if session.get('state')=='CLOSED' else None
                 state=gpu('show',node_id).get('job',{})
                 if state.get('state') in ('RUNNING','STARTING','PREEMPTING'):return True
                 if state.get('state') in ('SUCCEEDED','FAILED','CANCELED','LOST'):return False
