@@ -404,6 +404,8 @@ gpuctl reconcile-resources JOB_ID --json
 
 `watch` 默认每 5 秒查询，`--interval 1` 可调整；Ctrl+C 不取消任务。日志和诊断用于排查 CPU、内存、OOM 和 worker；`completion` 查完成情况，`reconcile-resources` 收尾已结束任务的资源，不重跑训练。进度需要代码接入 `gpuq.progress.ProgressReporter`；未上报不填假进度，上报 100% 也不等于进程已结束。
 
+诊断里的 `state` 表示采集完整性，`schedulerState` 表示任务运行状态；采集不可用不等于节点离线，完成情况用 `completion` 查询。
+
 `logs` 默认查看最后 200 行；加 `--output 本机文件` 经门户 HTTPS 分块下载最近一次运行的完整主日志（stdout/stderr，不附加诊断摘要）。中断后保留本机临时文件和 `.gpuctl-download.json`，重复原命令从原运行、原字节偏移续传，不会混入后来重跑的日志。首次不覆盖已有文件。建议任务结束后导出；日志仍在增长或被改写导致大小变化时会暂停，应等它稳定后下载到新文件。尚未启动的任务没有运行日志，不会生成假成功的空文件。
 
 训练任务和开发终端共享整机可用 CPU、内存，不按 GPU 张数绑核或划分内存。单卡任务也能使用全部可用 CPU 和共享内存池，GPU 仍只可见调度器分配的卡。内存按实际使用，不提前预留；所有任务合计受节点共享池限制，为系统保留余量。需要主动限制某项训练时，用 `gpuctl run --memory-limit-gib 64 ...`。并发任务仍会争用资源，共享池耗尽可能触发 OOM。
