@@ -514,6 +514,7 @@ async function main() {
       if(scopeOwner)scope.push('--owner',scopeOwner);
       const commandText = (parts) => parts.map((value) => /^[A-Za-z0-9_.:-]+$/.test(value) ? value : "'" + value.replaceAll("'", "'\\''") + "'").join(" ");
       const statusCommand = commandText(["gpuctl", "terminal", "status", id2, "--machine", machine, ...scope,"--url",base.origin,"--session-file",sessionFile]);
+      const closeCommand = commandText(["gpuctl", "terminal", "close", id2, "--machine", machine, ...scope,"--url",base.origin,"--session-file",sessionFile]);
       const reconnectCommand = commandText([
         "gpuctl",
         "ssh",
@@ -523,7 +524,7 @@ async function main() {
         "--reconnect",
         id2,"--url",base.origin,"--session-file",sessionFile
       ]);
-      const terminal = { id: id2, machine, project: context.project || null, ownerId:context.ownerId||targetOwnerId||session.principal.userId, mode: openMode, state: "UNKNOWN", statusCommand,reconnectCommand };
+      const terminal = { id: id2, machine, project: context.project || null, ownerId:context.ownerId||targetOwnerId||session.principal.userId, mode: openMode, state: "UNKNOWN", statusCommand,reconnectCommand,closeCommand };
       const unconfirmed = (error2) => Object.assign(Error(`${terminal.state==='REJECTED'?'':error2.message}
 ${terminal.state==='REJECTED'?`终端未创建：${terminal.reason||error2.message}`:terminal.state==='ALIVE'?`原终端仍在运行，尚未附着。重连原会话：${reconnectCommand}`:terminal.state==='STOPPED'?'原终端已结束，未新建会话。':terminal.state==='NOT_FOUND'?`原终端未创建，可以直接新建：${terminal.newCommand}`:`终端状态未确认，未重开或重放输入。只读查询原会话：${statusCommand}`}`), { terminal, status: terminal.state==='REJECTED'?400:error2.status, code: terminal.state==='REJECTED'?'TERMINAL_OPEN_REJECTED':error2.code });
       const observeOriginal=async()=>{
@@ -549,6 +550,7 @@ ${terminal.state==='REJECTED'?`终端未创建：${terminal.reason||error2.messa
       }
       let input = Buffer.alloc(0), offset = 0, done = false, closed = false, delay2 = 250, lastSize = "";
       const sessionArgs = { machine, id: opened.id, clientId, writerToken: opened.writerToken, ...context };
+      if(opened.closedReason==='idle')process.stderr.write('终端因空闲满 24 小时自动关闭，正在只读查看历史输出。\n');
       process.stderr.write(`\r
 ${machine} · ${context.project ? "项目 " + context.project : "默认 OCI 项目"} · ${opened.id}（Ctrl+] 仅断开；exit 结束此会话）\r
 `);
@@ -593,9 +595,11 @@ ${machine} · ${context.project ? "项目 " + context.project : "默认 OCI 项�
         process.stdin.off("data", listener);
         process.stdin.setRawMode(false);
         process.stdin.pause();
+        if(done&&!closed)await call('terminal.detach',sessionArgs).catch(()=>{});
         process.stderr.write(`\r
 ${closed ? "此终端已结束。" : `已断开。只读查询：${statusCommand}\r
-重连：${reconnectCommand}`}\r
+重连：${reconnectCommand}\r
+结束：${closeCommand}`}\r
 `);
       }
       return;

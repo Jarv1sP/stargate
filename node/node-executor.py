@@ -51,7 +51,8 @@ def low_priority_scan():
 def storage_collect():
     low_priority_scan();collected=[]
     # Each cleanup is independent; a failure never skips the usage sample.
-    for kind,step in (('trash',lambda:module('project-purge').Trash(CONFIG).collect()),('transfers',lambda:transfers().collect())):
+    for kind,step in (('trash',lambda:module('project-purge').Trash(CONFIG).collect()),('transfers',lambda:transfers().collect()),
+                      ('terminals',lambda:module('terminal-lifecycle').Terminals(sys.modules[__name__]).collect())):
         try:collected+=step()
         except Exception as error:collected.append({'kind':kind,'state':'UNKNOWN','error':str(error)[:400]})
     module('storage-usage').refresh(projects())
@@ -107,6 +108,8 @@ def job_operation(operation,args):
                 if job.get('projectCopy'):module('project-store').read_json(module('project-copy').runtime_folder(CONFIG,job['projectCopy'])/'project.json')
                 else:projects().store.admit(job.get('ownerId') or job['userId'],job['project'])
             if operation in ('sync','cancel'):atomic_json(file,job)
+        rejected=folder/(jid+'.rejected.json')
+        if rejected.exists():return module('project-store').read_json(rejected)
         node_id=native(job)
         dispatched=folder/(jid+'.dispatch.json');canceled=folder/(jid+'.canceled.json')
         if node_id is None and operation=='cancel':
@@ -121,8 +124,16 @@ def job_operation(operation,args):
                 return {'state':'CANCELED' if state=='CANCELED' else 'UNKNOWN','error':'未知，请按原编号查询。' if state!='CANCELED' else None}
             if job.get('interactive'):
                 terminal_folder=module('project-store').private_dir(ROOT/'terminals',create=True)
-                atomic_json(terminal_folder/(jid+'.json'),job)
-                if not (terminal_folder/(jid+'.session.json')).exists():atomic_json(terminal_folder/(jid+'.session.json'),{'state':'DETACHED','clientId':None,'leaseExpiresAt':0})
+                with module('terminal-lifecycle').Terminals(sys.modules[__name__]).locked(job):
+                    if not (terminal_folder/(jid+'.json')).exists():
+                        rejected=module('terminal-lifecycle').Terminals(sys.modules[__name__]).admission({**job,'key':jid,'machine':CONFIG['machine']})
+                        if rejected:
+                            result={'state':'FAILED','notSubmitted':True,'error':rejected['reason'],'failureCode':'TERMINAL_LIMIT','assignedIndices':[]}
+                            atomic_json(folder/(jid+'.rejected.json'),result)
+                            if job.get('projectCopy'):transfers().finish_runtime(job['projectCopy'])
+                            return result
+                        atomic_json(terminal_folder/(jid+'.json'),job)
+                    if not (terminal_folder/(jid+'.session.json')).exists():atomic_json(terminal_folder/(jid+'.session.json'),{'state':'DETACHED','clientId':None,'leaseExpiresAt':0,'lastInteractionAt':time.time()})
             policy=SCHEDULING.normalize_job_policy(args['job'])
             resources=module('job-resources').requested_limits(job,False,CONFIG)
             # Scheduler uses the original UUID to prevent repeated submissions.
@@ -169,7 +180,11 @@ def terminal_alive(folder,jid):
             spec=module('project-store').read_json(spec_file)
             if spec.get('interactive'):
                 node_id=native(spec)
-                if node_id is None:return None
+                if node_id is None:
+                    if (ROOT/'jobs'/(jid+'.canceled.json')).exists():return False
+                    try:session=module('project-store').read_json(folder/(jid+'.session.json'))
+                    except FileNotFoundError:session={}
+                    return False if session.get('state')=='CLOSED' else None
                 state=gpu('show',node_id).get('job',{})
                 if state.get('state') in ('RUNNING','STARTING','PREEMPTING'):return True
                 if state.get('state') in ('SUCCEEDED','FAILED','CANCELED','LOST'):return False
@@ -181,6 +196,22 @@ def terminal_alive(folder,jid):
     return None
 
 def terminal_output():return module('terminal-output')
+
+def terminal_close(folder,jid,spec,session_state,reason='manual'):
+    if spec.get('interactive'):job_operation('cancel',{'job':spec})
+    else:
+        try:run(['/usr/bin/systemctl','--user','stop','amax-term-'+jid+'.service'])
+        except ValueError as error:
+            if 'not loaded' not in str(error):raise
+    session_state=session_state or {}
+    if session_state.get('state')!='CLOSED':session_state.update(closedAt=time.time(),closedReason=reason)
+    session_state.update(state='CLOSED',leaseExpiresAt=0)
+    atomic_json(folder/(jid+'.session.json'),session_state)
+
+def terminal_closed_fields(folder,jid):
+    try:session=module('project-store').read_json(folder/(jid+'.session.json'))
+    except FileNotFoundError:return {}
+    return {key:session[key] for key in ('closedAt','closedReason') if key in session}
 
 def terminal_absent(folder,jid):
     # Caller holds this ID's exclusive lock, including when voiding a late open.
@@ -215,7 +246,7 @@ def terminal_status(args):
             finally:
                 if fd is not None:os.close(fd)
         live=terminal_alive(folder,jid)
-        rows.append({**spec,'id':jid,'state':('ALIVE' if args.get('id') else 'RUNNING') if live is True else 'STOPPED' if live is False else 'UNKNOWN',
+        rows.append({**spec,**terminal_closed_fields(folder,jid),'id':jid,'state':('ALIVE' if args.get('id') else 'RUNNING') if live is True else 'STOPPED' if live is False else 'UNKNOWN',
                      'alive':live,'readOnly':live is not True})
     if args.get('id'):return rows[0] if rows else {'id':args['id'],'state':'UNKNOWN'}
     return {'sessions':rows}
@@ -237,52 +268,58 @@ def terminal_op(operation,args):
         session_state=module('project-store').read_json(session) if session.exists() else None
         if opening:
             if not file.exists():
+                # User-approved keyring ceiling; serialize different new IDs in a project.
                 projects().store.admit(args.get('ownerId') or args['userId'],args['project'])
-                spec={'id':jid,'userId':args['userId'],'ownerId':args.get('ownerId') or args['userId'],'username':args.get('username'),'project':args['project'],
-                      'cards':0,'argv':['/bin/bash','--noprofile','--norc','-i'],'hostAdmin':False}
-                atomic_json(file,spec)
-                session_state={'clientId':args['clientId'],'writerToken':str(uuid.uuid4()),'state':'OPEN','leaseExpiresAt':time.time()+30}
-                atomic_json(session,session_state)
-                # The terminal shares the persistent OCI environment with all jobs.
-                limits=module('job-resources').requested_limits(spec,True,CONFIG)
-                command=['/usr/bin/systemd-run','--user','--collect','--unit=amax-term-'+jid,
-                    '--property=KillMode=control-group','--property=KillSignal=SIGHUP','--property=TimeoutStopSec=5',
-                    '--property=Delegate=yes','--property=MemoryMax='+str(limits['memory']),
-                    '--property=CPUQuota='+str(limits['cpu']*100)+'%','--property=TasksMax=2048']
-                if CONFIG.get('memoryPool'):command+=['--slice=gpuq-workloads.slice','--property=OOMPolicy=kill']
-                run(command+['/usr/bin/python3',str(HERE/'terminal-helper.py'),jid])
+                with module('terminal-lifecycle').Terminals(sys.modules[__name__]).locked(args):
+                    rejected=module('terminal-lifecycle').Terminals(sys.modules[__name__]).admission(args)
+                    if rejected:return rejected
+                    spec={'id':jid,'userId':args['userId'],'ownerId':args.get('ownerId') or args['userId'],'username':args.get('username'),'project':args['project'],
+                          'cards':0,'argv':['/bin/bash','--noprofile','--norc','-i'],'hostAdmin':False,'createdAt':time.time()}
+                    atomic_json(file,spec)
+                    session_state={'clientId':args['clientId'],'writerToken':str(uuid.uuid4()),'state':'OPEN','leaseExpiresAt':time.time()+30,'lastInteractionAt':time.time()}
+                    atomic_json(session,session_state)
+                    # The terminal shares the persistent OCI environment with all jobs.
+                    limits=module('job-resources').requested_limits(spec,True,CONFIG)
+                    command=['/usr/bin/systemd-run','--user','--collect','--unit=amax-term-'+jid,
+                        '--property=KillMode=control-group','--property=KillSignal=SIGHUP','--property=TimeoutStopSec=5',
+                        '--property=Delegate=yes','--property=MemoryMax='+str(limits['memory']),
+                        '--property=CPUQuota='+str(limits['cpu']*100)+'%','--property=TasksMax=2048']
+                    if CONFIG.get('memoryPool'):command+=['--slice=gpuq-workloads.slice','--property=OOMPolicy=kill']
+                    run(command+['/usr/bin/python3',str(HERE/'terminal-helper.py'),jid])
             elif session_state is not None and session_state.get('clientId')!=args['clientId'] and session_state.get('leaseExpiresAt',0)>time.time() and not args.get('takeover'):
                 return {'id':jid,'state':'BUSY','takeoverRequired':True}
             else:
                 writer=session_state.get('writerToken') if session_state and session_state.get('clientId')==args['clientId'] and not args.get('takeover') else str(uuid.uuid4())
-                session_state=session_state or {};session_state.update(clientId=args['clientId'],writerToken=writer,leaseExpiresAt=time.time()+30,state='OPEN')
+                session_state=session_state or {};session_state.update(clientId=args['clientId'],writerToken=writer,lastInteractionAt=time.time())
+                if session_state.get('state')!='CLOSED':session_state.update(leaseExpiresAt=time.time()+30,state='OPEN')
                 atomic_json(session,session_state)
             live=terminal_alive(folder,jid)
-            return {'id':jid,'clientId':args['clientId'],'writerToken':session_state['writerToken'],'leaseExpiresAt':session_state['leaseExpiresAt'],
-                    'state':'OPEN' if live else 'UNKNOWN' if live is None else 'STOPPED','readOnly':live is False,'hostAdmin':False}
+            return {'id':jid,'clientId':args['clientId'],'writerToken':session_state['writerToken'],'leaseExpiresAt':session_state['leaseExpiresAt'],**terminal_closed_fields(folder,jid),
+                    'state':'OPEN' if live else 'UNKNOWN' if live is None else 'STOPPED','readOnly':live is False or session_state.get('state')=='CLOSED','hostAdmin':False}
         # The writer token authenticates one PTY writer; any team member may explicitly take over.
         if args.get('writerToken') and (session_state is None or not __import__('hmac').compare_digest(session_state.get('writerToken',''),args['writerToken'])):
             raise PermissionError('终端连接已被接管，请重新连接。')
         if operation=='terminal.detach':
-            if session_state:session_state.update(state='DETACHED',leaseExpiresAt=0);atomic_json(session,session_state)
+            if session_state:
+                if session_state.get('state')!='CLOSED':session_state['state']='DETACHED'
+                session_state.update(leaseExpiresAt=0,lastInteractionAt=time.time());atomic_json(session,session_state)
             return {'id':jid,'detached':True,**terminal_status({'id':jid})}
         if operation=='terminal.close':
             spec=module('project-store').read_json(file)
-            if spec.get('interactive'):job_operation('cancel',{'job':spec})
-            else:
-                try:run(['/usr/bin/systemctl','--user','stop','amax-term-'+jid+'.service'])
-                except ValueError as e:
-                    if 'not loaded' not in str(e):raise  # Shell already exited and its unit was collected.
-            if session_state:session_state['state']='CLOSED';atomic_json(session,session_state)
+            terminal_close(folder,jid,spec,session_state)
             return terminal_status({'id':jid})
         if operation=='terminal.exchange':
             if not args.get('writerToken'):raise PermissionError('请先连接终端。')
+            if session_state and session_state.get('state')=='CLOSED':
+                return {**terminal_output().read_output(folder,jid,args.get('offset',0),exited=terminal_alive(folder,jid) is False),**terminal_closed_fields(folder,jid)}
             if session_state:
-                session_state['leaseExpiresAt']=time.time()+30;atomic_json(session,session_state)
+                session_state['lastInteractionAt']=time.time()
+                if session_state.get('state')!='CLOSED':session_state['leaseExpiresAt']=time.time()+30
+                atomic_json(session,session_state)
             sock=folder/(jid+'.sock')
             if not sock.exists():
                 live=terminal_alive(folder,jid)
-                if live is False:return terminal_output().read_output(folder,jid,args.get('offset',0),exited=True)
+                if live is False:return {**terminal_output().read_output(folder,jid,args.get('offset',0),exited=True),**terminal_closed_fields(folder,jid)}
                 return {'state':'UNKNOWN','error':'终端暂未响应，请重连原会话；输入结果未知时不要重放。'}
             request={k:args[k] for k in ('input','offset','rows','cols') if k in args}
             with socket.socket(socket.AF_UNIX) as connection:

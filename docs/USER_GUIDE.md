@@ -172,15 +172,19 @@ gpuctl project delete my-project
 每次 `gpuctl ssh` 新建独立终端，使用 HTTPS PTY；VS Code Remote-SSH、SFTP 和 rsync 不能直接连接它。终端不占 GPU，需要 GPU 时见[交互训练](/guide/training)。
 
 ```sh local
-gpuctl terminal status SESSION_ID
-gpuctl ssh --reconnect SESSION_ID
-gpuctl ssh --reconnect SESSION_ID --takeover
-gpuctl terminal close SESSION_ID
+gpuctl terminal status SESSION_ID --machine SERVER
+gpuctl ssh --reconnect SESSION_ID --machine SERVER
+gpuctl ssh --reconnect SESSION_ID --takeover --machine SERVER
+gpuctl terminal close SESSION_ID --machine SERVER
 ```
 
 保持原服务器、项目和会话 ID。`Ctrl+]` 只断开，`exit` 或「结束终端」才结束；接管会让另一处失去输入权。输入结果未知时不自动重放，先重连查看输出，再决定下一条命令。为什么：终端命令没有幂等性，重放可能执行两遍。
 
 提示「原终端未创建」时，可以直接新建终端；由你点击新建或重新运行新建命令，不会自动重开。
+
+每个项目在每个节点最多保留 20 个未结束终端；达到上限会列出较早的会话编号和关闭命令，重连或接管原会话不受影响。网页点「重新连接」，输入会话编号（会话忙时需要接管），再点「结束终端」。
+
+普通终端在没有有效客户端租约、24 小时没有交互或输出、且容器里只剩初始 shell 时，由每小时的定时清理自动关闭。有其他进程或属于 GPU 交互任务的终端不会被自动关闭。自动关闭后保留历史输出，可用原编号重连只读查看；继续工作需明确新建终端。
 
 ## 提交训练 {#training}
 

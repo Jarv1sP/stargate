@@ -2,6 +2,7 @@ import {stripVTControlCharacters} from 'node:util';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {closeObserved} from '../lib/terminal-observation.mjs';
+import {idleTerminalRegression} from '../lib/terminal-lifecycle.mjs';
 import {approvedMember} from '../lib/accounts.mjs';
 import {project,call,openTerminal,terminalCommand,submit,waitJob,terminalStates} from '../lib/exec.mjs';
 export default {features:["容器里自带 git，代码用 git 管理（pull/commit/push 用自己的 GitHub 凭据）", "网页和 CLI 打开项目终端，断开重连、接管", "带 GPU 的交互终端", "容器网络诊断"],id:'G05',title:'Git 终端、重连、接管与 GPU 终端（FEATURES 四）',level:'fast',async run(ctx){
@@ -24,6 +25,7 @@ export default {features:["容器里自带 git，代码用 git 管理（pull/com
     ctx.check('B 接管 A 的终端成功',text.includes('GRAY_B_TAKEOVER'));
   }finally{try{await closeObserved(ctx,member,terminal);}catch(error){closeError=error;ctx.note('关闭失败保留，继续网络/GPU子检查：'+error.message);}}
   try{
+  await idleTerminalRegression(ctx,member,name);
   const network=await call(ctx,member,'projects.status',{machine:ctx.machine,project:name,diagnoseNetwork:true});
   ctx.check('容器网络诊断返回结果',network.network&&network.network.state!=='UNKNOWN',network.network);
   const gpu=await submit(ctx,member,name,['/bin/bash','--noprofile','--norc','-i'],{interactive:true,placement:{gpuIndices:[0],shared:false}});
