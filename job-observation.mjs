@@ -13,10 +13,14 @@ export function terminalNativeObservation(job,result){
 }
 export const portalTerminalSnapshot=job=>({state:job.state,cancelRequested:job.cancelRequested===true,...jobTiming(job)});
 export function jobCompletion(job,result){
+ const localUnsubmitted=!result&&job.notSubmitted===true&&terminal.has(job.state);
+ if(localUnsubmitted)result={state:job.state,notSubmitted:true};
  const nativeObservation=terminalNativeObservation(job,result),completed=terminal.has(result?.state);
+ if(result?.notSubmitted===true)nativeObservation.message='任务未派发，未运行训练。';
+ if(localUnsubmitted)nativeObservation.observedAt=null;
  return {readOnly:true,jobId:job.id,machine:job.machine,userId:job.userId,nodeJobId:result?.nodeJobId??job.nodeJobId??null,
   project:job.spec?.project??job.project??null,submission:{key:job.key??null},portalHistory:portalTerminalSnapshot(job),
-  completed,state:completed?result.state:result?.state??'UNKNOWN',nativeObservation,
+  completed,state:completed?result.state:result?.state??'UNKNOWN',nativeObservation,...(result?.notSubmitted===true?{notSubmitted:true}:{}),
   ...(completed?{completedAttempt:nativeObservation.latestAttempt,observedAt:nativeObservation.observedAt}:{}),
   message:completed?'训练已结束。':'任务尚未结束或节点暂未响应，请按原编号查询。'};
 }

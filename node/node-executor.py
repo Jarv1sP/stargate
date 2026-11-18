@@ -111,17 +111,22 @@ def job_operation(operation,args):
         rejected=folder/(jid+'.rejected.json')
         if rejected.exists():return module('project-store').read_json(rejected)
         node_id=native(job)
-        dispatched=folder/(jid+'.dispatch.json');canceled=folder/(jid+'.canceled.json')
-        if node_id is None and operation=='cancel':
-            state='CANCEL_REQUESTED' if dispatched.exists() else 'CANCELED'
-            atomic_json(canceled,{'state':state})
-            if state=='CANCELED' and job.get('projectCopy'):transfers().finish_runtime(job['projectCopy'])
-            return {'state':'UNKNOWN' if state=='CANCEL_REQUESTED' else state,'error':'未知，请按原编号查询。' if state=='CANCEL_REQUESTED' else None}
+        canceled=folder/(jid+'.canceled.json')
+        cancel_state=module('project-store').read_json(canceled)['state'] if canceled.exists() else None
+        if node_id is None and operation=='cancel' and cancel_state!='CANCELED':
+            cancel_state='CANCEL_REQUESTED'
+            atomic_json(canceled,{'state':cancel_state})
+            result=gpu('cancel','--submit-key',jid)
+            node_id=result.get('job_id')
+            if node_id is None:
+                cancel_state='CANCELED'
+                atomic_json(canceled,{'state':cancel_state})
+        if node_id is None and cancel_state is not None:
+            if cancel_state=='CANCELED':
+                if job.get('projectCopy'):transfers().finish_runtime(job['projectCopy'])
+                return {'state':'CANCELED','notSubmitted':True,'assignedIndices':[]}
+            return {'state':'UNKNOWN','error':'未知，请按原编号查询。'}
         if node_id is None and operation=='sync':
-            if canceled.exists():
-                state=module('project-store').read_json(canceled)['state']
-                if state=='CANCELED' and job.get('projectCopy'):transfers().finish_runtime(job['projectCopy'])
-                return {'state':'CANCELED' if state=='CANCELED' else 'UNKNOWN','error':'未知，请按原编号查询。' if state!='CANCELED' else None}
             if job.get('interactive'):
                 terminal_folder=module('project-store').private_dir(ROOT/'terminals',create=True)
                 with module('terminal-lifecycle').Terminals(sys.modules[__name__]).locked(job):
@@ -137,7 +142,6 @@ def job_operation(operation,args):
             policy=SCHEDULING.normalize_job_policy(args['job'])
             resources=module('job-resources').requested_limits(job,False,CONFIG)
             # Scheduler uses the original UUID to prevent repeated submissions.
-            atomic_json(dispatched,{'state':'SUBMITTING'})
             result=gpu('submit',*SCHEDULING.allocation_arguments(job),*SCHEDULING.submit_arguments(policy),
                 *(item for dependency in job.get('after',[]) for item in ('--after',dependency)),
                 '--env','GPUQ_CONSOLE_OCI=1','-n','portal-'+jid[:8],'-u',gpuq_owner(job),

@@ -1599,6 +1599,10 @@ class Store:
         now = self._now()
         try:
             with self._transaction() as connection:
+                if connection.execute(
+                    "SELECT 1 FROM settings WHERE key=?", ("canceled-submit:" + submit_key,)
+                ).fetchone():
+                    raise StoreConflictError("该提交已取消，请勿按原编号重新启动。")
                 sequence = int(
                     connection.execute(
                         "SELECT COALESCE(MAX(sequence), 0) + 1 FROM jobs"
@@ -1682,6 +1686,21 @@ class Store:
             raise StoreConflictError(f"cannot insert job: {exc}") from exc
 
     create_job = submit_job
+
+    def cancel_unsubmitted(self, submit_key: str) -> dict[str, Any] | None:
+        """Cancel an absent original key atomically with submission insertion."""
+        submit_key = _nonempty(submit_key, "submit_key", maximum=256)
+        with self._transaction() as connection:
+            row = connection.execute("SELECT * FROM jobs WHERE submit_key=?", (submit_key,)).fetchone()
+            if row is not None:
+                return self._job(row)
+            inserted = connection.execute(
+                "INSERT INTO settings(key,value_json,updated_at) VALUES (?,'true',?) ON CONFLICT(key) DO NOTHING",
+                ("canceled-submit:" + submit_key, self._now()),
+            )
+            if inserted.rowcount:
+                self.append_event("SUBMISSION_CANCELED", payload={"submit_key": submit_key})
+        return None
 
     def set_job_display(self, job_id: str, metadata: Any) -> dict[str, Any]:
         from .job_display import normalize_display

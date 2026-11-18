@@ -1147,7 +1147,8 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 def cmd_cancel(args: argparse.Namespace) -> int:
-    result = get_client(args).call("cancel", {"job_id": args.job_id})
+    arguments = {"submit_key": args.submit_key} if args.submit_key is not None else {"job_id": args.job_id}
+    result = get_client(args).call("cancel", arguments)
     print_result(result, args.json)
     return 0
 
@@ -1445,7 +1446,9 @@ def build_parser() -> argparse.ArgumentParser:
     show.set_defaults(func=cmd_show)
 
     cancel = subparsers.add_parser("cancel")
-    cancel.add_argument("job_id")
+    cancel_target = cancel.add_mutually_exclusive_group(required=True)
+    cancel_target.add_argument("job_id", nargs="?")
+    cancel_target.add_argument("--submit-key", help="cancel the original submission even before a job ID exists")
     cancel.set_defaults(func=cmd_cancel)
 
     retry = subparsers.add_parser("retry")
