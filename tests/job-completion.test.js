@@ -45,6 +45,25 @@ test('unknown allocation stays unknown and native observations determine card co
  const f=fixture('RUNNING');schedulerResult(f.job,{state:'UNKNOWN'});assert.equal(f.job.actualCards,null);assert.equal(f.job.assignedIndices,null);assert.equal(usage([f.job],f.job.userId),1);
  assert.equal(jobCompletion(f.job,{state:'SUCCEEDED',nodeJobId}).completed,true);
 });
+test('acknowledged pre-submission cancellation is complete without inventing a native run',async()=>{
+ const f=fixture('UNKNOWN');delete f.job.nodeJobId;
+ schedulerResult(f.job,{state:'CANCELED',notSubmitted:true,assignedIndices:[]});
+ const value=await executionCall(f.service,f.principal,'jobs.completion',{jobId:id});
+ assert.equal(f.job.notSubmitted,true);assert.equal(value.completed,true);assert.equal(value.state,'CANCELED');
+ assert.equal(value.notSubmitted,true);assert.equal(value.nodeJobId,null);assert.equal(value.completedAttempt,null);
+ assert.equal(value.observedAt,null);assert.equal(value.nativeObservation.manualRecovery.required,false);
+ assert.match(value.nativeObservation.message,/未派发/);assert.equal(usage([f.job],f.job.userId),0);assert.deepEqual(f.calls,[]);
+});
+test('terminal reads can confirm original-key cancellation without a native job ID',async()=>{
+ for(const operation of ['jobs.completion','jobs.watch']){
+  const f=fixture('CANCELED');delete f.job.nodeJobId;const before=structuredClone(f.job);
+  Object.assign(f.result,{state:'CANCELED',notSubmitted:true});delete f.result.nodeJobId;delete f.result.latestAttempt;
+  const value=await executionCall(f.service,f.principal,operation,{jobId:id});
+  assert.equal(value.state,'CANCELED');assert.equal(value.nativeObservation.status,'CONFIRMED');
+  assert.match(value.nativeObservation.message,/未派发|节点当前状态/);
+  assert.deepEqual(f.job,before);assert.deepEqual(f.calls,[[machine,'watch',{job:f.job.spec}]]);
+ }
+});
 test('login revocation and an absent job reject before a node request',async()=>{
  const f=fixture();f.user.enabled=false;await assert.rejects(executionCall(f.service,f.principal,'jobs.completion',{jobId:id}),e=>e.status===403);f.user.enabled=true;await assert.rejects(executionCall(f.service,f.principal,'jobs.completion',{jobId:'absent'}),e=>e.status===404);assert.deepEqual(f.calls,[]);
 });

@@ -241,8 +241,11 @@ assert os.readlink('/proc/self/ns/mnt')==namespace and not list(folder.iterdir()
         with self.assertRaises(TimeoutError):node.process('sync',{'job':spec})
         # Absent from GPUQ after a lost reply: redispatch is safe, GPUQ dedups by the original key.
         self.assertEqual(node.process('watch',{'job':spec})['schedulerState'],'NOT_SUBMITTED')
-        self.assertEqual(node.process('cancel',{'job':spec})['state'],'UNKNOWN')
+        with self.assertRaises(TimeoutError):node.process('cancel',{'job':spec})
         self.assertEqual(node.process('sync',{'job':spec})['state'],'UNKNOWN')
+        node.gpu=lambda *a:{'job_id':None,'state':'CANCELED','not_submitted':True}
+        self.assertEqual(node.process('cancel',{'job':spec})['state'],'CANCELED')
+        self.assertEqual(node.process('watch',{'job':spec})['state'],'CANCELED')
 
     def test_terminal_close_after_shell_exit_is_closed(self):
         node=self.node();jid=self.key();folder=node.module('project-store').private_dir(node.ROOT/'terminals',create=True)

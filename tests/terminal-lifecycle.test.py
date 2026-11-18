@@ -188,7 +188,9 @@ class TerminalLifecycle(unittest.TestCase):
         node.atomic_json(jobs/(jid+'.dispatch.json'),{'state':'SUBMITTING'})
         refused=self.open(node);self.assertEqual(refused['openCount'],21);self.assertNotIn(jid,refused['oldestIds'])
         node.terminal_alive=node.real_terminal_alive
+        node.gpu=Mock(return_value={'job_id':None,'state':'CANCELED','not_submitted':True})
         closed=node.terminal_op('terminal.close',{'id':jid});self.assertEqual(closed['state'],'STOPPED')
+        node.gpu.assert_called_once_with('cancel','--submit-key',jid)
         self.assertEqual(self.open(node)['openCount'],20)
         self.live.remove(known[0]);node.terminal_alive=lambda folder,jid:jid in self.live
         self.assertEqual(self.open(node)['state'],'OPEN')

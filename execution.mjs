@@ -33,7 +33,7 @@ export function schedulerResult(job,result){
   job.nodeJobId=result.nodeJobId||job.nodeJobId;
   job.state=['PENDING','STARTING','RUNNING','PREEMPTING',...TERMINAL].includes(result.state)?result.state:'UNKNOWN';
   job.assignedIndices=Array.isArray(result.assignedIndices)?result.assignedIndices:null;job.error=result.error||null;job.checkedAt=new Date().toISOString();
-  if(result.notSubmitted===true&&job.state==='FAILED'){
+  if(result.notSubmitted===true&&['FAILED','CANCELED'].includes(job.state)){
     job.notSubmitted=true;
     job.failureCode=typeof result.failureCode==='string'?result.failureCode.slice(0,80):null;
   }
@@ -426,7 +426,7 @@ export async function executionCall(service,principal,operation,args,readContext
     args=selectFields(args,['jobId']);
     const job=jobById(args.jobId);authorizedMachine(job.machine);
     let result;
-    if(job.nodeJobId||['SUBMITTING','UNKNOWN'].includes(job.state)&&job.dispatchPending!==true)
+    if(job.nodeJobId||!job.notSubmitted&&['SUBMITTING','UNKNOWN','CANCELED'].includes(job.state)&&job.dispatchPending!==true)
       try{result=await observeJob(job,'watch',{job:nativeJobSpec(job)});}catch(error){if([401,403].includes(error.status))throw error;}
     readContext?.check?.();
     const completion=jobCompletion(job,result);
@@ -442,7 +442,7 @@ export async function executionCall(service,principal,operation,args,readContext
     if(TERMINAL.has(job.state)){
       authorizedMachine(job.machine);
       const original=jobView(job);
-      if(!job.nodeJobId)return {...original,nativeObservation:unavailableObservation()};
+      if(!job.nodeJobId&&job.notSubmitted)return {...original,nativeObservation:jobCompletion(job).nativeObservation};
       try{
         const result=await observeJob(job,'watch',{job:nativeJobSpec(job)});
         observeTerminalResources(service,job,result);

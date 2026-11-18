@@ -4917,6 +4917,15 @@ class Coordinator:
         }
 
     def _api_cancel(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if "submit_key" in arguments:
+            try:
+                key = str(uuid.UUID(str(arguments["submit_key"])))
+                job = self.store.cancel_unsubmitted(key)
+            except ValueError as exc:
+                raise ApiError("BAD_REQUEST", str(exc)) from exc
+            if job is None:
+                return {"job_id": None, "state": "CANCELED", "not_submitted": True}
+            return self._api_cancel({"job_id": job["id"]})
         _request_fields(arguments, allowed={"job_id"}, required={"job_id"})
         try:
             job = self.store.get_job(str(arguments["job_id"]))
