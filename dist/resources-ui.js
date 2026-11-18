@@ -33,31 +33,32 @@ function processList(gpu,admin,key,jobs){
 }
 const waitingStates=new Set(['PENDING','QUEUED']);
 function queuedTasks(view){
-  if(!view.fresh)return null;
+  if(!view.fresh||view.host?.gpuq?.connected===false)return null;
   const rows=Array.isArray(view.host?.tasks)?view.host.tasks:Array.isArray(view.host?.gpuq?.jobs)?view.host.gpuq.jobs:null;
-  if(!rows||rows.some(row=>!row.state||row.state==='UNKNOWN'))return null;
-  return rows.filter(row=>waitingStates.has(row.state));
+  if(!rows)return null;
+  return {waiting:rows.filter(row=>waitingStates.has(row.state)),unconfirmed:rows.filter(row=>!row.state||row.state==='UNKNOWN').length};
 }
 // Totals cover the servers read right now; an offline server simply is not
 // counted, and a server under maintenance has no free cards to offer.
 export function resourceTotals(views){
   const seen=views.filter(view=>view.processesComplete),queues=seen.map(queuedTasks);
   return {free:seen.length?seen.reduce((sum,view)=>sum+(view.maintenance?0:view.count-view.busy),0):null,busy:seen.length?seen.reduce((sum,view)=>sum+view.busy,0):null,
-    queued:seen.length&&queues.every(rows=>rows!==null)?queues.reduce((sum,rows)=>sum+rows.length,0):null};
+    queued:seen.length&&queues.every(reading=>reading!==null&&!reading.unconfirmed)?queues.reduce((sum,reading)=>sum+reading.waiting.length,0):null};
 }
 const QUEUE_PREVIEW=5;
 function queue(view){
   if(view.host?.displayMasked)return '<p class="muted">任务中</p>';
   if(view.maintenance)return '<p class="muted">维护中，不接新任务。</p>';
-  const rows=queuedTasks(view);
-  if(rows===null)return '<p class="muted hatch">队列读数未知</p>';
-  if(!rows.length)return `<p class="muted">${view.host.gpuq?.connected===true&&view.host.gpuq?.observeOnly!==true&&view.host.gpuq?.health!=='degraded'?'没有排队，提交即开始。':'没有排队任务。'}</p>`;
+  const reading=queuedTasks(view);
+  if(reading===null)return '<p class="muted hatch">队列读数未知</p>';
+  const rows=reading.waiting,notice=reading.unconfirmed?`<p class="muted">另有 ${reading.unconfirmed} 项任务状态待核对 · <a href="#jobs">查看任务</a></p>`:'';
+  if(!rows.length)return `<p class="muted">${reading.unconfirmed?'暂无已确认的排队任务。':'没有排队任务。'}</p>${notice}`;
   // The full queue lives in Tasks; here only the next few are shown.
   const more=rows.length-QUEUE_PREVIEW;
   return `<ol class="resource-queue-list">${rows.slice(0,QUEUE_PREVIEW).map((task,index)=>{
     const rank=Number.isInteger(task.priority)?task.priority:({idle:0,P1:1,normal:2,P3:3,high:4})[task.priority],cards=task.gpuCount??task.gpu_count??task.cards;
     return `<li class="resource-queue-row" data-resource-queue-row><span>${index+1}. ${esc(task.name||task.id||'未命名任务')}</span><span>${rank==null?'优先级未知':'P'+rank} · ${known(cards)?cards:'未知'} 张</span></li>`;
-  }).join('')}</ol>${more>0?`<a class="resource-queue-more" href="#jobs">还有 ${more} 个排队 · 在任务里看全部</a>`:''}`;
+  }).join('')}</ol>${more>0?`<a class="resource-queue-more" href="#jobs">还有 ${more} 个排队 · 在任务里看全部</a>`:''}${notice}`;
 }
 // Monitoring, process evidence and scheduler admission are independent. A
 // measured memory level never proves that the scheduler can start a task.

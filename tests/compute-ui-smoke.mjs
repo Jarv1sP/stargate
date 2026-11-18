@@ -48,6 +48,15 @@ try{
       assert.equal(await page.locator('[data-summary]').count(),3);
       assert.deepEqual(await page.locator('[data-summary]').allTextContents(),['未知','未知','未知']);
       assert.match(await page.locator('[data-resource-queue-row]').innerText(),/P2 · 2 张/);assert.equal(await page.locator('.resource-queue details').count(),0);
+      await page.evaluate(()=>{const sample=structuredClone(window.fixture.gpuq);sample.hosts[0].tasks.push({id:'unconfirmed',state:'UNKNOWN'});window.store.data.gpuq=sample;window.refresh();});
+      assert.match(await page.locator('[data-resource-queue-row]').innerText(),/团队训练/);
+      assert.match(await page.locator('.resource-queue').innerText(),/另有 1 项任务状态待核对/);
+      assert.doesNotMatch(await page.locator('.resource-queue').innerText(),/队列读数未知|提交即开始/);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
+      await page.evaluate(()=>{const sample=structuredClone(window.store.data.gpuq);sample.hosts[0].tasks=[{id:'unconfirmed',state:'UNKNOWN'}];window.store.data.gpuq=sample;window.refresh();});
+      assert.match(await page.locator('.resource-queue').innerText(),/暂无已确认的排队任务/);
+      assert.equal(await page.locator('[data-resource-queue-row]').count(),0);
+      await page.evaluate(()=>{window.store.data.gpuq=window.fixture.gpuq;window.refresh();});
       await page.evaluate(()=>{
         const sample=structuredClone(window.fixture.gpuq);sample.hosts[2].reachable=true;
         for(const host of sample.hosts)for(const gpu of host.gpus)gpu.processesAvailable=true;
