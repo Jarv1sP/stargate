@@ -109,10 +109,19 @@ test('zero capacity and incomplete disk samples stay unknown without low-space w
 test('compute queue shows only waiting jobs as one row each, with honest empty and missing states',()=>{
   const html=render({host:{tasks:[{id:'q',name:'等待训练',state:'QUEUED',priority:2,gpuCount:2},{id:'r',name:'已运行训练',state:'RUNNING',priority:1,gpuCount:1}]}});
   assert.match(html,/data-resource-queue-row/);assert.match(html,/1\. 等待训练/);assert.match(html,/P2 · 2 张/);assert.doesNotMatch(html,/已运行训练|任务队列与近期记录|本次没有返回任务记录/);
-  assert.match(render(),/没有排队，提交即开始。/);
+  assert.match(render(),/没有排队任务。/);assert.doesNotMatch(render(),/提交即开始/);
   assert.match(render({host:{samplingStale:true}}),/队列读数未知/);
+  assert.match(render({host:{gpuq:{connected:false}}}),/队列读数未知/);
   assert.doesNotMatch(render({host:{samplingStale:true}}),/提交即开始/);
   assert.match(render({maintenance:{global:{reason:'维护',since:'2026-10-15T18:00:00Z'}}}),/维护中，不接新任务/);
+});
+test('an uncertain task does not hide confirmed waiting tasks or promise immediate admission',()=>{
+  const html=render({host:{tasks:[{id:'q',name:'确认排队任务',state:'QUEUED',priority:2,gpuCount:1},{id:'old',state:'UNKNOWN'}]}});
+  assert.match(html,/确认排队任务/);assert.match(html,/另有 1 项任务状态待核对/);
+  assert.doesNotMatch(html,/队列读数未知|提交即开始/);
+  const unknown=render({host:{tasks:[{id:'old',state:'UNKNOWN'},{id:'missing'}]}});
+  assert.match(unknown,/暂无已确认的排队任务/);assert.match(unknown,/另有 2 项任务状态待核对/);
+  assert.doesNotMatch(unknown,/没有排队任务。|队列读数未知|提交即开始/);
 });
 test('fleet summary totals free, busy and queued independently and preserves unknown observations',async()=>{
   const {resourceTotals,resourceServerView}=await import('../dist/resources-ui.js');
@@ -121,6 +130,8 @@ test('fleet summary totals free, busy and queued independently and preserves unk
   const partial=resourceServerView(machine,{production:true,snapshot:{...snapshot,hosts:[{...snapshot.hosts[0],gpus:[gpu(0)]}]}});
   assert.deepEqual(resourceTotals([partial]),{free:null,busy:null,queued:null});
   assert.deepEqual(resourceTotals([view,partial]),{free:1,busy:1,queued:2},'an unread server is not counted');
+  const uncertain=resourceServerView(machine,{production:true,snapshot:{...snapshot,hosts:[{...snapshot.hosts[0],tasks:[...snapshot.hosts[0].tasks,{state:'UNKNOWN'}]}]}});
+  assert.deepEqual(resourceTotals([uncertain]),{free:1,busy:1,queued:null},'partial task states are not a confirmed total or zero');
   assert.deepEqual(resourceTotals([resourceServerView(machine)]),{free:null,busy:null,queued:null});
   assert.deepEqual(resourceTotals([]),{free:null,busy:null,queued:null});
 });
