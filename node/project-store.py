@@ -1,5 +1,5 @@
 """Mutable SSD project workspaces; no releases, snapshots or migration."""
-import contextlib,errno,fcntl,importlib.util,json,os,re,stat,time,uuid
+import contextlib,errno,fcntl,functools,importlib.util,json,os,re,stat,time,uuid
 from pathlib import Path
 SLUG=re.compile(r'^[a-z][a-z0-9_-]{0,47}$')
 JOB_ID=re.compile(r'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$')
@@ -9,10 +9,12 @@ WORKSPACE_WARNING_BYTES=256*1024**3
 WORKSPACE_HARD_FLOOR_BYTES=64*1024**3
 PROJECT_LOCK_WAIT_SECONDS=2.0
 
+@functools.lru_cache(maxsize=None)
 def data():
     spec=importlib.util.spec_from_file_location('project_data',Path(__file__).with_name('local-data.py'))
     result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
 
+@functools.lru_cache(maxsize=None)
 def quota():
     spec=importlib.util.spec_from_file_location('project_quota',Path(__file__).with_name('quota-ids.py'))
     result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result

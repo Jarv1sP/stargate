@@ -7,7 +7,7 @@ directory with a different ID returns EXDEV, so container-type directories
 Tagging never blocks a user operation: on failure the bytes stay on ID 0 and
 show as untracked. Stdlib only, so the root migration can load this file alone.
 """
-import contextlib,errno,fcntl,importlib.util,json,os,re,stat,struct,sys,uuid
+import contextlib,errno,fcntl,functools,importlib.util,json,os,re,stat,struct,sys,uuid
 from pathlib import Path
 FS_IOC_FSGETXATTR=0x801C581F
 FS_IOC_FSSETXATTR=0x401C5820
@@ -20,6 +20,7 @@ UNSUPPORTED=(errno.EOPNOTSUPP,errno.ENOTTY,errno.ENOSYS)
 DIR_FLAGS=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC
 FILE_FLAGS=os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC|os.O_NOCTTY
 
+@functools.lru_cache(maxsize=None)
 def module(name):
     s=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
     m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
