@@ -1,8 +1,9 @@
 """Ordinary HDD directories, with descriptor-relative browsing/downloads."""
-import base64,os,stat,time
+import base64,functools,os,stat,time
 from pathlib import Path
 import importlib.util
 
+@functools.lru_cache(maxsize=None)
 def data():
     s=importlib.util.spec_from_file_location('dataset_local',Path(__file__).with_name('local-data.py'))
     m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
@@ -25,7 +26,7 @@ def datasets(config):
                      'uploadedBy':uploader,'modifiedAt':info.st_mtime})
     return {'datasets':rows,'complete':complete}
 
-def process(config,operation,args,root=None):
+def process(config,operation,args,root=None,*,binary=False):
     d=data();root=d.dataset_root(config,args['dataset']) if root is None else d.require_data_path(config,root)
     path=d.relative(args.get('path',''),empty=True)
     if operation=='files.list':
@@ -64,7 +65,7 @@ def process(config,operation,args,root=None):
                 offset=int(args.get('offset',0));length=min(16*1024**2,int(args.get('length',1024**2)))
                 if not 0<=offset<=info.st_size or length<0:raise ValueError('下载偏移超出文件大小。')
                 raw=os.pread(fd,length,offset)
-                return {'data':base64.b64encode(raw).decode(),'offset':offset,'nextOffset':offset+len(raw),
+                return {'data':raw if binary else base64.b64encode(raw).decode(),'offset':offset,'nextOffset':offset+len(raw),
                         'size':info.st_size,'totalSize':info.st_size,'eof':offset+len(raw)>=info.st_size}
             finally:os.close(fd)
     raise ValueError('此文件操作不存在。')

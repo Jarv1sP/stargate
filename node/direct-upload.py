@@ -1,10 +1,12 @@
 """Fixed authenticated TLS file lane. No manifests, versions or content digests."""
-import base64,hashlib,hmac,http.client,importlib.util,json,os,re,ssl,time,uuid
+import base64,functools,hashlib,hmac,http.client,importlib.util,json,os,re,ssl,threading,time,uuid
+from collections import OrderedDict
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import parse_qs,urlsplit
 
 
+@functools.lru_cache(maxsize=None)
 def module(name):
     s=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
     m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
@@ -14,6 +16,7 @@ class DirectUploads:
     def __init__(self,node):
         self.n=node;self.c=node.CONFIG['directUpload'];self.s=module('project-store');self.d=module('local-data')
         self.folder=self.s.private_dir(self.d.root(node.CONFIG,'root')/'file-grants',create=True)
+        self.checked=OrderedDict();self.check_lock=threading.Lock()
 
     def root(self,args):
         if args.get('jobId') or args.get('runId'):return self.n.projects().store.workspace_output('', '',jobid=args.get('jobId',args.get('runId')),create=False)
@@ -58,7 +61,19 @@ class DirectUploads:
         if not re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',key):raise PermissionError('传输凭据无效，请重新登录。')
         row=self.s.read_json(self.folder/(key+'.json'))
         if time.time()>row['expiresAt'] or not hmac.compare_digest(row['ticket'],token):raise PermissionError('传输凭据已到期，请重新获取。')
-        self.control_check(token)
+        cache_key=(key,token);stamp=time.monotonic()
+        with self.check_lock:
+            for cached,expires in list(self.checked.items()):
+                if expires<=stamp:self.checked.pop(cached,None)
+            valid=self.checked.get(cache_key,0)>stamp
+            if valid:self.checked.move_to_end(cache_key)
+        if not valid:
+            self.control_check(token)
+            now=time.time()
+            if now>=row['expiresAt']:raise PermissionError('传输凭据已到期，请重新获取。')
+            with self.check_lock:
+                self.checked[cache_key]=time.monotonic()+min(30,row['expiresAt']-now)
+                while len(self.checked)>1024:self.checked.popitem(last=False)
         self.d.require_data_path(self.n.CONFIG,row['root']);return row
 
 
@@ -95,8 +110,8 @@ def create_server(node):
                 if action=='status':return self.response(200,{'ok':True,'result':module('data-uploads').Uploads(node.CONFIG,row['userId'],root=row['root']).process('status',{'key':key})})
                 if action!=row['action']:raise PermissionError('请重新获取对应上传或下载凭据。')
                 if action=='get':
-                    result=module('dataset-files').process(node.CONFIG,'files.get',{'path':row['path'],'offset':offset,'length':row['chunkBytes']},root=row['root'])
-                    body=base64.b64decode(result.pop('data'));result.update(protocol=2,path=row['path'])
+                    result=module('dataset-files').process(node.CONFIG,'files.get',{'path':row['path'],'offset':offset,'length':row['chunkBytes']},root=row['root'],binary=True)
+                    body=result.pop('data');result.update(protocol=2,path=row['path'])
                     self.send_response(200);self.send_header('Content-Length',str(len(body)));self.send_header('Content-Type','application/octet-stream')
                     self.send_header('X-GPUQ-File-Metadata',base64.urlsafe_b64encode(json.dumps(result).encode()).decode().rstrip('='))
                     self.send_header('Access-Control-Expose-Headers','X-GPUQ-File-Metadata')
@@ -105,13 +120,11 @@ def create_server(node):
                     self.end_headers();self.wfile.write(body);return
                 length=int(self.headers.get('Content-Length','0'))
                 if not 0<=length<=16*1024**2:raise ValueError('单次传输正文不能超过16MiB。')
-                uploads=module('data-uploads').Uploads(node.CONFIG,row['userId'],root=row['root']);left=length
-                while left:
-                    raw=self.rfile.read(min(left,1024**2))
-                    if not raw:raise ValueError('传输中断，请按原编号和偏移续传。')
-                    result=uploads.process('chunk',{'key':key,'offset':offset,'data':base64.b64encode(raw).decode()});offset+=len(raw);left-=len(raw)
+                uploads=module('data-uploads').Uploads(node.CONFIG,row['userId'],root=row['root'])
+                raw=self.rfile.read(length)
+                result=uploads.write_request(key,offset,raw)
+                if len(raw)!=length:raise ValueError('传输中断，请按原编号和偏移续传。')
                 if query.get('final',['false'])[0]=='true':result=uploads.process('finish',{'key':key})
-                else:result=uploads.process('status',{'key':key})
                 result.update(protocol=2,path=row['path'],size=result.get('offset'),offset=result.get('offset'))
                 self.response(200,{'ok':True,'result':result})
             except Exception as error:

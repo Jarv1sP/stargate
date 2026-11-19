@@ -1,7 +1,8 @@
 """One original-key upload; size + durable offset + same-directory rename."""
-import base64,contextlib,errno,fcntl,importlib.util,os,stat,time,uuid
+import base64,contextlib,errno,fcntl,functools,importlib.util,os,stat,time,uuid
 from pathlib import Path
 
+@functools.lru_cache(maxsize=None)
 def module(name):
     s=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
     m=importlib.util.module_from_spec(s);s.loader.exec_module(m);return m
@@ -35,6 +36,37 @@ class Uploads:
             if error.errno not in (errno.EDQUOT,errno.ENOSPC):raise
             raise ValueError(self.s.storage_error(self.config,error,self.root)) from None
 
+    def write_chunk(self,row,root,fd,raw,offset,limit):
+        if type(offset) is not int or offset<0 or offset+len(raw)>row['totalSize'] or len(raw)>limit:raise ValueError('上传分块大小或偏移超出范围。')
+        part=os.open(row['temp'],os.O_RDWR|os.O_NOFOLLOW,dir_fd=fd)
+        try:
+            current=os.fstat(part).st_size
+            # A process can die after pwrite but before the durable offset record.
+            # Discard only that unacknowledged tail before accepting a retry.
+            if current>row['offset']:os.ftruncate(part,row['offset']);current=row['offset']
+            if offset>current or current<row['offset']:raise ValueError('上传偏移不连续，请查询原编号后续传。')
+            if offset+len(raw)>current:
+                self.s.require_workspace_space(root,needed=offset+len(raw)-current,target_fd=fd)
+                at=max(0,current-offset)
+                while at<len(raw):at+=os.pwrite(part,raw[at:],offset+at)
+                os.fsync(part)
+            row['offset']=os.fstat(part).st_size
+        finally:os.close(part)
+
+    def write_request(self,key,offset,raw):
+        """One direct HTTP body, with one data sync and one durable offset update."""
+        try:
+            with self.locked(key) as record:
+                row=self.s.read_json(record);root=self.d.require_data_path(self.config,row['root'])
+                if row['state'] in ('COMPLETE','CANCELED','COMMITTING'):return self.view(row)
+                with self.d.parent(root,row['path'],datasets_root=self.config['datasetsRoot'] if row.get('project') else None) as (fd,name):
+                    self.write_chunk(row,root,fd,raw,offset,16*1024**2)
+                self.s.atomic_json(record,row)
+                return self.view(row)
+        except OSError as error:
+            if error.errno not in (errno.EDQUOT,errno.ENOSPC):raise
+            raise ValueError(self.s.storage_error(self.config,error,self.root)) from None
+
     def _process(self,action,args):
         key=args['key']
         with self.locked(key) as record:
@@ -63,19 +95,7 @@ class Uploads:
                     os.fsync(fd);row['state']='CANCELED'
                 elif action=='chunk':
                     raw=base64.b64decode(args['data'],validate=True);offset=args['offset']
-                    if type(offset) is not int or offset<0 or offset+len(raw)>row['totalSize'] or len(raw)>1024**2:raise ValueError('上传分块大小或偏移超出范围。')
-                    part=os.open(row['temp'],os.O_RDWR|os.O_NOFOLLOW,dir_fd=fd)
-                    try:
-                        current=os.fstat(part).st_size
-                        if offset>current:raise ValueError('上传偏移不连续，请查询原编号后续传。')
-                        if offset+len(raw)>current:
-                            self.s.require_workspace_space(root,needed=offset+len(raw)-current,target_fd=fd)
-                            # A retry may overwrite an unacknowledged tail at the same offset.
-                            at=0
-                            while at<len(raw):at+=os.pwrite(part,raw[at:],offset+at)
-                            os.fsync(part)
-                        row['offset']=os.fstat(part).st_size
-                    finally:os.close(part)
+                    self.write_chunk(row,root,fd,raw,offset,1024**2)
                 elif action=='finish':
                     if 'executable' in args:row['executable']=bool(args['executable'])
                     try:part=os.open(row['temp'],os.O_RDWR|os.O_NOFOLLOW,dir_fd=fd)

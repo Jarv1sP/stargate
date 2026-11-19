@@ -1,6 +1,7 @@
 """Trusted data disks and descriptor-relative file access."""
 import contextlib
 import fcntl
+import functools
 import importlib.util
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import uuid
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 SYS_DEV_BLOCK = Path('/sys/dev/block')
 
+@functools.lru_cache(maxsize=None)
 def module(name):
     spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'))
     result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
