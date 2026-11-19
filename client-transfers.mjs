@@ -9,6 +9,7 @@ import {recoverOriginalWrite,uncertainWrite} from './client-http.mjs';
 import {downloadResultFile} from './client-result-download.mjs';
 import {selectTransferRoute} from './client-transfer-route.mjs';
 const safe=value=>String(value??'').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,c=>'\\u{'+c.codePointAt(0).toString(16)+'}');
+const chunkData=value=>Buffer.isBuffer(value)?value:Buffer.from(value,'base64');
 export function transferText(row){const result=row.result||{},bytes=result.bytes??row.bytes??(Number.isFinite(result.totalBytes)&&Number.isFinite(result.remainingBytes)?result.totalBytes-result.remainingBytes:'?'),total=result.totalBytes??row.totalBytes;return `${safe(row.id)} · ${safe(row.kind)} · ${safe(row.from?row.from+' → '+row.machine:row.machine)} · ${safe(row.state)}\n  ${bytes} / ${total??'?'} bytes${result.path?' · '+safe(result.path):''}${result.phase||row.phase?'\n  '+safe(result.phase||row.phase):''}${row.error||result.error?'\n  '+safe(row.error||result.error):''}`;}
 export async function uploadLocalFile(call,{machine,context,path,local,key=randomUUID(),transferId,via,route,initialGrant,stateDirectory,probe,notify=message=>process.stderr.write(message+'\n'),progress=()=>{},transportFactory=createPersonalFileTransport,lstatFile=lstat,openFile=open,platform=process.platform}){
   dataPath(path);const named=await lstatFile(local,{bigint:true});if(!named.isFile()||named.isSymbolicLink()||named.size>BigInt(Number.MAX_SAFE_INTEGER))throw Error('请选择普通文件，链接不会上传。');
@@ -25,11 +26,11 @@ export async function uploadLocalFile(call,{machine,context,path,local,key=rando
         if(operation==='data.upload.chunk'&&via!=='relay'){
           try{
             transport ||= await transportFactory(call,{machine,context,path,action:'put',initialGrant,identity:{uploadId:key,totalSize:size}});
-            return {result:await transport.request({offset:args.offset,bytes:Buffer.from(args.data,'base64'),final:false})};
+            return {result:await transport.request({offset:args.offset,bytes:chunkData(args.data),final:false})};
           }catch(error){
             if(!automatic||!campusRetryable(error))throw error;
             let row;try{row=(await call('data.upload.status',scope)).result;}catch{throw error;}
-            const bytes=Buffer.from(args.data,'base64'),end=args.offset+bytes.length;
+            const bytes=chunkData(args.data),end=args.offset+bytes.length;
             if(!Number.isSafeInteger(row?.offset)||row.offset<args.offset||row.offset>end)throw error;
             via=selected.via='relay';await selected.save?.(via);notify('校园直连失败，改经 VPS 继续');
             if(row.offset===end)return {result:row};
@@ -44,10 +45,12 @@ export async function uploadLocalFile(call,{machine,context,path,local,key=rando
         if(row?.state==='ABSENT')return operation==='data.upload.begin'?{absent:true}:undefined;
         if(operation==='data.upload.begin')return {value:reply};
         if(operation==='data.upload.finish'){if(row?.state==='COMPLETE')return {value:reply};if(row?.offset===size)return {absent:true};}
-        if(operation==='data.upload.chunk'){const next=args.offset+Buffer.from(args.data,'base64').length;if(row?.offset===next)return {value:reply};if(row?.offset===args.offset)return {absent:true};}
+        if(operation==='data.upload.chunk'){const next=args.offset+chunkData(args.data).length;if(row?.offset===next)return {value:reply};if(row?.offset===args.offset)return {absent:true};}
       },unresolved:error=>Object.assign(error,{key,message:error.message+'\n上传结果未知，请保留 --key '+key})})).result;
     };
-    const result=await uploadPersonalFile({call:request,machine,...context,path,key,transferId,size,overwrite:true,chunkBytes:512*1024,...(context.area==='code'?{ownerExecutable:!!(Number(info.mode)&0o100)}:{}),read:async(offset,length)=>{const bytes=Buffer.alloc(length),part=await file.read(bytes,0,length,offset);return bytes.subarray(0,part.bytesRead);},onProgress:row=>progress({path,...row})});
+    const rawChunks=context.area==='dataset'&&via!=='relay';let chunkBytes=512*1024;
+    if(rawChunks){transport=await transportFactory(call,{machine,context,path,action:'put',initialGrant,identity:{uploadId:key,totalSize:size}});chunkBytes=transport.chunkBytes||1024**2;}
+    const result=await uploadPersonalFile({call:request,machine,...context,path,key,transferId,size,overwrite:true,chunkBytes,rawChunks,...(context.area==='code'?{ownerExecutable:!!(Number(info.mode)&0o100)}:{}),read:async(offset,length)=>{const bytes=Buffer.alloc(length),part=await file.read(bytes,0,length,offset);return bytes.subarray(0,part.bytesRead);},onProgress:row=>progress({path,...row})});
     return {...result,machine,path,bytes:size};
   }finally{await file.close();await transport?.close();}
 }
