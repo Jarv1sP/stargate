@@ -22,6 +22,21 @@ export async function retryCampusRequest(send,{signal,now=()=>performance.now(),
     signal?.throwIfAborted();await sleep(Math.min(delay,remaining));signal?.throwIfAborted();if(now()>=deadline)throw first;delay=Math.min(16000,delay*2);
   }}
 }
+export const isCampusTicketMessage=message=>message==='传输凭据已到期，请重新获取。'||message==='登录已失效，请重新登录。';
+export async function retryCampusFileChunk(send,refresh,options){
+  let renewed=false;
+  return retryCampusRequest(async()=>{
+    try{return await send();}
+    catch(error){
+      // These node replies are sent before reading or writing the file body.
+      if(renewed||error?.status!==403
+        ||(error.reasonCode!=='FILE_TICKET_EXPIRED'&&!isCampusTicketMessage(error.nodeError)))throw error;
+      await refresh();
+      renewed=true;
+      return send();
+    }
+  },options);
+}
 const encode=bytes=>{let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(text);};
 // One file, one original key, offset resume, atomic finish on the node.
 export async function uploadPersonalFile({call,machine,area='code',project,ownerId,dataset,transferId,ownerExecutable,path,size,read,overwrite=false,key=crypto.randomUUID(),chunkBytes=CHUNK,rawChunks=false,signal,onProgress=()=>{},timeoutMs=7200000,wait=()=>new Promise(resolve=>setTimeout(resolve,1000)),resumeHint}){
@@ -67,14 +82,15 @@ export async function uploadBrowserFile(file,options){
     const bytes=Uint8Array.from(atob(args.data),c=>c.charCodeAt(0)),end=args.offset+bytes.length;
     const status=async error=>{let row;try{row=await call('data.upload.status',{...scope,key:args.key});}catch{error.receiptChecked=true;throw error;}
       if(!Number.isSafeInteger(row?.offset)||row.offset<args.offset||row.offset>end){error.receiptChecked=true;throw error;}return row;};
-    try{return await retryCampusRequest(async()=>{
-      if(!grant||grant.expiresAt*1000<=Date.now()+5000)grant=await call('files.direct-ticket',{...scope,action:'put',uploadId:args.key,totalSize:file.size});
+    const refresh=async()=>{grant=await call('files.direct-ticket',{...scope,action:'put',uploadId:args.key,totalSize:file.size});};
+    try{return await retryCampusFileChunk(async()=>{
+      if(!grant||grant.expiresAt*1000<=Date.now()+5000)await refresh();
       const url=new URL('/v1/files/'+encodeURIComponent(grant.grantId)+'/put',grant.endpoint);if(url.protocol!=='https:')throw Error('校园直连需要 HTTPS 地址。');url.searchParams.set('offset',args.offset);url.searchParams.set('final','false');
       try{
         const response=await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+grant.ticket,'Content-Type':'application/octet-stream'},body:bytes,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(30000)]):AbortSignal.timeout(30000)});
-        const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error||'上传连接中断，请沿用原编号续传。'),{status:response.status});return value.result;
+        const value=await response.json();if(!response.ok)throw Object.assign(Error(value.error||'上传连接中断，请沿用原编号续传。'),{status:response.status,reasonCode:value.code,nodeError:value.error});return value.result;
       }catch(error){if(campusRetryable(error)){const row=await status(error);if(row.offset===end)return row;}throw error;}
-    },{...options.retry,signal});}catch(error){
+    },refresh,{...options.retry,signal});}catch(error){
       signal?.throwIfAborted();
       if(scope.area==='dataset'||!campusRetryable(error)){if(campusRetryable(error))error.message+='\n'+BROWSER_DATASET_HELP;throw error;}
       const row=await status(error);route.via='relay';route.save?.('relay');onRoute('校园直连失败，改经 VPS 继续');

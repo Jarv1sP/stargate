@@ -22,3 +22,38 @@ test('a file request refreshes its scheduled ticket before sending bytes',async(
     finally{await transport.close();}
   }
 });
+
+test('a download refreshes once after a ticket refusal and keeps the requested offset',async()=>{
+  const value=grant();
+  let tickets=0,sends=0,closed=0;
+  const transport=await createPersonalFileTransport(async()=>({result:{...value,ticket:'new-isolated-capability-'+(++tickets)}}),{
+    machine:'fixture',context:{area:'dataset'},path:'fixed',action:'get',initialGrant:value,
+    agentFactory:()=>({destroy:async()=>{closed++;}}),send:async(current,_agent,_action,{offset})=>{
+      assert.equal(offset,7);
+      if(++sends===1)throw Object.assign(Error('rejected'),{status:403,reasonCode:'FILE_TICKET_EXPIRED'});
+      assert.notEqual(current.ticket,value.ticket);
+      return {data:'eA=='};
+    },
+  });
+  try{
+    assert.equal((await transport.request({offset:7})).data,'eA==');
+    assert.equal(sends,2);assert.equal(tickets,1);assert.equal(closed,1);
+  }finally{await transport.close();}
+});
+
+for(const [reasonCode,expected] of [['FILE_TICKET_EXPIRED',2],['FORBIDDEN',1]]){
+  test(`a persistent ${reasonCode} refusal stops without an unbounded replay`,async()=>{
+    let tickets=0,sends=0;
+    const transport=await createPersonalFileTransport(async()=>{tickets++;return {result:grant()};},{
+      machine:'fixture',context:{area:'code'},path:'fixed',action:'put',initialGrant:grant(),
+      agentFactory:()=>({destroy:async()=>{}}),send:async()=>{
+        sends++;
+        throw Object.assign(Error('rejected'),{status:403,reasonCode});
+      },
+    });
+    try{
+      await assert.rejects(transport.request({offset:7,bytes:Buffer.of(1),final:false}),error=>error.status===403);
+      assert.equal(sends,expected);assert.equal(tickets,expected-1);
+    }finally{await transport.close();}
+  });
+}

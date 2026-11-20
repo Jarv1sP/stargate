@@ -6,8 +6,10 @@ import {join} from 'node:path';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
+import {createPersonalFileTransport} from '../client-personal-file-campus.mjs';
+import {uploadPersonalFile} from '../dist/personal-upload.js';
 
-async function fixture(t,{central=false}={}){
+async function fixture(t,{central=false,prepare}={}){
   const root=await mkdtemp(join(tmpdir(),'campus-login-')),database=join(root,'business.sqlite'),accounts=join(root,'accounts.sqlite'),bootstrap=join(root,'bootstrap');
   const environment=Object.fromEntries(['TEAM_ACCOUNTS_DATABASE','TEAM_IDENTITY_CONFIG'].map(name=>[name,process.env[name]]));
   for(const name of Object.keys(environment))delete process.env[name];
@@ -20,6 +22,7 @@ async function fixture(t,{central=false}={}){
   await writeFile(bootstrap,JSON.stringify({username:'admin',password:'Synthetic-File-Login-Only-2026!'}));
   const bridge=async(machine,operation,args)=>{
     assert.equal(operation,'files.direct.prepare');
+    if(prepare)return prepare(args);
     return {available:true,grantId:args.uploadId??randomUUID(),ticket:randomBytes(32).toString('hex'),
       endpoint:'https://campus.invalid',certificateSha256:'a'.repeat(64),expiresAt:Date.now()/1000+300,
       chunkBytes:1024**2,file:{size:3}};
@@ -67,6 +70,84 @@ for(const [label,change,status] of [
   const f=await fixture(t),grant=await f.grant('get');
   change(f.service.accounts.db);
   assert.throws(()=>f.service.checkFileTicket({ticket:grant.ticket}),error=>error.status===status);
+});
+
+for(const legacy of [false,true]){
+  test(`long upload with a ${legacy?'legacy':'renewing'} node continues under the original key`,async t=>{
+    const machine=MACHINES[0].id,key=randomUUID(),ttl=150,bytes=Buffer.from('multi-cycle transfer');
+    const started=Math.floor(Date.now()/1000);
+    let elapsed=0,grant,issued=0,offset=0,begins=0,rejected=0;
+    const rejectedOffsets=[];
+    const f=await fixture(t,{prepare:args=>{
+      assert.equal(args.uploadId,key);
+      const now=Date.now()/1000;
+      if(!grant||grant.expiresAt-now<=(legacy?0:120)){
+        issued++;
+        grant={available:true,grantId:key,ticket:randomBytes(32).toString('hex'),expiresAt:now+ttl,
+          endpoint:'https://campus.invalid',certificateSha256:'a'.repeat(64),chunkBytes:1024**2};
+      }
+      return grant;
+    }});
+    const skew=legacy?30:0;
+    t.mock.method(Date,'now',()=>(started+elapsed+skew)*1000);
+    const scope={machine,area:'dataset',dataset:'shared',path:'sample'};
+    const transport=await createPersonalFileTransport((op,args)=>f.service.invoke(f.token,op,args),{
+      ...scope,context:{area:'dataset',dataset:'shared'},action:'put',identity:{uploadId:key,totalSize:bytes.length},
+      now:()=>started+elapsed,monotonic:()=>elapsed*1000,
+      agentFactory:()=>({destroy:async()=>{}}),send:async(value,_agent,_action,chunk)=>{
+        try{f.service.checkFileTicket({ticket:value.ticket});}
+        catch{
+          rejected++;
+          rejectedOffsets.push(chunk.offset);
+          throw Object.assign(Error('HTTP 403'),{status:403,nodeError:'登录已失效，请重新登录。'});
+        }
+        assert.equal(chunk.offset,offset);
+        assert.equal(chunk.bytes[0],bytes[offset]);
+        elapsed+=35;
+        return {state:'UPLOADING',offset:++offset};
+      },
+    });
+    try{
+      const result=await uploadPersonalFile({...scope,key,size:bytes.length,chunkBytes:1,rawChunks:true,
+        read:async at=>bytes.subarray(at,at+1),call:async(operation,args)=>{
+          assert.equal(args.key,key);
+          if(operation==='data.upload.begin'){begins++;return {state:'UPLOADING',offset};}
+          if(operation==='data.upload.finish')return {state:'COMPLETE',offset};
+          assert.equal(operation,'data.upload.chunk');
+          return transport.request({offset:args.offset,bytes:args.data,final:false});
+        },
+      });
+      assert.equal(result.state,'COMPLETE');
+      assert.equal(offset,bytes.length);
+      assert.equal(begins,1);
+      assert.ok(elapsed>3*ttl&&issued>=4);
+      if(legacy)assert.ok(rejected>0&&new Set(rejectedOffsets).size===rejected);
+      else assert.equal(rejected,0);
+    }finally{await transport.close();}
+  });
+}
+
+test('a revoked login cannot refresh a direct ticket or replay the rejected write',async t=>{
+  const f=await fixture(t),initialGrant=await f.grant('put');
+  let sends=0,ticketRequests=0;
+  const transport=await createPersonalFileTransport((op,args)=>{
+    ticketRequests++;
+    return f.service.invoke(f.token,op,args);
+  },{
+    machine:MACHINES[0].id,context:{area:'code',project:'fixture'},path:'sample',action:'put',initialGrant,
+    identity:{uploadId:initialGrant.grantId,totalSize:3},
+    agentFactory:()=>({destroy:async()=>{}}),send:async value=>{
+      sends++;
+      assert.throws(()=>f.service.checkFileTicket({ticket:value.ticket}),error=>error.status===401);
+      throw Object.assign(Error('HTTP 403'),{status:403,nodeError:'登录已失效，请重新登录。'});
+    },
+  });
+  try{
+    f.service.revokeSession(f.token);
+    await assert.rejects(transport.request({offset:0,bytes:Buffer.from('abc'),final:false}),error=>error.status===401);
+    assert.equal(ticketRequests,1);
+    assert.equal(sends,1);
+  }finally{await transport.close();}
 });
 
 test('direct files use the same sliding login lifetime as control requests',async t=>{
