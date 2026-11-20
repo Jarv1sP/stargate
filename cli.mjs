@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import packageInfo from "./package.json" with { type: "json" };
 
 export function gpuMetricsText(metrics){
   const value=(number,unit)=>Number.isFinite(number)?number+unit:'未知';
@@ -36,6 +37,7 @@ export function gpuMetricsText(metrics){
 
 var daily = `STARGATE — 团队项目、数据集与训练
 
+gpuctl --version / -V （查看本机客户端版本与构建）
 gpuctl login [USERNAME] / register USERNAME / logout
 gpuctl state / use MACHINE_ID / jobs / queue
 gpuctl jobs --key UUID --json （按原提交 key 查询，包括已结束任务）
@@ -199,6 +201,11 @@ async function secret(label = "Password") {
   });
 }
 async function main() {
+  if (args.length === 1 && ["--version", "-V"].includes(args[0])) {
+    const build = typeof STARGATE_CLIENT_REVISION === "undefined" ? "source" : STARGATE_CLIENT_REVISION;
+    console.log(`gpuctl ${packageInfo.version} (${build})`);
+    return;
+  }
   ({ options, positionals, training } = parseCLIOptions(args));
   if(options.output!==undefined&&positionals[0]!=='logs')fail9('--output 只用于 logs JOB --output 本机文件。');
   if(options.after.length&&positionals[0]!=='run')fail9('--after 只用于 run。');
