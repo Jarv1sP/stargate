@@ -102,6 +102,18 @@ export async function createPersonalFileTransport(call,{machine,context,path,act
   let grantDeadline=ticketStarted+Math.max(0,validity(grant))*1000;
   const remainingGrant=()=>Math.max(0,Math.min((grantDeadline-monotonic())/1000,
     grant.ttl===undefined?grant.expiresAt-now():Infinity));
+  if(context?.area==='dataset'&&(action==='put'?identity.totalSize:grant.file?.size)>CHUNK){
+    request={...request,maxChunkBytes:MAX_CHUNK};
+    let offered=(await ticket()).result;
+    // Old nodes may accept the requested size without advertising support.
+    // GET needs a fresh small grant too, so the node never returns 16 MiB to
+    // a transport which has fallen back to the original 1 MiB bound.
+    if(offered.chunkBytes===MAX_CHUNK&&offered.maxChunkBytes!==MAX_CHUNK){
+      request={...request,maxChunkBytes:CHUNK};offered=(await ticket()).result;
+    }
+    if(offered.maxChunkBytes!==MAX_CHUNK)request={...request,maxChunkBytes:CHUNK};
+    grant=personalFileGrant(offered,path,action);grantDeadline=ticketStarted+Math.max(0,validity(grant))*1000;
+  }
   // A single-chunk file needs no second ticket just to negotiate 16 MiB.
   if(grant.maxChunkBytes===MAX_CHUNK&&grant.chunkBytes!==MAX_CHUNK&&(action==='put'?identity.totalSize:grant.file?.size)>CHUNK){
     request={...request,maxChunkBytes:MAX_CHUNK};

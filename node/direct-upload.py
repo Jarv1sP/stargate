@@ -24,8 +24,12 @@ class DirectUploads:
         return self.d.dataset_root(self.n.CONFIG,args['dataset'],create=args.get('action')=='put')
 
     def issue(self,args):
+        chunk=args.get('maxChunkBytes',1024**2)
         action=args.get('action','get');key=args.get('uploadId',args.get('key')) if action=='put' else str(uuid.uuid4());root=self.root(args);path=self.d.relative(args['path']);action=args.get('action','get')
         if action not in ('get','put'):raise ValueError('请选择上传或下载。')
+        # PUT bodies already carry their size. Keep its stored v1 bound so a
+        # service/client rollback can resume this UUID with the old grant API.
+        stored_chunk=1024**2 if action=='put' else chunk
         if action=='put':
             module('data-uploads').Uploads(self.n.CONFIG,args['userId'],root=root).process('begin',{**args,'key':key})
         if not isinstance(key,str) or str(uuid.UUID(key))!=key:raise ValueError('请使用原传输UUID。')
@@ -34,13 +38,16 @@ class DirectUploads:
         if file.exists():
             row=self.s.read_json(file)
             if action=='get' and (row['root'],row['path'],row['action'])!=(str(root),path,action):raise ValueError('原下载编号已用于不同请求。')
-            if row['expiresAt']<time.time():row.update(ticket=uuid.uuid4().hex,expiresAt=int(time.time())+300);self.s.atomic_json(file,row)
+            changed=False
+            if row['expiresAt']<time.time():row.update(ticket=uuid.uuid4().hex,expiresAt=int(time.time())+300);changed=True
+            if row['chunkBytes']!=stored_chunk:row['chunkBytes']=stored_chunk;changed=True
+            if changed:self.s.atomic_json(file,row)
         else:
-            row={'id':key,'ticket':uuid.uuid4().hex,'root':str(root),'path':path,'action':action,'expiresAt':int(time.time())+300,'userId':args['userId'],'chunkBytes':args.get('maxChunkBytes',1024**2)}
+            row={'id':key,'ticket':uuid.uuid4().hex,'root':str(root),'path':path,'action':action,'expiresAt':int(time.time())+300,'userId':args['userId'],'chunkBytes':stored_chunk}
             self.s.atomic_json(file,row)
         der=ssl.PEM_cert_to_DER_cert(Path(self.c['certificate']).read_text())
         file_info={'path':row['path'],'size':args.get('totalSize')} if action=='put' else module('dataset-files').process(self.n.CONFIG,'files.stat',{'path':row['path']},root=root)
-        return {'available':True,'protocol':'campus-file','grantId':key,'action':action,'file':file_info,'chunkBytes':row['chunkBytes'],'ticket':row['ticket'],'endpoint':self.c['endpoint'],'certificateSha256':hashlib.sha256(der).hexdigest(),
+        return {'available':True,'protocol':'campus-file','grantId':key,'action':action,'file':file_info,'chunkBytes':chunk,'maxChunkBytes':chunk,'ticket':row['ticket'],'endpoint':self.c['endpoint'],'certificateSha256':hashlib.sha256(der).hexdigest(),
                 'expiresAt':row['expiresAt'],'path':row['path']}
 
     def control_check(self,token):

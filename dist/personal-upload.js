@@ -24,7 +24,7 @@ export async function retryCampusRequest(send,{signal,now=()=>performance.now(),
 }
 const encode=bytes=>{let text='';for(let i=0;i<bytes.length;i+=8192)text+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(text);};
 // One file, one original key, offset resume, atomic finish on the node.
-export async function uploadPersonalFile({call,machine,area='code',project,ownerId,dataset,transferId,ownerExecutable,path,size,read,overwrite=false,key=crypto.randomUUID(),chunkBytes=CHUNK,signal,onProgress=()=>{},timeoutMs=7200000,wait=()=>new Promise(resolve=>setTimeout(resolve,1000)),resumeHint}){
+export async function uploadPersonalFile({call,machine,area='code',project,ownerId,dataset,transferId,ownerExecutable,path,size,read,overwrite=false,key=crypto.randomUUID(),chunkBytes=CHUNK,rawChunks=false,signal,onProgress=()=>{},timeoutMs=7200000,wait=()=>new Promise(resolve=>setTimeout(resolve,1000)),resumeHint}){
   const scope={machine,area,...(project?{project}:{}),...(ownerId?{ownerId}:{}),...(dataset?{dataset}:{}),path,key,...(transferId?{transferId}:{})};
   const check=()=>signal?.throwIfAborted();
   const request=async(action,args={})=>{check();const value=await call('data.upload.'+action,{...scope,...args});check();return value;};
@@ -40,7 +40,7 @@ export async function uploadPersonalFile({call,machine,area='code',project,owner
     while(offset<size){
       check();const bytes=await read(offset,Math.min(chunkBytes,size-offset));check();
       if(bytes.length!==Math.min(chunkBytes,size-offset))throw Error('本地文件大小改变，原断点已保留。');
-      result=await pending(await request('chunk',{offset,data:encode(bytes)}));
+      result=await pending(await request('chunk',{offset,data:rawChunks?bytes:encode(bytes)}));
       offset+=bytes.length;
       if(result.offset!==undefined&&result.offset!==offset)throw Error('上传偏移不对，请按原编号查询。');
       onProgress({...result,key,path,totalSize:size,offset});

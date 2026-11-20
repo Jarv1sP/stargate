@@ -189,17 +189,17 @@ test('repository project, terminal git, dataset resume, training bytes, output d
  const read=await f.call('terminal.exchange',{project,id:terminal.id,clientId,writerToken:terminal.writerToken,offset:0,input:Buffer.from(command).toString('base64')});
  const text=Buffer.from(read.data,'base64').toString();assert.match(text,/main/);assert.ok(text.includes(status.git.commit));
  assert.equal(f.calls.filter(row=>row.op==='terminal.exchange'&&row.args.input).length,1,'terminal input is sent once');
- const bytes=Buffer.concat([Buffer.from('directory-dataset'),Buffer.alloc(512*1024,97)]),local=join(f.dir,'dataset.bin'),uploadKey=randomUUID();await writeFile(local,bytes);
+ const chunkBytes=1024**2,bytes=Buffer.concat([Buffer.from('directory-dataset'),Buffer.alloc(chunkBytes,97)]),local=join(f.dir,'dataset.bin'),uploadKey=randomUUID();await writeFile(local,bytes);
  // Substitute the campus socket only; the actual node owns these bytes and offsets.
  const campusChunks=[],upload=()=>uploadLocalFile(async(op,args)=>({result:await f.call(op,args)}),{machine,context:{area:'dataset',dataset:'shared'},path:'dataset.bin',local,key:uploadKey,route:{via:'direct'},
-  transportFactory:async()=>({request:async({offset,bytes})=>{
+  transportFactory:async()=>({chunkBytes,request:async({offset,bytes})=>{
    const args={userId:'builtin-admin',key:uploadKey,offset,data:bytes.toString('base64')};campusChunks.push(args);
    const result=await f.node('data.upload.chunk',args);
    if(f.failChunk){f.failChunk=false;f.failStatus=true;throw Object.assign(Error('lost campus response after durable bytes'),{code:'ACK_UNCONFIRMED',writeMayHaveReachedPeer:true});}return result;
   },close:async()=>{}})});
  f.failChunk=true;await assert.rejects(upload(),error=>error.message.includes(uploadKey));
  f.failStatus=false;assert.equal((await upload()).state,'COMPLETE');
- assert.deepEqual(campusChunks.map(row=>row.offset),[0,512*1024]);assert.equal(f.calls.some(row=>row.op==='data.upload.chunk'&&row.args.key===uploadKey),false,'dataset bytes never use Portal');
+ assert.deepEqual(campusChunks.map(row=>row.offset),[0,chunkBytes]);assert.equal(f.calls.some(row=>row.op==='data.upload.chunk'&&row.args.key===uploadKey),false,'dataset bytes never use Portal');
  assert.equal((await f.call('datasets.list')).datasets.find(row=>row.dataset==='shared').size,bytes.length);
  const jobKey=randomUUID(),run=await f.cli(['run','--machine',machine,'--project',project,'-g','1','--key',jobKey,'--','python3','train.py','/datasets/shared/dataset.bin','/outputs']);assert.equal(run.code,0,run.err);
  const submitted=JSON.parse(run.out).data,deadline=Date.now()+5000;let observed;
@@ -211,7 +211,9 @@ test('repository project, terminal git, dataset resume, training bytes, output d
  const member=await f.call('users.create',{username:'chain-member',password}),login=await f.service.login(member.username,password);
  await f.call('policy.save',{userId:member.id,total:1,limits:{[machine]:1}});
  const datasetTrash=randomUUID(),deleted=await f.call('datasets.delete',{dataset:'shared',key:datasetTrash},login.token);assert.equal(deleted.state,'TRASHED');
- assert.equal((await f.call('datasets.list')).datasets.length,0);await f.call('projects.retire.restore',{key:datasetTrash,kind:'dataset'});assert.deepEqual(Buffer.from((await f.call('files.get',{area:'dataset',dataset:'shared',path:'dataset.bin'})).data,'base64'),bytes);
+ assert.equal((await f.call('datasets.list')).datasets.length,0);await f.call('projects.retire.restore',{key:datasetTrash,kind:'dataset'});
+ const restored=[];for(let offset=0;offset<bytes.length;offset+=chunkBytes)restored.push(Buffer.from((await f.call('files.get',{area:'dataset',dataset:'shared',path:'dataset.bin',offset,length:chunkBytes})).data,'base64'));
+ assert.deepEqual(Buffer.concat(restored),bytes);
  const outputTrash=randomUUID();assert.equal((await f.call('outputs.delete',{jobId:submitted.id,path:'result.json',key:outputTrash},login.token)).state,'TRASHED');await f.call('projects.retire.restore',{key:outputTrash,kind:'output'});
  const projectTrash=randomUUID();assert.equal((await f.call('projects.retire',{project,ownerId:'builtin-admin',key:projectTrash},login.token)).state,'TRASHED');await f.call('projects.retire.restore',{key:projectTrash,kind:'project'});
  assert.equal((await f.call('projects.status',{project})).git.commit,status.git.commit);
