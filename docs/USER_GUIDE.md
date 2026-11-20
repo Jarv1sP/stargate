@@ -29,6 +29,8 @@ curl -fsSL https://gpu.example.com/install.sh | sh
 
 将示例地址换成平台地址。安装只写用户目录，无需管理员权限；更新运行同一安装命令。Windows 与 WSL 分别安装和登录。
 
+安装后运行 `gpuctl --version`（也可用 `-V`）查看本机客户端版本和发布构建编号，无需登录。直接运行源码时，构建一栏显示 `source`。
+
 校园直传助手随客户端内置，支持 Linux、Windows 和 macOS 的 x64/arm64（Mac 包括 Intel 与 Apple Silicon），无需另装 Go 或配置 SSH。macOS 的数据集传输同样需要校园入口可达；项目文件和任务输出仍按现有规则在直连失败时改走门户。
 
 ### 研究工具包装器
@@ -532,6 +534,16 @@ CLI 未读重要公告写入 stderr，`--json` 的 stdout 保持原格式。`gpu
 页面底部可「恢复默认外观与插件」。界面异常时，用 `?workshop=off#workshop` 打开网站，再停用或重置。上述操作不会停止训练。
 
 ## 常见问题 {#troubleshooting}
+
+### 安装后找不到 gpuctl 或想确认版本
+
+Linux、macOS 或 WSL 上，如果安装器提示「客户端已保存」但「未创建 gpuctl 命令入口」，说明下载和安装已完成，退出码为 0。可直接运行下列命令，也可以把客户端软链接到 PATH 中可写的目录，命名为 `gpuctl`。下载、语法检查或保存客户端失败仍返回非 0。
+
+```sh local
+node "$HOME/.local/share/gpuq-console/gpuctl.mjs" --version
+```
+
+若入口已经创建，按安装器提示重新打开终端或在当前终端设置 PATH，再运行 `gpuctl --version`。如果版本仍不对，用 `command -v gpuctl` 核对当前命令指向的文件，或检查研究工具包装器是否仍使用旧副本。
 
 ### 请求超时、终端未知或传输中断
 

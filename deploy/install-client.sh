@@ -2,10 +2,14 @@
 set -eu
 command -v node >/dev/null 2>&1 || { echo '请先安装 Node.js 22.13 或更新版本，然后重试。'; exit 1; }
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);if(a<22||(a===22&&b<13))process.exit(1)' || { echo 'Node.js 版本过旧，需要 22.13+。'; exit 1; }
-mkdir -p "$HOME/.local/share/gpuq-console" "$HOME/.local/bin"
+client_dir="$HOME/.local/share/gpuq-console"
+client="$client_dir/gpuctl.mjs"
+bin_dir="$HOME/.local/bin"
+launcher="$bin_dir/gpuctl"
+mkdir -p "$client_dir"
 origin='__GPUQ_PUBLIC_ORIGIN__'
 case "$origin" in https://*) ;; *) echo 'Download this installer from your running GPUQ portal.'; exit 1;; esac
-temporary=$(mktemp "$HOME/.local/share/gpuq-console/.client.XXXXXX")
+temporary=$(mktemp "$client_dir/.client.XXXXXX")
 trap 'rm -f "$temporary"' EXIT HUP INT TERM
 node --input-type=module - "$origin" "$temporary" <<'JS'
 import {open,readFile,unlink} from 'node:fs/promises';
@@ -72,14 +76,35 @@ try{
 }finally{await file.close();}
 JS
 node --input-type=module --check < "$temporary"
-mv "$temporary" "$HOME/.local/share/gpuq-console/gpuctl.mjs"
-chmod 700 "$HOME/.local/share/gpuq-console/gpuctl.mjs"
-ln -sf "$HOME/.local/share/gpuq-console/gpuctl.mjs" "$HOME/.local/bin/gpuctl"
+chmod 700 "$temporary"
+if [ -d "$client" ]; then
+  printf '无法安装客户端：%s 已是目录。\n' "$client" >&2
+  exit 1
+fi
+mv -f "$temporary" "$client"
+
+entry_error=
+if ! mkdir -p "$bin_dir"; then
+  entry_error="无法创建目录 $bin_dir"
+elif [ -d "$launcher" ]; then
+  entry_error="$launcher 已是目录"
+elif ! ln -sf "$client" "$launcher"; then
+  entry_error="无法在 $launcher 写入软链接"
+fi
+if [ -n "$entry_error" ]; then
+  printf '安装完成：客户端已保存到 %s\n未创建 gpuctl 命令入口：%s。\n' "$client" "$entry_error"
+  printf '%s\n' '可直接运行：node "$HOME/.local/share/gpuq-console/gpuctl.mjs" --help' \
+    '也可以将客户端软链接到 PATH 中可写的目录，命名为 gpuctl。'
+  exit 0
+fi
 case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
+  *":$bin_dir:"*) ;;
   *) case "${SHELL:-}" in */zsh) profile="$HOME/.zshrc";; *) profile="$HOME/.bashrc";; esac
      line='export PATH="$HOME/.local/bin:$PATH"'
-     grep -Fqx "$line" "$profile" 2>/dev/null || printf '\n%s\n' "$line" >> "$profile"
-     echo '请重新打开终端以加载 gpuctl 命令。';;
+     if grep -Fqx "$line" "$profile" 2>/dev/null || printf '\n%s\n' "$line" >> "$profile"; then
+       echo '请重新打开终端以加载 gpuctl 命令。'
+     else
+       printf '已创建命令入口 %s，但无法更新 %s。\n可在当前终端运行：%s\n' "$launcher" "$profile" "$line" >&2
+     fi;;
 esac
 echo '安装完成：gpuctl login → gpuctl state → gpuctl use 机器名 → gpuctl ssh'
