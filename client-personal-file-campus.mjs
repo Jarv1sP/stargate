@@ -2,7 +2,7 @@ import {approvedCampusEndpoints,finishCampusOperation} from './client-campus-end
 import {request as httpsRequest} from 'node:https';
 import {pinnedUploadAgent} from './client-direct-upload.mjs';
 import {campusNativeTransportOptions} from './client-campus-native.mjs';
-import {CAMPUS_CONNECTION_HELP,DATASET_DIRECT_HELP,campusRetryable,retryCampusRequest} from './dist/personal-upload.js';
+import {CAMPUS_CONNECTION_HELP,DATASET_DIRECT_HELP,campusRetryable,isCampusTicketMessage,retryCampusFileChunk} from './dist/personal-upload.js';
 
 const CHUNK=1024**2,MAX_CHUNK=16*CHUNK;
 const HASH=/^[a-f0-9]{64}$/,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -63,8 +63,13 @@ export function personalFileRequest(grant,agent,action,args,{request=httpsReques
         res.on('error',()=>finish(Object.assign(Error('Campus file response failed; partial and original identity were preserved'),{code:'RESPONSE_INTERRUPTED'})));
         res.on('end',()=>{
           if(res.statusCode!==200){
-            let reasonCode;try{const value=JSON.parse(Buffer.concat(parts).toString()),code=value.reasonCode??value.code;if(typeof code==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(code))reasonCode=code;}catch{}
-            return finish(Object.assign(Error(`Campus file request rejected (HTTP ${res.statusCode}); no VPS or Tail fallback`),{status:res.statusCode,...(reasonCode?{reasonCode}:{})}));
+            let reasonCode,nodeError;
+            try{
+              const value=JSON.parse(Buffer.concat(parts).toString()),code=value.reasonCode??value.code;
+              if(typeof code==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(code))reasonCode=code;
+              if(isCampusTicketMessage(value.error))nodeError=value.error;
+            }catch{}
+            return finish(Object.assign(Error(`Campus file request rejected (HTTP ${res.statusCode}); no VPS or Tail fallback`),{status:res.statusCode,reasonCode,nodeError}));
           }
           try{
             const bytes=Buffer.concat(parts);
@@ -100,6 +105,7 @@ export async function createPersonalFileTransport(call,{machine,context,path,act
   let grant=personalFileGrant(initialGrant??(await ticket()).result,path,action),closed=false;
   const validity=value=>value.ttl??Math.min(300,value.expiresAt-now());
   let grantDeadline=ticketStarted+Math.max(0,validity(grant))*1000;
+  let renewWindow=120;
   const remainingGrant=()=>Math.max(0,Math.min((grantDeadline-monotonic())/1000,
     grant.ttl===undefined?grant.expiresAt-now():Infinity));
   if(context?.area==='dataset'&&(action==='put'?identity.totalSize:grant.file?.size)>CHUNK){
@@ -125,21 +131,23 @@ export async function createPersonalFileTransport(call,{machine,context,path,act
   let selected=endpoints[0];
   const makeAgent=()=>agentFactory(grant.certificateSha256,{dialEndpoint:selected.endpoint,serverName:new URL(grant.endpoint).hostname});
   let agent=makeAgent();
-  const refresh=async()=>{
+  const refresh=async(reconnect=false)=>{
     const next=personalFileGrant((await ticket()).result,path,action);
     if(action==='get'&&next.file.size!==fixedSize)fail('下载文件大小已改变，请重新下载；原文件和断点已保留。');
     const previous=grant,previousEndpoint=selected.endpoint;
+    // A pre-renewal node echoes its current ticket until it actually expires.
+    renewWindow=next.ticket===previous.ticket&&next.expiresAt===previous.expiresAt?0:120;
     grant=next;endpoints=approvedCampusEndpoints(grant);grantDeadline=ticketStarted+Math.max(0,validity(grant))*1000;
     selected=endpoints.find(row=>row.endpoint===selected.endpoint)??endpoints[0];
-    if(grant.endpoint!==previous.endpoint||grant.certificateSha256!==previous.certificateSha256||selected.endpoint!==previousEndpoint){await agent.destroy();agent=makeAgent();}
+    if(reconnect||grant.endpoint!==previous.endpoint||grant.certificateSha256!==previous.certificateSha256||selected.endpoint!==previousEndpoint){await agent.destroy();agent=makeAgent();}
   };
   return {
     get chunkBytes(){return grant.chunkBytes;},
     async request(args){
       if(closed)fail('Campus file transport is closed');
       let firstError;
-      try{return await retryCampusRequest(async()=>{
-        if(remainingGrant()<=120)await refresh();
+      try{return await retryCampusFileChunk(async()=>{
+        if(remainingGrant()<=renewWindow)await refresh();
         const attempted=new Set();
         for(;;){
           attempted.add(selected.endpoint);
@@ -158,7 +166,7 @@ export async function createPersonalFileTransport(call,{machine,context,path,act
             if(!remaining.length)throw firstError;
           }
         }
-      },retry);}catch(error){if(campusRetryable(error))error.message+='\n'+(context?.area==='dataset'?DATASET_DIRECT_HELP:CAMPUS_CONNECTION_HELP);throw error;}
+      },()=>refresh(true),retry);}catch(error){if(campusRetryable(error))error.message+='\n'+(context?.area==='dataset'?DATASET_DIRECT_HELP:CAMPUS_CONNECTION_HELP);throw error;}
     },
     async close(){closed=true;await finishCampusOperation(()=>agent.destroy());}
   };

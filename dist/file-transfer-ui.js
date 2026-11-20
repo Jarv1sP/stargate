@@ -1,22 +1,26 @@
-import {BROWSER_DATASET_HELP,campusRetryable,retryCampusRequest,selectBrowserTransferRoute} from './personal-upload.js';
+import {BROWSER_DATASET_HELP,campusRetryable,retryCampusFileChunk,retryCampusRequest,selectBrowserTransferRoute} from './personal-upload.js';
 const join=(parent,name)=>parent==='.'?name:parent+'/'+name;
 export function filePath(parent,name){if(typeof name!=='string'||!name||name.includes('/')||/[\\\x00-\x1f\x7f]/.test(name)||name==='.'||name==='..')throw Error('文件名超出了当前目录。');return join(parent,name);}
 export async function readBrowserFile(call,scope,path,{signal,onProgress=()=>{},route={},onRoute=message=>console.warn(message),retry}={}){
   let offset=0,size,grant;const chunks=[];
   grant=await selectBrowserTransferRoute(call,{...scope,path,action:'get'},{route,signal});
+  const refresh=async()=>{grant=await call('files.direct-ticket',{...scope,path,action:'get'});};
   do{
     signal?.throwIfAborted();
     let bytes,metadata;
     const portal=async()=>{metadata=await retryCampusRequest(()=>call('files.get',{...scope,path,offset}),{...retry,signal});bytes=Uint8Array.from(atob(metadata.data),c=>c.charCodeAt(0));};
     if(route.via==='portal')await portal();
     else try{
-      ({bytes,metadata}=await retryCampusRequest(async()=>{
-        if(!grant||grant.expiresAt*1000<=Date.now()+5000)grant=await call('files.direct-ticket',{...scope,path,action:'get'});
+      ({bytes,metadata}=await retryCampusFileChunk(async()=>{
+        if(!grant||grant.expiresAt*1000<=Date.now()+5000)await refresh();
         const url=new URL('/v1/files/'+encodeURIComponent(grant.grantId)+'/get',grant.endpoint);if(url.protocol!=='https:')throw Error('校园直连需要 HTTPS 地址。');url.searchParams.set('offset',offset);
         const response=await fetch(url,{headers:{Authorization:'Bearer '+grant.ticket},signal:signal?AbortSignal.any([signal,AbortSignal.timeout(30000)]):AbortSignal.timeout(30000)});
-        if(!response.ok)throw Object.assign(Error('下载连接中断，请使用 CLI 续传原下载。'),{status:response.status});
+        if(!response.ok){
+          const value=response.status===403?await response.json().catch(()=>null):null;
+          throw Object.assign(Error('下载连接中断，请使用 CLI 续传原下载。'),{status:response.status,reasonCode:value?.code,nodeError:value?.error});
+        }
         return {bytes:new Uint8Array(await response.arrayBuffer()),metadata:JSON.parse(atob(response.headers.get('x-gpuq-file-metadata').replaceAll('-','+').replaceAll('_','/')))};
-      },{...retry,signal}));
+      },refresh,{...retry,signal}));
     }catch(error){
       signal?.throwIfAborted();
       if(scope.area==='dataset'||!campusRetryable(error)){if(campusRetryable(error))error.message+='\n'+BROWSER_DATASET_HELP;throw error;}

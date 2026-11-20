@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,6 +9,27 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+func TestEarlyFileTicketRejectionSurvivesInterruptedBody(t *testing.T) {
+	s, g, _, _ := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		conn, stream, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		io.WriteString(stream, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n"+`{"code":"FILE_TICKET_EXPIRED"}`)
+		if err := stream.Flush(); err != nil {
+			t.Error(err)
+		}
+	})
+	g.Chunk, g.MaxChunk = personalChunkLimit, personalChunkLimit
+	body := bytes.Repeat([]byte{'x'}, personalChunkLimit)
+	out, _ := s.request(put(g, 0, body, false), body)
+	if out.Code != "HTTP_REJECTED" || out.Status != 403 || out.ReasonCode != "FILE_TICKET_EXPIRED" {
+		t.Fatalf("lost the node's ticket refusal: %+v", out)
+	}
+}
 
 func TestHTTPRejectionDetailsAndNoReplay(t *testing.T) {
 	for _, status := range []int{403, 409, 429} {

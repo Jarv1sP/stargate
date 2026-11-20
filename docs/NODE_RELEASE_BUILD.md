@@ -140,6 +140,8 @@ python3 -I -B deploy/node/quota-migrate.py --config /etc/gpuq-console/node-insta
 
 校园数据集传输沿用 `maxChunkBytes` 协商：新客户端先取得 1 MiB 原始凭据，再显式请求 16 MiB；节点在响应中同时返回选定的 `chunkBytes` 和 `maxChunkBytes`。未请求升级的客户端仍得到 1 MiB。旧节点缺少响应标记时，新客户端继续用 1 MiB；下载需重新取小块凭据，避免旧节点按 16 MiB 返回正文。上传的持久 grant 保留 1 MiB 边界，16 MiB 只影响已协商的请求响应，以便回退节点后沿原 UUID 续传。数据集字节仍只走校园直连，单请求在途，不增加流水线。
 
+直传票据有效期为 300 秒。已登录客户端在剩余 120 秒内重新申请上传票据时，节点换发票据并保留原 UUID 和持久化偏移。旧节点可能先返回原票据，CLI 会等到原到期时间再主动申请。若节点在处理正文前报告票据到期或登录校验拒绝，客户端先经 Portal 重新取票，再重试一次当前偏移。会话失效仍由 Portal 拒绝。
+
 调用者负责 SSH/传输；节点本机用 Python 3.10 以管理员权限运行 `python3 deploy/node/install.py <单机包目录或tar包> --config <本机私有JSON>`。
 自动安装由强制 SSH 命令调用 `deploy/node/receive.py`：stdin 为未压缩 tar，根目录包含 `install.py` 和 `package/` 单机包；在 `/var/tmp` 临时解包后调用安装器，输出其 JSON/退出码，临时文件自动清理；默认私有配置 `/etc/gpuq-console/node-install.json`，可由节点安装者通过 `--config` 指定。
 私有配置结构见 [config.example.json](../deploy/node/config.example.json)：account、releaseRoot、dataMountPoints、gpuq、profiles、authorizedKeys（每条显式写 profile）、services；数据盘列表由顶层统一填入各 profile，真实值只留节点。

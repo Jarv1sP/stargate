@@ -42,6 +42,42 @@ test('one browser dataset directory shares the direct route and probes only once
  for(const path of ['first','second','third'])await uploadBrowserFile(new Blob(['abc']),{machine:'fixture',area:'dataset',dataset:'images',call,path,key,route});
  assert.equal(probes,1);assert.equal(campus,3);assert.equal(route.via,'direct');
 });
+for(const action of ['put','get'])test(`browser ${action} renews a refused ticket and continues at the same offset`,async t=>{
+ const bytes=Buffer.alloc(1024**2+3,97),scope={machine:'fixture',area:'dataset',dataset:'images'},offsets=[];
+ let tickets=0,offset=0;
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  const target=new URL(url);
+  if(target.pathname==='/capabilities')return {};
+  assert.equal(Number(target.searchParams.get('offset')),offset);
+  offsets.push(offset);
+  if(offset&&tickets===1)return {ok:false,status:403,json:async()=>({code:'FILE_TICKET_EXPIRED'})};
+  assert.equal(options.headers.Authorization,'Bearer ticket-'+tickets);
+  if(action==='put'){
+   assert.deepEqual(Buffer.from(options.body),bytes.subarray(offset,offset+options.body.length));
+   offset+=options.body.length;
+   return {ok:true,json:async()=>({result:{offset}})};
+  }
+  const metadata={size:bytes.length,offset},chunk=bytes.subarray(offset,offset+1024**2);
+  offset+=chunk.length;
+  return {ok:true,arrayBuffer:async()=>chunk,headers:new Headers({'x-gpuq-file-metadata':Buffer.from(JSON.stringify(metadata)).toString('base64')})};
+ });
+ const call=async(op,args)=>{
+  if(op==='files.direct-ticket'){
+   assert.equal(args.action,action);
+   if(action==='put')assert.equal(args.uploadId,key);
+   return {...grant,ticket:'ticket-'+(++tickets)};
+  }
+  assert.equal(args.key,key);
+  if(op==='data.upload.begin')return {state:'UPLOADING',offset};
+  assert.equal(op,'data.upload.finish');
+  return {state:'COMPLETE',offset};
+ };
+ if(action==='put')assert.equal((await uploadBrowserFile(new Blob([bytes]),{...scope,call,path:'sample',key})).state,'COMPLETE');
+ else assert.deepEqual(Buffer.from(await (await readBrowserFile(call,scope,'sample')).arrayBuffer()),bytes);
+ assert.deepEqual(offsets,[0,1024**2,1024**2]);
+ assert.equal(tickets,2);
+ assert.equal(offset,bytes.length);
+});
 test('browser dataset probe stops after 1.5 seconds without a VPS data request',async t=>{
  let elapsed;const started=performance.now();
  t.mock.method(globalThis,'fetch',async(_url,options)=>new Promise((resolve,reject)=>{const timer=setTimeout(resolve,5000);options.signal.addEventListener('abort',()=>{clearTimeout(timer);elapsed=performance.now()-started;reject(options.signal.reason);},{once:true});}));

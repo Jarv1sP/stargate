@@ -397,6 +397,15 @@ func (s *session) request(f frame, body []byte) (out reply, raw []byte) {
 		out.RetryAfterMs = delay
 		return out, nil
 	}
+	// The node can reject authorization before reading the upload body.
+	// Keep the parsed refusal even when closing the socket interrupts the write.
+	if res.StatusCode == http.StatusForbidden {
+		out.ReasonCode, out.NodeError = rejectionDetails(payload, f)
+		s.close()
+		<-writeDone
+		writeFinished = true
+		return fail(errors.New("HTTP_REJECTED"))
+	}
 	writeError := <-writeDone
 	writeFinished = true
 	if writeError != nil {

@@ -87,6 +87,26 @@ class DirectRequests(unittest.TestCase):
         self.assertEqual(len(syncs),1);self.assertEqual(record.call_count,1);self.assertEqual(quota.call_count,1)
         self.assertIs(self.direct.module('data-uploads'),self.direct.module('data-uploads'))
 
+    def test_upload_rotates_tickets_before_expiry_without_resetting_the_offset(self):
+        clock=[time.time()]
+        with patch.object(self.direct,'TICKET_LIFETIME',12),patch.object(self.direct,'TICKET_RENEW_WINDOW',4),\
+             patch.object(self.direct.time,'time',side_effect=lambda:clock[0]):
+            self.start(4)
+            request={'action':'put','uploadId':self.key,'dataset':'shared','path':'sample.bin','totalSize':4,'userId':'alice'}
+            for offset,byte in enumerate(b'abcd'):
+                self.assertEqual(self.request(offset,bytes([byte]),final=offset==3)['offset'],offset+1)
+                if offset==3:break
+                clock[0]+=9
+                old=self.grant
+                self.assertLess(clock[0],old['expiresAt'])
+                self.grant=self.lane.issue(request)
+                self.assertEqual(self.grant['grantId'],old['grantId'])
+                self.assertNotEqual(self.grant['ticket'],old['ticket'])
+                self.assertGreater(self.grant['expiresAt'],old['expiresAt'])
+                with self.assertRaises(self.direct.TicketExpired):self.lane.authorize(self.key,old['ticket'])
+            self.assertEqual((self.root/'sample.bin').read_bytes(),b'abcd')
+            self.assertEqual(self.checks,4)
+
     def test_disconnect_and_uncommitted_tail_resume_from_durable_offset(self):
         self.start(4*1024**2)
         context=ssl._create_unverified_context()
