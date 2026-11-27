@@ -119,14 +119,17 @@ export function progressText(progress){
   return parts.join(' · ');
 }
 
+export const backfillText=job=>job.backfillFor&&['STARTING','RUNNING','PREEMPTING'].includes(job.state)?'临时借用空卡，前序任务凑齐后按约定让位':'';
+
 export function feedbackKey(job){
-  return JSON.stringify([job.state,job.cancelRequested===true,job.error,job.queueReason,job.latestAttempt,job.progress?.stale,job.progress?.error,job.progress?.snapshot]);
+  return JSON.stringify([job.state,job.cancelRequested===true,job.error,job.queueReason,job.backfillFor,job.latestAttempt,job.progress?.stale,job.progress?.error,job.progress?.snapshot]);
 }
 
 export function jobFeedbackText(job){
   const parts=[`${clean(job.name,64)||'train'} · ${clean(job.username,24)||'-'} · ${clean(job.id,256)||'-'}`,
     `${clean(job.machine,128)||'待选服务器'} · ${clean(job.state,40)||'UNKNOWN'} · ${progressText(job.progress)}`];
   if(['PENDING','QUEUED','SUBMITTING','PREPARING_DATA'].includes(job.state)&&job.queueReason)parts.push('排队原因：'+clean(job.queueReason,400));
+  if(backfillText(job))parts.push(backfillText(job));
   if(job.error)parts.push(clean(job.error,512));
   const attempt=job.latestAttempt;
   if(attempt?.exitCode!==null&&attempt?.exitCode!==undefined)parts.push('退出码 '+attempt.exitCode);

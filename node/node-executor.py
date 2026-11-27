@@ -65,6 +65,7 @@ def cloud_files():return module('cloud-files').CloudFiles(sys.modules[__name__])
 def scheduling_status(job,data):
     state=data.get('job',data);attempts=data.get('attempts',[])
     return {'schedulerState':state.get('state'),'schedulerPriority':state.get('priority'),
+            'backfillFor':state.get('backfill_for'),
             'priorityMutable':state.get('state')=='PENDING','queueReason':state.get('state_reason'),
             'schedulerPolicy':{k:state.get(k) for k in ('priority','yield_policy','restart_policy','dispatch_mode')},
             'progress':data.get('progress'),'gpuMetrics':data.get('gpuMetrics'),

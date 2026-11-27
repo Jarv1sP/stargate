@@ -8,7 +8,7 @@ import {runCloudImport} from './client-cloud-import.mjs';
 import {runCloudFiles} from './client-cloud-files.mjs';
 import {runCommunityCommand,formatCommunityResult,communityJSON,showCLIAnnouncements,communityHelp} from './community-cli.mjs';
 import {watchJob} from './job-watch.mjs';
-import {progressText,jobTimingText} from './dist/job-progress.js';
+import {progressText,jobTimingText,backfillText} from './dist/job-progress.js';
 import {diskLabel} from './dist/disk-media.js';
 import {quotaReport,quotaUsageLines} from './dist/storage-usage.js';
 import {elasticAllocation,allocationLabel,gpuPlacement} from './dist/gpu-allocation.js';
@@ -868,7 +868,7 @@ ${n.body}
       return;
     }
     console.log(result.length ? [...result].slice(-50).reverse().map((j) => `${j.id}  ${j.state}${j.historyExpired?"（明细已清理，输出保留）":j.preempted ? "（让位中断，不会自动重跑）" : ""}
-  ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${Number.isInteger(j.schedulerPriority) ? 'P'+j.schedulerPriority : ["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}
+  ${j.machine} · ${allocationLabel(j)} · ${j.name || "train"} · 优先级 ${Number.isInteger(j.schedulerPriority) ? 'P'+j.schedulerPriority : ["idle", "normal", "high"].includes(j.priority) ? j.priority : "未提供"}${j.schedulerState ? " · 调度 " + j.schedulerState : ""}${j.queueReason ? "\n  排队原因：" + j.queueReason : ""}${backfillText(j)?"\n  "+backfillText(j):""}
   ${j.after?.length?'依赖：'+j.after.map(item=>`${item.name} (${item.id})`).join('、')+(j.error||j.reason?' · '+(j.error||j.reason):'')+'\n  ':''}${progressText(j.progress)}${jobTimingText(j) ? "\n  " + jobTimingText(j) : ""}\n  ${gpuMetricsText(j.gpuMetrics)}`).join("\n") : options.key?"当前平台记录中未找到此 key；提交结果仍未知，请保留原 key 继续查询。":"暂无任务。");
     if (result.length > 50) console.log("显示最近 50 条；完整记录：gpuctl jobs --json");
     return;

@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {pendingJobReason,executionCall} from '../execution.mjs';
+import {pendingJobReason,executionCall,schedulerResult,publicJob} from '../execution.mjs';
 import {PortalService} from '../portal-service.mjs';
 import {MACHINES} from '../dist/model.js';
-import {feedbackKey,jobFeedbackText} from '../dist/job-progress.js';
+import {feedbackKey,jobFeedbackText,backfillText} from '../dist/job-progress.js';
 import {workbenchCards} from '../dist/workbench-ui.js';
 
 const machine=MACHINES[0].id,otherMachine=MACHINES[1].id;
@@ -24,6 +24,18 @@ function fixture(){
   memoryJobAccess(service);return {service,job,user,host,reason:()=>pendingJobReason(service,job,now)};
 }
 const allCards=()=>Array.from({length:MACHINES[0].cards},(_,i)=>i);
+
+test('backfill loan flows through native result, public jobs and CLI feedback without changing policy',()=>{
+  const job=target();job.spec.scheduling={rank:'P2',yieldPolicy:'save',restartPolicy:'on-preempt'};
+  schedulerResult(job,{state:'RUNNING',backfillFor:'native-head',assignedIndices:[0]});
+  const view=publicJob(job),before=feedbackKey(view);
+  assert.equal(view.backfillFor,'native-head');assert.match(jobFeedbackText(view),/临时借用空卡/);
+  assert.match(backfillText(view),/按约定让位/);
+  schedulerResult(job,{state:'RUNNING',assignedIndices:[0]});
+  assert.equal(job.backfillFor,null);assert.equal(backfillText(job),'');assert.notEqual(feedbackKey(job),before);
+  assert.deepEqual(job.spec.scheduling,{rank:'P2',yieldPolicy:'save',restartPolicy:'on-preempt'});
+  assert.equal(backfillText({...view,state:'SUCCEEDED'}),'');
+});
 function fill(f){f.host.gpuq.jobs=[{id:'native-running',state:'RUNNING',assigned_gpu_indices:allCards()}];}
 
 test('full GPU leases explain low utilization and count only earlier same-machine queue records',()=>{
