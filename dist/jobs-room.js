@@ -8,6 +8,7 @@ import {deleteJobOutputs,deletableResultJob,ownResultJob,resultPullCommand} from
 import {reducedMotion} from './motion-ui.js';
 import {confirmSheet} from './sheet-ui.js';
 import {installJobHistory} from './job-history-ui.js';
+import {backfillText} from './job-progress.js';
 
 const QUEUED=['PENDING','QUEUED','SUBMITTING'],LIVE=['RUNNING','STARTING'];
 const dotClass=job=>job.cancelRequested&&!endedJob(job)?'cancel':LIVE.includes(job.state)?'run':QUEUED.includes(job.state)?'queue':job.state==='FAILED'?'fail':'done';
@@ -52,7 +53,7 @@ export function jobsRoom(store,{toast,machines,getPage}){
   function rowHTML(job){
     const readout=trainingReadout(job),running=job.state==='RUNNING'&&!job.cancelRequested,fresh=!seen.has(job.id);
     const status=job.state==='FAILED'?esc(job.error||job.failure?.message||'失败'):QUEUED.includes(job.state)&&job.queueReason?esc(job.queueReason):LIVE.includes(job.state)&&readout.description?esc(readout.description):esc(stateWord(job));
-    return `<button type="button" class="jr-row${fresh&&lastRows?' jr-new':''}" role="listitem" data-job="${esc(job.id)}"><span class="jr-dot ${dotClass(job)}" aria-hidden="true"></span><span class="jr-main"><span class="jr-t">${esc(job.name||'训练')}</span>${running&&readout.percent!==null?`<span class="jr-prog" role="progressbar" aria-label="训练进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${readout.percent}"><b data-w="${readout.percent}"></b></span>`:`<span class="jr-s${job.state==='FAILED'?' fail':''}">${status}</span>`}</span><span class="jr-s jr-hide-m">${esc(job.username||'成员未知')} · ${esc(job.project||'默认项目')}</span><span class="jr-s jr-hide-m mono">${esc(shortServer(job.machine))} · ${Number.isSafeInteger(job.cards)?job.cards+' 张':'—'}${rank(job)!==null?' · P'+rank(job):''}</span><span class="jr-time mono">${esc(timeText(job))}</span></button>`;
+    return `<button type="button" class="jr-row${fresh&&lastRows?' jr-new':''}" role="listitem" data-job="${esc(job.id)}"><span class="jr-dot ${dotClass(job)}" aria-hidden="true"></span><span class="jr-main"><span class="jr-t">${esc(job.name||'训练')}</span>${running&&readout.percent!==null?`<span class="jr-prog" role="progressbar" aria-label="训练进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${readout.percent}"><b data-w="${readout.percent}"></b></span>`:`<span class="jr-s${job.state==='FAILED'?' fail':''}">${status}</span>`}${backfillText(job)?`<span class="jr-s">${esc(backfillText(job))}</span>`:''}</span><span class="jr-s jr-hide-m">${esc(job.username||'成员未知')} · ${esc(job.project||'默认项目')}</span><span class="jr-s jr-hide-m mono">${esc(shortServer(job.machine))} · ${Number.isSafeInteger(job.cards)?job.cards+' 张':'—'}${rank(job)!==null?' · P'+rank(job):''}</span><span class="jr-time mono">${esc(timeText(job))}</span></button>`;
   }
   function renderRows(){
     const rows=visible(),more=rows.length-limit,html=rows.length?rows.slice(0,limit).map(rowHTML).join('')+(more>0?`<button type="button" class="jr-more" data-more>再显示 ${Math.min(more,PAGE)} 个 · 共 ${rows.length} 个</button>`:''):`<div class="jr-empty">${falcon}<p>${search||scope!=='all'&&store.jobs.length?'没有符合条件的任务。':'发射台是空的。'}<br>新建一个任务，几秒后就会排上。</p><button type="button" class="jr-btn ghost" data-empty-new>新建任务</button></div>`;

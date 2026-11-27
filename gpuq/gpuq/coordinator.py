@@ -1840,7 +1840,7 @@ class Coordinator:
         for candidate in victims:
             attempt = self.store.get_attempt(candidate.attempt_id)
             victim_job = self.store.get_job(candidate.job_id)
-            if not victim_in_scope(requester,victim_job):
+            if not self._victim_in_scope(requester, victim_job, attempt):
                 raise StoreConflictError("requester may only interrupt explicit idle / opt-in yielding jobs in its scope")
             actual_mode = preemption_mode(requester["dispatch_mode"], candidate)
             if actual_mode is None:
@@ -2071,7 +2071,7 @@ class Coordinator:
             ) or self._attempt_has_sharing(attempt):
                 continue
             victim_job = self.store.get_job(attempt["job_id"])
-            if not victim_in_scope(requester,victim_job):
+            if not self._victim_in_scope(requester, victim_job, attempt):
                 continue
             if victim_job.get("yield_policy", "legacy") in {"save", "never"}:
                 continue
@@ -2148,7 +2148,7 @@ class Coordinator:
         requester = self.store.get_job(requester_id)
         if requester["state"] != JobState.PENDING.value:
             return False
-        if not victim_in_scope(requester,self.store.get_job(attempt["job_id"])):
+        if not self._victim_in_scope(requester, self.store.get_job(attempt["job_id"]), attempt):
             return False
         return not bool(
             self._select_free_devices_for_job(requester, self._free_devices())
@@ -4242,7 +4242,8 @@ class Coordinator:
             limit=10_000,
         )
         for attempt in attempts:
-            if not victim_in_scope(requester,self.store.get_job(attempt["job_id"])):
+            returned_loan = attempt["state"] in terminal_promise_states and attempt.get("preempt_requested_by_job_id") == requester["id"]
+            if not returned_loan and not self._victim_in_scope(requester, self.store.get_job(attempt["job_id"]), attempt):
                 continue
             if self._attempt_is_quarantine_affected(
                 attempt
@@ -4345,6 +4346,56 @@ class Coordinator:
                 self.store.update_job(job["id"], state_reason=None)
         return waiting
 
+    def _borrowed_for(self, job: dict[str, Any], attempt: dict[str, Any] | None) -> str | None:
+        loan = self.store.get_setting("borrowed-for:" + job["id"])
+        if loan and attempt and loan["attempt"] == attempt["id"]:
+            head = self.store.get_job(loan["head"])
+            if head["state"] == JobState.PENDING.value:
+                return head["id"]
+        return None
+
+    def _victim_in_scope(self, requester: dict[str, Any], victim: dict[str, Any], attempt: dict[str, Any]) -> bool:
+        # A loan may be reclaimed by its own earlier queue entry, including
+        # equal priority. Ordinary jobs still obey the unchanged victim policy.
+        if (self._borrowed_for(victim, attempt) == requester["id"]
+                and victim["priority"] <= requester["priority"]
+                and victim.get("yield_policy") in {"now", "save"}):
+            return True
+        return victim_in_scope(requester, victim)
+
+    def _waiting_reason(self, job: dict[str, Any], reason: str) -> None:
+        reason = reason[:400]
+        if job.get("state_reason") != reason:
+            self.store.update_job(job["id"], state_reason=reason)
+
+    def _backfill(self, head: dict[str, Any], later: list[dict[str, Any]], free: list[GpuDevice]) -> None:
+        batch_key = "queue-backfill:" + head["id"]
+        allow_batch = not self.store.get_setting(batch_key, False)
+        for job in later:
+            if self.store.get_active_scale_up_plan(job["id"]) or self._pending_scale_fallback_plan(job):
+                continue
+            borrowed = (job.get("yield_policy") in {"now", "save"}
+                        and (head["dispatch_mode"] != DispatchMode.PREEMPT_SAVE.value
+                             or job["checkpoint_capability"] == CheckpointCapability.EPOCH_V1.value))
+            selected = self._select_free_devices_for_job(job, free)
+            if selected and (borrowed or allow_batch):
+                # The batch grant and loan belong to the allocation decision;
+                # a daemon crash cannot turn one batch into unlimited bypasses.
+                with self.store.transaction() as tx:
+                    attempt = self._plan_start(job, selected)
+                    if borrowed:
+                        tx.set_setting("borrowed-for:" + job["id"], {"head": head["id"], "attempt": attempt["id"]})
+                    else:
+                        tx.set_setting(batch_key, True)
+                assigned = {device.uuid for device in selected}
+                free = [device for device in free if device.uuid not in assigned]
+            else:
+                self._waiting_reason(job, "等待前序多卡任务凑齐显卡" + ("；本轮不可打断补位已用完" if not allow_batch and not borrowed else ""))
+        counts = self._allowed_gpu_counts(head)
+        minimum = counts[0] if counts else self._minimum_gpu_count(head)
+        self._waiting_reason(head, f"需要 {minimum} 张卡，当前可用 {len(free)} 张；等待凑齐" +
+                             ("（已放行一批补位）" if self.store.get_setting(batch_key, False) else ""))
+
     def _schedule(self) -> None:
         pending = [
             job
@@ -4362,7 +4413,7 @@ class Coordinator:
         pending.sort(key=lambda job: fallback_plans[job["id"]] is not None)
         free = self._free_devices()
         backfill_only = False
-        for job in pending:
+        for index, job in enumerate(pending):
             fallback_plan = fallback_plans[job["id"]]
             scale_plan = self.store.get_active_scale_up_plan(job["id"])
             if (
@@ -4396,9 +4447,9 @@ class Coordinator:
 
             if backfill_only:
                 if required_uuids is None:
-                    # A flexible job which cannot start immediately ends
-                    # backfill.  In particular, it may not preempt work on
-                    # behalf of a lower-ranked queue entry.
+                    # Bounded fill uses only capacity left by earlier pinned
+                    # reservations; it never preempts on a later job's behalf.
+                    self._backfill(job, pending[index + 1:], free)
                     break
                 # Preserve every currently-free member of this pinned
                 # request.  Later jobs may use only GPUs irrelevant to all
@@ -4426,6 +4477,7 @@ class Coordinator:
             has_quarantined_preemption = self._has_quarantined_active_preemption_for(
                 str(job["id"])
             )
+            victims = ()
             if (
                 not promised_capacity_ready
                 and launch_floor is not None
@@ -4433,6 +4485,9 @@ class Coordinator:
             ):
                 candidates = self._running_candidates()
                 candidates.extend(self._save_takeover_candidates(job))
+                borrowed = frozenset(candidate.attempt_id for candidate in candidates
+                    if self._borrowed_for(self.store.get_job(candidate.job_id),
+                                          self.store.get_attempt(candidate.attempt_id)) == job["id"])
                 victims = select_victims(
                     requester_priority=job["priority"],
                     requester_gpu_count=job["gpu_count"],
@@ -4444,6 +4499,7 @@ class Coordinator:
                     free_gpu_uuids=frozenset(available_uuids),
                     preempt_idle_only=bool(job.get("preempt_idle_only", False)),
                     preempt_opt_in_only=bool(job.get("preempt_opt_in_only", False)),
+                    borrowed_attempt_ids=borrowed,
                 )
                 if victims:
                     self._plan_preemption(job, victims)
@@ -4458,13 +4514,13 @@ class Coordinator:
                 backfill_only = True
                 continue
 
-            if promised_capacity_ready:
+            if promised_capacity_ready or victims or has_quarantined_preemption:
                 # Earlier ticks already committed enough victim capacity for
                 # this requester. Do not expand the blast radius while those
                 # exact attempts save/terminate/drain.
                 break
-            # Conservative head-of-line scheduling.  A lower-ranked job never
-            # starts while an earlier flexible job is blocked.
+            if fallback_plan is None:
+                self._backfill(job, pending[index + 1:], free)
             break
 
     # ------------------------------------------------------------------- API
@@ -4690,6 +4746,7 @@ class Coordinator:
                     "active_attempt_id": (
                         active_attempt["id"] if active_attempt is not None else None
                     ),
+                    "backfill_for": self._borrowed_for(job, active_attempt),
                     "assigned_gpu_count": (
                         len(active_attempt["gpu_uuids"])
                         if active_attempt is not None
@@ -4812,6 +4869,7 @@ class Coordinator:
         return {
             "job": {
                 **job,
+                "backfill_for": self._borrowed_for(job, attempts[0] if attempts else None),
                 "allowed_gpu_counts": list(self._allowed_gpu_counts(job)),
                 "scale_up_plan": self._scale_plan_status(
                     self.store.get_active_scale_up_plan(job["id"])

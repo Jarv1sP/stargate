@@ -128,6 +128,7 @@ def select_victims(
     free_gpu_uuids: frozenset[str] = frozenset(),
     preempt_idle_only: bool = False,
     preempt_opt_in_only: bool = False,
+    borrowed_attempt_ids: frozenset[str] = frozenset(),
 ) -> tuple[VictimCandidate, ...]:
     """Choose a deterministic, minimally harmful victim set.
 
@@ -173,19 +174,23 @@ def select_victims(
         needed = len(missing_required)
     eligible: list[VictimCandidate] = []
     for candidate in candidates:
+        borrowed = candidate.attempt_id in borrowed_attempt_ids and candidate.yield_policy in {'now', 'save'}
         if preempt_opt_in_only and candidate.yield_policy not in {'now','save'}:
             continue
-        if preempt_idle_only and not is_idle_victim(
+        if preempt_idle_only and not borrowed and not is_idle_victim(
             candidate.priority, candidate.yield_policy, candidate.preempt_idle_only
         ):
             continue
-        if candidate.priority >= requester_priority or candidate.gpu_count <= 0:
+        if candidate.priority > requester_priority or (candidate.priority == requester_priority and not borrowed) or candidate.gpu_count <= 0:
             continue
         if candidate.state != "RUNNING":
             continue
         if preemption_mode(mode.value, candidate) is None:
             continue
         eligible.append(candidate)
+    loans = [item for item in eligible if item.attempt_id in borrowed_attempt_ids]
+    if missing_required is None and sum(item.gpu_count for item in loans) >= needed:
+        eligible = loans
     eligible.sort(key=lambda item: (item.priority, item.attempt_id))
     if not eligible:
         return ()

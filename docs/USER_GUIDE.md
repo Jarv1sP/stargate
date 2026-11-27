@@ -497,6 +497,8 @@ P0–P4 越大越优先，团队成员都可使用。低等级不等于同意中
 
 同机等待个人额度的任务也按 P4→P0 派发，同等级先来先到。高优先级暂不满足额度时，不阻塞其他可运行任务；已发送给节点的请求不会因此重复提交。
 
+多卡队首暂时凑不齐时，后面能用现有空卡的任务可补位。不可打断任务只放行一批，随后新释放的卡为前序任务保留；`now`/`save` 任务仍可临时借用，凑够前序任务需要的卡时按约定让位，同级也仅回收这次借用。网页和 `gpuctl jobs` 显示「需要 X 张，当前可用 Y 张」或「临时借用空卡」。补位不改变提交时的重排策略；不可打断任务不会被强杀，但补位的一批可能延迟多卡任务启动。
+
 ```sh local
 gpuctl run --rank P1 --yield never -g 1 -- python train.py
 gpuctl run --rank P1 --yield now -g 1 -- python disposable.py
@@ -511,7 +513,7 @@ gpuctl priority JOB_ID P1
 
 训练每轮结束调用 `gpuq.checkpoint.checkpoint_at_epoch_end`，启动读取 `resume_checkpoint_path()`；保存 model、optimizer、scheduler、进度和各 rank RNG，DDP 所有 rank 协同，保留退出码 75。`--checkpointable` 不替程序实现保存；保存失败或超时不强杀，缺恢复文件不从头冒充恢复。
 
-模式 1 只让可保存的低等级任务让位；模式 2 对 now 任务立即让位，对 save 仍先保存。默认 queue 也遵守被抢占任务的 now/save 约定；同等级不互抢，never、共享和外部进程不被强杀。排队、让位、恢复与本次是否申请抢占是不同设置。
+模式 1 只让可保存的低等级任务让位；模式 2 对 now 任务立即让位，对 save 仍先保存。默认 queue 也遵守被抢占任务的 now/save 约定；普通同等级任务不互抢，仅临时借用的卡可由对应前序任务收回，never、共享和外部进程不被强杀。排队、让位、恢复与本次是否申请抢占是不同设置。
 
 ### 额度与协作区
 

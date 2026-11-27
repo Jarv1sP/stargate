@@ -1832,6 +1832,10 @@ class Store:
                 if exists is None:
                     raise StoreNotFoundError(f"job not found: {job_id}")
                 raise StoreConflictError("job state/version changed concurrently")
+            if normalized_state == JobState.STARTING.value or normalized_state in TERMINAL_JOB_STATES:
+                self.delete_setting("queue-backfill:" + job_id)
+                self.delete_setting("borrowed-for:" + job_id)
+                connection.execute("DELETE FROM settings WHERE key GLOB 'borrowed-for:*' AND json_extract(value_json, '$.head')=?", (job_id,))
             row = connection.execute(
                 "SELECT * FROM jobs WHERE id=?", (job_id,)
             ).fetchone()

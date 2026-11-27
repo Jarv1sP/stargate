@@ -40,6 +40,7 @@ export function schedulerResult(job,result){
   job.actualCards=job.assignedIndices?.length??null;
   job.schedulerState=typeof result.schedulerState==='string'?result.schedulerState:result.state;
   job.queueReason=typeof result.queueReason==='string'?result.queueReason.slice(0,400):null;
+  job.backfillFor=result.backfillFor||null;
   job.schedulerCheckedAt=job.checkedAt;
   job.schedulerPriority=Number.isInteger(result.schedulerPriority)?result.schedulerPriority:null;
   job.gpuMetrics=result.gpuMetrics??null;
